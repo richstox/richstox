@@ -121,3 +121,7 @@ backup_test_database_20260224_201546.gz
 # Environment files
 *.env
 *.env.*
+-e 
+# Environment files
+*.env
+*.env.*
