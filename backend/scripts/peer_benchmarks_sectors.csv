@@ -1,0 +1,13 @@
+sector,peer_count_total,pe_count,pe_median,pe_excluded_missing,pe_excluded_non_positive,pe_excluded_insufficient_peers,ps_count,ps_median,ps_excluded_missing,ps_excluded_non_positive,ps_excluded_insufficient_peers,pb_count,pb_median,pb_excluded_missing,pb_excluded_non_positive,pb_excluded_insufficient_peers,ev_ebitda_count,ev_ebitda_median,ev_ebitda_excluded_missing,ev_ebitda_excluded_non_positive,ev_ebitda_excluded_insufficient_peers,ev_revenue_count,ev_revenue_median,ev_revenue_excluded_missing,ev_revenue_excluded_non_positive,ev_revenue_excluded_insufficient_peers
+Basic Materials,202,122,23.5448,80,0,0,183,1.5779,19,0,0,192,2.1453,10,0,0,148,13.2514,54,0,0,180,2.0048,19,3,0
+Communication Services,226,107,16.072,119,0,0,212,0.7746,13,1,0,200,1.1063,26,0,0,142,7.896,79,5,0,208,1.3101,13,5,0
+Consumer Cyclical,495,301,21.6667,194,0,0,479,0.7906,16,0,0,422,1.8068,73,0,0,363,10.7224,128,4,0,466,1.0838,16,13,0
+Consumer Defensive,207,133,20.8974,74,0,0,198,0.8074,9,0,0,189,1.7007,18,0,0,141,11.6376,63,3,0,194,1.1285,9,4,0
+Energy,203,164,20.0785,39,0,0,196,1.6328,7,0,0,196,1.7077,7,0,0,187,8.1856,14,2,0,194,2.2816,7,2,0
+Financial Services,960,755,15.9238,205,0,0,781,2.3877,179,0,0,923,1.1206,37,0,0,700,11.7203,236,24,0,748,3.1819,181,31,0
+Financials,1,0,,1,0,0,0,,1,0,0,1,0.715,0,0,1,0,,1,0,0,0,,1,0,0
+Healthcare,1002,258,24.5449,744,0,0,685,3.5056,317,0,0,901,2.8354,101,0,0,276,15.1969,723,3,0,658,3.5837,317,27,0
+Industrials,608,388,29.2234,220,0,0,568,1.692,39,1,0,571,2.8629,36,1,0,437,14.5814,169,2,0,556,2.0469,39,13,0
+Real Estate,244,170,33.8547,74,0,0,240,3.6286,4,0,0,232,1.1878,10,2,0,211,16.3262,32,1,0,239,9.3747,4,1,0
+Technology,696,410,26.9032,286,0,0,673,2.6505,21,2,0,636,2.8708,57,3,0,418,16.9327,273,5,0,656,2.7304,22,18,0
+Utilities,91,76,26.7397,15,0,0,83,2.754,8,0,0,86,2.0523,5,0,0,79,12.6499,12,0,0,82,4.8735,8,1,0

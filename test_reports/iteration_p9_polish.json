@@ -1,0 +1,62 @@
+{
+  "test_session": "P9 Financial Hub POLISH",
+  "date": "2026-02-22",
+  "status": "COMPLETED",
+  "fixes_applied": {
+    "1_chronology": {
+      "description": "Left → Right (oldest left, newest right, TTM last)",
+      "implementation": "periods array reversed before display, TTM appended at end",
+      "verified": "API order [2025,2024,2023,2022] → Display [FY'22,FY'23,FY'24,FY'25,TTM]"
+    },
+    "2_label_overlap": {
+      "description": "Prevent label collision with headers",
+      "implementation": "Added chartWrapper with paddingTop: 24, reduced label fontSize to 10, added numberOfLines={1}",
+      "verified": "Labels have dedicated space above chart area"
+    },
+    "3_ttm_quarterly": {
+      "description": "TTM bar in both Annual AND Quarterly views",
+      "implementation": "Removed 'period === annual' condition, TTM bar now shows in both views",
+      "verified": "TTM bar renders in quarterly and annual mode"
+    },
+    "4_percent_formula": {
+      "description": "Correct YoY % formula WITHOUT abs() in denominator",
+      "implementation": "yoyPct = (current / prior) - 1",
+      "formula": "Δ%(t) = (X(t)/X(t-1y) - 1) × 100",
+      "example_aapl": {
+        "ttm_revenue": "$435.62B",
+        "prior_ttm_revenue": "$395.76B",
+        "calculation": "(435.62/395.76 - 1) × 100 = +10.1%"
+      }
+    },
+    "5_pill_cascade": {
+      "description": "Complete Financial Vitals pill cascade",
+      "states": [
+        "1. No Data / Pending",
+        "2. Burning Cash (TTM FCF < 0)",
+        "3. Declining Business (Rev YoY < 0 AND NI YoY < 0)",
+        "4. Healthy Growth (Rev YoY > 0 AND NI YoY > 0)",
+        "5. Expansion (Rev YoY > 0 AND (NI YoY < 0 OR N/A))",
+        "6. Cutting Costs (Rev YoY < 0 AND NI YoY > 0)",
+        "7. In line (default)"
+      ],
+      "verified": {
+        "AAPL": "Healthy Growth (Rev +10.1%, NI +22.5%, FCF +$123B)",
+        "XXII": "Burning Cash (FCF -$14.98M)"
+      }
+    },
+    "6_usd_pct_switch": {
+      "description": "USD/% switch controls chart + emphasizes active mode in table",
+      "implementation": "valueTextActive and yoyTextActive styles applied based on displayMode",
+      "verified": "Active mode has opacity: 1 and fontWeight: 600"
+    }
+  },
+  "files_changed": [
+    "/app/frontend/components/FinancialHub.tsx"
+  ],
+  "key_changes": {
+    "calculateYoYDelta": "Fixed: yoyPct = (currentValue / priorValue) - 1",
+    "periods_display": "Added: [...sliced].reverse() for left-to-right chronology",
+    "ttm_bar": "Removed: period === 'annual' condition",
+    "styles": "Added: chartWrapper paddingTop, valueTextActive, yoyTextActive"
+  }
+}

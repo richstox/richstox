@@ -1,0 +1,67 @@
+{
+  "generated_at": "2026-02-27T21:25:12.384809+00:00",
+  "total_tickers": 5374,
+  "tickers_with_warnings": 2644,
+  "tickers_clean": 2730,
+  "clean_rate_pct": 50.8,
+  "warnings_by_type": {
+    "missing_pe": 2271,
+    "missing_ev_ebitda": 1985,
+    "missing_ev_revenue": 697,
+    "missing_ps": 696,
+    "missing_pb": 418,
+    "insufficient_quarters": 130
+  },
+  "top_10_by_warning_count": [
+    {
+      "ticker": "ARVLF.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "BRSHF.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "CNTGF.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "CUPR.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "ENGS.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "LAFA.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "LAWR.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "OWLS.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "RGFC.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "SLNAF.US",
+      "warning_count": 6,
+      "warnings": "insufficient_quarters|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    }
+  ]
+}

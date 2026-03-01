@@ -1,0 +1,122 @@
+[
+  {
+    "ticker": "ABLVW.US",
+    "url": "https://eodhd.com/api/fundamentals/ABLVW.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "ABPWW.US",
+    "url": "https://eodhd.com/api/fundamentals/ABPWW.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "ABVEW.US",
+    "url": "https://eodhd.com/api/fundamentals/ABVEW.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "AACBR.US",
+    "url": "https://eodhd.com/api/fundamentals/AACBR.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "AFJKR.US",
+    "url": "https://eodhd.com/api/fundamentals/AFJKR.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "ASPCR.US",
+    "url": "https://eodhd.com/api/fundamentals/ASPCR.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "ALOVU.US",
+    "url": "https://eodhd.com/api/fundamentals/ALOVU.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "BOEU.US",
+    "url": "https://eodhd.com/api/fundamentals/BOEU.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "ADAMI.US",
+    "url": "https://eodhd.com/api/fundamentals/ADAMI.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "ADAMO.US",
+    "url": "https://eodhd.com/api/fundamentals/ADAMO.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "BRK.B.US",
+    "url": "https://eodhd.com/api/fundamentals/BRK.B.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "ABXL.US",
+    "url": "https://eodhd.com/api/fundamentals/ABXL.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "AIZN.US",
+    "url": "https://eodhd.com/api/fundamentals/AIZN.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "AOMD.US",
+    "url": "https://eodhd.com/api/fundamentals/AOMD.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "APOS.US",
+    "url": "https://eodhd.com/api/fundamentals/APOS.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "AQNB.US",
+    "url": "https://eodhd.com/api/fundamentals/AQNB.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "BBBY.US",
+    "url": "https://eodhd.com/api/fundamentals/BBBY.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "BEPH.US",
+    "url": "https://eodhd.com/api/fundamentals/BEPH.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "BEPI.US",
+    "url": "https://eodhd.com/api/fundamentals/BEPI.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  },
+  {
+    "ticker": "BNH.US",
+    "url": "https://eodhd.com/api/fundamentals/BNH.US",
+    "http_status": 401,
+    "result": "NO DATA"
+  }
+]

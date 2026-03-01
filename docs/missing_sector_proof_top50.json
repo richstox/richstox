@@ -1,0 +1,302 @@
+[
+  {
+    "ticker": "AACBR.US",
+    "url": "https://eodhd.com/api/fundamentals/AACBR.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AAUGD.US",
+    "url": "https://eodhd.com/api/fundamentals/AAUGD.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ABLVW.US",
+    "url": "https://eodhd.com/api/fundamentals/ABLVW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ABPWW.US",
+    "url": "https://eodhd.com/api/fundamentals/ABPWW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ABVEW.US",
+    "url": "https://eodhd.com/api/fundamentals/ABVEW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ABXL.US",
+    "url": "https://eodhd.com/api/fundamentals/ABXL.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ACONW.US",
+    "url": "https://eodhd.com/api/fundamentals/ACONW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ADAMG.US",
+    "url": "https://eodhd.com/api/fundamentals/ADAMG.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ADAMH.US",
+    "url": "https://eodhd.com/api/fundamentals/ADAMH.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ADAMI.US",
+    "url": "https://eodhd.com/api/fundamentals/ADAMI.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ADAMO.US",
+    "url": "https://eodhd.com/api/fundamentals/ADAMO.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ADNWW.US",
+    "url": "https://eodhd.com/api/fundamentals/ADNWW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AEAQ.US",
+    "url": "https://eodhd.com/api/fundamentals/AEAQ.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AEAQW.US",
+    "url": "https://eodhd.com/api/fundamentals/AEAQW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AENTW.US",
+    "url": "https://eodhd.com/api/fundamentals/AENTW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AERTW.US",
+    "url": "https://eodhd.com/api/fundamentals/AERTW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AEXA.US",
+    "url": "https://eodhd.com/api/fundamentals/AEXA.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AFJKR.US",
+    "url": "https://eodhd.com/api/fundamentals/AFJKR.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AFRIW.US",
+    "url": "https://eodhd.com/api/fundamentals/AFRIW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AILEQ.US",
+    "url": "https://eodhd.com/api/fundamentals/AILEQ.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AIMDW.US",
+    "url": "https://eodhd.com/api/fundamentals/AIMDW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AIRJW.US",
+    "url": "https://eodhd.com/api/fundamentals/AIRJW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AISPW.US",
+    "url": "https://eodhd.com/api/fundamentals/AISPW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AIZN.US",
+    "url": "https://eodhd.com/api/fundamentals/AIZN.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ALFUW.US",
+    "url": "https://eodhd.com/api/fundamentals/ALFUW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ALOVU.US",
+    "url": "https://eodhd.com/api/fundamentals/ALOVU.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ALVOW.US",
+    "url": "https://eodhd.com/api/fundamentals/ALVOW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AMODW.US",
+    "url": "https://eodhd.com/api/fundamentals/AMODW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AMPGW.US",
+    "url": "https://eodhd.com/api/fundamentals/AMPGW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ANGHW.US",
+    "url": "https://eodhd.com/api/fundamentals/ANGHW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ANSCW.US",
+    "url": "https://eodhd.com/api/fundamentals/ANSCW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AOMD.US",
+    "url": "https://eodhd.com/api/fundamentals/AOMD.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AOMN.US",
+    "url": "https://eodhd.com/api/fundamentals/AOMN.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "APOS.US",
+    "url": "https://eodhd.com/api/fundamentals/APOS.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AQNB.US",
+    "url": "https://eodhd.com/api/fundamentals/AQNB.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ARBEW.US",
+    "url": "https://eodhd.com/api/fundamentals/ARBEW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ARQQW.US",
+    "url": "https://eodhd.com/api/fundamentals/ARQQW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ASBPW.US",
+    "url": "https://eodhd.com/api/fundamentals/ASBPW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ASPCR.US",
+    "url": "https://eodhd.com/api/fundamentals/ASPCR.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ASPSW.US",
+    "url": "https://eodhd.com/api/fundamentals/ASPSW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ASPSZ.US",
+    "url": "https://eodhd.com/api/fundamentals/ASPSZ.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "ATHS.US",
+    "url": "https://eodhd.com/api/fundamentals/ATHS.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AUROW.US",
+    "url": "https://eodhd.com/api/fundamentals/AUROW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "AUUDW.US",
+    "url": "https://eodhd.com/api/fundamentals/AUUDW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "BAERW.US",
+    "url": "https://eodhd.com/api/fundamentals/BAERW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "BANXR.US",
+    "url": "https://eodhd.com/api/fundamentals/BANXR.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "BAYAR.US",
+    "url": "https://eodhd.com/api/fundamentals/BAYAR.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "BBBY.US",
+    "url": "https://eodhd.com/api/fundamentals/BBBY.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "BBCQ.US",
+    "url": "https://eodhd.com/api/fundamentals/BBCQ.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  },
+  {
+    "ticker": "BBCQW.US",
+    "url": "https://eodhd.com/api/fundamentals/BBCQW.US",
+    "api_status": "PARSE_ERROR",
+    "raw_sample": "Unauthenticated"
+  }
+]

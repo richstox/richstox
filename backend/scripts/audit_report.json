@@ -1,0 +1,380 @@
+{
+  "audit_timestamp": "2026-02-27T06:43:07.845217+00:00",
+  "quality_score": 91.84033910279054,
+  "total_audited": 5662,
+  "passed": 5200,
+  "failed": 462,
+  "by_category": {
+    "missing": {
+      "shares": 251,
+      "income_stmt": 172,
+      "balance_sheet": 104,
+      "cashflow": 171,
+      "income_quarters": 77
+    },
+    "stale": {
+      "price": 51
+    },
+    "invalid": {}
+  },
+  "red_flags": [
+    {
+      "ticker": "AAM-UN.US",
+      "name": "AA Mission Acquisition Corp.",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "BFZ.US",
+      "name": "BlackRock California Municipal Income Closed Fund",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "BFK.US",
+      "name": "BlackRock Municipal Income Closed Fund",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "BIGZ.US",
+      "name": "Blackrock Innovation & Growth Trust",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "BLE.US",
+      "name": "BlackRock MIT II",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "BNY.US",
+      "name": "BlackRock New York Municipal Income Trust",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "BYM.US",
+      "name": "BlackRock Municipal Income Quality Closed Fund",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "CADE.US",
+      "name": "Cadence Bancorp",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "CMA.US",
+      "name": "Comerica Incorporated",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "DAY.US",
+      "name": "Dayforce Inc.",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "ECCF.US",
+      "name": "Eagle Point Credit Company Inc.",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "HI.US",
+      "name": "Hillenbrand Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "REVG.US",
+      "name": "Rev Group Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "PLYM.US",
+      "name": "Plymouth Industrial REIT Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "RCC.US",
+      "name": "Small Cap Premium & Dividend Income Fund Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "SHCO.US",
+      "name": "Soho House & Co Inc.",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "THS.US",
+      "name": "Treehouse Foods Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "ALCYW.US",
+      "name": "Alchemy Investments Acquisition Corp 1 Warrants",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "APLT.US",
+      "name": "Applied Therapeutics Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "AVDL.US",
+      "name": "Avadel Pharmaceuticals PLC",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "BLMZ.US",
+      "name": "BloomZ Inc. Ordinary Shares",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "CJET.US",
+      "name": "Chijet Motor Company, Inc. Ordinary Shares",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "DUET.US",
+      "name": "DUET Acquisition Corp",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "DVAX.US",
+      "name": "Dynavax Technologies Corporation",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "CYBR.US",
+      "name": "CyberArk Software Ltd",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "DOOO.US",
+      "name": "BRP Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "DMAAU.US",
+      "name": "Drugs Made In America Acquisition Corp. Units",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "ENTO.US",
+      "name": "Entero Therapeutics, Inc.",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "ESLAW.US",
+      "name": "Estrella Immunopharma Inc.",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "FAT.US",
+      "name": "FAT Brands Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "FLGC.US",
+      "name": "Flora Growth Corp",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "FSFG.US",
+      "name": "First Savings Financial Group Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "GBIO.US",
+      "name": "Generation Bio\u00a0Co",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "GRNLD.US",
+      "name": "Greenlite Ventures Inc.",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "HSPO.US",
+      "name": "Horizon Space Acquisition I Corp. Ordinary Shares",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "JAMF.US",
+      "name": "Jamf Holding",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "MCTR.US",
+      "name": "CTRL Group Limited Ordinary Shares",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "MHUA.US",
+      "name": "Meihua International Medical Technologies Co Ltd",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "MOFG.US",
+      "name": "MidWestOne Financial Group Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "NISN.US",
+      "name": "Nisun International Enterprise Development Group Co Ltd",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "OBLG.US",
+      "name": "Oblong Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "PCH.US",
+      "name": "PotlatchDeltic Corp",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "RPTX.US",
+      "name": "Repare Therapeutics Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "SGD.US",
+      "name": "Safe and Green Development Corporation",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "SNBHD.US",
+      "name": "Sentient Brands Holdings Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "SNCR.US",
+      "name": "Synchronoss Technologies Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "SOHO.US",
+      "name": "Sotherly Hotels Inc",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "SVII.US",
+      "name": "Spring Valley Acquisition Corp. II Class A Ordinary Shares",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "VSTA.US",
+      "name": "Vasta Platform\u00a0Ltd",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "YGMZ.US",
+      "name": "Mingzhu Logistics Holdings\u00a0Ltd",
+      "critical": [
+        "stale_price"
+      ]
+    },
+    {
+      "ticker": "ZEUS.US",
+      "name": "Olympic Steel Inc",
+      "critical": [
+        "stale_price"
+      ]
+    }
+  ],
+  "recommendations": []
+}

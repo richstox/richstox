@@ -1,0 +1,112 @@
+[
+  {
+    "test": "GET /tickers",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:23.933181",
+    "response": {
+      "count": 100,
+      "first_ticker": "AAPL"
+    }
+  },
+  {
+    "test": "GET /tickers/search?q=AAPL",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:24.788749",
+    "response": {
+      "results_count": 1
+    }
+  },
+  {
+    "test": "GET /tickers/AAPL",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:25.656012",
+    "response": {
+      "ticker": "AAPL",
+      "current_price": 212.19
+    }
+  },
+  {
+    "test": "GET /tickers/AAPL/prices",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:26.623504",
+    "response": {
+      "price_entries": 365
+    }
+  },
+  {
+    "test": "GET /tickers/AAPL/dividends",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:27.483270",
+    "response": {
+      "dividend_entries": 4
+    }
+  },
+  {
+    "test": "POST /portfolios",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:28.360457",
+    "response": {
+      "portfolio_id": "39972f05-5b30-4793-8575-fed14d9b40f7",
+      "name": "Investment Growth Portfolio"
+    }
+  },
+  {
+    "test": "GET /portfolios",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:29.233468",
+    "response": {
+      "portfolios_count": 2
+    }
+  },
+  {
+    "test": "POST /positions",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:30.104837",
+    "response": {
+      "position_id": "5bf59dae-e15a-4351-8f47-fbe481f678ec",
+      "ticker": "AAPL"
+    }
+  },
+  {
+    "test": "GET /portfolios/{id}",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:30.963707",
+    "response": {
+      "total_value": 27121.9,
+      "positions": 1
+    }
+  },
+  {
+    "test": "GET /dashboard/{id}",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:31.834801",
+    "response": {
+      "portfolio_value": 27121.9
+    }
+  },
+  {
+    "test": "GET /positions/{id}",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:32.708635",
+    "response": {
+      "ticker": "AAPL",
+      "return_pct": 21.25
+    }
+  },
+  {
+    "test": "GET /benchmark",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:33.566128",
+    "response": {
+      "data_points": 365
+    }
+  },
+  {
+    "test": "POST /ticker-requests",
+    "status": "PASS",
+    "timestamp": "2026-02-17T20:00:34.441917",
+    "response": {
+      "message": "Ticker request submitted"
+    }
+  }
+]

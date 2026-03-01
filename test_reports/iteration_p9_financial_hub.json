@@ -1,0 +1,52 @@
+{
+  "test_session": "P9 Financial Hub UI Implementation",
+  "date": "2026-02-22",
+  "status": "PASSED",
+  "tests": [
+    {
+      "name": "AAPL.US Financial Hub renders with data",
+      "status": "PASSED",
+      "evidence": "API returns annual (5), quarterly (8), TTM, prior_ttm data. Screenshot shows Revenue Delta YoY chart and Core 5 table."
+    },
+    {
+      "name": "TTM bar in Annual view chart with distinct styling",
+      "status": "PASSED",
+      "evidence": "Screenshot shows TTM bar (+10.1%) at far right of delta chart with border styling"
+    },
+    {
+      "name": "TTM column in Core 5 Metrics table",
+      "status": "PASSED",
+      "evidence": "Screenshot shows TTM column: Revenue $435.62B, Net Income $117.78B"
+    },
+    {
+      "name": "Revenue Delta YoY percentages correct for AAPL",
+      "status": "PASSED",
+      "evidence": "FY'25: +6.4%, FY'24: +2.0%, FY'23: -2.8%, FY'22: +7.8%, TTM: +10.1% - matches API calculation"
+    },
+    {
+      "name": "XXII.US Burning Cash pill logic",
+      "status": "PASSED",
+      "evidence": "API confirms TTM FCF = -$14.98M < 0, getFinancialVitalsPill() returns 'Burning Cash'"
+    },
+    {
+      "name": "YoY delta formulas",
+      "status": "PASSED",
+      "evidence": {
+        "USD_delta": "currentValue - priorValue",
+        "PCT_delta": "(currentValue - priorValue) / |priorValue|",
+        "quarterly_prior": "index + 4 (same quarter last year)",
+        "annual_prior": "index + 1 (prior fiscal year)",
+        "ttm_prior": "prior_ttm from API"
+      }
+    }
+  ],
+  "files_changed": [
+    "/app/frontend/components/FinancialHub.tsx",
+    "/app/frontend/app/stock/[ticker].tsx"
+  ],
+  "key_functions": [
+    "calculateYoYDelta() - YoY delta calculation with quarterly/annual mode",
+    "getFinancialVitalsPill() - Priority cascade for collapsed pill",
+    "FinancialHub component - Main UI with chart, table, toggles"
+  ]
+}

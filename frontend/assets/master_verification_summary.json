@@ -1,0 +1,68 @@
+{
+  "generated_at": "2026-02-27T19:39:54.145405+00:00",
+  "total_tickers": 5662,
+  "tickers_with_warnings": 3028,
+  "tickers_clean": 2634,
+  "clean_rate_pct": 46.5,
+  "warnings_by_type": {
+    "missing_pe": 2461,
+    "missing_ev_ebitda": 2283,
+    "missing_ev_revenue": 1087,
+    "missing_ps": 962,
+    "missing_pb": 621,
+    "missing_shares": 251,
+    "insufficient_quarters": 249
+  },
+  "top_10_by_warning_count": [
+    {
+      "ticker": "AGMB.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "ALH.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "ALUB-UN.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "ARCIU.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "BIII-UN.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "BLUWU.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "BTGO.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "CGCTU.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "CHPGU.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    },
+    {
+      "ticker": "COPL.US",
+      "warning_count": 7,
+      "warnings": "insufficient_quarters|missing_shares|missing_pe|missing_ps|missing_pb|missing_ev_ebitda|missing_ev_revenue"
+    }
+  ]
+}
