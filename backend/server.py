@@ -605,6 +605,7 @@ async def health_check():
 
 from auth_service import (
     exchange_session_id,
+    exchange_google_code,
     create_or_update_user,
     create_session,
     validate_session,
@@ -615,6 +616,7 @@ from auth_service import (
     get_session_token_from_request,
     User,
     serialize_user,
+    GOOGLE_CLIENT_ID,
 )
 from fastapi import Request, Response
 
@@ -626,48 +628,6 @@ class TimezoneUpdate(BaseModel):
     """Request to update user timezone."""
     timezone: str
     country: Optional[str] = None
-
-@api_router.post("/auth/session")
-async def auth_session(request: SessionRequest, response: Response):
-    """
-    Exchange session_id for session_token and user data.
-    
-    REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
-    
-    This endpoint is called after Google OAuth redirect.
-    Creates user if not exists, creates session, sets cookie.
-    """
-    # Exchange session_id with Emergent Auth
-    auth_data = await exchange_session_id(request.session_id)
-    
-    if not auth_data:
-        raise HTTPException(401, "Invalid session_id")
-    
-    # Create or update user in database
-    user = await create_or_update_user(db, auth_data)
-    
-    # Serialize user for response (convert datetime to string)
-    user_data = serialize_user(user)
-    
-    # Create session
-    session_token = auth_data.get("session_token")
-    await create_session(db, user_data["user_id"], session_token)
-    
-    # Set httpOnly cookie
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        path="/",
-        max_age=7 * 24 * 60 * 60  # 7 days
-    )
-    
-    return {
-        "user": User(**user_data).dict(),
-        "session_token": session_token,  # Also return for mobile apps
-    }
 
 @api_router.get("/auth/me")
 async def auth_me(request: Request):
@@ -707,6 +667,72 @@ async def auth_logout(request: Request, response: Response):
     )
     
     return {"message": "Logged out"}
+
+@api_router.get("/auth/google")
+async def auth_google_login(request: Request):
+    """Redirect to Google OAuth."""
+    from urllib.parse import urlencode
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth/google/callback"
+    frontend_url = os.environ.get("FRONTEND_URL", "https://jocular-faun-27ea7b.netlify.app")
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": redirect_uri,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+    }
+    google_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url=google_url)
+
+@api_router.get("/auth/google/callback")
+async def auth_google_callback(code: str, request: Request, response: Response):
+    """Handle Google OAuth callback."""
+    from fastapi.responses import RedirectResponse
+    base_url = str(request.base_url).rstrip("/")
+    redirect_uri = f"{base_url}/api/auth/google/callback"
+    frontend_url = os.environ.get("FRONTEND_URL", "https://jocular-faun-27ea7b.netlify.app")
+    
+    auth_data = await exchange_google_code(code, redirect_uri)
+    if not auth_data:
+        return RedirectResponse(url=f"{frontend_url}/?error=auth_failed")
+    
+    user = await create_or_update_user(db, auth_data)
+    user_data = serialize_user(user)
+    session_token = auth_data.get("session_token")
+    await create_session(db, user_data["user_id"], session_token)
+    
+    response_redirect = RedirectResponse(url=f"{frontend_url}/auth/callback?session_id={session_token}")
+    response_redirect.set_cookie(
+        key="session_token",
+        value=session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=7 * 24 * 60 * 60
+    )
+    return response_redirect
+
+@api_router.post("/auth/session")
+async def auth_session_token(body: dict, response: Response):
+    """Exchange session_id (which is now session_token) for user data."""
+    session_id = body.get("session_id", "")
+    user = await validate_session(db, session_id)
+    if not user:
+        raise HTTPException(401, "Invalid session")
+    user_data = serialize_user(user)
+    response.set_cookie(
+        key="session_token",
+        value=session_id,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=7 * 24 * 60 * 60
+    )
+    return {"user": User(**user_data).dict(), "session_token": session_id}
 
 @api_router.put("/auth/timezone")
 async def auth_update_timezone(request: Request, data: TimezoneUpdate):
