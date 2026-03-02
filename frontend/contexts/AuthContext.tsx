@@ -2,13 +2,15 @@
  * RICHSTOX Auth Context
  * =====================
  * Google OAuth via direct Google APIs (no Emergent dependency).
+ * Web-compatible storage using localStorage.
  */
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Platform } from 'react-native';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+
+const SESSION_TOKEN_KEY = 'richstox_session_token';
+const USER_DATA_KEY = 'richstox_user_data';
 
 export interface User {
   user_id: string;
@@ -38,8 +40,17 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const SESSION_TOKEN_KEY = 'richstox_session_token';
-const USER_DATA_KEY = 'richstox_user_data';
+function getStorage(key: string): string | null {
+  try { return localStorage.getItem(key); } catch { return null; }
+}
+
+function setStorage(key: string, value: string): void {
+  try { localStorage.setItem(key, value); } catch {}
+}
+
+function removeStorage(key: string): void {
+  try { localStorage.removeItem(key); } catch {}
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -52,35 +63,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkExistingSession = async () => {
     try {
-      let storedToken: string | null = null;
-      storedToken = await AsyncStorage.getItem(SESSION_TOKEN_KEY);
-
-      if (!storedToken && Platform.OS === 'web' && typeof document !== 'undefined') {
-        const cookies = document.cookie.split(';');
-        for (const cookie of cookies) {
-          const [name, value] = cookie.trim().split('=');
-          if (name === 'session_token') {
-            storedToken = value;
-            break;
-          }
-        }
-      }
-
+      const storedToken = getStorage(SESSION_TOKEN_KEY);
       if (storedToken) {
         const response = await fetch(`${API_URL}/api/auth/me`, {
           headers: { 'Authorization': `Bearer ${storedToken}` },
           credentials: 'include',
         });
-
         if (response.ok) {
           const userData = await response.json();
           setUser(userData);
           setSessionToken(storedToken);
-          await AsyncStorage.setItem(SESSION_TOKEN_KEY, storedToken);
-          await AsyncStorage.setItem(USER_DATA_KEY, JSON.stringify(userData));
+          setStorage(USER_DATA_KEY, JSON.stringify(userData));
         } else {
-          await AsyncStorage.removeItem(SESSION_TOKEN_KEY);
-          await AsyncStorage.removeItem(USER_DATA_KEY);
+          removeStorage(SESSION_TOKEN_KEY);
+          removeStorage(USER_DATA_KEY);
         }
       }
     } catch (error) {
@@ -96,10 +92,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const login = () => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined') {
-      // Redirect to backend Google OAuth
-      window.location.href = `${API_URL}/api/auth/google`;
-    }
+    window.location.href = `${API_URL}/api/auth/google`;
   };
 
   const processSessionId = async (sessionId: string): Promise<boolean> => {
@@ -111,12 +104,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         credentials: 'include',
         body: JSON.stringify({ session_id: sessionId }),
       });
-
       if (!response.ok) return false;
-
       const data = await response.json();
-      await AsyncStorage.setItem(SESSION_TOKEN_KEY, data.session_token);
-      await AsyncStorage.setItem(USER_DATA_KEY, JSON.stringify(data.user));
+      setStorage(SESSION_TOKEN_KEY, data.session_token);
+      setStorage(USER_DATA_KEY, JSON.stringify(data.user));
       setUser(data.user);
       setSessionToken(data.session_token);
       return true;
@@ -138,10 +129,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Error logging out:', error);
     }
-    await AsyncStorage.removeItem(SESSION_TOKEN_KEY);
-    await AsyncStorage.removeItem(USER_DATA_KEY);
+    removeStorage(SESSION_TOKEN_KEY);
+    removeStorage(USER_DATA_KEY);
     setUser(null);
     setSessionToken(null);
+    window.location.href = '/login';
   };
 
   const updateTimezone = async (timezone: string, country?: string) => {
@@ -159,7 +151,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (response.ok) {
         const updatedUser = await response.json();
         setUser(updatedUser);
-        await AsyncStorage.setItem(USER_DATA_KEY, JSON.stringify(updatedUser));
+        setStorage(USER_DATA_KEY, JSON.stringify(updatedUser));
       }
     } catch (error) {
       console.error('Error updating timezone:', error);
@@ -167,24 +159,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const devLogin = async () => {
-    setIsLoading(true);
-    try {
-      const response = await fetch(`${API_URL}/api/auth/dev-login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include',
-      });
-      if (!response.ok) return;
-      const data = await response.json();
-      await AsyncStorage.setItem(SESSION_TOKEN_KEY, data.session_token);
-      await AsyncStorage.setItem(USER_DATA_KEY, JSON.stringify(data.user));
-      setUser(data.user);
-      setSessionToken(data.session_token);
-    } catch (error) {
-      console.error('Dev login error:', error);
-    } finally {
-      setIsLoading(false);
-    }
+    // Dev login disabled
   };
 
   const value: AuthContextType = {
