@@ -552,15 +552,13 @@ export default function AdminPanel() {
 
           {/* Overdue */}
           {jobs.overdue.length > 0 && (
-            <JobSection title={`Overdue (${jobs.overdue.length})`} jobs={jobs.overdue} defaultOpen onRefresh={fetchData} jobLastRuns={data?.job_last_runs} />
+            <JobSection title={`Overdue (${jobs.overdue.length})`} jobs={jobs.overdue} defaultOpen onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
           )}
 
-          {/* Failed */}
           {jobs.failed.length > 0 && (
-            <JobSection title={`Failed (${jobs.failed.length})`} jobs={jobs.failed} defaultOpen type="error" onRefresh={fetchData} jobLastRuns={data?.job_last_runs} />
+            <JobSection title={`Failed (${jobs.failed.length})`} jobs={jobs.failed} defaultOpen type="error" onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
           )}
 
-          {/* Pending */}
           {jobs.pending.length > 0 && (
             <JobSection 
               title={`Pending (${jobs.pending.length})`} 
@@ -569,10 +567,10 @@ export default function AdminPanel() {
               onToggle={() => setShowPending(!showPending)}
               onRefresh={fetchData}
               jobLastRuns={data?.job_last_runs}
+              sessionToken={sessionToken}
             />
           )}
 
-          {/* Completed */}
           {jobs.completed.length > 0 && (
             <JobSection 
               title={`Completed (${jobs.completed.length})`} 
@@ -582,10 +580,10 @@ export default function AdminPanel() {
               type="success"
               onRefresh={fetchData}
               jobLastRuns={data?.job_last_runs}
+              sessionToken={sessionToken}
             />
           )}
 
-          {/* Not Scheduled */}
           {jobs.not_scheduled.length > 0 && (
             <JobSection 
               title={`Not Scheduled Today (${jobs.not_scheduled.length})`} 
@@ -594,6 +592,7 @@ export default function AdminPanel() {
               onToggle={() => setShowNotScheduled(!showNotScheduled)}
               onRefresh={fetchData}
               jobLastRuns={data?.job_last_runs}
+              sessionToken={sessionToken}
             />
           )}
         </View>
@@ -617,7 +616,7 @@ function HealthItem({ label, value, warn, error }: { label: string; value: any; 
   );
 }
 
-function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLastRuns }: { 
+function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLastRuns, sessionToken }: { 
   title: string; 
   jobs: Job[]; 
   defaultOpen?: boolean;
@@ -625,6 +624,7 @@ function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLa
   type?: string;
   onRefresh?: () => void;
   jobLastRuns?: AdminOverview['job_last_runs'];
+  sessionToken?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   
@@ -642,17 +642,18 @@ function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLa
         <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={16} color={COLORS.textMuted} />
       </TouchableOpacity>
       {isOpen && jobs.map((job) => (
-        <JobRow key={job.name} job={job} type={type} onRefresh={onRefresh} lastRun={jobLastRuns?.[job.name]} />
+        <JobRow key={job.name} job={job} type={type} onRefresh={onRefresh} lastRun={jobLastRuns?.[job.name]} sessionToken={sessionToken} />
       ))}
     </View>
   );
 }
 
-function JobRow({ job, type, onRefresh, lastRun }: { 
+function JobRow({ job, type, onRefresh, lastRun, sessionToken }: { 
   job: Job; 
   type?: string; 
   onRefresh?: () => void;
   lastRun?: AdminOverview['job_last_runs'] extends Record<string, infer T> ? T : never;
+  sessionToken?: string | null;
 }) {
   const [isRunning, setIsRunning] = useState(false);
   
@@ -701,7 +702,10 @@ function JobRow({ job, type, onRefresh, lastRun }: {
         : `${API_URL}/api/admin/job/${job.name}/run`;
       const response = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(sessionToken ? { 'Authorization': `Bearer ${sessionToken}` } : {}),
+        },
       });
       const result = await response.json();
       console.log('Job run result:', result);
