@@ -552,12 +552,12 @@ export default function AdminPanel() {
 
           {/* Overdue */}
           {jobs.overdue.length > 0 && (
-            <JobSection title={`Overdue (${jobs.overdue.length})`} jobs={jobs.overdue} defaultOpen onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
+            <JobSection title={`Overdue (${jobs.overdue.length})`} jobs={jobs.overdue} defaultOpen onRefresh={fetchData} jobLastRuns={data?.job_last_runs} />
           )}
 
           {/* Failed */}
           {jobs.failed.length > 0 && (
-            <JobSection title={`Failed (${jobs.failed.length})`} jobs={jobs.failed} defaultOpen type="error" onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
+            <JobSection title={`Failed (${jobs.failed.length})`} jobs={jobs.failed} defaultOpen type="error" onRefresh={fetchData} jobLastRuns={data?.job_last_runs} />
           )}
 
           {/* Pending */}
@@ -569,7 +569,6 @@ export default function AdminPanel() {
               onToggle={() => setShowPending(!showPending)}
               onRefresh={fetchData}
               jobLastRuns={data?.job_last_runs}
-              sessionToken={sessionToken}
             />
           )}
 
@@ -583,7 +582,6 @@ export default function AdminPanel() {
               type="success"
               onRefresh={fetchData}
               jobLastRuns={data?.job_last_runs}
-              sessionToken={sessionToken}
             />
           )}
 
@@ -596,7 +594,6 @@ export default function AdminPanel() {
               onToggle={() => setShowNotScheduled(!showNotScheduled)}
               onRefresh={fetchData}
               jobLastRuns={data?.job_last_runs}
-              sessionToken={sessionToken}
             />
           )}
         </View>
@@ -620,7 +617,7 @@ function HealthItem({ label, value, warn, error }: { label: string; value: any; 
   );
 }
 
-function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLastRuns, sessionToken }: { 
+function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLastRuns }: { 
   title: string; 
   jobs: Job[]; 
   defaultOpen?: boolean;
@@ -628,7 +625,6 @@ function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLa
   type?: string;
   onRefresh?: () => void;
   jobLastRuns?: AdminOverview['job_last_runs'];
-  sessionToken?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen ?? false);
   
@@ -646,18 +642,17 @@ function JobSection({ title, jobs, defaultOpen, onToggle, type, onRefresh, jobLa
         <Ionicons name={isOpen ? 'chevron-up' : 'chevron-down'} size={16} color={COLORS.textMuted} />
       </TouchableOpacity>
       {isOpen && jobs.map((job) => (
-        <JobRow key={job.name} job={job} type={type} onRefresh={onRefresh} lastRun={jobLastRuns?.[job.name]} sessionToken={sessionToken} />
+        <JobRow key={job.name} job={job} type={type} onRefresh={onRefresh} lastRun={jobLastRuns?.[job.name]} />
       ))}
     </View>
   );
 }
 
-function JobRow({ job, type, onRefresh, lastRun, sessionToken }: { 
+function JobRow({ job, type, onRefresh, lastRun }: { 
   job: Job; 
   type?: string; 
   onRefresh?: () => void;
   lastRun?: AdminOverview['job_last_runs'] extends Record<string, infer T> ? T : never;
-  sessionToken?: string | null;
 }) {
   const [isRunning, setIsRunning] = useState(false);
   
@@ -697,20 +692,12 @@ function JobRow({ job, type, onRefresh, lastRun, sessionToken }: {
     return `${mins}m ${secs}s`;
   };
 
-  // CHANGE 3: endpoint override for universe_seed + auth header
   const handleRunNow = async () => {
     if (isRunning) return;
     setIsRunning(true);
     try {
-      const endpoint = job.name === 'universe_seed'
-        ? `${API_URL}/api/admin/jobs/universe-seed`
-        : `${API_URL}/api/admin/job/${job.name}/run`;
-      const response = await fetch(endpoint, {
+      const response = await fetch(`${API_URL}/api/admin/job/${job.name}/run`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(sessionToken ? { 'Authorization': `Bearer ${sessionToken}` } : {}),
-        },
       });
       const result = await response.json();
       console.log('Job run result:', result);
@@ -725,88 +712,73 @@ function JobRow({ job, type, onRefresh, lastRun, sessionToken }: {
     }
   };
 
+  // Shorten URL: remove https://, api_token param, trim to domain+path
+  const shortenUrl = (url: string): string => {
+    if (!url) return '';
+    return url
+      .replace(/https?:\/\//, '')
+      .replace(/[?&]api_token=[^&]*/g, '')
+      .replace(/[?&]fmt=[^&]*/g, '')
+      .replace(/[?&]$/, '')
+      .replace(/\?$/, '');
+  };
+
   return (
     <View style={[styles.jobRow, type === 'error' && styles.jobRowError, type === 'success' && styles.jobRowSuccess]}>
-      <Ionicons name={icon.name} size={16} color={icon.color} />
+      <Ionicons name={icon.name} size={16} color={icon.color} style={{ marginTop: 2 }} />
       <View style={styles.jobInfo}>
+
+        {/* LINE 1: Name + badges + Run Now */}
         <View style={styles.jobNameRow}>
           <Text style={styles.jobName}>{job.name.replace(/_/g, ' ')}</Text>
-          {/* External/Internal badge */}
           <View style={[styles.typeBadge, isExternal ? styles.typeBadgeExternal : styles.typeBadgeInternal]}>
-            <Ionicons 
-              name={isExternal ? 'cloud-outline' : 'calculator-outline'} 
-              size={10} 
-              color={isExternal ? '#0EA5E9' : '#8B5CF6'} 
-            />
             <Text style={[styles.typeBadgeText, isExternal ? styles.typeBadgeTextExternal : styles.typeBadgeTextInternal]}>
               {isExternal ? 'API' : 'Calc'}
             </Text>
           </View>
-          {/* Manual badge */}
           {isManual && (
             <View style={styles.manualBadge}>
-              <Ionicons name="hand-left-outline" size={10} color="#F59E0B" />
               <Text style={styles.manualBadgeText}>Manual</Text>
             </View>
           )}
+          {/* Run Now inline for manual jobs */}
+          {isManual && (
+            <TouchableOpacity
+              style={[styles.runNowBtn, isRunning && styles.runNowBtnDisabled]}
+              onPress={handleRunNow}
+              disabled={isRunning}
+            >
+              <Ionicons name={isRunning ? 'hourglass-outline' : 'play-circle-outline'} size={12} color="#FFF" />
+              <Text style={styles.runNowBtnText}>{isRunning ? 'Running…' : 'Run Now'}</Text>
+            </TouchableOpacity>
+          )}
         </View>
-        <Text style={styles.jobMeta}>
-          Next: {job.next_run} | Sched: {job.scheduled_time}
-          {job.sunday_only && ' (Sun)'}
-        </Text>
-        
-        {/* NEW: Last Run info from system_job_logs */}
-        {lastRun && (
-          <View style={styles.lastRunRow}>
-            <View style={[
-              styles.statusPill, 
-              lastRun.status === 'success' ? styles.statusPillSuccess : styles.statusPillError
-            ]}>
-              <Ionicons 
-                name={lastRun.status === 'success' ? 'checkmark' : 'close'} 
-                size={10} 
-                color="#FFF" 
-              />
-              <Text style={styles.statusPillText}>
-                {lastRun.status === 'success' ? 'OK' : 'ERR'}
+
+        {/* LINE 2: Next | Sched | Last run */}
+        <View style={styles.jobMetaRow}>
+          <Text style={styles.jobMeta}>
+            Next: {job.next_run}{job.sunday_only ? ' (Sun)' : ''} · Sched: {job.scheduled_time}
+          </Text>
+          {lastRun ? (
+            <View style={styles.lastRunInline}>
+              <View style={[styles.statusPill, lastRun.status === 'success' ? styles.statusPillSuccess : styles.statusPillError]}>
+                <Text style={styles.statusPillText}>{lastRun.status === 'success' ? 'OK' : 'ERR'}</Text>
+              </View>
+              <Text style={styles.lastRunText}>
+                {formatRelativeTime(lastRun.end_time)} · {formatDuration(lastRun.duration_seconds)}
               </Text>
             </View>
-            <Text style={styles.lastRunText}>
-              Last: {formatRelativeTime(lastRun.end_time)} | {formatDuration(lastRun.duration_seconds)} | {lastRun.records_processed ?? 0} rec
-            </Text>
-          </View>
-        )}
-        {!lastRun && (
-          <Text style={styles.neverRunText}>Last: Never run</Text>
-        )}
-        
-        {/* API endpoint for external jobs */}
+          ) : (
+            <Text style={styles.neverRunText}>Never run</Text>
+          )}
+        </View>
+
+        {/* LINE 3 (optional): shortened URL */}
         {isExternal && job.api_endpoint && (
-          <Text style={styles.jobApiUrl} numberOfLines={1}>
-            {job.api_endpoint}
-          </Text>
+          <Text style={styles.jobApiUrl} numberOfLines={1}>{shortenUrl(job.api_endpoint)}</Text>
         )}
-        {job.ran_today && (
-          <Text style={styles.jobMeta}>
-            Run: {job.last_run_started}
-            {job.duration_ms !== undefined && ` | ${job.duration_ms}ms`}
-            {job.api_calls !== undefined && job.api_calls !== null && ` | API: ${job.api_calls}`}
-            {job.records_updated !== undefined && ` | Rec: ${job.records_updated}`}
-          </Text>
-        )}
-        {job.error_summary && <Text style={styles.jobError}>Error: {job.error_summary}</Text>}
-        
-        {/* Run Now button for manual jobs */}
-        {isManual && (
-          <TouchableOpacity 
-            style={[styles.runNowBtn, isRunning && styles.runNowBtnDisabled]} 
-            onPress={handleRunNow}
-            disabled={isRunning}
-          >
-            <Ionicons name={isRunning ? 'hourglass-outline' : 'play-circle-outline'} size={14} color="#FFF" />
-            <Text style={styles.runNowBtnText}>{isRunning ? 'Running...' : 'Run Now'}</Text>
-          </TouchableOpacity>
-        )}
+
+        {job.error_summary && <Text style={styles.jobError}>⚠ {job.error_summary}</Text>}
       </View>
     </View>
   );
@@ -885,85 +857,79 @@ const styles = StyleSheet.create({
   inconsistencyText: { fontSize: 10, color: '#EF4444' },
 
   // Jobs
-  jobSection: { marginTop: 8, backgroundColor: 'rgba(0,0,0,0.02)', padding: 8, borderRadius: 6 },
+  jobSection: { marginTop: 6, backgroundColor: 'rgba(0,0,0,0.02)', padding: 6, borderRadius: 6 },
   jobSectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   jobSectionTitle: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted },
-  jobRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 6, gap: 8 },
-  jobRowError: { backgroundColor: 'rgba(239,68,68,0.05)', borderRadius: 4, padding: 6, marginVertical: 2 },
-  jobRowSuccess: { backgroundColor: 'rgba(34,197,94,0.05)', borderRadius: 4, padding: 6, marginVertical: 2 },
+  jobRow: { flexDirection: 'row', alignItems: 'flex-start', paddingVertical: 5, gap: 6 },
+  jobRowError: { backgroundColor: 'rgba(239,68,68,0.05)', borderRadius: 4, padding: 5, marginVertical: 1 },
+  jobRowSuccess: { backgroundColor: 'rgba(34,197,94,0.05)', borderRadius: 4, padding: 5, marginVertical: 1 },
   jobInfo: { flex: 1 },
-  jobNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  jobNameRow: { flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap' },
   jobName: { fontSize: 12, fontWeight: '500', color: COLORS.text, textTransform: 'capitalize' },
-  jobMeta: { fontSize: 10, color: COLORS.textMuted, marginTop: 2 },
+  jobMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2, flexWrap: 'wrap' },
+  jobMeta: { fontSize: 10, color: COLORS.textMuted },
   jobError: { fontSize: 10, color: '#EF4444', marginTop: 2 },
-  jobApiUrl: { fontSize: 9, color: '#0EA5E9', marginTop: 2, fontFamily: 'monospace' },
+  jobApiUrl: { fontSize: 9, color: '#0EA5E9', marginTop: 1, fontFamily: 'monospace' },
   
   // Type badges (API/Calc)
-  typeBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, gap: 3 },
+  typeBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, gap: 2 },
   typeBadgeExternal: { backgroundColor: 'rgba(14,165,233,0.1)' },
   typeBadgeInternal: { backgroundColor: 'rgba(139,92,246,0.1)' },
   typeBadgeText: { fontSize: 9, fontWeight: '600' },
   typeBadgeTextExternal: { color: '#0EA5E9' },
   typeBadgeTextInternal: { color: '#8B5CF6' },
   
-  // Manual badge (P1)
-  manualBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, gap: 3, backgroundColor: 'rgba(245,158,11,0.1)' },
+  // Manual badge
+  manualBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3, gap: 2, backgroundColor: 'rgba(245,158,11,0.1)' },
   manualBadgeText: { fontSize: 9, fontWeight: '600', color: '#F59E0B' },
   
-  // Run Now button (P1)
-  runNowBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#22C55E', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, marginTop: 8, alignSelf: 'flex-start' },
+  // Run Now button — inline, smaller
+  runNowBtn: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#22C55E', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5, marginLeft: 4 },
   runNowBtnDisabled: { backgroundColor: '#6B7280' },
-  runNowBtnText: { fontSize: 11, fontWeight: '600', color: '#FFF' },
+  runNowBtnText: { fontSize: 10, fontWeight: '600', color: '#FFF' },
   
-  // NEW: Last Run status display (Observability)
-  lastRunRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
-  statusPill: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  // Last Run inline
+  lastRunInline: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  lastRunRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 3 },
   statusPillSuccess: { backgroundColor: '#22C55E' },
   statusPillError: { backgroundColor: '#EF4444' },
   statusPillText: { fontSize: 9, fontWeight: '700', color: '#FFF' },
   lastRunText: { fontSize: 10, color: COLORS.textMuted },
-  neverRunText: { fontSize: 10, color: COLORS.textMuted, marginTop: 4, fontStyle: 'italic' },
+  neverRunText: { fontSize: 10, color: COLORS.textMuted, fontStyle: 'italic' },
 
   // Visibility Audit (DATA SUPREMACY MANIFESTO v1.0)
   runJobButton: { backgroundColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 4, marginLeft: 'auto' },
   runJobButtonText: { fontSize: 10, fontWeight: '600', color: '#FFF' },
-  subsectionTitle: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, marginTop: 10, marginBottom: 4 },
-  failedReasonsBox: { marginTop: 8, backgroundColor: 'rgba(239,68,68,0.05)', padding: 8, borderRadius: 6 },
-  failedReasonRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 },
-  failedReasonName: { fontSize: 10, color: '#EF4444' },
-  failedReasonCount: { fontSize: 10, fontWeight: '600', color: '#EF4444' },
-  apiUrlsBox: { marginTop: 10, backgroundColor: 'rgba(99,102,241,0.05)', padding: 8, borderRadius: 6 },
-  apiUrlsTitle: { fontSize: 10, fontWeight: '600', color: '#6366F1', marginBottom: 4 },
-  apiUrlText: { fontSize: 9, color: COLORS.textMuted, fontFamily: 'monospace' },
-  
-  // API Calls section
-  apiCallsBox: { backgroundColor: 'rgba(34,197,94,0.05)', padding: 8, borderRadius: 6 },
-  apiCallRow: { marginBottom: 6 },
-  apiCallName: { fontSize: 10, fontWeight: '600', color: '#22C55E' },
+  subsectionTitle: { fontSize: 10, fontWeight: '600', color: COLORS.textMuted, marginTop: 8, marginBottom: 3 },
+  failedReasonsBox: { marginTop: 6, backgroundColor: 'rgba(239,68,68,0.05)', padding: 6, borderRadius: 4 },
+  failedReasonRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 1 },
+  failedReasonName: { fontSize: 9, color: '#EF4444' },
+  failedReasonCount: { fontSize: 9, fontWeight: '600', color: '#EF4444' },
+  apiUrlsBox: { marginTop: 6, backgroundColor: 'rgba(99,102,241,0.05)', padding: 6, borderRadius: 4 },
+  apiUrlsTitle: { fontSize: 9, fontWeight: '600', color: '#6366F1', marginBottom: 3 },
+  apiUrlText: { fontSize: 8, color: COLORS.textMuted, fontFamily: 'monospace' },
+  apiCallsBox: { backgroundColor: 'rgba(34,197,94,0.05)', padding: 6, borderRadius: 4 },
+  apiCallRow: { marginBottom: 4 },
+  apiCallName: { fontSize: 9, fontWeight: '600', color: '#22C55E' },
   apiCallUrl: { fontSize: 8, color: COLORS.textMuted, fontFamily: 'monospace' },
-  
-  // Exclude patterns
-  excludePatternsBox: { backgroundColor: 'rgba(239,68,68,0.05)', padding: 8, borderRadius: 6 },
+  excludePatternsBox: { backgroundColor: 'rgba(239,68,68,0.05)', padding: 6, borderRadius: 4 },
   excludePatternText: { fontSize: 9, color: '#EF4444', fontFamily: 'monospace' },
-  
-  // Exchange breakdown
-  exchangeBox: { backgroundColor: 'rgba(99,102,241,0.05)', padding: 8, borderRadius: 6 },
-  exchangeRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 2 },
+  exchangeBox: { backgroundColor: 'rgba(99,102,241,0.05)', padding: 6, borderRadius: 4 },
+  exchangeRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 1 },
   exchangeName: { fontSize: 10, color: COLORS.text },
   exchangeCount: { fontSize: 10, fontWeight: '600', color: COLORS.text },
   exchangeExcluded: { opacity: 0.5 },
-  exchangeNameExcluded: { fontSize: 10, color: '#EF4444', fontStyle: 'italic' },
-  exchangeCountExcluded: { fontSize: 10, fontWeight: '600', color: '#EF4444' },
-  
-  // Complete funnel steps
-  funnelStepRow: { marginBottom: 8, padding: 8, backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: 6, borderLeftWidth: 3, borderLeftColor: '#22C55E' },
-  funnelStepHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  funnelStepNumber: { fontSize: 10, fontWeight: '700', color: '#22C55E' },
-  funnelStepCount: { fontSize: 12, fontWeight: '700', color: COLORS.text },
-  funnelStepLost: { fontSize: 10, fontWeight: '600', color: '#EF4444' },
-  funnelStepName: { fontSize: 10, fontWeight: '600', color: COLORS.text, marginTop: 2 },
-  funnelStepQuery: { fontSize: 8, color: COLORS.textMuted, fontFamily: 'monospace', marginTop: 2 },
-  funnelStepLostReason: { fontSize: 8, color: '#EF4444', fontStyle: 'italic', marginTop: 2 },
+  exchangeNameExcluded: { fontSize: 9, color: '#EF4444', fontStyle: 'italic' },
+  exchangeCountExcluded: { fontSize: 9, fontWeight: '600', color: '#EF4444' },
+  funnelStepRow: { marginBottom: 5, padding: 6, backgroundColor: 'rgba(255,255,255,0.02)', borderRadius: 4, borderLeftWidth: 2, borderLeftColor: '#22C55E' },
+  funnelStepHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  funnelStepNumber: { fontSize: 9, fontWeight: '700', color: '#22C55E' },
+  funnelStepCount: { fontSize: 11, fontWeight: '700', color: COLORS.text },
+  funnelStepLost: { fontSize: 9, fontWeight: '600', color: '#EF4444' },
+  funnelStepName: { fontSize: 9, fontWeight: '600', color: COLORS.text, marginTop: 1 },
+  funnelStepQuery: { fontSize: 8, color: COLORS.textMuted, fontFamily: 'monospace', marginTop: 1 },
+  funnelStepLostReason: { fontSize: 8, color: '#EF4444', fontStyle: 'italic', marginTop: 1 },
   
   // Simple Funnel (Summary)
   simpleFunnelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 6, paddingHorizontal: 8, borderBottomWidth: 1, borderBottomColor: 'rgba(0,0,0,0.05)' },
