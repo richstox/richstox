@@ -147,7 +147,7 @@ def get_env_info() -> Dict[str, str]:
 # =============================================================================
 JOB_REGISTRY = {
     "universe_seed": {
-        "hour": 4, "minute": 0, "sunday_only": True, "has_api_calls": True,
+        "hour": 4, "minute": 0, "sunday_only": True, "has_api_calls": True,"is_manual": True,
         "api_endpoint": "https://eodhd.com/api/exchange-symbol-list/US?fmt=json"
     },
     "price_sync": {
