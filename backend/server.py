@@ -672,7 +672,7 @@ async def auth_logout(request: Request, response: Response):
 async def auth_google_login(request: Request):
     """Redirect to Google OAuth."""
     from urllib.parse import urlencode
-    base_url = str(request.base_url).rstrip("/")
+    base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     redirect_uri = f"{base_url}/api/auth/google/callback"
     frontend_url = os.environ.get("FRONTEND_URL", "https://jocular-faun-27ea7b.netlify.app")
     params = {
@@ -690,7 +690,7 @@ async def auth_google_login(request: Request):
 async def auth_google_callback(code: str, request: Request, response: Response):
     """Handle Google OAuth callback."""
     from fastapi.responses import RedirectResponse
-    base_url = str(request.base_url).rstrip("/")
+    base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     redirect_uri = f"{base_url}/api/auth/google/callback"
     frontend_url = os.environ.get("FRONTEND_URL", "https://jocular-faun-27ea7b.netlify.app")
     
