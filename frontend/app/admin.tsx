@@ -696,8 +696,12 @@ function JobRow({ job, type, onRefresh, lastRun }: {
     if (isRunning) return;
     setIsRunning(true);
     try {
-      const response = await fetch(`${API_URL}/api/admin/job/${job.name}/run`, {
+      const endpoint = job.name === 'universe_seed'
+        ? `${API_URL}/api/admin/jobs/universe-seed`
+        : `${API_URL}/api/admin/job/${job.name}/run`;
+      const response = await fetch(endpoint, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
       });
       const result = await response.json();
       console.log('Job run result:', result);
