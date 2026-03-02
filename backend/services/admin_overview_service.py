@@ -363,7 +363,7 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     
     for job_name, reg in JOB_REGISTRY.items():
         is_sunday_only = reg.get("sunday_only", False)
-        is_manual = reg.get("schedule_type") == "manual"
+        is_manual = reg.get("schedule_type") == "manual" or reg.get("is_manual") is True
         expected = is_expected_by_now(job_name) if not is_manual else False  # Manual jobs never "expected"
         sched_time = "Manual" if is_manual else f"{reg['hour']:02d}:{reg['minute']:02d}"
         next_run = get_next_run_datetime(job_name, now_prague)
