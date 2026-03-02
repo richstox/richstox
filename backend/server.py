@@ -2018,6 +2018,40 @@ async def admin_whitelist_sync(dry_run: bool = Query(True)):
     result = await sync_ticker_whitelist(db, dry_run=dry_run)
     return result
 
+@api_router.post("/admin/jobs/universe-seed")
+async def admin_run_universe_seed(request: Request):
+    """Admin-only: Manually trigger Universe Seed job."""
+    session_token = get_session_token_from_request(request)
+    if not session_token or not await is_admin(db, session_token):
+        raise HTTPException(403, "Admin access required")
+
+    import uuid as _uuid
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+
+    job_id = f"universe_seed_{_uuid.uuid4().hex[:8]}"
+    started_at = datetime.now(PRAGUE)
+
+    try:
+        result = await sync_ticker_whitelist(db, dry_run=False)
+        status = "completed"
+    except Exception as e:
+        result = {"error": str(e)}
+        status = "failed"
+
+    finished_at = datetime.now(PRAGUE)
+    await db.ops_job_runs.insert_one({
+        "job_id": job_id,
+        "job_name": "universe_seed",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_sec": (finished_at - started_at).total_seconds(),
+        "status": status,
+        "result": result,
+        "triggered_by": "admin_manual",
+    })
+    return {"status": status, "job": "universe_seed", "job_id": job_id, "result": result}
+
 @api_router.get("/admin/whitelist/preview")
 async def admin_whitelist_preview():
     """Preview what would happen if we synced the whitelist now."""
