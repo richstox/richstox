@@ -2034,7 +2034,7 @@ async def admin_run_universe_seed(request: Request):
 
     try:
         result = await sync_ticker_whitelist(db, dry_run=False)
-        status = "success"
+        status = "completed"
     except Exception as e:
         result = {"error": str(e)}
         status = "failed"
@@ -6273,6 +6273,145 @@ async def admin_visible_universe_stats():
         "visible_universe_count": visible,
         "note": "Only tickers with is_visible=true appear in the app",
     }
+
+
+
+# ============================================================================
+# ADMIN USERS / CUSTOMERS ENDPOINTS
+# ============================================================================
+
+@api_router.get("/admin/users")
+async def admin_list_users(request: Request, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    """Admin-only: List all users with their stats."""
+    session_token = get_session_token_from_request(request)
+    if not session_token or not await is_admin(db, session_token):
+        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+
+    users = await db.users.find({}, {"_id": 0}).skip(offset).limit(limit).to_list(limit)
+
+    result = []
+    for user in users:
+        user_id = user.get("user_id") or user.get("id") or str(user.get("_id", ""))
+        portfolio_count = await db.portfolios.count_documents({"user_id": user_id})
+        watchlist_count = await db.user_watchlist.count_documents({"user_id": user_id})
+        result.append({
+            "user_id": user_id,
+            "email": user.get("email"),
+            "name": user.get("name"),
+            "subscription_tier": user.get("subscription_tier", "free"),
+            "is_suspended": user.get("is_suspended", False),
+            "created_at": user.get("created_at").isoformat() if user.get("created_at") and hasattr(user.get("created_at"), "isoformat") else user.get("created_at"),
+            "last_login": user.get("last_login").isoformat() if user.get("last_login") and hasattr(user.get("last_login"), "isoformat") else user.get("last_login"),
+            "portfolio_count": portfolio_count,
+            "watchlist_count": watchlist_count,
+        })
+
+    total = await db.users.count_documents({})
+    return {"users": result, "total": total, "offset": offset, "limit": limit}
+
+
+@api_router.patch("/admin/users/{user_id}/tier")
+async def admin_update_user_tier(user_id: str, request: Request):
+    """Admin-only: Change user subscription tier (free <-> pro)."""
+    session_token = get_session_token_from_request(request)
+    if not session_token or not await is_admin(db, session_token):
+        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+
+    body = await request.json()
+    new_tier = body.get("subscription_tier")
+    if new_tier not in ["free", "pro", "pro_plus"]:
+        raise HTTPException(400, detail={"error": "Invalid tier. Must be free, pro, or pro_plus.", "code": "INVALID_TIER"})
+
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, detail={"error": "User not found", "code": "USER_NOT_FOUND"})
+
+    old_tier = user.get("subscription_tier", "free")
+    await db.users.update_one({"user_id": user_id}, {"$set": {"subscription_tier": new_tier}})
+
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+    admin_user = await db.users.find_one({"user_id": (await db.user_sessions.find_one({"session_token": session_token}) or {}).get("user_id", "")}, {"_id": 0, "email": 1})
+    await db.admin_audit_log.insert_one({
+        "action": "user.tier_change",
+        "performed_by": admin_user.get("email") if admin_user else "admin",
+        "target_user_id": user_id,
+        "target_email": user.get("email"),
+        "before": {"subscription_tier": old_tier},
+        "after": {"subscription_tier": new_tier},
+        "timestamp": datetime.now(PRAGUE).isoformat(),
+        "ip": request.client.host if request.client else None,
+    })
+
+    return {"status": "updated", "user_id": user_id, "subscription_tier": new_tier}
+
+
+@api_router.post("/admin/users/{user_id}/suspend")
+async def admin_suspend_user(user_id: str, request: Request):
+    """Admin-only: Suspend or unsuspend a user account."""
+    session_token = get_session_token_from_request(request)
+    if not session_token or not await is_admin(db, session_token):
+        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, detail={"error": "User not found", "code": "USER_NOT_FOUND"})
+
+    current_suspended = user.get("is_suspended", False)
+    new_suspended = not current_suspended
+    await db.users.update_one({"user_id": user_id}, {"$set": {"is_suspended": new_suspended}})
+
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+    action = "user.suspend" if new_suspended else "user.unsuspend"
+    await db.admin_audit_log.insert_one({
+        "action": action,
+        "performed_by": "admin",
+        "target_user_id": user_id,
+        "target_email": user.get("email"),
+        "before": {"is_suspended": current_suspended},
+        "after": {"is_suspended": new_suspended},
+        "timestamp": datetime.now(PRAGUE).isoformat(),
+        "ip": request.client.host if request.client else None,
+    })
+
+    return {"status": "suspended" if new_suspended else "unsuspended", "user_id": user_id, "is_suspended": new_suspended}
+
+
+@api_router.delete("/admin/users/{user_id}")
+async def admin_delete_user(user_id: str, request: Request):
+    """Admin-only: Permanently delete a user and all their data."""
+    session_token = get_session_token_from_request(request)
+    if not session_token or not await is_admin(db, session_token):
+        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, detail={"error": "User not found", "code": "USER_NOT_FOUND"})
+
+    if user.get("email") == "kurtarichard@gmail.com":
+        raise HTTPException(400, detail={"error": "Cannot delete admin account", "code": "CANNOT_DELETE_ADMIN"})
+
+    # Delete user data
+    await db.users.delete_one({"user_id": user_id})
+    await db.portfolios.delete_many({"user_id": user_id})
+    await db.user_watchlist.delete_many({"user_id": user_id})
+    await db.user_sessions.delete_many({"user_id": user_id})
+
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+    await db.admin_audit_log.insert_one({
+        "action": "user.delete",
+        "performed_by": "admin",
+        "target_user_id": user_id,
+        "target_email": user.get("email"),
+        "before": {"subscription_tier": user.get("subscription_tier", "free")},
+        "after": None,
+        "timestamp": datetime.now(PRAGUE).isoformat(),
+        "ip": request.client.host if request.client else None,
+    })
+
+    return {"status": "deleted", "user_id": user_id, "email": user.get("email")}
 
 
 # Include router
