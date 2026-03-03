@@ -61,6 +61,8 @@ const PIPELINE_STEPS = [
     result_label: 'seeded',
     icon: 'globe-outline' as const,
     color: '#6366F1',
+    scheduledHour: 23,
+    scheduledMinute: 0,
   },
   {
     step: 2,
@@ -74,6 +76,8 @@ const PIPELINE_STEPS = [
     result_label: 'tickers with prices',
     icon: 'trending-up-outline' as const,
     color: '#10B981',
+    scheduledHour: 23,
+    scheduledMinute: 0,
   },
   {
     step: 3,
@@ -87,6 +91,8 @@ const PIPELINE_STEPS = [
     result_label: 'tickers classified',
     icon: 'library-outline' as const,
     color: '#F59E0B',
+    scheduledHour: 23,
+    scheduledMinute: 30,
   },
   {
     step: 4,
@@ -100,6 +106,8 @@ const PIPELINE_STEPS = [
     result_label: 'tickers visible',
     icon: 'eye-outline' as const,
     color: '#8B5CF6',
+    scheduledHour: 23,
+    scheduledMinute: 30,
   },
   {
     step: 5,
@@ -113,6 +121,8 @@ const PIPELINE_STEPS = [
     result_label: 'tickers processed',
     icon: 'stats-chart-outline' as const,
     color: '#EC4899',
+    scheduledHour: 23,
+    scheduledMinute: 45,
   },
 ];
 
@@ -125,6 +135,20 @@ const MORNING_FRESH = {
   icon: 'newspaper-outline' as const,
   color: '#06B6D4',
 };
+
+function getNextRun(hour: number, minute: number): string {
+  try {
+    const now = new Date();
+    const pragueNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Prague' }));
+    const nextRun = new Date(pragueNow);
+    nextRun.setHours(hour, minute, 0, 0);
+    if (nextRun <= pragueNow) nextRun.setDate(nextRun.getDate() + 1);
+    return nextRun.toLocaleString('en-GB', {
+      timeZone: 'Europe/Prague', month: 'short', day: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    }) + ' Prague';
+  } catch { return '—'; }
+}
 
 function formatDuration(sec?: number): string {
   if (!sec) return '';
@@ -323,12 +347,21 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.runValue}>{run.records_processed.toLocaleString()} {step.result_label}</Text>
                     </View>
                   )}
+                  <View style={s.runInfoRow}>
+                    <Text style={s.runLabel}>Next run:</Text>
+                    <Text style={s.runValue}>{getNextRun(step.scheduledHour, step.scheduledMinute)}</Text>
+                  </View>
                   {run.error_message && (
                     <Text style={s.errorText}>⚠️ {run.error_message}</Text>
                   )}
                 </View>
               ) : (
-                <Text style={s.neverRun}>Never run</Text>
+<View style={s.runInfo}>
+                  <View style={s.runInfoRow}>
+                    <Text style={s.runLabel}>Next run:</Text>
+                    <Text style={s.runValue}>{getNextRun(step.scheduledHour, step.scheduledMinute)}</Text>
+                  </View>
+                </View>
               )}
 
               {/* Expand Details */}
