@@ -43,7 +43,7 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             {"job_name": job_name},
             {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
              "duration_sec": 1, "result": 1, "triggered_by": 1},
-            sort=[("_id", -1)]
+            sort=[("started_at", -1)]
         )
         if doc:
             started = doc.get("started_at")
@@ -148,7 +148,7 @@ def get_env_info() -> Dict[str, str]:
 # =============================================================================
 JOB_REGISTRY = {
     "universe_seed": {
-        "hour": 4, "minute": 0, "sunday_only": True, "has_api_calls": True,"is_manual": True,
+        "hour": 4, "minute": 0, "sunday_only": False, "has_api_calls": True, "is_manual": True,
         "api_endpoint": "eodhd.com/api/exchange-symbol-list/NYSE + /NASDAQ",
     },
     "price_sync": {
