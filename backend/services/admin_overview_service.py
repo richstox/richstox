@@ -27,9 +27,8 @@ PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 async def get_job_last_runs(db) -> Dict[str, Any]:
     """
-    Get last run status for all scheduled jobs from system_job_logs.
-    
-    NEW: Observability layer for Admin Panel "Last Run" column.
+    Get last run status for all scheduled jobs from ops_job_runs.
+    Reads from canonical ops_job_runs collection (written by all job endpoints).
     """
     job_names = [
         "universe_seed", "price_sync", "sp500tr_update", "fundamentals_sync",
@@ -37,25 +36,27 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         "pain_cache", "admin_report", "news_refresh", "valuation_precompute",
         "backfill_fundamentals_complete", "scheduler_heartbeat"
     ]
-    
+
     last_runs = {}
     for job_name in job_names:
-        doc = await db.system_job_logs.find_one(
+        doc = await db.ops_job_runs.find_one(
             {"job_name": job_name},
-            {"_id": 0, "status": 1, "start_time": 1, "end_time": 1, 
-             "duration_seconds": 1, "records_processed": 1, "error_message": 1},
-            sort=[("start_time", -1)]
+            {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
+             "duration_sec": 1, "result": 1, "triggered_by": 1},
+            sort=[("started_at", -1)]
         )
         if doc:
-            # Convert datetime to ISO string for JSON
-            if doc.get("start_time"):
-                doc["start_time"] = doc["start_time"].isoformat()
-            if doc.get("end_time"):
-                doc["end_time"] = doc["end_time"].isoformat()
+            started = doc.get("started_at")
+            finished = doc.get("finished_at")
+            result = doc.get("result") or {}
+            doc["start_time"] = started.isoformat() if hasattr(started, "isoformat") else str(started) if started else None
+            doc["end_time"] = finished.isoformat() if hasattr(finished, "isoformat") else str(finished) if finished else None
+            doc["duration_seconds"] = doc.get("duration_sec")
+            doc["records_processed"] = result.get("added_pending") or result.get("processed") or result.get("records_upserted") or 0
+            doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
         last_runs[job_name] = doc
-    
-    return last_runs
 
+    return last_runs
 
 async def compute_system_health(db) -> Dict[str, Any]:
     """
