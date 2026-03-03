@@ -106,7 +106,7 @@ TIMEZONE = ZoneInfo("Europe/Prague")
 
 # SUNDAY ONLY - Universe seed
 UNIVERSE_SEED_DAY = 6  # Sunday
-UNIVERSE_SEED_HOUR = 4
+UNIVERSE_SEED_HOUR = 23
 UNIVERSE_SEED_MINUTE = 0
 
 # MON-SAT - Daily jobs
