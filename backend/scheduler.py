@@ -416,17 +416,10 @@ async def scheduler_loop():
                 continue
             
             # =================================================================
-            # SUNDAY JOBS (Universe Seed + News) - with catch-up
+            # =================================================================
+            # SUNDAY: News refresh only (Universe Seed moved to daily pipeline)
             # =================================================================
             if is_sunday():
-                # Universe Seed at 04:00 Sunday (catch-up enabled)
-                if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
-                    logger.info(f"Triggering universe_seed (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
-                    from whitelist_service import sync_ticker_whitelist
-                    await run_job_with_retry("universe_seed", sync_ticker_whitelist, db)
-                    last_run["universe_seed"] = today_str
-                    await set_last_run_state(last_run)
-                
                 # News refresh at 13:00 Sunday (catch-up enabled)
                 if should_run("news_refresh", NEWS_REFRESH_HOUR, NEWS_REFRESH_MINUTE, last_run, today_str, current_hour, current_minute):
                     logger.info(f"Triggering news_refresh (hour={current_hour}, scheduled={NEWS_REFRESH_HOUR}:{NEWS_REFRESH_MINUTE:02d})")
@@ -445,7 +438,15 @@ async def scheduler_loop():
                 await asyncio.sleep(60)
                 continue
             
-            # Price sync at 04:00 (catch-up enabled)
+            # STEP 1: Universe Seed at 04:00 DAILY (every day)
+            if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
+                from whitelist_service import sync_ticker_whitelist
+                await run_job_with_retry("universe_seed", sync_ticker_whitelist, db)
+                last_run["universe_seed"] = today_str
+                await set_last_run_state(last_run)
+            
+            # STEP 2: Price sync at 04:00 (catch-up enabled)
             if should_run("price_sync", PRICE_SYNC_HOUR, PRICE_SYNC_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering price_sync (hour={current_hour}, scheduled={PRICE_SYNC_HOUR}:{PRICE_SYNC_MINUTE:02d})")
                 await run_job_with_retry("price_sync", run_daily_price_sync, db)
