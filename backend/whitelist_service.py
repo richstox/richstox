@@ -347,60 +347,75 @@ async def sync_ticker_whitelist(
         return result
     
     # LIVE MODE
+    # BULK UPSERT tracked_tickers v batchích po 500
+    from pymongo import UpdateOne
+    BATCH_SIZE = 500
+
+    ticker_ops = []
     for candidate in all_candidates:
         ticker = candidate["ticker"]
-        
-        existing = await db.tracked_tickers.find_one({"ticker": ticker})
-        
-        if existing:
-            # Update last_seen_date
-            await db.tracked_tickers.update_one(
-                {"ticker": ticker},
-                {"$set": {
+        ticker_ops.append(UpdateOne(
+            {"ticker": ticker},
+            {
+                "$set": {
                     "last_seen_date": now,
                     "updated_at": now,
-                }}
-            )
-            result["already_exists"] += 1
-        else:
-            # Insert new ticker - NOT active until price data is available
-            new_doc = {
-                "ticker": ticker,
-                "code": candidate["code"],
-                "symbol": candidate["code"],  # Canonical symbol (AAPL)
-                "primary_ticker": ticker,  # With suffix (AAPL.US)
-                "name": candidate["name"],
-                "exchange": candidate["exchange"],
-                "isin": candidate["isin"],
-                "type": candidate["type"],
-                "asset_type": candidate["type"],  # Copy type to asset_type for consistency
-                "currency": candidate["currency"],
-                "country": candidate["country"],
-                # UNIVERSE SYSTEM flags
-                "is_whitelisted": True,  # Passed Common Stock filter
-                "is_active": False,  # Will be True when has_price_data=True
-                "has_price_data": False,  # Set by price ingestion job
-                "fundamentals_status": "pending",  # pending/ok/missing/error
-                "status": "pending_fundamentals",  # Legacy field for compatibility
-                "first_seen_date": now,
-                "last_seen_date": now,
-                "classification_source": "exchange_symbol_list",
-                "created_at": now,
-                "updated_at": now,
-            }
-            
-            await db.tracked_tickers.insert_one(new_doc)
-            result["added_pending"] += 1
-            
-            # Queue fundamentals event
-            event_doc = {
-                "ticker": ticker,
+                },
+                "$setOnInsert": {
+                    "ticker": ticker,
+                    "code": candidate["code"],
+                    "symbol": candidate["code"],
+                    "primary_ticker": ticker,
+                    "name": candidate["name"],
+                    "exchange": candidate["exchange"],
+                    "isin": candidate["isin"],
+                    "type": candidate["type"],
+                    "asset_type": candidate["type"],
+                    "currency": candidate["currency"],
+                    "country": candidate["country"],
+                    "is_whitelisted": True,
+                    "is_active": False,
+                    "has_price_data": False,
+                    "fundamentals_status": "pending",
+                    "status": "pending_fundamentals",
+                    "first_seen_date": now,
+                    "classification_source": "exchange_symbol_list",
+                    "created_at": now,
+                }
+            },
+            upsert=True
+        ))
+
+    # Zpracovat v batchích, sbírat indexy nových tickerů přes upserted_ids
+    new_ticker_indices = []
+    for i in range(0, len(ticker_ops), BATCH_SIZE):
+        batch = ticker_ops[i:i + BATCH_SIZE]
+        try:
+            bulk_result = await db.tracked_tickers.bulk_write(batch, ordered=False)
+            result["added_pending"] += bulk_result.upserted_count
+            result["already_exists"] += bulk_result.matched_count
+            # upserted_ids je dict {index_v_batchi: _id}
+            for batch_idx in bulk_result.upserted_ids:
+                new_ticker_indices.append(i + batch_idx)
+        except Exception as e:
+            logger.error(f"Bulk write batch {i // BATCH_SIZE} failed: {e}")
+
+    # Bulk insert fundamentals_events jen pro nové tickery
+    if new_ticker_indices:
+        event_docs = [
+            {
+                "ticker": all_candidates[idx]["ticker"],
                 "event_type": "initial_sync",
                 "status": "pending",
                 "created_at": now,
             }
-            await db.fundamentals_events.insert_one(event_doc)
-            result["fundamentals_events_created"] += 1
+            for idx in new_ticker_indices
+        ]
+        try:
+            await db.fundamentals_events.insert_many(event_docs, ordered=False)
+            result["fundamentals_events_created"] += len(event_docs)
+        except Exception as e:
+            logger.error(f"fundamentals_events insert_many failed: {e}")
     
     # Deactivate tickers not in current EODHD list
     deactivate_result = await db.tracked_tickers.update_many(
