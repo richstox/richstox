@@ -410,6 +410,60 @@ export default function AdminPanel() {
             <Text style={styles.simpleFunnelLabelFinal}>Visible (final)</Text>
             <Text style={styles.simpleFunnelCountFinal}>{universe_funnel.counts?.visible_tickers?.toLocaleString() || '-'}</Text>
           </View>
+
+          {/* SCHEDULER JOBS - inside Funnel card */}
+          <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: '#F3F4F6', paddingTop: 10 }}>
+            <View style={[styles.cardHeader, { marginBottom: 4 }]}>
+              <Ionicons name="time" size={16} color="#F59E0B" />
+              <Text style={[styles.cardTitle, { fontSize: 13 }]}>Pipeline Jobs ({jobs.registry_count})</Text>
+              <Text style={styles.timestamp}>Sorted by next run</Text>
+            </View>
+
+            {jobs.overdue.length > 0 && (
+              <JobSection title={`Overdue (${jobs.overdue.length})`} jobs={jobs.overdue} defaultOpen onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
+            )}
+
+            {jobs.failed.length > 0 && (
+              <JobSection title={`Failed (${jobs.failed.length})`} jobs={jobs.failed} defaultOpen type="error" onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
+            )}
+
+            {jobs.pending.length > 0 && (
+              <JobSection 
+                title={`Pending (${jobs.pending.length})`} 
+                jobs={jobs.pending} 
+                defaultOpen={showPending}
+                onToggle={() => setShowPending(!showPending)}
+                onRefresh={fetchData}
+                jobLastRuns={data?.job_last_runs}
+                sessionToken={sessionToken}
+              />
+            )}
+
+            {jobs.completed.length > 0 && (
+              <JobSection 
+                title={`Completed (${jobs.completed.length})`} 
+                jobs={jobs.completed} 
+                defaultOpen={showCompleted}
+                onToggle={() => setShowCompleted(!showCompleted)}
+                type="success"
+                onRefresh={fetchData}
+                jobLastRuns={data?.job_last_runs}
+                sessionToken={sessionToken}
+              />
+            )}
+
+            {jobs.not_scheduled.length > 0 && (
+              <JobSection 
+                title={`Not Scheduled Today (${jobs.not_scheduled.length})`} 
+                jobs={jobs.not_scheduled} 
+                defaultOpen={showNotScheduled}
+                onToggle={() => setShowNotScheduled(!showNotScheduled)}
+                onRefresh={fetchData}
+                jobLastRuns={data?.job_last_runs}
+                sessionToken={sessionToken}
+              />
+            )}
+          </View>
         </View>
 
         {/* DETAILS ACCORDION */}
@@ -542,60 +596,6 @@ export default function AdminPanel() {
           </View>
         )}
 
-        {/* SCHEDULER JOBS (sorted by next run) */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="time" size={18} color="#F59E0B" />
-            <Text style={styles.cardTitle}>Scheduler Jobs ({jobs.registry_count})</Text>
-            <Text style={styles.timestamp}>Sorted by next run</Text>
-          </View>
-
-          {/* Overdue */}
-          {jobs.overdue.length > 0 && (
-            <JobSection title={`Overdue (${jobs.overdue.length})`} jobs={jobs.overdue} defaultOpen onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
-          )}
-
-          {jobs.failed.length > 0 && (
-            <JobSection title={`Failed (${jobs.failed.length})`} jobs={jobs.failed} defaultOpen type="error" onRefresh={fetchData} jobLastRuns={data?.job_last_runs} sessionToken={sessionToken} />
-          )}
-
-          {jobs.pending.length > 0 && (
-            <JobSection 
-              title={`Pending (${jobs.pending.length})`} 
-              jobs={jobs.pending} 
-              defaultOpen={showPending}
-              onToggle={() => setShowPending(!showPending)}
-              onRefresh={fetchData}
-              jobLastRuns={data?.job_last_runs}
-              sessionToken={sessionToken}
-            />
-          )}
-
-          {jobs.completed.length > 0 && (
-            <JobSection 
-              title={`Completed (${jobs.completed.length})`} 
-              jobs={jobs.completed} 
-              defaultOpen={showCompleted}
-              onToggle={() => setShowCompleted(!showCompleted)}
-              type="success"
-              onRefresh={fetchData}
-              jobLastRuns={data?.job_last_runs}
-              sessionToken={sessionToken}
-            />
-          )}
-
-          {jobs.not_scheduled.length > 0 && (
-            <JobSection 
-              title={`Not Scheduled Today (${jobs.not_scheduled.length})`} 
-              jobs={jobs.not_scheduled} 
-              defaultOpen={showNotScheduled}
-              onToggle={() => setShowNotScheduled(!showNotScheduled)}
-              onRefresh={fetchData}
-              jobLastRuns={data?.job_last_runs}
-              sessionToken={sessionToken}
-            />
-          )}
-        </View>
 
         <View style={{ height: 60 }} />
       </ScrollView>
