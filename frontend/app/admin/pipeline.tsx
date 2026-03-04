@@ -157,6 +157,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const jobRuns = data?.job_last_runs || {};
   const counts = data?.universe_funnel?.counts || {};
 
+  const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
   const seeded = counts.seeded_us_total;
   const withPrice = counts.with_price_data;
   const withClass = counts.with_classification;
@@ -181,7 +182,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       color: '#6366F1',
       apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
       inputLabel: 'Raw symbols (EODHD)',
-      inputCount: undefined as number | undefined,
+      inputCount: rawSymbols,
       outputCount: seeded,
       outputLabel: 'seeded',
       filters: [
