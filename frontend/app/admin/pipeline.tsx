@@ -208,9 +208,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     setRunningJob(jobName);
     setRunResult(prev => ({ ...prev, [jobName]: '' }));
     try {
-      const endpoint = jobName === 'universe_seed'
+      // Jobs that support sync mode (?wait=true) — no polling needed
+      const SYNC_JOBS = ['price_sync', 'fundamentals_sync', 'news_refresh'];
+      const useWait = SYNC_JOBS.includes(jobName);
+      let endpoint = jobName === 'universe_seed'
         ? `${API_URL}/api/admin/jobs/universe-seed`
-        : `${API_URL}/api/admin/scheduler/run/${jobName.replace('_', '-')}`;
+        : `${API_URL}/api/admin/scheduler/run/${jobName.replace(/_/g, '-')}`;
+      if (useWait) endpoint += '?wait=true';
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
