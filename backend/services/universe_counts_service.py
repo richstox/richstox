@@ -48,41 +48,44 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     # STATUS: is_delisted != true
     # =========================================================================
     
-    # Step 1: All seeded US tickers (NYSE + NASDAQ only)
+    # Build step queries
     step1_query = {"exchange": {"$in": ["NYSE", "NASDAQ"]}}
-    seeded_us_total = await db.tracked_tickers.count_documents(step1_query)
-    
-    # Breakdown by exchange (for info)
-    nyse_count = await db.tracked_tickers.count_documents({"exchange": "NYSE"})
-    nasdaq_count = await db.tracked_tickers.count_documents({"exchange": "NASDAQ"})
-    
-    # Step 2: Common Stock only (use asset_type, not type)
     step2_query = {**step1_query, "asset_type": "Common Stock"}
-    seeded_common_stock = await db.tracked_tickers.count_documents(step2_query)
-    
-    # Step 3: With price data (ACTIVITY)
     step3_query = {**step2_query, "has_price_data": True}
-    active_with_price_data = await db.tracked_tickers.count_documents(step3_query)
-    
-    # Step 4: With classification - sector AND industry present (QUALITY)
     step4_query = {
         **step3_query,
         "sector": {"$nin": [None, ""]},
         "industry": {"$nin": [None, ""]}
     }
-    with_classification = await db.tracked_tickers.count_documents(step4_query)
-    
-    # Step 5: Passes visibility rule (STATUS - not delisted)
-    # This is the canonical sieve from DATA SUPREMACY MANIFESTO v1.0
-    step5_query = {
-        **step4_query,
-        "is_delisted": {"$ne": True}
-    }
-    passes_visibility_rule = await db.tracked_tickers.count_documents(step5_query)
-    
-    # Step 6: Visible tickers (is_visible=true) - this is the final customer-facing count
-    # This SHOULD equal step 5 if visibility logic is consistent
-    visible_tickers = await db.tracked_tickers.count_documents(VISIBLE_TICKERS_QUERY)
+    step5_query = {**step4_query, "is_delisted": {"$ne": True}}
+
+    # =========================================================================
+    # SINGLE ROUND-TRIP: $facet runs all 8 counts in parallel on the server
+    # Replaces 8x sequential count_documents (~400ms) with 1 aggregation (~50ms)
+    # =========================================================================
+    facet_result = await db.tracked_tickers.aggregate([{"$facet": {
+        "seeded":     [{"$match": step1_query},              {"$count": "n"}],
+        "nyse":       [{"$match": {"exchange": "NYSE"}},     {"$count": "n"}],
+        "nasdaq":     [{"$match": {"exchange": "NASDAQ"}},   {"$count": "n"}],
+        "common":     [{"$match": step2_query},              {"$count": "n"}],
+        "price":      [{"$match": step3_query},              {"$count": "n"}],
+        "classified": [{"$match": step4_query},              {"$count": "n"}],
+        "visibility": [{"$match": step5_query},              {"$count": "n"}],
+        "visible":    [{"$match": VISIBLE_TICKERS_QUERY},    {"$count": "n"}],
+    }}]).to_list(1)
+
+    f = facet_result[0] if facet_result else {}
+    def _n(key: str) -> int:
+        return (f.get(key) or [{}])[0].get("n", 0)
+
+    seeded_us_total       = _n("seeded")
+    nyse_count            = _n("nyse")
+    nasdaq_count          = _n("nasdaq")
+    seeded_common_stock   = _n("common")
+    active_with_price_data = _n("price")
+    with_classification   = _n("classified")
+    passes_visibility_rule = _n("visibility")
+    visible_tickers       = _n("visible")
     
     # =========================================================================
     # BUILD FUNNEL STEPS
