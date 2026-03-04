@@ -163,9 +163,17 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const withClass = counts.with_classification;
   const visible = counts.visible_tickers;
 
+  const JOB_OUTPUT: Record<string, number | undefined> = {
+    universe_seed: seeded,
+    price_sync: withPrice,
+    fundamentals_sync: withClass,
+    compute_visible_universe: visible,
+    peer_medians: visible,
+  };
   const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'compute_visible_universe', 'peer_medians'].filter(j => {
     const r = jobRuns[j];
-    return r?.status === 'success' || r?.status === 'completed';
+    const ok = r?.status === 'success' || r?.status === 'completed';
+    return ok && (JOB_OUTPUT[j] === undefined || (JOB_OUTPUT[j] ?? 0) > 0);
   }).length;
   const healthPct = Math.round((completedCount / 5) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
@@ -175,14 +183,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       step: 1,
       job_name: 'universe_seed',
       title: 'Universe Seed',
-      schedule: 'Sunday 04:00 Prague',
+      schedule: 'Daily 23:00 Prague',
       scheduledHour: 4,
       scheduledMinute: 0,
       icon: 'globe-outline' as const,
       color: '#6366F1',
       apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
       inputLabel: 'Raw symbols (EODHD)',
-      inputCount: rawSymbols,
+      inputCount: undefined as number | undefined, // Step 1 = funnel start, no prior input
       outputCount: seeded,
       outputLabel: 'seeded',
       filters: [
