@@ -1,6 +1,6 @@
 /**
  * RICHSTOX Admin Pipeline
- * Universe Pipeline — 5-step sequential process
+ * Universe Pipeline — 5-step sequential process with integrated funnel per step
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
@@ -45,97 +45,6 @@ interface OverviewData {
   };
 }
 
-const PIPELINE_STEPS = [
-  {
-    step: 1,
-    job_name: 'universe_seed',
-    title: 'Universe Seed',
-    schedule: 'Daily 23:00 Prague',
-    description: 'Fetch NYSE + NASDAQ, filter Common Stock, upsert to tracked_tickers',
-    apis: [
-      'https://eodhd.com/api/exchange-symbol-list/NYSE',
-      'https://eodhd.com/api/exchange-symbol-list/NASDAQ',
-    ],
-    filters: ['Type = "Common Stock"', 'Exclude: warrants, units, preferred, rights'],
-    result_key: 'added_pending',
-    result_label: 'seeded',
-    icon: 'globe-outline' as const,
-    color: '#6366F1',
-    scheduledHour: 23,
-    scheduledMinute: 0,
-  },
-  {
-    step: 2,
-    job_name: 'price_sync',
-    title: 'Price Sync',
-    schedule: 'Daily 23:00 Prague',
-    description: 'Fetch bulk prices, set has_price_data flag',
-    apis: ['https://eodhd.com/api/eod-bulk-last-day/US'],
-    filters: ['Has price data in EODHD bulk response'],
-    result_key: 'processed',
-    result_label: 'tickers with prices',
-    icon: 'trending-up-outline' as const,
-    color: '#10B981',
-    scheduledHour: 23,
-    scheduledMinute: 0,
-  },
-  {
-    step: 3,
-    job_name: 'fundamentals_sync',
-    title: 'Fundamentals Sync',
-    schedule: 'Daily 23:30 Prague',
-    description: 'Fetch fundamentals per ticker, set classification',
-    apis: ['https://eodhd.com/api/fundamentals/{TICKER}.US (~10 credits/ticker)'],
-    filters: ['Sector present', 'Industry present'],
-    result_key: 'processed',
-    result_label: 'tickers classified',
-    icon: 'library-outline' as const,
-    color: '#F59E0B',
-    scheduledHour: 23,
-    scheduledMinute: 30,
-  },
-  {
-    step: 4,
-    job_name: 'compute_visible_universe',
-    title: 'Compute Visible Universe',
-    schedule: 'Daily 23:30 Prague',
-    description: 'Apply visibility sieve, set is_visible flag',
-    apis: ['Local DB only — no external API'],
-    filters: ['is_delisted ≠ true', 'shares_outstanding > 0', 'financial_currency present'],
-    result_key: 'visible_count',
-    result_label: 'tickers visible',
-    icon: 'eye-outline' as const,
-    color: '#8B5CF6',
-    scheduledHour: 23,
-    scheduledMinute: 30,
-  },
-  {
-    step: 5,
-    job_name: 'peer_medians',
-    title: 'Peer Medians',
-    schedule: 'Daily 23:45 Prague',
-    description: 'Compute PE, PS, PB, EV/EBITDA medians by sector & industry',
-    apis: ['Local DB only — no external API'],
-    filters: ['USD-reporting tickers', 'Exclude self from peer group', 'Winsorize outliers (1-99%)'],
-    result_key: 'tickers_processed',
-    result_label: 'tickers processed',
-    icon: 'stats-chart-outline' as const,
-    color: '#EC4899',
-    scheduledHour: 23,
-    scheduledMinute: 45,
-  },
-];
-
-const MORNING_FRESH = {
-  job_name: 'news_refresh',
-  title: 'Morning Fresh',
-  schedule: 'Daily 13:00 Prague',
-  description: 'Fetch news + compute sentiment for tracked tickers',
-  apis: ['eodhd.com/api/news (per tracked ticker)'],
-  icon: 'newspaper-outline' as const,
-  color: '#06B6D4',
-};
-
 function getNextRun(hour: number, minute: number): string {
   try {
     const now = new Date();
@@ -177,6 +86,11 @@ function getStatusIcon(status?: string): string {
   return 'time-outline';
 }
 
+function fmt(n?: number): string {
+  if (n === undefined || n === null) return '—';
+  return n.toLocaleString();
+}
+
 export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -208,7 +122,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     setRunningJob(jobName);
     setRunResult(prev => ({ ...prev, [jobName]: '' }));
     try {
-      // Jobs that support sync mode (?wait=true) — no polling needed
       const SYNC_JOBS = ['price_sync', 'fundamentals_sync', 'news_refresh'];
       const useWait = SYNC_JOBS.includes(jobName);
       let endpoint = jobName === 'universe_seed'
@@ -244,19 +157,120 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const jobRuns = data?.job_last_runs || {};
   const counts = data?.universe_funnel?.counts || {};
 
-  const completedSteps = PIPELINE_STEPS.filter(s => {
-    const run = jobRuns[s.job_name];
-    return run?.status === 'success' || run?.status === 'completed';
-  }).length;
+  const seeded = counts.seeded_us_total;
+  const withPrice = counts.with_price_data;
+  const withClass = counts.with_classification;
+  const visible = counts.visible_tickers;
 
-  const healthPct = Math.round((completedSteps / PIPELINE_STEPS.length) * 100);
+  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'compute_visible_universe', 'peer_medians'].filter(j => {
+    const r = jobRuns[j];
+    return r?.status === 'success' || r?.status === 'completed';
+  }).length;
+  const healthPct = Math.round((completedCount / 5) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
-  const funnelSteps = [
-    { label: 'Seeded (NYSE+NASDAQ Common Stock)', count: counts.seeded_us_total, total: counts.seeded_us_total },
-    { label: 'With Price Data', count: counts.with_price_data, total: counts.seeded_us_total },
-    { label: 'With Classification', count: counts.with_classification, total: counts.seeded_us_total },
-    { label: 'Visible Universe', count: counts.visible_tickers, total: counts.seeded_us_total },
+  const steps = [
+    {
+      step: 1,
+      job_name: 'universe_seed',
+      title: 'Universe Seed',
+      schedule: 'Sunday 04:00 Prague',
+      scheduledHour: 4,
+      scheduledMinute: 0,
+      icon: 'globe-outline' as const,
+      color: '#6366F1',
+      apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
+      inputLabel: 'Raw symbols (EODHD)',
+      inputCount: undefined as number | undefined,
+      outputCount: seeded,
+      outputLabel: 'seeded',
+      filters: [
+        'Type ≠ "Common Stock"',
+        'Ticker contains dot (ADR / preferred)',
+        'Suffix -WT / -WS / -WI (warrants)',
+        'Suffix -U / -UN (units)',
+        'Suffix -PA .. -PJ (preferred shares)',
+        'Suffix -R / -RI (rights)',
+      ],
+    },
+    {
+      step: 2,
+      job_name: 'price_sync',
+      title: 'Price Sync',
+      schedule: 'Mon–Sat 04:00 Prague',
+      scheduledHour: 4,
+      scheduledMinute: 0,
+      icon: 'trending-up-outline' as const,
+      color: '#10B981',
+      apiUrl: 'https://eodhd.com/api/eod-bulk-last-day/US',
+      inputLabel: 'Seeded tickers',
+      inputCount: seeded,
+      outputCount: withPrice,
+      outputLabel: 'with price data',
+      filters: [
+        'Not present in EODHD bulk response',
+        'Close price = 0 or missing',
+      ],
+    },
+    {
+      step: 3,
+      job_name: 'fundamentals_sync',
+      title: 'Fundamentals Sync',
+      schedule: 'Mon–Sat 04:30 Prague',
+      scheduledHour: 4,
+      scheduledMinute: 30,
+      icon: 'library-outline' as const,
+      color: '#F59E0B',
+      apiUrl: 'https://eodhd.com/api/fundamentals/{TICKER}.US  (~10 credits/ticker)',
+      inputLabel: 'Tickers with prices',
+      inputCount: withPrice,
+      outputCount: withClass,
+      outputLabel: 'classified',
+      filters: [
+        'EODHD returns no fundamentals (404)',
+        'Sector missing or empty',
+        'Industry missing or empty',
+      ],
+    },
+    {
+      step: 4,
+      job_name: 'compute_visible_universe',
+      title: 'Compute Visible Universe',
+      schedule: 'Mon–Sat 04:30 Prague',
+      scheduledHour: 4,
+      scheduledMinute: 30,
+      icon: 'eye-outline' as const,
+      color: '#8B5CF6',
+      apiUrl: 'Local DB only — no external API',
+      inputLabel: 'Classified tickers',
+      inputCount: withClass,
+      outputCount: visible,
+      outputLabel: 'visible',
+      filters: [
+        'is_delisted = true',
+        'shares_outstanding = 0 or missing',
+        'financial_currency missing',
+      ],
+    },
+    {
+      step: 5,
+      job_name: 'peer_medians',
+      title: 'Peer Medians',
+      schedule: 'Mon–Sat 05:30 Prague',
+      scheduledHour: 5,
+      scheduledMinute: 30,
+      icon: 'stats-chart-outline' as const,
+      color: '#EC4899',
+      apiUrl: 'Local DB only — no external API',
+      inputLabel: 'Visible tickers',
+      inputCount: visible,
+      outputCount: visible,
+      outputLabel: 'with medians',
+      filters: [
+        'Winsorize outliers (1–99%)',
+        'Exclude self from own peer group',
+      ],
+    },
   ];
 
   if (loading) return (
@@ -281,19 +295,51 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         <View style={s.progressBg}>
           <View style={[s.progressFill, { width: `${healthPct}%` as any, backgroundColor: healthColor }]} />
         </View>
-        <Text style={s.healthSub}>{completedSteps}/{PIPELINE_STEPS.length} steps completed today</Text>
+        <Text style={s.healthSub}>{completedCount}/5 steps completed today</Text>
+        {/* Mini funnel summary */}
+        <View style={s.miniSummary}>
+          <View style={s.miniItem}>
+            <Text style={s.miniNum}>{fmt(seeded)}</Text>
+            <Text style={s.miniLabel}>seeded</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
+          <View style={s.miniItem}>
+            <Text style={s.miniNum}>{fmt(withPrice)}</Text>
+            <Text style={s.miniLabel}>prices</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
+          <View style={s.miniItem}>
+            <Text style={s.miniNum}>{fmt(withClass)}</Text>
+            <Text style={s.miniLabel}>classified</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
+          <View style={s.miniItem}>
+            <Text style={[s.miniNum, { color: '#22C55E' }]}>{fmt(visible)}</Text>
+            <Text style={[s.miniLabel, { color: '#22C55E' }]}>visible</Text>
+          </View>
+        </View>
       </View>
 
       {/* Pipeline Steps */}
-      {PIPELINE_STEPS.map((step, idx) => {
+      {steps.map((step, idx) => {
         const run = jobRuns[step.job_name];
         const status = run?.status;
         const isExpanded = expandedSteps.has(step.step);
         const isRunning = runningJob === step.job_name;
 
+        const inCount = step.inputCount;
+        const outCount = step.outputCount;
+        const droppedCount = (inCount !== undefined && outCount !== undefined)
+          ? inCount - outCount
+          : undefined;
+        const passPct = (inCount && outCount !== undefined)
+          ? Math.round((outCount / inCount) * 100)
+          : null;
+
         return (
           <View key={step.job_name}>
             <View style={s.stepCard}>
+
               {/* Step Header */}
               <View style={s.stepHeader}>
                 <View style={[s.stepBadge, { backgroundColor: step.color + '22' }]}>
@@ -314,7 +360,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
                 <TouchableOpacity
-                  style={[s.runBtn, isRunning && s.runBtnDisabled]}
+                  style={[s.runBtn, { backgroundColor: step.color }, isRunning && s.runBtnDisabled]}
                   onPress={() => handleRunNow(step.job_name)}
                   disabled={!!runningJob}
                 >
@@ -329,6 +375,53 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               {runResult[step.job_name] ? (
                 <Text style={s.runResultText}>{runResult[step.job_name]}</Text>
               ) : null}
+
+              {/* ── Integrated Funnel Row ── */}
+              <View style={s.funnelRow}>
+                {/* INPUT */}
+                <View style={s.funnelBox}>
+                  <Text style={s.funnelBoxNum}>
+                    {inCount !== undefined ? fmt(inCount) : '—'}
+                  </Text>
+                  <Text style={s.funnelBoxLabel}>{step.inputLabel}</Text>
+                </View>
+
+                {/* Arrow + pass rate */}
+                <View style={s.funnelArrow}>
+                  <Ionicons name="arrow-forward" size={16} color={step.color} />
+                  {passPct !== null && (
+                    <Text style={[s.funnelPct, { color: passPct > 50 ? '#22C55E' : '#EF4444' }]}>
+                      {passPct}%
+                    </Text>
+                  )}
+                </View>
+
+                {/* OUTPUT */}
+                <View style={[s.funnelBox, s.funnelBoxOut, { borderColor: step.color + '88' }]}>
+                  <Text style={[s.funnelBoxNum, { color: step.color }]}>
+                    {outCount !== undefined ? fmt(outCount) : '—'}
+                  </Text>
+                  <Text style={s.funnelBoxLabel}>{step.outputLabel}</Text>
+                </View>
+
+                {/* DROPPED */}
+                {droppedCount !== undefined && droppedCount > 0 && (
+                  <View style={s.funnelDropped}>
+                    <Text style={s.funnelDropNum}>−{fmt(droppedCount)}</Text>
+                    <Text style={s.funnelDropLabel}>filtered out</Text>
+                  </View>
+                )}
+              </View>
+
+              {/* Progress bar */}
+              {passPct !== null && (
+                <View style={s.funnelBarWrap}>
+                  <View style={[s.funnelBar, {
+                    width: `${passPct}%` as any,
+                    backgroundColor: step.color,
+                  }]} />
+                </View>
+              )}
 
               {/* Last Run Info */}
               {run ? (
@@ -347,8 +440,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   )}
                   {run.records_processed !== undefined && run.records_processed > 0 && (
                     <View style={s.runInfoRow}>
-                      <Text style={s.runLabel}>Result:</Text>
-                      <Text style={s.runValue}>{run.records_processed.toLocaleString()} {step.result_label}</Text>
+                      <Text style={s.runLabel}>Processed:</Text>
+                      <Text style={s.runValue}>{run.records_processed.toLocaleString()}</Text>
                     </View>
                   )}
                   <View style={s.runInfoRow}>
@@ -360,7 +453,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   )}
                 </View>
               ) : (
-<View style={s.runInfo}>
+                <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Next run:</Text>
                     <Text style={s.runValue}>{getNextRun(step.scheduledHour, step.scheduledMinute)}</Text>
@@ -368,30 +461,26 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {/* Expand Details */}
+              {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
-                <Text style={s.expandText}>Details</Text>
+                <Text style={s.expandText}>Filter details</Text>
                 <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={12} color={COLORS.textMuted} />
               </TouchableOpacity>
 
               {isExpanded && (
                 <View style={s.details}>
-                  <Text style={s.detailLabel}>Description</Text>
-                  <Text style={s.detailValue}>{step.description}</Text>
-                  <Text style={[s.detailLabel, { marginTop: 8 }]}>API Endpoints</Text>
-                  {step.apis.map(api => (
-                    <Text key={api} style={s.apiText}>· {api}</Text>
-                  ))}
-                  <Text style={[s.detailLabel, { marginTop: 8 }]}>Filters</Text>
+                  <Text style={s.detailLabel}>API ENDPOINT</Text>
+                  <Text style={s.apiText}>· {step.apiUrl}</Text>
+                  <Text style={[s.detailLabel, { marginTop: 8 }]}>EXCLUDED IF</Text>
                   {step.filters.map(f => (
-                    <Text key={f} style={s.filterText}>✓ {f}</Text>
+                    <Text key={f} style={s.filterText}>✕ {f}</Text>
                   ))}
                 </View>
               )}
             </View>
 
             {/* Arrow between steps */}
-            {idx < PIPELINE_STEPS.length - 1 && (
+            {idx < steps.length - 1 && (
               <View style={s.arrow}>
                 <View style={s.arrowLine} />
                 <Ionicons name="chevron-down" size={12} color={COLORS.textMuted} />
@@ -401,75 +490,46 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         );
       })}
 
-      {/* Morning Fresh */}
-      <View style={[s.stepCard, { borderLeftColor: MORNING_FRESH.color, borderLeftWidth: 3 }]}>
+      {/* Morning Fresh — independent job, not part of universe pipeline */}
+      <View style={[s.stepCard, { marginTop: 16, borderLeftColor: '#06B6D4', borderLeftWidth: 3 }]}>
         <View style={s.stepHeader}>
-          <View style={[s.stepBadge, { backgroundColor: MORNING_FRESH.color + '22' }]}>
-            <Ionicons name={MORNING_FRESH.icon} size={16} color={MORNING_FRESH.color} />
+          <View style={[s.stepBadge, { backgroundColor: '#06B6D422' }]}>
+            <Ionicons name="newspaper-outline" size={16} color="#06B6D4" />
           </View>
           <View style={s.stepMeta}>
             <View style={s.stepTitleRow}>
-              <Text style={s.stepTitle}>{MORNING_FRESH.title}</Text>
+              <Text style={s.stepTitle}>Morning Fresh</Text>
               {(() => {
-                const run = jobRuns[MORNING_FRESH.job_name];
+                const run = jobRuns['news_refresh'];
                 return run ? (
                   <Ionicons name={getStatusIcon(run.status) as any} size={14} color={getStatusColor(run.status)} style={{ marginLeft: 4 }} />
                 ) : null;
               })()}
             </View>
-            <Text style={s.stepSchedule}>{MORNING_FRESH.schedule}</Text>
+            <Text style={s.stepSchedule}>Daily 13:00 Prague</Text>
           </View>
           <TouchableOpacity
-            style={[s.runBtn, { backgroundColor: MORNING_FRESH.color }, runningJob === MORNING_FRESH.job_name && s.runBtnDisabled]}
-            onPress={() => handleRunNow(MORNING_FRESH.job_name)}
+            style={[s.runBtn, { backgroundColor: '#06B6D4' }, runningJob === 'news_refresh' && s.runBtnDisabled]}
+            onPress={() => handleRunNow('news_refresh')}
             disabled={!!runningJob}
           >
-            {runningJob === MORNING_FRESH.job_name
+            {runningJob === 'news_refresh'
               ? <ActivityIndicator size="small" color="#fff" />
               : <Text style={s.runBtnText}>▶ Run</Text>
             }
           </TouchableOpacity>
         </View>
-        {jobRuns[MORNING_FRESH.job_name] ? (
+        {jobRuns['news_refresh'] ? (
           <View style={s.runInfo}>
             <Text style={s.runValue}>
-              Last: {formatTime(jobRuns[MORNING_FRESH.job_name].start_time)} · {formatDuration(jobRuns[MORNING_FRESH.job_name].duration_seconds)}
+              Last: {formatTime(jobRuns['news_refresh'].start_time)} · {formatDuration(jobRuns['news_refresh'].duration_seconds)}
             </Text>
           </View>
         ) : (
           <Text style={s.neverRun}>Never run</Text>
         )}
-        <Text style={s.detailValue}>{MORNING_FRESH.description}</Text>
-        <Text style={s.apiText}>· {MORNING_FRESH.apis[0]}</Text>
-      </View>
-
-      {/* Universe Funnel */}
-      <View style={s.funnelCard}>
-        <View style={s.cardHeader}>
-          <Ionicons name="funnel" size={16} color="#6366F1" />
-          <Text style={s.cardTitle}>Universe Funnel</Text>
-          <Text style={s.funnelTotal}>{(counts.visible_tickers || 0).toLocaleString()} visible</Text>
-        </View>
-        {funnelSteps.map((f, i) => {
-          const pct = f.total ? Math.round(((f.count || 0) / f.total) * 100) : 0;
-          const isLast = i === funnelSteps.length - 1;
-          return (
-            <View key={f.label} style={s.funnelRow}>
-              <Text style={[s.funnelLabel, isLast && { fontWeight: '700', color: '#22C55E' }]}>{f.label}</Text>
-              <View style={s.funnelBarWrap}>
-                <View style={[s.funnelBar, {
-                  width: `${pct}%` as any,
-                  backgroundColor: isLast ? '#22C55E' : '#6366F1',
-                  opacity: isLast ? 1 : 0.6 + (i * 0.1),
-                }]} />
-              </View>
-              <Text style={[s.funnelCount, isLast && { color: '#22C55E', fontWeight: '700' }]}>
-                {(f.count || 0).toLocaleString()}
-                <Text style={s.funnelPct}>  {pct}%</Text>
-              </Text>
-            </View>
-          );
-        })}
+        <Text style={[s.detailValue, { marginTop: 4 }]}>Fetch news + compute sentiment for tracked tickers</Text>
+        <Text style={s.apiText}>· https://eodhd.com/api/news (per tracked ticker)</Text>
       </View>
 
       <View style={{ height: 40 }} />
@@ -487,7 +547,12 @@ const s = StyleSheet.create({
   healthPct: { fontSize: 20, fontWeight: '800', marginRight: 4 },
   progressBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 6 },
   progressFill: { height: 6, borderRadius: 3 },
-  healthSub: { fontSize: 11, color: COLORS.textMuted },
+  healthSub: { fontSize: 11, color: COLORS.textMuted, marginBottom: 10 },
+
+  miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
+  miniItem: { alignItems: 'center', flex: 1 },
+  miniNum: { fontSize: 14, fontWeight: '700', color: COLORS.text },
+  miniLabel: { fontSize: 9, color: COLORS.textMuted, marginTop: 1 },
 
   stepCard: { marginHorizontal: 12, marginBottom: 0, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
   stepHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
@@ -498,12 +563,26 @@ const s = StyleSheet.create({
   stepTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text },
   stepSchedule: { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
 
-  runBtn: { backgroundColor: '#6366F1', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center' },
+  runBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center' },
   runBtnDisabled: { opacity: 0.5 },
   runBtnText: { color: '#fff', fontSize: 11, fontWeight: '600' },
   runResultText: { fontSize: 11, marginTop: 6, color: COLORS.textMuted },
 
-  runInfo: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: COLORS.border },
+  funnelRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4, gap: 6 },
+  funnelBox: { alignItems: 'center', flex: 2.5, backgroundColor: COLORS.border + '44', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 4 },
+  funnelBoxOut: { borderWidth: 1 },
+  funnelBoxNum: { fontSize: 18, fontWeight: '800', color: COLORS.text },
+  funnelBoxLabel: { fontSize: 9, color: COLORS.textMuted, marginTop: 2, textAlign: 'center' },
+  funnelArrow: { alignItems: 'center', flex: 1 },
+  funnelPct: { fontSize: 9, fontWeight: '700', marginTop: 2 },
+  funnelDropped: { alignItems: 'center', flex: 1.8, backgroundColor: '#EF444414', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 4, borderWidth: 1, borderColor: '#EF444433' },
+  funnelDropNum: { fontSize: 14, fontWeight: '700', color: '#EF4444' },
+  funnelDropLabel: { fontSize: 9, color: '#EF4444', marginTop: 1 },
+
+  funnelBarWrap: { height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden', marginBottom: 8 },
+  funnelBar: { height: 4, borderRadius: 2 },
+
+  runInfo: { marginTop: 6, paddingTop: 8, borderTopWidth: 1, borderTopColor: COLORS.border },
   runInfoRow: { flexDirection: 'row', gap: 6, marginBottom: 2 },
   runLabel: { fontSize: 11, color: COLORS.textMuted, width: 80 },
   runValue: { fontSize: 11, color: COLORS.text, flex: 1 },
@@ -516,19 +595,8 @@ const s = StyleSheet.create({
   detailLabel: { fontSize: 10, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.5, marginBottom: 3 },
   detailValue: { fontSize: 11, color: COLORS.text, marginBottom: 2 },
   apiText: { fontSize: 10, color: '#6366F1', fontFamily: 'monospace', marginBottom: 1 },
-  filterText: { fontSize: 10, color: '#22C55E', marginBottom: 1 },
+  filterText: { fontSize: 10, color: '#EF4444', marginBottom: 1 },
 
   arrow: { alignItems: 'center', paddingVertical: 4 },
   arrowLine: { width: 1, height: 8, backgroundColor: COLORS.border },
-
-  funnelCard: { margin: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 14, borderWidth: 1, borderColor: COLORS.border },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 12 },
-  cardTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text, flex: 1 },
-  funnelTotal: { fontSize: 12, fontWeight: '700', color: '#22C55E' },
-  funnelRow: { marginBottom: 8 },
-  funnelLabel: { fontSize: 11, color: COLORS.textMuted, marginBottom: 3 },
-  funnelBarWrap: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 3 },
-  funnelBar: { height: 6, borderRadius: 3 },
-  funnelCount: { fontSize: 12, color: COLORS.text, fontWeight: '600' },
-  funnelPct: { fontSize: 10, color: COLORS.textMuted, fontWeight: '400' },
 });
