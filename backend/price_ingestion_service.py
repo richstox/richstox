@@ -853,7 +853,7 @@ async def detect_price_gaps(db) -> Dict[str, Any]:
     logger.info(f"[GAP DETECT] Config: lookback_days={lookback_days}, coverage_threshold={coverage_threshold}")
     
     # Get visible ticker count
-    visible_ticker_count = await db.tracked_tickers.count_documents({"is_visible": True})
+    visible_ticker_count = await db.tracked_tickers.count_documents({"is_whitelisted": True})
     
     # Calculate date range
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -984,7 +984,7 @@ async def run_daily_bulk_catchup(db) -> Dict[str, Any]:
     # Step 3: Get visible tickers for filtering
     visible_tickers = set()
     cursor = db.tracked_tickers.find(
-        {"is_visible": True},
+        {"is_whitelisted": True},
         {"_id": 0, "ticker": 1}
     )
     async for doc in cursor:
