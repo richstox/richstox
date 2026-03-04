@@ -28,32 +28,44 @@ PRAGUE_TZ = ZoneInfo("Europe/Prague")
 async def get_job_last_runs(db) -> Dict[str, Any]:
     """
     Get last run status for all scheduled jobs from ops_job_runs.
-    Reads from canonical ops_job_runs collection (written by all job endpoints).
+    Uses single aggregation instead of N sequential find_one calls — O(1) latency.
+
+    PERF: 1 MongoDB round-trip regardless of job count.
+    Requires index: { job_name: 1, started_at: -1 } on ops_job_runs.
     """
-    job_names = [
-        "universe_seed", "price_sync", "sp500tr_update", "fundamentals_sync",
-        "backfill_gaps", "backfill_all", "key_metrics", "peer_medians",
-        "pain_cache", "admin_report", "news_refresh", "valuation_precompute",
-        "backfill_fundamentals_complete", "scheduler_heartbeat"
+    pipeline = [
+        {"$sort": {"started_at": -1}},
+        {"$group": {
+            "_id": "$job_name",
+            "status":       {"$first": "$status"},
+            "started_at":   {"$first": "$started_at"},
+            "finished_at":  {"$first": "$finished_at"},
+            "duration_sec": {"$first": "$duration_sec"},
+            "result":       {"$first": "$result"},
+            "triggered_by": {"$first": "$triggered_by"},
+        }},
     ]
+    docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
 
     last_runs = {}
-    for job_name in job_names:
-        doc = await db.ops_job_runs.find_one(
-            {"job_name": job_name},
-            {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
-             "duration_sec": 1, "result": 1, "triggered_by": 1},
-            sort=[("started_at", -1)]
+    for doc in docs:
+        job_name = doc.get("_id")
+        if not job_name:
+            continue
+        started = doc.get("started_at")
+        finished = doc.get("finished_at")
+        result = doc.get("result") or {}
+        doc["start_time"] = started.isoformat() if hasattr(started, "isoformat") else str(started) if started else None
+        doc["end_time"] = finished.isoformat() if hasattr(finished, "isoformat") else str(finished) if finished else None
+        doc["duration_seconds"] = doc.get("duration_sec")
+        doc["records_processed"] = (
+            result.get("added_pending") or
+            result.get("processed") or
+            result.get("records_upserted") or 0
         )
-        if doc:
-            started = doc.get("started_at")
-            finished = doc.get("finished_at")
-            result = doc.get("result") or {}
-            doc["start_time"] = started.isoformat() if hasattr(started, "isoformat") else str(started) if started else None
-            doc["end_time"] = finished.isoformat() if hasattr(finished, "isoformat") else str(finished) if finished else None
-            doc["duration_seconds"] = doc.get("duration_sec")
-            doc["records_processed"] = result.get("added_pending") or result.get("processed") or result.get("records_upserted") or 0
-            doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
+        doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
+        # Raw symbols fetched from EODHD before filtering (universe_seed only)
+        doc["raw_symbols_fetched"] = result.get("fetched") or None
         last_runs[job_name] = doc
 
     return last_runs
