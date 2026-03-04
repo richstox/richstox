@@ -183,7 +183,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       step: 1,
       job_name: 'universe_seed',
       title: 'Universe Seed',
-      schedule: 'Daily 23:00 Prague',
+      schedule: 'Mon–Sat 23:00 Prague',
       scheduledHour: 4,
       scheduledMinute: 0,
       icon: 'globe-outline' as const,
@@ -386,41 +386,56 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               ) : null}
 
               {/* ── Integrated Funnel Row ── */}
-              <View style={s.funnelRow}>
-                {/* INPUT */}
-                <View style={s.funnelBox}>
-                  <Text style={s.funnelBoxNum}>
-                    {inCount !== undefined ? fmt(inCount) : '—'}
-                  </Text>
-                  <Text style={s.funnelBoxLabel}>{step.inputLabel}</Text>
+              {/* Step 1: no input box — funnel starts here */}
+              {/* Steps 2+: waiting state if previous step has 0 output */}
+              {inCount === 0 && step.step > 1 ? (
+                <View style={s.waitingRow}>
+                  <Ionicons name="time-outline" size={13} color={COLORS.textMuted} />
+                  <Text style={s.waitingText}>Waiting for Step {step.step - 1} to complete</Text>
                 </View>
+              ) : (
+                <View style={s.funnelRow}>
+                  {/* INPUT — hidden for Step 1 */}
+                  {inCount !== undefined && step.step > 1 && (
+                    <View style={s.funnelBox}>
+                      <Text style={s.funnelBoxNum}>{fmt(inCount)}</Text>
+                      <Text style={s.funnelBoxLabel}>{step.inputLabel}</Text>
+                    </View>
+                  )}
 
-                {/* Arrow + pass rate */}
-                <View style={s.funnelArrow}>
-                  <Ionicons name="arrow-forward" size={16} color={step.color} />
-                  {passPct !== null && (
-                    <Text style={[s.funnelPct, { color: passPct > 50 ? '#22C55E' : '#EF4444' }]}>
-                      {passPct}%
+                  {/* Arrow + pass rate — only when we have both sides */}
+                  {inCount !== undefined && step.step > 1 && (
+                    <View style={s.funnelArrow}>
+                      <Ionicons name="arrow-forward" size={16} color={step.color} />
+                      {passPct !== null && (
+                        <Text style={[s.funnelPct, { color: passPct > 50 ? '#22C55E' : '#EF4444' }]}>
+                          {passPct}%
+                        </Text>
+                      )}
+                    </View>
+                  )}
+
+                  {/* OUTPUT */}
+                  <View style={[s.funnelBox, s.funnelBoxOut, { borderColor: step.color + '88', flex: step.step === 1 ? 1 : 2.5 }]}>
+                    <Text style={[s.funnelBoxNum, { color: step.color }]}>
+                      {outCount !== undefined ? fmt(outCount) : '—'}
                     </Text>
+                    <Text style={s.funnelBoxLabel}>{step.outputLabel}</Text>
+                    {/* Step 1: show raw EODHD count as subtitle */}
+                    {step.step === 1 && rawSymbols !== undefined && (
+                      <Text style={s.funnelRawNote}>z {fmt(rawSymbols)} raw symbolů</Text>
+                    )}
+                  </View>
+
+                  {/* DROPPED */}
+                  {droppedCount !== undefined && droppedCount > 0 && (
+                    <View style={s.funnelDropped}>
+                      <Text style={s.funnelDropNum}>−{fmt(droppedCount)}</Text>
+                      <Text style={s.funnelDropLabel}>filtered out</Text>
+                    </View>
                   )}
                 </View>
-
-                {/* OUTPUT */}
-                <View style={[s.funnelBox, s.funnelBoxOut, { borderColor: step.color + '88' }]}>
-                  <Text style={[s.funnelBoxNum, { color: step.color }]}>
-                    {outCount !== undefined ? fmt(outCount) : '—'}
-                  </Text>
-                  <Text style={s.funnelBoxLabel}>{step.outputLabel}</Text>
-                </View>
-
-                {/* DROPPED */}
-                {droppedCount !== undefined && droppedCount > 0 && (
-                  <View style={s.funnelDropped}>
-                    <Text style={s.funnelDropNum}>−{fmt(droppedCount)}</Text>
-                    <Text style={s.funnelDropLabel}>filtered out</Text>
-                  </View>
-                )}
-              </View>
+              )}
 
               {/* Progress bar */}
               {passPct !== null && (
@@ -588,6 +603,9 @@ const s = StyleSheet.create({
   funnelDropNum: { fontSize: 14, fontWeight: '700', color: '#EF4444' },
   funnelDropLabel: { fontSize: 9, color: '#EF4444', marginTop: 1 },
 
+  waitingRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, marginBottom: 6, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: COLORS.border + '33', borderRadius: 8 },
+  waitingText: { fontSize: 11, color: COLORS.textMuted, fontStyle: 'italic' },
+  funnelRawNote: { fontSize: 9, color: COLORS.textMuted, marginTop: 3, textAlign: 'center' },
   funnelBarWrap: { height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden', marginBottom: 8 },
   funnelBar: { height: 4, borderRadius: 2 },
 
