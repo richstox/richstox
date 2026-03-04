@@ -416,8 +416,17 @@ async def scheduler_loop():
                 continue
             
             # =================================================================
+            # STEP 1: Universe Seed at 23:00 EVERY DAY (including Sunday)
             # =================================================================
-            # SUNDAY: News refresh only (Universe Seed moved to daily pipeline)
+            if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
+                from whitelist_service import sync_ticker_whitelist
+                await run_job_with_retry("universe_seed", sync_ticker_whitelist, db)
+                last_run["universe_seed"] = today_str
+                await set_last_run_state(last_run)
+
+            # =================================================================
+            # SUNDAY: News refresh only, then skip Mon-Sat jobs
             # =================================================================
             if is_sunday():
                 # News refresh at 13:00 Sunday (catch-up enabled)
@@ -437,14 +446,6 @@ async def scheduler_loop():
             if not is_daily_job_day():
                 await asyncio.sleep(60)
                 continue
-            
-            # STEP 1: Universe Seed at 04:00 DAILY (every day)
-            if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
-                from whitelist_service import sync_ticker_whitelist
-                await run_job_with_retry("universe_seed", sync_ticker_whitelist, db)
-                last_run["universe_seed"] = today_str
-                await set_last_run_state(last_run)
             
             # STEP 2: Price sync at 04:00 (catch-up enabled)
             if should_run("price_sync", PRICE_SYNC_HOUR, PRICE_SYNC_MINUTE, last_run, today_str, current_hour, current_minute):
