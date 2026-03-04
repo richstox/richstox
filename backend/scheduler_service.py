@@ -94,7 +94,7 @@ async def set_scheduler_enabled(db, enabled: bool) -> Dict[str, Any]:
 
 async def log_scheduled_job(
     db,
-    job_type: str,
+    job_name: str,
     status: str,
     details: Dict[str, Any],
     started_at: datetime,
@@ -114,7 +114,7 @@ async def log_scheduled_job(
     duration = (end_time - started_at).total_seconds() if started_at else 0
     
     doc = {
-        "job_type": job_type,
+        "job_name": job_name,
         "source": "scheduler",  # Distinguish from manual runs
         "status": status,
         "details": details,
@@ -145,16 +145,16 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
     from price_ingestion_service import run_daily_bulk_catchup
     
     started_at = datetime.now(timezone.utc)
-    job_type = "scheduled_price_sync"
+    job_name = "price_sync"
     
-    logger.info(f"Starting {job_type} with gap detection and bulk catchup")
+    logger.info(f"Starting {job_name} with gap detection and bulk catchup")
     
     try:
         # Check kill switch
         if not await get_scheduler_enabled(db):
-            logger.warning(f"{job_type} skipped: kill switch engaged")
+            logger.warning(f"{job_name} skipped: kill switch engaged")
             return {
-                "job_type": job_type,
+                "job_name": job_name,
                 "status": "skipped",
                 "reason": "kill_switch_engaged",
                 "started_at": started_at.isoformat(),
@@ -165,7 +165,7 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
         
         # Log to ops_job_runs
         await db.ops_job_runs.insert_one({
-            "job_type": job_type,
+            "job_name": job_name,
             "source": "scheduler",
             "started_at": started_at,
             "finished_at": datetime.now(timezone.utc),
@@ -180,12 +180,12 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
             }
         })
         
-        logger.info(f"{job_type} completed: {result.get('records_upserted', 0)} records, "
+        logger.info(f"{job_name} completed: {result.get('records_upserted', 0)} records, "
                    f"{result.get('dates_processed', 0)} gap dates processed, "
                    f"{result.get('api_calls', 0)} API calls")
         
         return {
-            "job_type": job_type,
+            "job_name": job_name,
             "status": result.get("status", "completed"),
             "records_upserted": result.get("records_upserted", 0),
             "dates_processed": result.get("dates_processed", 0),
@@ -196,11 +196,11 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"{job_type} failed: {error_msg}")
+        logger.error(f"{job_name} failed: {error_msg}")
         
         await log_scheduled_job(
             db,
-            job_type=job_type,
+            job_name=job_name,
             status="failed",
             details={"error": error_msg},
             started_at=started_at,
@@ -208,7 +208,7 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
         )
         
         return {
-            "job_type": job_type,
+            "job_name": job_name,
             "status": "failed",
             "error": error_msg,
             "started_at": started_at.isoformat(),
@@ -228,16 +228,16 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, A
     from batch_jobs_service import sync_single_ticker_fundamentals
     
     started_at = datetime.now(timezone.utc)
-    job_type = "scheduled_fundamentals_sync"
+    job_name = "fundamentals_sync"
     
-    logger.info(f"Starting {job_type}")
+    logger.info(f"Starting {job_name}")
     
     try:
         # Check kill switch
         if not await get_scheduler_enabled(db):
-            logger.warning(f"{job_type} skipped: kill switch engaged")
+            logger.warning(f"{job_name} skipped: kill switch engaged")
             return {
-                "job_type": job_type,
+                "job_name": job_name,
                 "status": "skipped",
                 "reason": "kill_switch_engaged",
                 "started_at": started_at.isoformat(),
@@ -252,9 +252,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, A
         tickers_to_sync = [e.get("ticker", "").replace(".US", "") for e in pending_events if e.get("ticker")]
         
         if not tickers_to_sync:
-            logger.info(f"{job_type}: No pending events to process")
+            logger.info(f"{job_name}: No pending events to process")
             return {
-                "job_type": job_type,
+                "job_name": job_name,
                 "status": "completed",
                 "message": "No pending events",
                 "processed": 0,
@@ -263,7 +263,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, A
         
         # Process tickers
         result = {
-            "job_type": job_type,
+            "job_name": job_name,
             "status": "completed",
             "processed": 0,
             "success": 0,
@@ -296,24 +296,24 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, A
         # Log job run
         await log_scheduled_job(
             db,
-            job_type=job_type,
+            job_name=job_name,
             status=result["status"],
             details=result,
             started_at=started_at,
             finished_at=datetime.now(timezone.utc)
         )
         
-        logger.info(f"{job_type} completed: processed={result['processed']}, success={result['success']}")
+        logger.info(f"{job_name} completed: processed={result['processed']}, success={result['success']}")
         
         return result
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"{job_type} failed: {error_msg}")
+        logger.error(f"{job_name} failed: {error_msg}")
         
         await log_scheduled_job(
             db,
-            job_type=job_type,
+            job_name=job_name,
             status="failed",
             details={"error": error_msg},
             started_at=started_at,
@@ -321,7 +321,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, A
         )
         
         return {
-            "job_type": job_type,
+            "job_name": job_name,
             "status": "failed",
             "error": error_msg,
             "started_at": started_at.isoformat(),
@@ -380,16 +380,16 @@ async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
     from price_ingestion_service import backfill_ticker_prices
     
     started_at = datetime.now(timezone.utc)
-    job_type = "scheduled_price_backfill"
+    job_name = "price_backfill"
     
-    logger.info(f"Starting {job_type}")
+    logger.info(f"Starting {job_name}")
     
     try:
         # Check kill switch
         if not await get_scheduler_enabled(db):
-            logger.warning(f"{job_type} skipped: kill switch engaged")
+            logger.warning(f"{job_name} skipped: kill switch engaged")
             return {
-                "job_type": job_type,
+                "job_name": job_name,
                 "status": "skipped",
                 "reason": "kill_switch_engaged",
                 "started_at": started_at.isoformat(),
@@ -399,9 +399,9 @@ async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
         tickers_to_backfill = await get_tickers_needing_backfill(db, limit=batch_size)
         
         if not tickers_to_backfill:
-            logger.info(f"{job_type}: No tickers need backfill")
+            logger.info(f"{job_name}: No tickers need backfill")
             return {
-                "job_type": job_type,
+                "job_name": job_name,
                 "status": "completed",
                 "message": "No tickers need backfill",
                 "processed": 0,
@@ -410,7 +410,7 @@ async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
         
         # Process tickers
         result = {
-            "job_type": job_type,
+            "job_name": job_name,
             "status": "completed",
             "processed": 0,
             "success": 0,
@@ -454,24 +454,24 @@ async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
         # Log job run
         await log_scheduled_job(
             db,
-            job_type=job_type,
+            job_name=job_name,
             status=result["status"],
             details={k: v for k, v in result.items() if k != "tickers_processed"},  # Don't store full list
             started_at=started_at,
             finished_at=datetime.now(timezone.utc)
         )
         
-        logger.info(f"{job_type} completed: processed={result['processed']}, records={result['total_records']}")
+        logger.info(f"{job_name} completed: processed={result['processed']}, records={result['total_records']}")
         
         return result
         
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"{job_type} failed: {error_msg}")
+        logger.error(f"{job_name} failed: {error_msg}")
         
         await log_scheduled_job(
             db,
-            job_type=job_type,
+            job_name=job_name,
             status="failed",
             details={"error": error_msg},
             started_at=started_at,
@@ -479,7 +479,7 @@ async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
         )
         
         return {
-            "job_type": job_type,
+            "job_name": job_name,
             "status": "failed",
             "error": error_msg,
             "started_at": started_at.isoformat(),
@@ -497,19 +497,19 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
     
     # Get last job runs
     last_price_sync = await db.ops_job_runs.find_one(
-        {"job_type": {"$in": ["daily_price_sync", "scheduled_price_sync"]}},
+        {"job_name": {"$in": ["price_sync", "scheduled_price_sync", "daily_price_sync"]}},
         {"_id": 0},
         sort=[("started_at", -1)]
     )
     
     last_fundamentals_sync = await db.ops_job_runs.find_one(
-        {"job_type": "scheduled_fundamentals_sync"},
+        {"job_name": {"$in": ["fundamentals_sync", "scheduled_fundamentals_sync"]}},
         {"_id": 0},
         sort=[("started_at", -1)]
     )
     
     last_backfill = await db.ops_job_runs.find_one(
-        {"job_type": "scheduled_price_backfill"},
+        {"job_name": {"$in": ["price_backfill", "scheduled_price_backfill"]}},
         {"_id": 0},
         sort=[("started_at", -1)]
     )
@@ -614,7 +614,7 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
     from batch_jobs_service import sync_single_ticker_fundamentals
     
     started_at = datetime.now(timezone.utc)
-    job_type = "fundamentals_sync_delta"
+    job_name = "fundamentals_sync"
     
     logger.info(f"[DELTA FUNDAMENTALS] Starting...")
     
@@ -625,7 +625,7 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
         logger.info(f"[DELTA FUNDAMENTALS] All tickers up-to-date")
         return {
             "status": "success",
-            "job_type": job_type,
+            "job_name": job_name,
             "message": "All tickers up-to-date",
             "tickers_processed": 0,
             "started_at": started_at.isoformat()
@@ -635,7 +635,7 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
     
     result = {
         "status": "success",
-        "job_type": job_type,
+        "job_name": job_name,
         "tickers_processed": 0,
         "tickers_success": 0,
         "tickers_failed": 0,
