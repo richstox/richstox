@@ -93,7 +93,6 @@ SUPPORTED_EXCHANGES = ["NYSE", "NASDAQ"]
 # Filter criteria for whitelist candidates
 WHITELIST_FILTERS = {
     "type": "Common Stock",
-    "currency": "USD",
 }
 
 # Fields to extract from fundamentals for company_fundamentals_cache
@@ -213,9 +212,6 @@ def filter_whitelist_candidates(symbols: List[Dict[str, Any]], exchange: str) ->
             continue
         
         if sym.get("Type") != WHITELIST_FILTERS["type"]:
-            continue
-        
-        if sym.get("Currency") != WHITELIST_FILTERS["currency"]:
             continue
         
         candidates.append({
