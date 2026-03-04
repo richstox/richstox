@@ -72,24 +72,20 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
 
 async def compute_system_health(db) -> Dict[str, Any]:
     """
-    Compute system health based on system_job_logs from last 24 hours.
-    
-    Logic:
-    - If ANY job has status="error" in last 24h → "Degraded"
-    - If ALL jobs succeeded and at least 1 ran → "Healthy"
-    - If NO jobs ran in last 24h → "Unknown"
+    Compute system health from ops_job_runs (last 24h).
+    PERF: Reads from ops_job_runs — same collection already fetched by get_admin_overview.
+    No longer reads system_job_logs (separate collection, likely empty).
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-    
-    # Get all job runs from last 24 hours (excluding heartbeats)
-    recent_runs = await db.system_job_logs.find(
+
+    recent_runs = await db.ops_job_runs.find(
         {
-            "start_time": {"$gte": cutoff},
+            "started_at": {"$gte": cutoff},
             "job_name": {"$ne": "scheduler_heartbeat"}
         },
-        {"_id": 0, "job_name": 1, "status": 1, "error_message": 1, "end_time": 1}
-    ).sort("start_time", -1).to_list(100)
-    
+        {"_id": 0, "job_name": 1, "status": 1, "result": 1}
+    ).sort("started_at", -1).to_list(50)
+
     if not recent_runs:
         return {
             "status": "Unknown",
@@ -98,26 +94,23 @@ async def compute_system_health(db) -> Dict[str, Any]:
             "successful_jobs": 0,
             "total_runs": 0
         }
-    
-    # Group by job_name, take latest status for each
-    job_latest = {}
+
+    job_latest: Dict[str, Any] = {}
     for run in recent_runs:
-        job_name = run["job_name"]
-        if job_name not in job_latest:
-            job_latest[job_name] = run
-    
+        jn = run.get("job_name", "")
+        if jn and jn not in job_latest:
+            job_latest[jn] = run
+
     failed_jobs = []
     successful_count = 0
-    
-    for job_name, run in job_latest.items():
-        if run["status"] == "error":
-            failed_jobs.append({
-                "job_name": job_name,
-                "error": (run.get("error_message") or "Unknown error")[:100]
-            })
-        elif run["status"] == "success":
+    for jn, run in job_latest.items():
+        st = run.get("status", "")
+        if st in ("failed", "error"):
+            err = (run.get("result") or {}).get("error", "Unknown error")
+            failed_jobs.append({"job_name": jn, "error": str(err)[:100]})
+        elif st in ("completed", "success"):
             successful_count += 1
-    
+
     if failed_jobs:
         return {
             "status": "Degraded",
@@ -126,7 +119,7 @@ async def compute_system_health(db) -> Dict[str, Any]:
             "successful_jobs": successful_count,
             "total_runs": len(recent_runs)
         }
-    
+
     return {
         "status": "Healthy",
         "message": f"All {successful_count} jobs succeeded",
@@ -306,12 +299,9 @@ async def get_admin_overview(db) -> Dict[str, Any]:
         {"_id": 0}
     ).sort("started_at", -1).to_list(200)
     
-    # Last universe seed (any time)
+    # Last universe seed (any time) — exact match, no regex full-scan
     last_universe_seed_task = db.ops_job_runs.find_one(
-        {"$or": [
-            {"job_name": {"$regex": "universe|whitelist", "$options": "i"}},
-            {"job_type": {"$regex": "universe|whitelist", "$options": "i"}}
-        ]},
+        {"job_name": "universe_seed"},
         {"_id": 0},
         sort=[("started_at", -1)]
     )
