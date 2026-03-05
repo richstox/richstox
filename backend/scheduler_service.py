@@ -169,6 +169,7 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
         result["tickers_seeded_total"] = price_flag_summary["seeded_total"]
         result["tickers_with_price_data"] = price_flag_summary["with_price_data"]
         result["tickers_without_price_data"] = price_flag_summary["without_price_data"]
+        result["matched_price_tickers_raw"] = price_flag_summary.get("matched_price_tickers_raw", 0)
 
         # Log to ops_job_runs
         await db.ops_job_runs.insert_one({
@@ -185,6 +186,7 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
                 "tickers_seeded_total": result.get("tickers_seeded_total", 0),
                 "tickers_with_price_data": result.get("tickers_with_price_data", 0),
                 "tickers_without_price_data": result.get("tickers_without_price_data", 0),
+                "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
                 "api_calls": result.get("api_calls", 0),
                 "bulk_writes": result.get("bulk_writes", 0),
             }
@@ -201,6 +203,7 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
             "tickers_seeded_total": result.get("tickers_seeded_total", 0),
             "tickers_with_price_data": result.get("tickers_with_price_data", 0),
             "tickers_without_price_data": result.get("tickers_without_price_data", 0),
+            "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
             "dates_processed": result.get("dates_processed", 0),
             "api_calls": result.get("api_calls", 0),
             "started_at": started_at.isoformat(),
@@ -231,15 +234,39 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
 async def sync_has_price_data_flags(db) -> Dict[str, int]:
     """
     Recompute has_price_data for seeded US Common Stock universe from stock_prices.
-    Step 2 canonical: has_price_data=true only for tickers with price rows.
+    Step 2 canonical: has_price_data=true only for tickers with valid price
+    (close > 0 OR adjusted_close > 0).
     """
     seeded_tickers = await db.tracked_tickers.distinct("ticker", SEED_QUERY)
     seeded_total = len(seeded_tickers)
     if seeded_total == 0:
-        return {"seeded_total": 0, "with_price_data": 0, "without_price_data": 0}
+        return {
+            "seeded_total": 0,
+            "with_price_data": 0,
+            "without_price_data": 0,
+            "matched_price_tickers_raw": 0,
+        }
 
-    tickers_with_prices = await db.stock_prices.distinct("ticker", {"ticker": {"$in": seeded_tickers}})
-    with_price_set = set(tickers_with_prices)
+    # Backward compatibility: older stock_prices may contain ticker without .US suffix.
+    seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
+    ticker_candidates = list(set(seeded_tickers) | set(seeded_codes))
+    valid_price_query = {
+        "ticker": {"$in": ticker_candidates},
+        "$or": [
+            {"close": {"$gt": 0}},
+            {"adjusted_close": {"$gt": 0}},
+        ],
+    }
+    raw_price_tickers = await db.stock_prices.distinct("ticker", valid_price_query)
+
+    def normalize_ticker(value: str) -> str:
+        if not value:
+            return value
+        return value if value.endswith(".US") else f"{value}.US"
+
+    normalized_price_tickers = {normalize_ticker(t) for t in raw_price_tickers if t}
+    seeded_set = set(seeded_tickers)
+    with_price_set = normalized_price_tickers & seeded_set
 
     # Reset all seeded tickers to false, then enable only those with prices.
     await db.tracked_tickers.update_many(
@@ -257,6 +284,7 @@ async def sync_has_price_data_flags(db) -> Dict[str, int]:
         "seeded_total": seeded_total,
         "with_price_data": with_price_data,
         "without_price_data": max(seeded_total - with_price_data, 0),
+        "matched_price_tickers_raw": len(raw_price_tickers),
     }
 
 
