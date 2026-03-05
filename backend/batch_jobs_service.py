@@ -148,6 +148,9 @@ async def sync_single_ticker_fundamentals(
         # Extract financial_currency using the new extraction utility (Option B - Persist)
         from utils.currency_utils import extract_statement_currency
         financial_currency = extract_statement_currency(data)
+        sector = (company_doc.get("sector") or "").strip()
+        industry = (company_doc.get("industry") or "").strip()
+        has_classification = bool(sector and industry)
         
         await db.tracked_tickers.update_one(
             {"ticker": ticker_full},
@@ -156,8 +159,9 @@ async def sync_single_ticker_fundamentals(
                     "status": "active",
                     "is_active": True,
                     "name": company_doc.get("name"),
-                    "sector": company_doc.get("sector"),
-                    "industry": company_doc.get("industry"),
+                    "sector": sector or None,
+                    "industry": industry or None,
+                    "has_classification": has_classification,
                     "financial_currency": financial_currency,  # P1 Policy: Persist currency
                     "fundamentals_updated_at": now,
                     "updated_at": now,

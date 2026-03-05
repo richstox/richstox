@@ -579,6 +579,9 @@ async def process_fundamentals_events(
         if fundamentals:
             # Extract and cache fundamentals
             cache_doc = extract_fundamentals_cache(fundamentals, ticker)
+            sector = (cache_doc.get("sector") or "").strip()
+            industry = (cache_doc.get("industry") or "").strip()
+            has_classification = bool(sector and industry)
             
             # Upsert into company_fundamentals_cache
             await db.company_fundamentals_cache.update_one(
@@ -595,8 +598,9 @@ async def process_fundamentals_events(
                     "fundamentals_status": "ok",
                     "status": "active",  # Legacy field
                     "name": cache_doc.get("name") or ticker,
-                    "sector": cache_doc.get("sector"),
-                    "industry": cache_doc.get("industry"),
+                    "sector": sector or None,
+                    "industry": industry or None,
+                    "has_classification": has_classification,
                     "logo_url": cache_doc.get("logo_url"),
                     "fundamentals_updated_at": now,
                     "updated_at": now,
@@ -621,6 +625,7 @@ async def process_fundamentals_events(
                 {"$set": {
                     "fundamentals_status": "missing",
                     "status": "no_fundamentals",  # Legacy field
+                    "has_classification": False,
                     "updated_at": now,
                 }}
             )

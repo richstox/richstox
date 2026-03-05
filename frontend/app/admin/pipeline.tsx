@@ -620,6 +620,42 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
+              {step.job_name === 'price_sync' && run?.details?.event_detectors && (
+                <View style={s.substepsCard}>
+                  <Text style={s.substepsTitle}>Step 2 sub-steps (event detectors)</Text>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>2.2 Splits</Text>
+                    <Text style={s.substepValue}>
+                      {fmt(run.details.event_detectors?.step_2_2_split?.candidate_tickers)} candidates · {fmt(run.details.event_detectors?.step_2_2_split?.enqueued)} queued
+                    </Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>2.4 Dividends</Text>
+                    <Text style={s.substepValue}>
+                      {fmt(run.details.event_detectors?.step_2_4_dividend?.candidate_tickers)} candidates · {fmt(run.details.event_detectors?.step_2_4_dividend?.enqueued)} queued
+                    </Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>2.6 Earnings</Text>
+                    <Text style={s.substepValue}>
+                      {fmt(run.details.event_detectors?.step_2_6_earnings?.candidate_tickers)} candidates · {fmt(run.details.event_detectors?.step_2_6_earnings?.enqueued)} queued
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {step.job_name === 'fundamentals_sync' && run?.details?.requested_event_types && (
+                <View style={s.substepsCard}>
+                  <Text style={s.substepsTitle}>Step 3 input event types</Text>
+                  {Object.entries(run.details.requested_event_types as Record<string, number>).map(([eventType, count]) => (
+                    <View key={eventType} style={s.substepRow}>
+                      <Text style={s.substepName}>{eventType}</Text>
+                      <Text style={s.substepValue}>{fmt(count as number)}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
+
               {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
                 <Text style={s.expandText}>Filter details</Text>
@@ -804,6 +840,25 @@ const s = StyleSheet.create({
   runValue: { fontSize: 11, color: COLORS.text, flex: 1 },
   errorText: { fontSize: 11, color: '#EF4444', marginTop: 4 },
   neverRun: { fontSize: 11, color: COLORS.textMuted, marginTop: 8, fontStyle: 'italic' },
+  substepsCard: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    backgroundColor: COLORS.border + '33',
+  },
+  substepsTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  substepRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 2 },
+  substepName: { fontSize: 11, color: COLORS.text, flex: 1 },
+  substepValue: { fontSize: 10, color: COLORS.textMuted },
 
   expandBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start' },
   expandText: { fontSize: 11, color: COLORS.textMuted },

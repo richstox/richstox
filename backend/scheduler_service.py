@@ -31,6 +31,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 import asyncio
 from zoneinfo import ZoneInfo
+from collections import defaultdict
 
 logger = logging.getLogger("richstox.scheduler")
 
@@ -133,6 +134,244 @@ async def log_scheduled_job(
     return str(result.inserted_id)
 
 
+def _as_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pick_price(row: dict) -> Optional[float]:
+    adjusted = _as_float((row or {}).get("adjusted_close"))
+    if adjusted is not None and adjusted > 0:
+        return adjusted
+    close = _as_float((row or {}).get("close"))
+    if close is not None and close > 0:
+        return close
+    return None
+
+
+async def _enqueue_fundamentals_events(
+    db,
+    event_type: str,
+    tickers: List[str],
+    now: datetime,
+    source_job: str,
+    detector_step: str,
+) -> Dict[str, int]:
+    """
+    Enqueue fundamentals events idempotently.
+    Creates one pending event per (ticker, event_type) while pending/processing exists.
+    """
+    inserted = 0
+    existing = 0
+    normalized = sorted({t for t in tickers if t})
+    for ticker in normalized:
+        result = await db.fundamentals_events.update_one(
+            {
+                "ticker": ticker,
+                "event_type": event_type,
+                "status": {"$in": ["pending", "processing"]},
+            },
+            {
+                "$setOnInsert": {
+                    "ticker": ticker,
+                    "event_type": event_type,
+                    "status": "pending",
+                    "source_job": source_job,
+                    "detector_step": detector_step,
+                    "created_at": now,
+                },
+                "$set": {
+                    "updated_at": now,
+                },
+            },
+            upsert=True,
+        )
+        if result.upserted_id is not None:
+            inserted += 1
+        else:
+            existing += 1
+    return {"inserted": inserted, "already_pending": existing}
+
+
+async def _detect_split_candidates(db, max_candidates: int = 500) -> Dict[str, Any]:
+    """
+    Step 2.2: detect probable split/reverse-split from two latest trading closes.
+    """
+    date_rows = await db.stock_prices.aggregate([
+        {"$group": {"_id": "$date"}},
+        {"$sort": {"_id": -1}},
+        {"$limit": 2},
+    ]).to_list(2)
+    dates = [d.get("_id") for d in date_rows if d.get("_id")]
+    if len(dates) < 2:
+        return {"checked_tickers": 0, "candidates": [], "latest_date": None, "previous_date": None}
+
+    latest_date, previous_date = dates[0], dates[1]
+    seed_docs = await db.tracked_tickers.find(
+        {**SEED_QUERY, "has_price_data": True},
+        {"_id": 0, "ticker": 1},
+    ).to_list(None)
+    seeded = {d.get("ticker") for d in seed_docs if d.get("ticker")}
+    if not seeded:
+        return {"checked_tickers": 0, "candidates": [], "latest_date": latest_date, "previous_date": previous_date}
+
+    rows = await db.stock_prices.find(
+        {"ticker": {"$in": list(seeded)}, "date": {"$in": [latest_date, previous_date]}},
+        {"_id": 0, "ticker": 1, "date": 1, "close": 1, "adjusted_close": 1},
+    ).to_list(None)
+
+    by_ticker: Dict[str, Dict[str, float]] = defaultdict(dict)
+    for row in rows:
+        ticker = row.get("ticker")
+        date = row.get("date")
+        price = _pick_price(row)
+        if ticker and date and price is not None:
+            by_ticker[ticker][date] = price
+
+    candidates: List[str] = []
+    checked = 0
+    for ticker, values in by_ticker.items():
+        if latest_date not in values or previous_date not in values:
+            continue
+        prev_price = values[previous_date]
+        latest_price = values[latest_date]
+        if prev_price <= 0:
+            continue
+        checked += 1
+        ratio = latest_price / prev_price
+        # 2:1, 3:1, 4:1 and reverse-split-like jumps.
+        if ratio >= 1.8 or ratio <= 0.56:
+            candidates.append(ticker)
+            if len(candidates) >= max_candidates:
+                break
+
+    return {
+        "checked_tickers": checked,
+        "candidates": candidates,
+        "latest_date": latest_date,
+        "previous_date": previous_date,
+    }
+
+
+async def _detect_dividend_candidates(db, lookback_days: int = 2, lookahead_days: int = 7, max_candidates: int = 500) -> Dict[str, Any]:
+    """
+    Step 2.4: detect ex-dividend window from cached fundamentals.
+    """
+    today = datetime.now(PRAGUE_TZ).date()
+    start = (today - timedelta(days=lookback_days)).isoformat()
+    end = (today + timedelta(days=lookahead_days)).isoformat()
+
+    docs = await db.company_fundamentals_cache.find(
+        {"ex_dividend_date": {"$gte": start, "$lte": end}},
+        {"_id": 0, "ticker": 1, "ex_dividend_date": 1},
+    ).limit(max_candidates).to_list(max_candidates)
+    candidates = [d.get("ticker") for d in docs if d.get("ticker")]
+    return {
+        "window_start": start,
+        "window_end": end,
+        "candidates": candidates,
+        "checked_tickers": len(docs),
+    }
+
+
+async def _detect_earnings_candidates(db, stale_days: int = 95, max_candidates: int = 500) -> Dict[str, Any]:
+    """
+    Step 2.6: detect stale fundamentals likely requiring earnings refresh.
+    """
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
+    docs = await db.tracked_tickers.find(
+        {
+            **SEED_QUERY,
+            "has_price_data": True,
+            "$or": [
+                {"fundamentals_updated_at": {"$exists": False}},
+                {"fundamentals_updated_at": None},
+                {"fundamentals_updated_at": {"$lt": stale_cutoff}},
+            ],
+        },
+        {"_id": 0, "ticker": 1},
+    ).sort("fundamentals_updated_at", 1).limit(max_candidates).to_list(max_candidates)
+
+    candidates = [d.get("ticker") for d in docs if d.get("ticker")]
+    return {
+        "stale_cutoff": stale_cutoff.isoformat(),
+        "checked_tickers": len(docs),
+        "candidates": candidates,
+    }
+
+
+async def run_step2_event_detectors(db) -> Dict[str, Any]:
+    """
+    Execute Step 2 sub-steps and enqueue fundamentals refresh events:
+    2.2 split detector, 2.4 dividend detector, 2.6 earnings detector.
+    """
+    now = datetime.now(timezone.utc)
+
+    split = await _detect_split_candidates(db)
+    dividend = await _detect_dividend_candidates(db)
+    earnings = await _detect_earnings_candidates(db)
+
+    split_enqueue = await _enqueue_fundamentals_events(
+        db,
+        event_type="split_detected",
+        tickers=split.get("candidates", []),
+        now=now,
+        source_job="price_sync",
+        detector_step="2.2",
+    )
+    dividend_enqueue = await _enqueue_fundamentals_events(
+        db,
+        event_type="dividend_detected",
+        tickers=dividend.get("candidates", []),
+        now=now,
+        source_job="price_sync",
+        detector_step="2.4",
+    )
+    earnings_enqueue = await _enqueue_fundamentals_events(
+        db,
+        event_type="earnings_refresh_due",
+        tickers=earnings.get("candidates", []),
+        now=now,
+        source_job="price_sync",
+        detector_step="2.6",
+    )
+
+    return {
+        "step_2_2_split": {
+            "checked_tickers": split.get("checked_tickers", 0),
+            "candidate_tickers": len(split.get("candidates", [])),
+            "enqueued": split_enqueue.get("inserted", 0),
+            "already_pending": split_enqueue.get("already_pending", 0),
+            "latest_date": split.get("latest_date"),
+            "previous_date": split.get("previous_date"),
+        },
+        "step_2_4_dividend": {
+            "checked_tickers": dividend.get("checked_tickers", 0),
+            "candidate_tickers": len(dividend.get("candidates", [])),
+            "enqueued": dividend_enqueue.get("inserted", 0),
+            "already_pending": dividend_enqueue.get("already_pending", 0),
+            "window_start": dividend.get("window_start"),
+            "window_end": dividend.get("window_end"),
+        },
+        "step_2_6_earnings": {
+            "checked_tickers": earnings.get("checked_tickers", 0),
+            "candidate_tickers": len(earnings.get("candidates", [])),
+            "enqueued": earnings_enqueue.get("inserted", 0),
+            "already_pending": earnings_enqueue.get("already_pending", 0),
+            "stale_cutoff": earnings.get("stale_cutoff"),
+        },
+        "enqueued_total": (
+            split_enqueue.get("inserted", 0)
+            + dividend_enqueue.get("inserted", 0)
+            + earnings_enqueue.get("inserted", 0)
+        ),
+    }
+
+
 async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
     Run daily price sync job with GAP DETECTION AND BULK CATCHUP.
@@ -180,6 +419,10 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
                 now=datetime.now(timezone.utc),
             )
         )
+        # Step 2.2 / 2.4 / 2.6 detectors -> enqueue fundamentals refresh events.
+        event_detector_summary = await run_step2_event_detectors(db)
+        result["event_detectors"] = event_detector_summary
+        result["fundamentals_events_enqueued"] = event_detector_summary.get("enqueued_total", 0)
 
         # Log to ops_job_runs
         await db.ops_job_runs.insert_one({
@@ -200,6 +443,8 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
                 "exclusion_report_rows": result.get("exclusion_report_rows", 0),
                 "api_calls": result.get("api_calls", 0),
                 "bulk_writes": result.get("bulk_writes", 0),
+                "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
+                "event_detectors": result.get("event_detectors", {}),
             }
         })
         
@@ -218,6 +463,7 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
             "exclusion_report_rows": result.get("exclusion_report_rows", 0),
             "dates_processed": result.get("dates_processed", 0),
             "api_calls": result.get("api_calls", 0),
+            "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -407,13 +653,50 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "started_at": started_at.isoformat(),
             }
         
+        # Ensure Step 3 includes priced tickers missing classification.
+        class_candidates = await db.tracked_tickers.find(
+            {
+                **SEED_QUERY,
+                "has_price_data": True,
+                "$or": [
+                    {"sector": {"$in": [None, ""]}},
+                    {"industry": {"$in": [None, ""]}},
+                    {"has_classification": {"$ne": True}},
+                ],
+            },
+            {"_id": 0, "ticker": 1},
+        ).limit(batch_size * 2).to_list(batch_size * 2)
+        class_candidate_tickers = [d.get("ticker") for d in class_candidates if d.get("ticker")]
+        class_enqueue = await _enqueue_fundamentals_events(
+            db,
+            event_type="classification_missing",
+            tickers=class_candidate_tickers,
+            now=datetime.now(timezone.utc),
+            source_job=job_name,
+            detector_step="3.0",
+        )
+
         # Get tickers with pending events (not full refresh)
         pending_events = await db.fundamentals_events.find(
             {"status": "pending"},
-            {"ticker": 1}
-        ).limit(batch_size).to_list(length=batch_size)
-        
-        tickers_to_sync = [e.get("ticker", "").replace(".US", "") for e in pending_events if e.get("ticker")]
+            {"ticker": 1, "event_type": 1, "created_at": 1}
+        ).sort("created_at", 1).limit(batch_size * 5).to_list(length=batch_size * 5)
+
+        events_by_ticker: Dict[str, List[dict]] = {}
+        for event in pending_events:
+            ticker_full = event.get("ticker")
+            if not ticker_full:
+                continue
+            if ticker_full not in events_by_ticker and len(events_by_ticker) >= batch_size:
+                continue
+            events_by_ticker.setdefault(ticker_full, []).append(event)
+
+        tickers_to_sync = [t.replace(".US", "") for t in events_by_ticker.keys()]
+        requested_event_types: Dict[str, int] = {}
+        for event_group in events_by_ticker.values():
+            for event in event_group:
+                event_type = event.get("event_type") or "unknown"
+                requested_event_types[event_type] = requested_event_types.get(event_type, 0) + 1
         
         if not tickers_to_sync:
             logger.info(f"{job_name}: No pending events to process")
@@ -422,6 +705,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "status": "completed",
                 "message": "No pending events",
                 "processed": 0,
+                "classification_events_enqueued": class_enqueue.get("inserted", 0),
                 "started_at": started_at.isoformat(),
             }
         
@@ -432,6 +716,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "processed": 0,
             "success": 0,
             "failed": 0,
+            "classification_events_enqueued": class_enqueue.get("inserted", 0),
+            "classification_events_already_pending": class_enqueue.get("already_pending", 0),
+            "requested_event_types": requested_event_types,
             "started_at": started_at.isoformat(),
         }
         
@@ -447,11 +734,17 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             
             if ticker_result["success"]:
                 result["success"] += 1
-                # Mark event as completed
-                await db.fundamentals_events.update_one(
-                    {"ticker": f"{ticker}.US", "status": "pending"},
-                    {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}}
-                )
+                # Mark selected pending events for this ticker as completed.
+                event_ids = [
+                    e.get("_id")
+                    for e in events_by_ticker.get(f"{ticker}.US", [])
+                    if e.get("_id")
+                ]
+                if event_ids:
+                    await db.fundamentals_events.update_many(
+                        {"_id": {"$in": event_ids}},
+                        {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}}
+                    )
             else:
                 result["failed"] += 1
         
