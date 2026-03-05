@@ -744,7 +744,11 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 result["reason"] = "kill_switch_engaged"
                 break
             
-            ticker_result = await sync_single_ticker_fundamentals(db, ticker)
+            ticker_result = await sync_single_ticker_fundamentals(
+                db,
+                ticker,
+                source_job=job_name,
+            )
             result["processed"] += 1
             
             if ticker_result["success"]:
@@ -1120,7 +1124,11 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
         ticker_short = ticker.replace(".US", "")
         
         try:
-            sync_result = await sync_single_ticker_fundamentals(db, ticker_short)
+            sync_result = await sync_single_ticker_fundamentals(
+                db,
+                ticker_short,
+                source_job=job_name,
+            )
             result["tickers_processed"] += 1
             result["api_calls"] += 1
             

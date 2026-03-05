@@ -17,6 +17,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 import httpx
+from provider_debug_service import upsert_provider_debug_snapshot
 
 logger = logging.getLogger("richstox.fundamentals")
 
@@ -73,9 +74,6 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
     Handles missing/null data gracefully.
     """
     general = data.get("General") or {}
-    highlights = data.get("Highlights") or {}
-    valuation = data.get("Valuation") or {}
-    technicals = data.get("Technicals") or {}
     shares = data.get("SharesStats") or {}
     splits_div = data.get("SplitsDividends") or {}
     address = general.get("AddressData") or {}
@@ -92,10 +90,6 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         eps_values = [q.get("epsActual") for q in quarters if q and q.get("epsActual") is not None]
         if len(eps_values) == 4:
             eps_ttm = sum(eps_values)
-    
-    # Fallback to EODHD EPS if TTM not calculable
-    if eps_ttm is None:
-        eps_ttm = highlights.get("EarningsShare")
     
     return {
         "ticker": ticker if ticker.endswith(".US") else f"{ticker}.US",
@@ -131,39 +125,38 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         "state": address.get("State"),
         "zip_code": address.get("ZIP"),
         
-        # Key metrics
-        "market_cap": highlights.get("MarketCapitalization"),
-        "enterprise_value": valuation.get("EnterpriseValue"),
-        
-        # Valuation ratios
-        "pe_ratio": highlights.get("PERatio"),
+        # RAW-FACTS policy: provider-computed metrics are intentionally not stored
+        # in production cache and stay available only in provider_debug_snapshot.
+        "market_cap": None,
+        "enterprise_value": None,
+        "pe_ratio": None,
         "eps_ttm": eps_ttm,
-        "ps_ratio": valuation.get("PriceSalesTTM"),
-        "pb_ratio": valuation.get("PriceBookMRQ"),
-        "ev_ebitda": valuation.get("EnterpriseValueEbitda"),
-        "ev_revenue": valuation.get("EnterpriseValueRevenue"),
-        "peg_ratio": highlights.get("PEGRatio"),
-        "forward_pe": valuation.get("ForwardPE"),
-        "trailing_pe": valuation.get("TrailingPE"),
+        "ps_ratio": None,
+        "pb_ratio": None,
+        "ev_ebitda": None,
+        "ev_revenue": None,
+        "peg_ratio": None,
+        "forward_pe": None,
+        "trailing_pe": None,
         
         # Profitability
-        "profit_margin": highlights.get("ProfitMargin"),
-        "operating_margin": highlights.get("OperatingMarginTTM"),
+        "profit_margin": None,
+        "operating_margin": None,
         "gross_margin": None,
         "net_margin_ttm": None,
-        "roe": highlights.get("ReturnOnEquityTTM"),
-        "roa": highlights.get("ReturnOnAssetsTTM"),
+        "roe": None,
+        "roa": None,
         
         # Growth
-        "revenue_ttm": highlights.get("RevenueTTM"),
-        "revenue_per_share": highlights.get("RevenuePerShareTTM"),
-        "quarterly_revenue_growth": highlights.get("QuarterlyRevenueGrowthYOY"),
-        "quarterly_earnings_growth": highlights.get("QuarterlyEarningsGrowthYOY"),
+        "revenue_ttm": None,
+        "revenue_per_share": None,
+        "quarterly_revenue_growth": None,
+        "quarterly_earnings_growth": None,
         
         # Dividends
-        "dividend_yield": highlights.get("DividendYield"),
+        "dividend_yield": None,
         "dividend_yield_ttm": None,
-        "dividend_share": highlights.get("DividendShare"),
+        "dividend_share": None,
         "forward_dividend_rate": splits_div.get("ForwardAnnualDividendRate"),
         "forward_dividend_yield": splits_div.get("ForwardAnnualDividendYield"),
         "payout_ratio": splits_div.get("PayoutRatio"),
@@ -177,15 +170,15 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         "pct_institutions": shares.get("PercentInstitutions"),
         
         # Technicals
-        "beta": technicals.get("Beta"),
-        "fifty_two_week_high": technicals.get("52WeekHigh"),
-        "fifty_two_week_low": technicals.get("52WeekLow"),
-        "fifty_day_ma": technicals.get("50DayMA"),
-        "two_hundred_day_ma": technicals.get("200DayMA"),
+        "beta": None,
+        "fifty_two_week_high": None,
+        "fifty_two_week_low": None,
+        "fifty_day_ma": None,
+        "two_hundred_day_ma": None,
         
         # Book value
-        "book_value": highlights.get("BookValue"),
-        "ebitda": highlights.get("EBITDA"),
+        "book_value": None,
+        "ebitda": None,
         
         # Price (set by price sync)
         "price_last_close": None,
@@ -442,6 +435,13 @@ async def sync_ticker_fundamentals(
         return result
     
     try:
+        await upsert_provider_debug_snapshot(
+            db=db,
+            ticker=ticker_full,
+            raw_payload=data,
+            source_job="manual_fundamentals_sync",
+        )
+
         # 1. Parse and store company fundamentals
         company_doc = parse_company_fundamentals(ticker_upper, data)
         await db.company_fundamentals_cache.update_one(

@@ -23,6 +23,7 @@ from fundamentals_service import (
     parse_earnings_history,
     parse_insider_activity,
 )
+from provider_debug_service import upsert_provider_debug_snapshot
 
 logger = logging.getLogger("richstox.batch_jobs")
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
@@ -79,7 +80,8 @@ async def log_job_run(
 
 async def sync_single_ticker_fundamentals(
     db,
-    ticker: str
+    ticker: str,
+    source_job: str = "fundamentals_sync",
 ) -> Dict[str, Any]:
     """
     Sync fundamentals for a single ticker with robust error handling.
@@ -100,6 +102,7 @@ async def sync_single_ticker_fundamentals(
         "earnings_count": 0,
         "error": None,
         "error_type": None,
+        "provider_debug_snapshot_stored": False,
     }
     
     try:
@@ -121,6 +124,14 @@ async def sync_single_ticker_fundamentals(
                 upsert=True
             )
             return result
+
+        debug_result = await upsert_provider_debug_snapshot(
+            db=db,
+            ticker=ticker_full,
+            raw_payload=data,
+            source_job=source_job,
+        )
+        result["provider_debug_snapshot_stored"] = bool(debug_result.get("stored"))
         
         # 1. Parse and store company fundamentals
         company_doc = parse_company_fundamentals(ticker_upper, data)

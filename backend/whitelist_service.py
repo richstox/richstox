@@ -82,6 +82,7 @@ import httpx
 from zoneinfo import ZoneInfo
 
 from visibility_rules import get_canonical_sieve_query
+from provider_debug_service import upsert_provider_debug_snapshot
 
 logger = logging.getLogger("richstox.whitelist")
 
@@ -577,6 +578,13 @@ async def process_fundamentals_events(
         result["processed"] += 1
         
         if fundamentals:
+            await upsert_provider_debug_snapshot(
+                db=db,
+                ticker=ticker,
+                raw_payload=fundamentals,
+                source_job="process_fundamentals_events",
+            )
+
             # Extract and cache fundamentals
             cache_doc = extract_fundamentals_cache(fundamentals, ticker)
             sector = (cache_doc.get("sector") or "").strip()

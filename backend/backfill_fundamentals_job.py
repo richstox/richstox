@@ -18,6 +18,7 @@ from whitelist_mapper import (
     verify_whitelist_integrity,
     WHITELIST_VERSION
 )
+from provider_debug_service import upsert_provider_debug_snapshot
 
 logger = logging.getLogger("richstox.backfill_fundamentals")
 
@@ -150,6 +151,14 @@ async def backfill_fundamentals_complete(
                 
                 # Apply whitelist mapper
                 filtered_payload, audit_info = apply_whitelist(raw_payload, ticker)
+
+                await upsert_provider_debug_snapshot(
+                    db=db,
+                    ticker=ticker,
+                    raw_payload=raw_payload,
+                    source_job="backfill_fundamentals_complete",
+                    audit_info=audit_info,
+                )
                 
                 # Update stats
                 stats["total_fields_kept"] += audit_info["fields_kept_count"]

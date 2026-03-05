@@ -5183,6 +5183,42 @@ async def fundamentals_whitelist_audit():
 
 
 # =========================================================================
+# PROVIDER DEBUG SNAPSHOT (STRICT DEBUG/PRODUCTION SEPARATION)
+# =========================================================================
+@api_router.get("/admin/provider-debug-snapshot/{ticker}")
+async def admin_provider_debug_snapshot(ticker: str):
+    """
+    Return provider_debug_snapshot for a ticker.
+    Debug-only collection; runtime APIs must not consume it.
+    """
+    ticker_full = ticker.upper()
+    if not ticker_full.endswith(".US"):
+        ticker_full = f"{ticker_full}.US"
+
+    snapshot = await db.provider_debug_snapshot.find_one(
+        {"ticker": ticker_full},
+        {"_id": 0},
+    )
+    if not snapshot:
+        raise HTTPException(status_code=404, detail=f"No provider debug snapshot for {ticker_full}")
+    return snapshot
+
+
+@api_router.get("/admin/provider-debug-snapshot")
+async def admin_provider_debug_snapshot_list(limit: int = Query(50, ge=1, le=500)):
+    """
+    List latest provider_debug_snapshot records.
+    """
+    cursor = (
+        db.provider_debug_snapshot.find({}, {"_id": 0})
+        .sort("last_captured_at", -1)
+        .limit(limit)
+    )
+    rows = await cursor.to_list(length=limit)
+    return {"count": len(rows), "rows": rows}
+
+
+# =========================================================================
 # VISIBILITY AUDIT ENDPOINT (DATA SUPREMACY MANIFESTO v1.0)
 # =========================================================================
 @api_router.get("/admin/visibility-audit")
