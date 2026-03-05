@@ -15,8 +15,9 @@ import { Ionicons } from '@expo/vector-icons';
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { login, isLoading, isAuthenticated } = useAuth();
+  const { login, isLoading, isAuthenticated, devLogin } = useAuth();
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isDevLoggingIn, setIsDevLoggingIn] = useState(false);
 
   // If already authenticated, redirect to dashboard
   React.useEffect(() => {
@@ -37,8 +38,19 @@ export default function LoginScreen() {
   };
 
   const handleAppleLogin = () => {
-    // Apple Sign-In - pending credentials
     alert('Apple Sign-In coming soon');
+  };
+
+  const handleDevLogin = async () => {
+    setIsDevLoggingIn(true);
+    try {
+      await devLogin();
+      router.replace('/(tabs)/dashboard');
+    } catch (error) {
+      console.error('Dev login error:', error);
+    } finally {
+      setIsDevLoggingIn(false);
+    }
   };
 
   return (
@@ -104,6 +116,21 @@ export default function LoginScreen() {
           Terms of Service and Privacy Policy
         </Text>
       </View>
+
+      {/* Dev Login - for local development */}
+      <TouchableOpacity 
+        style={styles.devLoginButton}
+        onPress={handleDevLogin}
+        disabled={isDevLoggingIn}
+        data-testid="dev-login-btn"
+      >
+        <View style={styles.buttonContent}>
+          <Ionicons name="code-slash" size={18} color={COLORS.accent} />
+          <Text style={styles.devLoginText}>
+            {isDevLoggingIn ? 'Signing in...' : 'Dev Login (Admin)'}
+          </Text>
+        </View>
+      </TouchableOpacity>
 
       {/* Skip for now - demo mode */}
       <TouchableOpacity 
@@ -221,6 +248,21 @@ const styles = StyleSheet.create({
     marginTop: 24,
     alignItems: 'center',
     paddingVertical: 12,
+  },
+  devLoginButton: {
+    marginTop: 24,
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    borderRadius: 12,
+    borderStyle: 'dashed',
+  },
+  devLoginText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: COLORS.accent,
   },
   skipText: {
     fontSize: 14,

@@ -7,6 +7,11 @@
 - All application code, UI strings, comments, and commit messages must be in **English**
 - The app UI must be fully English — no Czech strings in the frontend
 
+### Core rules
+- **Frontend NEVER calls EODHD API** — all EODHD data is fetched by scheduled backend jobs, stored in MongoDB, and served from there
+- **Raw facts only** — EODHD provides raw data (prices, dividends, statements). All derived metrics (market cap, P/E, margins, etc.) are computed locally by the backend
+- **Canonical pipeline only** — peer medians come from `compute_peer_benchmarks_v3` → `peer_benchmarks` collection, never computed on-the-fly in API routes
+
 ### Architecture
 
 RICHSTOX is a two-component application (not a monorepo):

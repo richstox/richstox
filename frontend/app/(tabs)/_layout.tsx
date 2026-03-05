@@ -70,17 +70,23 @@ export default function TabsLayout() {
           ),
         }}
       />
-      {/* Hide search and settings from tab bar - accessible via header icons */}
+      {/* Hidden tabs - accessible via navigation, not shown in tab bar */}
       <Tabs.Screen
         name="search"
         options={{
-          href: null, // Hide from tab bar
+          href: null,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
-          href: null, // Hide from tab bar
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="admin"
+        options={{
+          href: null,
         }}
       />
     </Tabs>

@@ -58,12 +58,6 @@ export default function RootLayout() {
                   presentation: 'modal',
                 }}
               />
-              <Stack.Screen 
-                name="admin" 
-                options={{
-                  headerShown: false,
-                }}
-              />
             </Stack>
           </View>
         </View>

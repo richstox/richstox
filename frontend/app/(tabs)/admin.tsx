@@ -10,10 +10,11 @@ import {
   RefreshControl, ActivityIndicator, SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../contexts/AuthContext';
-import { COLORS } from './_layout';
-import PipelineTab from './admin/pipeline';
-import CustomersTab from './admin/customers';
+import { useAuth } from '../../contexts/AuthContext';
+import { COLORS } from '../_layout';
+import AppHeader from '../../components/AppHeader';
+import PipelineTab from '../admin/pipeline';
+import CustomersTab from '../admin/customers';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
@@ -347,14 +348,7 @@ export default function AdminScreen() {
 
   return (
     <SafeAreaView style={a.container}>
-      {/* Header */}
-      <View style={a.header}>
-        <View style={a.headerLeft}>
-          <Text style={a.headerTitle}>Admin Panel</Text>
-          <View style={a.adminBadge}><Text style={a.adminBadgeText}>ADMIN</Text></View>
-        </View>
-        <Text style={a.headerEmail}>{user?.email}</Text>
-      </View>
+      <AppHeader title="Admin Panel" />
 
       {/* Tabs */}
       <View style={a.tabBar}>

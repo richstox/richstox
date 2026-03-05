@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { COLORS } from '../_layout';
 import { useAuth } from '../../contexts/AuthContext';
+import AppHeader from '../../components/AppHeader';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -68,17 +69,12 @@ export default function Settings() {
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
+      <AppHeader title="Settings" />
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* App Info */}
-        <View style={styles.appHeader}>
-          <Text style={styles.appName}>RICHSTOX</Text>
-          <Text style={styles.appTagline}>Calm investing, lasting wealth</Text>
-          <Text style={styles.appVersion}>Version 1.0.0</Text>
-        </View>
 
         {/* Portfolio Section */}
         <View style={styles.section}>
@@ -103,7 +99,7 @@ export default function Settings() {
             <View style={styles.sectionCard}>
               <TouchableOpacity 
                 style={styles.settingItem} 
-                onPress={() => router.push('/admin')}
+                onPress={() => router.push('/(tabs)/admin' as any)}
                 activeOpacity={0.7}
                 data-testid="settings-admin-panel-btn"
               >
