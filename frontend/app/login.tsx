@@ -10,7 +10,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Platform, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
-import { COLORS } from './_layout';
+import { COLORS, FONTS } from './_layout';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function LoginScreen() {
@@ -57,13 +57,13 @@ export default function LoginScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <Image 
-          source={require('../assets/images/richstox_logo.png')}
+          source={require('../assets/images/richstox_icon_only.png')}
           style={styles.logo}
           resizeMode="contain"
         />
         <Text style={styles.title}>Welcome to RICHSTOX</Text>
         <Text style={styles.subtitle}>
-          Your smart investment analytics
+          Verify before you invest.
         </Text>
       </View>
 
@@ -117,20 +117,22 @@ export default function LoginScreen() {
         </Text>
       </View>
 
-      {/* Dev Login - for local development only */}
-      <TouchableOpacity 
-        style={styles.devLoginButton}
-        onPress={handleDevLogin}
-        disabled={isDevLoggingIn}
-        data-testid="dev-login-btn"
-      >
-        <View style={styles.buttonContent}>
-          <Ionicons name="code-slash" size={18} color={COLORS.accent} />
-          <Text style={styles.devLoginText}>
-            {isDevLoggingIn ? 'Signing in...' : 'Dev Login (Admin)'}
-          </Text>
-        </View>
-      </TouchableOpacity>
+      {/* Dev Login - only visible in development */}
+      {__DEV__ && (
+        <TouchableOpacity 
+          style={styles.devLoginButton}
+          onPress={handleDevLogin}
+          disabled={isDevLoggingIn}
+          data-testid="dev-login-btn"
+        >
+          <View style={styles.buttonContent}>
+            <Ionicons name="code-slash" size={18} color={COLORS.accent} />
+            <Text style={styles.devLoginText}>
+              {isDevLoggingIn ? 'Signing in...' : 'Dev Login (Admin)'}
+            </Text>
+          </View>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -147,20 +149,22 @@ const styles = StyleSheet.create({
     marginBottom: 48,
   },
   logo: {
-    width: 200,
-    height: 70,
-    marginBottom: 24,
+    width: 100,
+    height: 100,
+    marginBottom: 16,
   },
   title: {
     fontSize: 28,
-    fontWeight: '600',
+    fontFamily: FONTS.heading,
     color: COLORS.text,
     marginBottom: 8,
   },
   subtitle: {
     fontSize: 16,
+    fontFamily: FONTS.body,
     color: COLORS.textLight,
     textAlign: 'center',
+    fontStyle: 'italic',
   },
   buttonContainer: {
     gap: 16,
