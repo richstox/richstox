@@ -634,12 +634,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {step.job_name === 'price_sync' && (
                 <View style={s.substepsCard}>
-                  <Text style={s.substepsTitle}>Step 2 sub-steps (clear view)</Text>
-                  <Text style={s.substepMeta}>Main source URL: https://eodhd.com/api/eod-bulk-last-day/US</Text>
+                  <Text style={s.substepsTitle}>Step 2 sub-steps</Text>
+                  <Text style={s.substepMeta}>Price URL: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode</Text>
+                  <Text style={s.substepMeta}>Splits URL: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode&type=splits</Text>
+                  <Text style={s.substepMeta}>Dividends URL: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode&type=dividends</Text>
+                  <Text style={s.substepMeta}>Date option: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode&date=YYYY-MM-DD</Text>
+                  <Text style={s.substepMeta}>Earnings URL: https://eodhd.com/api/calendar/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD&api_token=APIcode&fmt=json</Text>
+                  <Text style={s.substepMeta}>Earnings note: without dates = today + 7 days</Text>
 
                   <View style={s.substepBlock}>
                     <Text style={s.substepName}>2.2 Split detector</Text>
-                    <Text style={s.substepMeta}>What we do: compare latest vs previous close for split-like jumps.</Text>
                     <Text style={s.substepMeta}>Result:</Text>
                     <Text style={s.substepValue}>
                       {fmt(safeCount(splitDetector?.checked_tickers))} checked · {fmt(safeCount(splitDetector?.candidate_tickers))} candidates · {fmt(safeCount(splitDetector?.enqueued))} queued
@@ -648,8 +652,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
                   <View style={s.substepBlock}>
                     <Text style={s.substepName}>2.4 Dividend detector</Text>
-                    <Text style={s.substepMeta}>What we do: check ex-dividend window in cached fundamentals.</Text>
-                    <Text style={s.substepMeta}>Fundamentals source URL: https://eodhd.com/api/fundamentals/{'{TICKER}'}.US</Text>
                     <Text style={s.substepMeta}>Result:</Text>
                     <Text style={s.substepValue}>
                       {fmt(safeCount(dividendDetector?.checked_tickers))} checked · {fmt(safeCount(dividendDetector?.candidate_tickers))} candidates · {fmt(safeCount(dividendDetector?.enqueued))} queued
@@ -658,8 +660,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
                   <View style={s.substepBlock}>
                     <Text style={s.substepName}>2.6 Earnings refresh detector</Text>
-                    <Text style={s.substepMeta}>What we do: detect stale fundamentals and queue refresh.</Text>
-                    <Text style={s.substepMeta}>Refresh URL used later: https://eodhd.com/api/fundamentals/{'{TICKER}'}.US</Text>
                     <Text style={s.substepMeta}>Result:</Text>
                     <Text style={s.substepValue}>
                       {fmt(safeCount(earningsDetector?.checked_tickers))} checked · {fmt(safeCount(earningsDetector?.candidate_tickers))} candidates · {fmt(safeCount(earningsDetector?.enqueued))} queued
