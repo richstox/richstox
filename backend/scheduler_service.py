@@ -189,7 +189,6 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
             "finished_at": datetime.now(timezone.utc),
             "status": result.get("status", "completed"),
             "details": {
-                "reason": result.get("reason"),
                 "config": result.get("config"),
                 "gap_analysis": result.get("gap_analysis"),
                 "dates_processed": result.get("dates_processed", 0),
@@ -211,7 +210,6 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
         return {
             "job_name": job_name,
             "status": result.get("status", "completed"),
-            "reason": result.get("reason"),
             "records_upserted": result.get("records_upserted", 0),
             "tickers_seeded_total": result.get("tickers_seeded_total", 0),
             "tickers_with_price_data": result.get("tickers_with_price_data", 0),

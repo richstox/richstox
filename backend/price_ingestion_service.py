@@ -855,21 +855,6 @@ async def detect_price_gaps(db) -> Dict[str, Any]:
     # Get visible ticker count
     visible_ticker_count = await db.tracked_tickers.count_documents({"is_whitelisted": True})
     
-    # When seed step has not produced a universe yet, Step 2 must no-op.
-    if visible_ticker_count == 0:
-        return {
-            "config": {
-                "lookback_days": lookback_days,
-                "coverage_threshold": coverage_threshold
-            },
-            "visible_ticker_count": 0,
-            "dates_checked": 0,
-            "dates_with_gaps": [],
-            "fully_missing_dates": [],
-            "partial_coverage_dates": [],
-            "coverage_by_date": {}
-        }
-
     # Calculate date range
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
     start_date = (datetime.now(timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
@@ -972,50 +957,12 @@ async def run_daily_bulk_catchup(db) -> Dict[str, Any]:
     # Step 1: Get config
     config = await get_gap_detection_config(db)
     logger.info(f"[BULK CATCHUP] Config loaded: {config}")
-
-    if not EODHD_API_KEY:
-        logger.error("[BULK CATCHUP] blocked: EODHD_API_KEY not configured")
-        return {
-            "status": "blocked",
-            "reason": "missing_eodhd_api_key",
-            "config": config,
-            "gap_analysis": {
-                "dates_checked": 0,
-                "visible_tickers": 0,
-                "coverage_threshold": config["coverage_threshold"],
-                "fully_missing_dates": [],
-                "partial_coverage_count": 0
-            },
-            "dates_processed": 0,
-            "records_upserted": 0,
-            "api_calls": 0,
-            "bulk_writes": 0
-        }
     
     # Step 2: Detect gaps
     gap_analysis = await detect_price_gaps(db)
     
     dates_to_backfill = gap_analysis["dates_with_gaps"]
     
-    if gap_analysis["visible_ticker_count"] == 0:
-        logger.info("[BULK CATCHUP] No seeded tickers yet - waiting for Step 1 Universe Seed")
-        return {
-            "status": "blocked",
-            "reason": "no_seeded_tickers",
-            "config": config,
-            "gap_analysis": {
-                "dates_checked": 0,
-                "visible_tickers": 0,
-                "coverage_threshold": config["coverage_threshold"],
-                "fully_missing_dates": [],
-                "partial_coverage_count": 0
-            },
-            "dates_processed": 0,
-            "records_upserted": 0,
-            "api_calls": 0,
-            "bulk_writes": 0
-        }
-
     if not dates_to_backfill:
         logger.info("[BULK CATCHUP] No gaps detected - price coverage is healthy")
         return {

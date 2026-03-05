@@ -360,7 +360,6 @@ async def sync_ticker_whitelist(
     
     result = {
         "started_at": now.isoformat(),
-        "status": "running",
         "dry_run": dry_run,
         "exchanges": exchanges,
         "fetched": 0,
@@ -392,9 +391,6 @@ async def sync_ticker_whitelist(
         all_exclusions.extend(exclusions)
     
     if not all_candidates:
-        has_symbols_error = any(err.startswith("No symbols returned from") for err in result["errors"])
-        result["status"] = "failed"
-        result["reason"] = "missing_eodhd_api_key_or_exchange_fetch_failed" if has_symbols_error else "no_candidates_after_filtering"
         result["errors"].append("No candidates after filtering")
         result["seeded_total"] = 0
         if not dry_run:
@@ -423,7 +419,6 @@ async def sync_ticker_whitelist(
                 result["already_exists"] += 1
         
         result["exclusion_report_rows_preview"] = len(all_exclusions)
-        result["status"] = "preview"
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
         return result
     
@@ -517,7 +512,6 @@ async def sync_ticker_whitelist(
     result["deactivated"] = deactivate_result.modified_count
     result.update(await save_universe_seed_exclusion_report(db, all_exclusions, now))
     
-    result["status"] = "success"
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
     
     logger.info(
