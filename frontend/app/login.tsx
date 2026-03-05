@@ -117,7 +117,7 @@ export default function LoginScreen() {
         </Text>
       </View>
 
-      {/* Dev Login - for local development */}
+      {/* Dev Login - for local development only */}
       <TouchableOpacity 
         style={styles.devLoginButton}
         onPress={handleDevLogin}
@@ -130,15 +130,6 @@ export default function LoginScreen() {
             {isDevLoggingIn ? 'Signing in...' : 'Dev Login (Admin)'}
           </Text>
         </View>
-      </TouchableOpacity>
-
-      {/* Skip for now - demo mode */}
-      <TouchableOpacity 
-        style={styles.skipButton}
-        onPress={() => router.replace('/(tabs)/dashboard')}
-        data-testid="skip-login-btn"
-      >
-        <Text style={styles.skipText}>Continue without signing in</Text>
       </TouchableOpacity>
     </View>
   );
@@ -244,11 +235,6 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     marginTop: 4,
   },
-  skipButton: {
-    marginTop: 24,
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
   devLoginButton: {
     marginTop: 24,
     alignItems: 'center',
@@ -263,10 +249,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: COLORS.accent,
-  },
-  skipText: {
-    fontSize: 14,
-    color: COLORS.textMuted,
-    textDecorationLine: 'underline',
   },
 });

@@ -187,25 +187,6 @@ export default function AppHeader({
                 <View style={styles.menuDivider} />
                 
                 {/* Menu Items */}
-                <TouchableOpacity 
-                  style={styles.menuItem}
-                  onPress={() => handleMenuItemPress('dashboard')}
-                  testID="menu-my-dashboard"
-                >
-                  <Ionicons name="home-outline" size={20} color={COLORS.text} />
-                  <Text style={styles.menuItemText}>My Dashboard</Text>
-                </TouchableOpacity>
-                
-                <TouchableOpacity 
-                  style={styles.menuItem}
-                  onPress={() => handleMenuItemPress('settings')}
-                  testID="menu-account-settings"
-                >
-                  <Ionicons name="settings-outline" size={20} color={COLORS.text} />
-                  <Text style={styles.menuItemText}>Account Settings</Text>
-                </TouchableOpacity>
-                
-                {/* Admin Panel - only for admins */}
                 {isAdmin && (
                   <TouchableOpacity 
                     style={styles.menuItem}
@@ -216,6 +197,15 @@ export default function AppHeader({
                     <Text style={[styles.menuItemText, { color: COLORS.primary }]}>Admin Panel</Text>
                   </TouchableOpacity>
                 )}
+                
+                <TouchableOpacity 
+                  style={styles.menuItem}
+                  onPress={() => handleMenuItemPress('settings')}
+                  testID="menu-account-settings"
+                >
+                  <Ionicons name="settings-outline" size={20} color={COLORS.text} />
+                  <Text style={styles.menuItemText}>Account Settings</Text>
+                </TouchableOpacity>
                 
                 <View style={styles.menuDivider} />
                 

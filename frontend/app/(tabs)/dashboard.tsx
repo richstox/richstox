@@ -430,7 +430,7 @@ export default function Dashboard() {
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Global Header with Avatar Menu */}
       <AppHeader
-        title="My Dashboard"
+        title="Home"
         onNotificationPress={openNotifications}
         notificationCount={notificationCount}
       />
