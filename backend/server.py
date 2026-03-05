@@ -6201,7 +6201,7 @@ async def admin_full_history_backfill_status():
 
 @api_router.get("/admin/pipeline/exclusion-report")
 async def admin_get_pipeline_exclusion_report(
-    report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to Prague today)"),
+    report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
     step: str = Query(None, description="Optional step filter, e.g. 'Step 1 - Universe Seed'"),
     limit: int = Query(100, ge=1, le=2000),
     offset: int = Query(0, ge=0),
@@ -6214,7 +6214,16 @@ async def admin_get_pipeline_exclusion_report(
     PRAGUE = ZoneInfo("Europe/Prague")
 
     if not report_date:
-        report_date = datetime.now(PRAGUE).strftime("%Y-%m-%d")
+        latest = await db.pipeline_exclusion_report.find_one(
+            {},
+            {"_id": 0, "report_date": 1},
+            sort=[("report_date", -1), ("created_at", -1)],
+        )
+        report_date = (
+            latest.get("report_date")
+            if latest and latest.get("report_date")
+            else datetime.now(PRAGUE).strftime("%Y-%m-%d")
+        )
 
     query = {"report_date": report_date}
     if step:
@@ -6261,7 +6270,7 @@ async def admin_get_pipeline_exclusion_report(
 
 @api_router.get("/admin/pipeline/exclusion-report/download")
 async def admin_download_pipeline_exclusion_report(
-    report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to Prague today)"),
+    report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
     step: str = Query(None, description="Optional step filter"),
 ):
     """
@@ -6275,7 +6284,16 @@ async def admin_download_pipeline_exclusion_report(
     PRAGUE = ZoneInfo("Europe/Prague")
 
     if not report_date:
-        report_date = datetime.now(PRAGUE).strftime("%Y-%m-%d")
+        latest = await db.pipeline_exclusion_report.find_one(
+            {},
+            {"_id": 0, "report_date": 1},
+            sort=[("report_date", -1), ("created_at", -1)],
+        )
+        report_date = (
+            latest.get("report_date")
+            if latest and latest.get("report_date")
+            else datetime.now(PRAGUE).strftime("%Y-%m-%d")
+        )
 
     query = {"report_date": report_date}
     if step:
