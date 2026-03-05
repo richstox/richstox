@@ -12,6 +12,37 @@
 - **Raw facts only** — EODHD provides raw data (prices, dividends, statements). All derived metrics (market cap, P/E, margins, etc.) are computed locally by the backend
 - **Canonical pipeline only** — peer medians come from `compute_peer_benchmarks_v3` → `peer_benchmarks` collection, never computed on-the-fly in API routes
 
+### Pipeline steps (canonical definition)
+
+The Universe Pipeline has sequential steps. Each step runs ONLY after the previous completes successfully.
+
+**Step 1 — Universe Seed** (23:00 Prague, Mon-Sat)
+- Call EODHD API: get all symbols from NYSE
+- Call EODHD API: get all symbols from NASDAQ
+- Count TOTAL RAW (both exchanges combined)
+- Filter locally (NO additional API calls):
+  - Remove empty codes
+  - Remove codes containing dots (ADRs, preferred with dot notation)
+  - Remove exclude patterns (warrants -WT/-WS, units -U/-UN, preferred -PA/-PB/etc, rights -R/-RI)
+  - Remove Type != "Common Stock"
+- Result = SEEDED tickers
+- Log every filtered-out ticker to a report: Ticker, Name, Step, Reason
+- Frontend pipeline view must show: RAW count → SEEDED count → filtered out count (same visual style as Step 2)
+
+**Step 2 — Price Sync** (after Step 1 completes)
+- Fetch daily prices from EODHD for all seeded tickers
+- Mark `has_price_data = true` for tickers with price data
+- Tickers without price data are filtered out (logged to report)
+
+**Steps 3-5** — Fundamentals, Visible Universe, Peer Medians (each after previous completes)
+
+**Report**: ONE file across ALL steps. Each row: Ticker | Name | Step | Reason for exclusion. Admin can download/view this report.
+
+**CRITICAL RULES**:
+- Frontend NEVER calls EODHD — all data comes from scheduled jobs → MongoDB
+- EODHD provides raw data only — all derived metrics (P/E, market cap, margins) computed by backend
+- Step timing: NYSE closes 22:00 Prague, EODHD processes data, 23:00 Prague is the correct start time
+
 ### Architecture
 
 RICHSTOX is a two-component application (not a monorepo):

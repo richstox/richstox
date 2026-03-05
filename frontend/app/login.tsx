@@ -157,6 +157,7 @@ const styles = StyleSheet.create({
     ...TYPOGRAPHY.h1,
     color: COLORS.text,
     marginBottom: 8,
+    textAlign: 'center',
   },
   subtitle: {
     ...TYPOGRAPHY.subtitle,
