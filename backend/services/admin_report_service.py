@@ -74,7 +74,7 @@ async def generate_daily_report(db, source: GenerationSource = "manual") -> Dict
     # =========================================================================
     # Map scheduler job names to ops_job_runs job_type patterns
     job_mapping = {
-        "universe_seed": {"patterns": ["universe_seed", "whitelist_seed", "sync_ticker_whitelist"], "sunday_only": True},
+        "universe_seed": {"patterns": ["universe_seed", "whitelist_seed", "sync_ticker_whitelist"], "sunday_only": False},
         "price_sync": {"patterns": ["daily_price_sync", "scheduled_price_sync", "price_sync"], "sunday_only": False},
         "fundamentals_sync": {"patterns": ["scheduled_fundamentals_sync", "fundamentals_sync", "fundamentals_batch"], "sunday_only": False},
         "backfill_gaps": {"patterns": ["backfill_gaps", "scheduled_backfill_gaps"], "sunday_only": False},
@@ -94,12 +94,12 @@ async def generate_daily_report(db, source: GenerationSource = "manual") -> Dict
     current_hour = now_prague.hour
     current_minute = now_prague.minute
     
-    # Scheduled times (Europe/Prague) for expected_by_now calculation
+    # Scheduled times (Europe/Prague) for expected_by_now calculation.
+    # Step 1 is hard scheduled at 23:00 (Mon-Sat). Step 2/3 are dependency based
+    # and become expected once their dependency should already have run.
     job_schedule = {
-        "universe_seed": {"hour": 4, "minute": 0},      # Sunday 04:00
-        "price_sync": {"hour": 4, "minute": 0},          # 04:00
+        "universe_seed": {"hour": 23, "minute": 0},      # Mon-Sat 23:00
         "sp500tr_update": {"hour": 4, "minute": 15},     # 04:15
-        "fundamentals_sync": {"hour": 4, "minute": 30},  # 04:30
         "backfill_gaps": {"hour": 4, "minute": 45},      # 04:45
         "backfill_all": {"hour": 5, "minute": 0},        # 05:00
         "key_metrics": {"hour": 5, "minute": 0},         # 05:00
@@ -108,9 +108,16 @@ async def generate_daily_report(db, source: GenerationSource = "manual") -> Dict
         "admin_report": {"hour": 6, "minute": 0},        # 06:00
         "news_refresh": {"hour": 13, "minute": 0},       # 13:00
     }
+    dependency_expected = {
+        "price_sync": "universe_seed",
+        "fundamentals_sync": "price_sync",
+    }
     
     def is_expected_by_now(job_name: str) -> bool:
         """Check if job should have run by now based on Europe/Prague time."""
+        dep = dependency_expected.get(job_name)
+        if dep:
+            return is_expected_by_now(dep)
         schedule = job_schedule.get(job_name)
         if not schedule:
             return False

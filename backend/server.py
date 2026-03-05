@@ -5499,21 +5499,22 @@ async def admin_health_report():
             "api_calls": run.get("api_calls") or run.get("details", {}).get("api_calls_used"),
         }
     
-    # Calculate next scheduled run
-    prague_offset = timedelta(hours=1)
-    now_prague = datetime.now(timezone.utc) + prague_offset
-    next_run_prague = now_prague.replace(hour=4, minute=0, second=0, microsecond=0)
-    if now_prague.hour >= 4:
+    # Pipeline anchor run = Step 1 Universe Seed (23:00 Mon-Sat, Prague).
+    PRAGUE = ZoneInfo("Europe/Prague")
+    now_prague = datetime.now(PRAGUE)
+    next_run_prague = now_prague.replace(hour=23, minute=0, second=0, microsecond=0)
+    if now_prague >= next_run_prague:
         next_run_prague += timedelta(days=1)
+    # Sunday (weekday=6) has no universe seed run.
     while next_run_prague.weekday() == 6:
         next_run_prague += timedelta(days=1)
-    next_run_utc = next_run_prague - prague_offset
+    next_run_utc = next_run_prague.astimezone(timezone.utc)
     
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scheduler": {
             "enabled": scheduler_enabled,
-            "schedule": "Mon-Sat @ 04:00/04:30/04:45/05:00 Europe/Prague",
+            "schedule": "Mon-Sat @ 23:00 (Step 1), Step 2/3 auto by dependency",
             "next_run": next_run_utc.isoformat(),
             "next_run_prague": next_run_prague.strftime("%Y-%m-%d %H:%M Prague"),
         },

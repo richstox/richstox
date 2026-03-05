@@ -52,25 +52,25 @@ Standalone scheduler process that runs scheduled jobs.
 
 UNIVERSE SYSTEM - Single Source of Truth
 =========================================
-Step 1: Weekly Universe Seed (Sunday 04:00 Prague)
+Step 1: Universe Seed (Mon-Sat 23:00 Prague)
   - Fetches NYSE + NASDAQ exchange-symbol-list
   - ONLY Common Stock (no ETF/funds/warrants/preferred)
   - Sets is_whitelisted=true, is_active=false
 
-Step 2: Daily Bulk Prices (04:00 Prague, Mon-Sat)
+Step 2: Price Sync (auto after Step 1 completion)
   - Fetches eod-bulk-last-day/US
   - Sets has_price_data=true, is_active=true for tickers with prices
   - DETECTS splits/dividends -> triggers backfill + fundamentals for those tickers
 
-Step 3: Daily Fundamentals (04:30 Prague, Mon-Sat)
+Step 3: Fundamentals Sync (auto after Step 2 completion)
   - ONLY for has_price_data=true tickers + corporate action tickers
   - Stores sector/industry (does NOT block visibility)
 
 Schedule (Europe/Prague timezone):
-- SUNDAY 04:00: Weekly universe seed (NYSE + NASDAQ Common Stock)
-- MON-SAT 04:00: Daily price sync (bulk API) + split/dividend detection
+- MON-SAT 23:00: Universe seed (NYSE + NASDAQ Common Stock)
+- MON-SAT after Step 1 completion: price sync (bulk API) + split/dividend detection
 - MON-SAT 04:15: SP500TR benchmark update
-- MON-SAT 04:30: Fundamentals sync (changes + corporate actions)
+- MON-SAT after Step 2 completion: fundamentals sync (changes + corporate actions)
 - MON-SAT 04:45: Price backfill (gaps + corporate actions)
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
 - MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day)

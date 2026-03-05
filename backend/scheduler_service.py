@@ -11,9 +11,10 @@ Handles scheduled tasks with:
 - Manual admin endpoints always work (bypass kill switch)
 
 Schedule (Europe/Prague timezone):
-- 04:00: Daily price sync (bulk API call) + corporate actions detection
+- 23:00 (Mon-Sat): Step 1 Universe Seed
+- Step 2 auto-runs after Step 1 completion: price sync + event detectors
+- Step 3 auto-runs after Step 2 completion: fundamentals sync from pending events
 - 04:15: SP500TR benchmark update
-- 04:30: Fundamentals sync (only tickers with changes/events/splits)
 - 04:45: Price backfill (newly activated tickers, gaps, corporate actions)
 - 05:00: PAIN cache refresh (max drawdown for all visible tickers)
 - 05:00: Parallel backfill ALL (1,000 tickers/day)
@@ -1000,8 +1001,9 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
         "schedule": {
             "timezone": "Europe/Prague",
             "days": "Mon-Sat",
-            "price_sync": "04:00",
-            "fundamentals_sync": "04:30",
+            "universe_seed": "23:00",
+            "price_sync": "after universe_seed completion",
+            "fundamentals_sync": "after price_sync completion",
             "price_backfill": "04:45",
         },
         "last_runs": {
