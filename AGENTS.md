@@ -2,6 +2,11 @@
 
 ## Cursor Cloud specific instructions
 
+### Communication & Language
+- Communicate with the user (Richard) in **Czech**
+- All application code, UI strings, comments, and commit messages must be in **English**
+- The app UI must be fully English — no Czech strings in the frontend
+
 ### Architecture
 
 RICHSTOX is a two-component application (not a monorepo):
