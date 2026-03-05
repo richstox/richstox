@@ -33,6 +33,7 @@ const COLORS = {
 };
 
 interface AppHeaderProps {
+  title?: string;
   showBackButton?: boolean;
   backDestination?: string;
   onNotificationPress?: () => void;
@@ -40,6 +41,7 @@ interface AppHeaderProps {
 }
 
 export default function AppHeader({ 
+  title = 'RICHSTOX',
   showBackButton = false, 
   backDestination,
   onNotificationPress,
@@ -67,7 +69,7 @@ export default function AppHeader({
         router.push('/(tabs)/settings');
         break;
       case 'admin':
-        router.push('/admin');
+        router.push('/(tabs)/admin' as any);
         break;
       case 'signout':
         logout();
@@ -93,7 +95,7 @@ export default function AppHeader({
         />
       )}
       
-      <Text style={styles.headerTitle}>RICHSTOX</Text>
+      <Text style={styles.headerTitle}>{title}</Text>
       
       {/* Right side: Search, Notifications, PRO badge, Avatar */}
       <View style={styles.headerRight}>
