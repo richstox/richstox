@@ -50,6 +50,15 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
     ]
     docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
 
+    def _to_iso_utc(dt) -> Optional[str]:
+        if dt is None:
+            return None
+        if not hasattr(dt, "isoformat"):
+            return str(dt)
+        if getattr(dt, "tzinfo", None) is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+
     last_runs = {}
     for doc in docs:
         job_name = doc.get("_id")
@@ -58,8 +67,8 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         started = doc.get("started_at")
         finished = doc.get("finished_at") or doc.get("completed_at")
         result = doc.get("result") or doc.get("details") or {}
-        doc["start_time"] = started.isoformat() if hasattr(started, "isoformat") else str(started) if started else None
-        doc["end_time"] = finished.isoformat() if hasattr(finished, "isoformat") else str(finished) if finished else None
+        doc["start_time"] = _to_iso_utc(started)
+        doc["end_time"] = _to_iso_utc(finished)
         doc["duration_seconds"] = doc.get("duration_sec") or doc.get("duration_seconds")
         doc["records_processed"] = (
             result.get("tickers_with_price_data") or
@@ -235,6 +244,8 @@ def to_prague_str(dt) -> Optional[str]:
         return None
     try:
         if hasattr(dt, 'astimezone'):
+            if getattr(dt, "tzinfo", None) is None:
+                dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d %H:%M:%S")
         return str(dt)
     except:

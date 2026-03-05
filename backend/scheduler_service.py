@@ -30,12 +30,15 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 import asyncio
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("richstox.scheduler")
 
 # Constants
 SCHEDULER_CONFIG_KEY = "scheduler_enabled"
 SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
+PRAGUE_TZ = ZoneInfo("Europe/Prague")
+STEP2_REPORT_STEP = "Step 2 - Price Sync"
 
 
 async def get_scheduler_enabled(db) -> bool:
@@ -165,11 +168,18 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
         result = await run_daily_bulk_catchup(db)
         
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
-        price_flag_summary = await sync_has_price_data_flags(db)
+        price_flag_summary = await sync_has_price_data_flags(db, include_exclusions=True)
         result["tickers_seeded_total"] = price_flag_summary["seeded_total"]
         result["tickers_with_price_data"] = price_flag_summary["with_price_data"]
         result["tickers_without_price_data"] = price_flag_summary["without_price_data"]
         result["matched_price_tickers_raw"] = price_flag_summary.get("matched_price_tickers_raw", 0)
+        result.update(
+            await save_price_sync_exclusion_report(
+                db,
+                rows=price_flag_summary.get("exclusions", []),
+                now=datetime.now(timezone.utc),
+            )
+        )
 
         # Log to ops_job_runs
         await db.ops_job_runs.insert_one({
@@ -187,6 +197,7 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
                 "tickers_with_price_data": result.get("tickers_with_price_data", 0),
                 "tickers_without_price_data": result.get("tickers_without_price_data", 0),
                 "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
+                "exclusion_report_rows": result.get("exclusion_report_rows", 0),
                 "api_calls": result.get("api_calls", 0),
                 "bulk_writes": result.get("bulk_writes", 0),
             }
@@ -204,6 +215,7 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
             "tickers_with_price_data": result.get("tickers_with_price_data", 0),
             "tickers_without_price_data": result.get("tickers_without_price_data", 0),
             "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
+            "exclusion_report_rows": result.get("exclusion_report_rows", 0),
             "dates_processed": result.get("dates_processed", 0),
             "api_calls": result.get("api_calls", 0),
             "started_at": started_at.isoformat(),
@@ -231,21 +243,33 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
         }
 
 
-async def sync_has_price_data_flags(db) -> Dict[str, int]:
+async def sync_has_price_data_flags(db, include_exclusions: bool = False) -> Dict[str, Any]:
     """
     Recompute has_price_data for seeded US Common Stock universe from stock_prices.
     Step 2 canonical: has_price_data=true only for tickers with valid price
     (close > 0 OR adjusted_close > 0).
     """
-    seeded_tickers = await db.tracked_tickers.distinct("ticker", SEED_QUERY)
+    seeded_docs = await db.tracked_tickers.find(
+        SEED_QUERY,
+        {"_id": 0, "ticker": 1, "name": 1}
+    ).to_list(None)
+    seeded_tickers = [d.get("ticker") for d in seeded_docs if d.get("ticker")]
+    name_by_ticker = {
+        d.get("ticker"): (d.get("name") or "(unknown)")
+        for d in seeded_docs
+        if d.get("ticker")
+    }
     seeded_total = len(seeded_tickers)
     if seeded_total == 0:
-        return {
+        base = {
             "seeded_total": 0,
             "with_price_data": 0,
             "without_price_data": 0,
             "matched_price_tickers_raw": 0,
         }
+        if include_exclusions:
+            base["exclusions"] = []
+        return base
 
     # Backward compatibility: older stock_prices may contain ticker without .US suffix.
     seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
@@ -258,6 +282,10 @@ async def sync_has_price_data_flags(db) -> Dict[str, int]:
         ],
     }
     raw_price_tickers = await db.stock_prices.distinct("ticker", valid_price_query)
+    raw_any_price_tickers = await db.stock_prices.distinct(
+        "ticker",
+        {"ticker": {"$in": ticker_candidates}}
+    )
 
     def normalize_ticker(value: str) -> str:
         if not value:
@@ -265,8 +293,10 @@ async def sync_has_price_data_flags(db) -> Dict[str, int]:
         return value if value.endswith(".US") else f"{value}.US"
 
     normalized_price_tickers = {normalize_ticker(t) for t in raw_price_tickers if t}
+    normalized_any_price_tickers = {normalize_ticker(t) for t in raw_any_price_tickers if t}
     seeded_set = set(seeded_tickers)
     with_price_set = normalized_price_tickers & seeded_set
+    any_price_set = normalized_any_price_tickers & seeded_set
 
     # Reset all seeded tickers to false, then enable only those with prices.
     await db.tracked_tickers.update_many(
@@ -280,11 +310,72 @@ async def sync_has_price_data_flags(db) -> Dict[str, int]:
         )
 
     with_price_data = len(with_price_set)
-    return {
+    summary = {
         "seeded_total": seeded_total,
         "with_price_data": with_price_data,
         "without_price_data": max(seeded_total - with_price_data, 0),
         "matched_price_tickers_raw": len(raw_price_tickers),
+    }
+    if include_exclusions:
+        exclusions: List[Dict[str, Any]] = []
+        for ticker in sorted(seeded_set - with_price_set):
+            reason = (
+                "Close/adjusted_close missing or zero"
+                if ticker in any_price_set
+                else "Ticker not present in price data"
+            )
+            exclusions.append({
+                "ticker": ticker.replace(".US", ""),
+                "name": name_by_ticker.get(ticker, "(unknown)"),
+                "step": STEP2_REPORT_STEP,
+                "reason": reason,
+            })
+        summary["exclusions"] = exclusions
+    return summary
+
+
+async def save_price_sync_exclusion_report(
+    db,
+    rows: List[Dict[str, Any]],
+    now: datetime,
+) -> Dict[str, Any]:
+    """
+    Save Step 2 exclusion rows to shared pipeline exclusion report collection.
+    Rewrites only Step 2 rows for report_date, keeping other step rows intact.
+    """
+    report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
+    run_id = f"price_sync_{now.strftime('%Y%m%d_%H%M%S')}"
+
+    await db.pipeline_exclusion_report.delete_many({
+        "report_date": report_date,
+        "step": STEP2_REPORT_STEP,
+    })
+
+    if not rows:
+        return {
+            "exclusion_report_date": report_date,
+            "exclusion_report_rows": 0,
+            "exclusion_report_run_id": run_id,
+        }
+
+    docs = []
+    for row in rows:
+        docs.append({
+            "ticker": row.get("ticker", "(unknown)"),
+            "name": row.get("name", "(unknown)"),
+            "step": row.get("step", STEP2_REPORT_STEP),
+            "reason": row.get("reason", "Unknown"),
+            "report_date": report_date,
+            "source_job": "price_sync",
+            "run_id": run_id,
+            "created_at": now,
+        })
+
+    await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
+    return {
+        "exclusion_report_date": report_date,
+        "exclusion_report_rows": len(docs),
+        "exclusion_report_run_id": run_id,
     }
 
 
