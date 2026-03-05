@@ -5896,57 +5896,34 @@ async def admin_run_complete_fundamentals_backfill(
     start_from: str = Query(None, description="Start from ticker (for resuming)"),
 ):
     """
-    Run COMPLETE fundamentals backfill - fetches ALL data from EODHD.
-    
-    This stores EVERYTHING: financials, earnings, valuation, holders, etc.
-    Cost: 1 ticker = 10 API credits. ~6096 tickers = 60,960 credits.
-    
-    DO NOT re-run unless absolutely necessary.
-    
-    Args:
-        limit: Optional limit on tickers (None = all)
-        dry_run: If True, don't write to DB
-        start_from: Start from this ticker (for resuming interrupted backfill)
+    LEGACY endpoint is intentionally disabled.
+
+    Reason:
+    - Strict RAW FACTS ONLY production policy.
+    - Provider-computed sections must not be stored in production flows.
+    - Use /api/admin/backfill-raw-facts (or fundamentals-refill) instead.
     """
-    from backfill_fundamentals_complete import run_complete_backfill, verify_backfill
-    
-    if dry_run:
-        # Run synchronously for dry run
-        result = await run_complete_backfill(db, limit=limit, dry_run=True, start_from=start_from)
-        return result
-    
-    # Run in background for actual backfill
-    async def run_backfill():
-        await run_complete_backfill(db, limit=limit, dry_run=False, start_from=start_from)
-    
-    background_tasks.add_task(run_backfill)
-    
-    return {
-        "status": "started",
-        "message": f"Complete fundamentals backfill started in background",
-        "limit": limit or "ALL",
-        "start_from": start_from,
-        "check_progress": "Check backend logs: tail -f /var/log/supervisor/backend.err.log",
-        "check_status": "/api/admin/scheduler/status",
-    }
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Legacy endpoint disabled. Use /api/admin/backfill-raw-facts "
+            "or /api/admin/fundamentals-refill."
+        ),
+    )
 
 
 @api_router.get("/admin/backfill-fundamentals-complete/verify")
 async def admin_verify_fundamentals_backfill():
     """
-    Verify fundamentals backfill results.
-    
-    Returns the 5 key verification metrics:
-    1. Missing sector count
-    2. Missing industry count
-    3. Missing logo_url count
-    4. Top 20 missing by market cap
-    5. Total records in company_fundamentals_cache
+    LEGACY verification endpoint disabled together with complete backfill.
     """
-    from backfill_fundamentals_complete import verify_backfill
-    
-    result = await verify_backfill(db)
-    return result
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "Legacy endpoint disabled. Use /api/admin/backfill-raw-facts/verify "
+            "or /api/admin/fundamentals-refill/verify."
+        ),
+    )
 
 
 # =============================================================================
