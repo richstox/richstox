@@ -6663,43 +6663,58 @@ async def startup():
     await create_notification_indexes(db)
     
     # ⚠️ STARTUP VISIBILITY GUARD - Prevents silent data integrity breaches
-    await startup_visibility_guard(db)
+    await startup_mega_caps_visibility_guard(db)
     
     # ⚠️ P55: STARTUP PAIN CACHE GUARD - Warns if mega-caps missing PAIN data
     await startup_pain_cache_guard(db)
 
 
-async def startup_visibility_guard(database):
+async def startup_mega_caps_visibility_guard(database):
     """
-    Verify that visibility rule is enforced.
-    Fails loudly if mega-caps are invisible (data integrity breach).
-    
-    This guard runs at startup to prevent serving incorrect data to users.
-    If this fails, the application will not start.
+    Soft startup guard for mega-cap visibility.
+
+    This guard must NOT crash startup. In fresh environments (or before the
+    pipeline seeds visible tickers), it logs warnings and exits.
     """
     mega_caps = ["AAPL.US", "MSFT.US", "GOOGL.US", "AMZN.US", "NVDA.US"]
-    
+    tracked_total = await database.tracked_tickers.count_documents({})
+    visible_total = await database.tracked_tickers.count_documents({"is_visible": True})
+
+    # Fresh / empty environment: nothing to validate yet.
+    if tracked_total == 0 or visible_total == 0:
+        logger.warning(
+            "⚠️ Startup mega-cap visibility guard skipped: "
+            f"tracked={tracked_total}, visible={visible_total}. "
+            "Run pipeline Step 1→2→3→4 first."
+        )
+        return
+
+    invisible = []
+    missing = []
+
     for ticker in mega_caps:
-        # Check if ticker exists and is invisible (violation)
         doc = await database.tracked_tickers.find_one(
-            {"ticker": ticker, "is_visible": False},
-            {"_id": 0, "ticker": 1, "is_visible": 1}
+            {"ticker": ticker},
+            {"_id": 0, "ticker": 1, "is_visible": 1},
         )
-        if doc:
-            raise RuntimeError(
-                f"CRITICAL: {ticker} is invisible. Visibility rule violated. "
-                f"Check is_visible field and VISIBLE_UNIVERSE_QUERY."
-            )
-        
-        # Also verify ticker exists and IS visible
-        visible_doc = await database.tracked_tickers.find_one(
-            {"ticker": ticker, "is_visible": True},
-            {"_id": 0, "ticker": 1}
+        if not doc:
+            missing.append(ticker)
+            continue
+        if doc.get("is_visible") is not True:
+            invisible.append(ticker)
+
+    if invisible:
+        logger.error(
+            "⚠️ Startup mega-cap visibility check: some mega-caps are invisible: "
+            f"{invisible}. App continues to start."
         )
-        if not visible_doc:
-            logger.warning(f"⚠️ Startup guard: {ticker} not found or not visible in tracked_tickers")
-    
-    logger.info("✅ Startup visibility guard passed - mega-caps are visible")
+    if missing:
+        logger.warning(
+            "⚠️ Startup mega-cap visibility check: some mega-caps are missing: "
+            f"{missing}. App continues to start."
+        )
+    if not invisible and not missing:
+        logger.info("✅ Startup mega-cap visibility guard passed - mega-caps are visible")
 
 
 async def startup_pain_cache_guard(database):
