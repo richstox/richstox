@@ -3015,6 +3015,20 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
 # RAW FACTS ONLY. All metrics computed locally from raw financial statements.
 # =============================================================================
 
+def _is_local_valuation_cache_doc(doc: Optional[Dict[str, Any]]) -> bool:
+    """
+    M01 guard: Runtime valuation may use cache only when it was
+    materialized from local valuation time-series (raw facts pipeline).
+    """
+    if not isinstance(doc, dict):
+        return False
+    source = doc.get("source")
+    timeseries_source = doc.get("timeseries_source") or {}
+    return (
+        source == "materialized_from_timeseries"
+        and timeseries_source.get("collection") == "ticker_valuation_timeseries"
+    )
+
 @api_router.get("/v1/ticker/{ticker}/detail")
 async def get_ticker_detail_mobile(
     ticker: str,
@@ -3122,10 +3136,11 @@ async def get_ticker_detail_mobile(
     # =========================================================================
     # BINDING: Read from ticker_valuations_cache (pre-computed nightly)
     # This replaces expensive real-time computation with instant lookup
-    valuation_cache = await db.ticker_valuations_cache.find_one(
+    valuation_cache_raw = await db.ticker_valuations_cache.find_one(
         {"ticker": ticker_full},
         {"_id": 0}
     )
+    valuation_cache = valuation_cache_raw if _is_local_valuation_cache_doc(valuation_cache_raw) else None
     
     # Also get peer benchmarks for the ticker's industry
     peer_bench_doc = None
@@ -3143,7 +3158,6 @@ async def get_ticker_detail_mobile(
     # Build valuation response from cache
     if valuation_cache:
         cached_metrics = valuation_cache.get("current_metrics", {})
-        vs_peers = valuation_cache.get("vs_peers", {})
         
         # BINDING: Use peer_count_used (USD-only) for vs_peers comparison
         peer_count_used = peer_bench_doc.get("peer_count_used", peer_bench_doc.get("peer_count", 0)) if peer_bench_doc else 0
@@ -3328,6 +3342,7 @@ async def get_ticker_detail_mobile(
         
         valuation = {
             "available": True,
+            "source": "local_raw_facts_timeseries",
             "overall_vs_peers": recomputed_overall,  # P0 FIX: Use recomputed value
             "peer_count": peer_count_used,  # BINDING: Use peer_count_used
             "peer_count_total": peer_count_total,
@@ -3395,7 +3410,11 @@ async def get_ticker_detail_mobile(
             "cache_timestamp": valuation_cache.get("computed_at")
         }
     else:
-        valuation = {"available": False, "reason": "Not pre-computed yet"}
+        valuation = {
+            "available": False,
+            "reason": "Local valuation cache not pre-computed yet",
+            "local_only_enforced": True,
+        }
     
     # ==========================================================================
     # P0 BLOCKER FIX: Hybrid 7 Key Metrics - Full implementation with all fields
