@@ -9,9 +9,10 @@ import asyncio
 import statistics
 from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import logging
 import os
+from bisect import bisect_right
 
 logger = logging.getLogger("richstox.valuation")
 
@@ -120,67 +121,333 @@ def safe_divide(
 
 
 # =============================================================================
+# TIMESERIES HELPERS (M-06)
+# =============================================================================
+
+def _sorted_date_keys(section: dict, limit: int) -> List[str]:
+    """Return latest date keys (YYYY-MM-DD) sorted descending."""
+    if not isinstance(section, dict) or not section:
+        return []
+    return sorted([k for k in section.keys() if isinstance(k, str)], reverse=True)[:limit]
+
+
+def _latest_value_on_or_before(section: dict, field: str, period_end: str) -> Optional[float]:
+    """Get latest numeric value from statement section at or before period_end."""
+    if not isinstance(section, dict) or not section:
+        return None
+    for key in sorted(section.keys(), reverse=True):
+        if key <= period_end:
+            val = safe_float((section.get(key) or {}).get(field))
+            if val is not None:
+                return val
+    return None
+
+
+def _build_price_index(price_rows: List[dict]) -> Tuple[List[str], List[float]]:
+    """
+    Build ascending date/value arrays for binary-search alignment.
+    Keeps only rows with numeric positive price.
+    """
+    items: List[Tuple[str, float]] = []
+    for row in price_rows:
+        date = row.get("date")
+        price = safe_float(row.get("adjusted_close")) or safe_float(row.get("close"))
+        if not date or price is None or price <= 0:
+            continue
+        items.append((date, price))
+    items.sort(key=lambda x: x[0])  # ascending
+    return [d for d, _ in items], [p for _, p in items]
+
+
+def _price_on_or_before(price_dates: List[str], price_values: List[float], period_end: str) -> Tuple[Optional[float], Optional[str]]:
+    """
+    Period alignment rule:
+    price_used = close from nearest previous trading day (<= period_end).
+    """
+    if not price_dates:
+        return None, None
+    idx = bisect_right(price_dates, period_end) - 1
+    if idx < 0:
+        return None, None
+    return price_values[idx], price_dates[idx]
+
+
+def _extract_shares_as_of(fund: dict, period_end: str) -> Optional[float]:
+    """Get shares outstanding as-of period_end from raw facts only."""
+    shares_stats = fund.get("SharesStats", {}) or {}
+    shares_direct = safe_float(shares_stats.get("SharesOutstanding"))
+
+    outstanding = fund.get("outstandingShares", {}) or {}
+    candidates: List[Tuple[str, float]] = []
+
+    # Dict format: {"annual": {"2024-12-31": {"shares": ...}}}
+    for bucket in ("quarterly", "annual"):
+        block = outstanding.get(bucket, {})
+        if isinstance(block, dict):
+            for date_key, payload in block.items():
+                shares_val = safe_float((payload or {}).get("shares"))
+                if shares_val is not None:
+                    candidates.append((str(date_key), shares_val))
+        elif isinstance(block, list):
+            for payload in block:
+                if not isinstance(payload, dict):
+                    continue
+                date_key = payload.get("date") or payload.get("period") or payload.get("reportedDate")
+                shares_val = safe_float(payload.get("shares"))
+                if date_key and shares_val is not None:
+                    candidates.append((str(date_key), shares_val))
+
+    # Prefer period-aligned shares first
+    aligned = [(d, s) for d, s in candidates if d <= period_end]
+    if aligned:
+        aligned.sort(key=lambda x: x[0], reverse=True)
+        return aligned[0][1]
+
+    # Fallback to latest known shares
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+
+    return shares_direct
+
+
+def _ttm_sum_as_of(quarterly: dict, field: str, period_end: str) -> Optional[float]:
+    """
+    Get TTM sum ending at period_end from quarterly statement.
+    Requires at least 3 valid quarters out of 4.
+    """
+    if not isinstance(quarterly, dict) or not quarterly:
+        return None
+    eligible = [k for k in sorted(quarterly.keys(), reverse=True) if k <= period_end]
+    window = eligible[:4]
+    if len(window) < 4:
+        return None
+    total = 0.0
+    valid = 0
+    for q in window:
+        v = safe_float((quarterly.get(q) or {}).get(field))
+        if v is not None:
+            total += v
+            valid += 1
+    return total if valid >= 3 else None
+
+
+def _eps_ttm_as_of(earnings_history: dict, period_end: str) -> Optional[float]:
+    """Compute EPS TTM from earnings history up to period_end."""
+    if not isinstance(earnings_history, dict) or not earnings_history:
+        return None
+    eligible = [k for k in sorted(earnings_history.keys(), reverse=True) if k <= period_end]
+    window = eligible[:4]
+    if len(window) < 4:
+        return None
+    vals = []
+    for key in window:
+        v = safe_float((earnings_history.get(key) or {}).get("epsActual"))
+        if v is not None:
+            vals.append(v)
+    if len(vals) >= 3:
+        return sum(vals)
+    return None
+
+
+def _classify_relative(current: Optional[float], benchmark: Optional[float]) -> Optional[str]:
+    if current is None or benchmark is None or benchmark <= 0:
+        return None
+    ratio = current / benchmark
+    if ratio < 0.85:
+        return "cheaper"
+    if ratio > 1.15:
+        return "more_expensive"
+    return "around"
+
+
+def _majority_badge(classifications: List[str]) -> Optional[str]:
+    if not classifications:
+        return None
+    cheaper_count = sum(1 for x in classifications if x == "cheaper")
+    expensive_count = sum(1 for x in classifications if x == "more_expensive")
+    total = len(classifications)
+    if expensive_count / total >= 0.6:
+        return "more_expensive"
+    if cheaper_count / total >= 0.6:
+        return "cheaper"
+    return "around"
+
+
+def _compute_point_metrics(
+    *,
+    price_used: Optional[float],
+    shares_used: Optional[float],
+    net_income_used: Optional[float],
+    revenue_used: Optional[float],
+    book_value_used: Optional[float],
+    ebitda_used: Optional[float],
+    total_debt_used: Optional[float],
+    cash_used: Optional[float],
+) -> Tuple[Dict[str, Optional[float]], Dict[str, str], Dict[str, Any]]:
+    """
+    Compute valuation point metrics with persisted reason codes and audit inputs.
+    """
+    market_cap_used = None
+    if price_used is not None and shares_used is not None and shares_used > 0:
+        market_cap_used = price_used * shares_used
+
+    ev_used = None
+    if market_cap_used is not None and total_debt_used is not None and cash_used is not None:
+        ev_used = market_cap_used + total_debt_used - cash_used
+
+    metrics: Dict[str, Optional[float]] = {
+        "pe": None,
+        "ps": None,
+        "pb": None,
+        "ev_ebitda": None,
+        "ev_revenue": None,
+    }
+    statuses: Dict[str, str] = {}
+
+    # P/E
+    if shares_used is None or shares_used <= 0:
+        statuses["pe"] = MetricStatus.MISSING_SHARES
+    elif net_income_used is None:
+        statuses["pe"] = MetricStatus.MISSING_RAW_DATA
+    else:
+        eps_used = net_income_used / shares_used if shares_used else None
+        pe_val, pe_status = safe_divide(
+            price_used,
+            eps_used,
+            require_positive_denominator=True,
+        )
+        metrics["pe"] = pe_val
+        statuses["pe"] = pe_status
+
+    # P/S
+    if market_cap_used is None:
+        statuses["ps"] = MetricStatus.MISSING_SHARES
+    else:
+        ps_val, ps_status = safe_divide(
+            market_cap_used,
+            revenue_used,
+            require_positive_denominator=True,
+        )
+        metrics["ps"] = ps_val
+        statuses["ps"] = ps_status
+
+    # P/B
+    if market_cap_used is None:
+        statuses["pb"] = MetricStatus.MISSING_SHARES
+    else:
+        pb_val, pb_status = safe_divide(
+            market_cap_used,
+            book_value_used,
+            require_positive_denominator=True,
+        )
+        metrics["pb"] = pb_val
+        statuses["pb"] = pb_status
+
+    # EV/EBITDA
+    if ev_used is None:
+        statuses["ev_ebitda"] = MetricStatus.MISSING_SHARES if market_cap_used is None else MetricStatus.MISSING_RAW_DATA
+    else:
+        ev_ebitda_val, ev_ebitda_status = safe_divide(
+            ev_used,
+            ebitda_used,
+            require_positive_denominator=True,
+        )
+        metrics["ev_ebitda"] = ev_ebitda_val
+        statuses["ev_ebitda"] = ev_ebitda_status
+
+    # EV/Revenue
+    if ev_used is None:
+        statuses["ev_revenue"] = MetricStatus.MISSING_SHARES if market_cap_used is None else MetricStatus.MISSING_RAW_DATA
+    else:
+        ev_revenue_val, ev_revenue_status = safe_divide(
+            ev_used,
+            revenue_used,
+            require_positive_denominator=True,
+        )
+        metrics["ev_revenue"] = ev_revenue_val
+        statuses["ev_revenue"] = ev_revenue_status
+
+    inputs_used = {
+        "price_used": price_used,
+        "shares_used": shares_used,
+        "market_cap_used": market_cap_used,
+        "net_income_used": net_income_used,
+        "revenue_used": revenue_used,
+        "book_value_used": book_value_used,
+        "ebitda_used": ebitda_used,
+        "ev_used": ev_used,
+        "fx_used": None,  # Reserved for future FX normalization
+        # Backward-compatible aliases for existing API payload usage
+        "enterprise_value": ev_used,
+        "total_debt": total_debt_used,
+        "cash": cash_used,
+        "shares_outstanding": shares_used,
+    }
+    return metrics, statuses, inputs_used
+
+
+# =============================================================================
 # MAIN PRE-COMPUTATION FUNCTION
 # =============================================================================
 
 async def precompute_ticker_valuations(db) -> Dict[str, Any]:
     """
-    Pre-compute valuation metrics for ALL visible tickers.
-    
-    BINDING: Stores results in ticker_valuations_cache collection.
-    
-    Schema:
-    {
-        "_id": "AAPL.US",
-        "current_metrics": {
-            "pe": 33.9,
-            "ps": 9.2,
-            "pb": 45.3,
-            "ev_ebitda": 26.4,
-            "ev_revenue": 9.3
-        },
-        "eval_vs_peers": "more_expensive",
-        "eval_vs_5y": "more_expensive",
-        "computed_at": "2026-02-26T04:00:00Z"
-    }
+    M-06: Pre-compute local-only valuation time-series for ALL visible tickers.
+
+    Source of truth:
+      - ticker_valuation_timeseries (quarterly + annual points)
+
+    Materialized latest view:
+      - ticker_valuations_cache (derived ONLY from ticker_valuation_timeseries)
     """
-    logger.info("Starting ticker valuations pre-computation...")
+    logger.info("Starting M-06 valuation pre-computation (timeseries + latest view)...")
     start_time = datetime.now(timezone.utc)
     
-    # Get all visible tickers (just metadata first)
+    # Get all visible tickers (metadata only)
     ticker_list = await db.tracked_tickers.find(
         {"is_visible": True},
         {"_id": 0, "ticker": 1, "sector": 1, "industry": 1}
     ).to_list(length=10000)
     
     logger.info(f"Found {len(ticker_list)} visible tickers")
-    
-    # Get latest prices for all tickers
-    prices = {}
-    cursor = db.stock_prices.aggregate([
-        {"$sort": {"date": -1}},
-        {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}}
-    ])
-    async for doc in cursor:
-        if doc.get("price"):
-            prices[doc["_id"]] = doc["price"]
-    
-    logger.info(f"Got prices for {len(prices)} tickers")
-    
+
     # Load peer benchmarks for comparison
     peer_benchmarks = {}
     cursor = db.peer_benchmarks.find({})
     async for doc in cursor:
+        # Support both shapes:
+        #   1) {"benchmarks": {"pe_median": ...}}
+        #   2) {"pe_median": ...}
+        benchmarks = doc.get("benchmarks", {})
+        if not benchmarks:
+            benchmarks = {
+                "pe_median": doc.get("pe_median"),
+                "ps_median": doc.get("ps_median"),
+                "pb_median": doc.get("pb_median"),
+                "ev_ebitda_median": doc.get("ev_ebitda_median"),
+                "ev_revenue_median": doc.get("ev_revenue_median"),
+            }
         key = doc.get("industry") or f"sector:{doc.get('sector')}"
         if key:
-            peer_benchmarks[key] = doc.get("benchmarks", {})
+            peer_benchmarks[key] = benchmarks
     
     logger.info(f"Loaded {len(peer_benchmarks)} peer benchmarks")
-    
+
+    # Ensure indexes for idempotent time-series upserts
+    await db.ticker_valuation_timeseries.create_index(
+        [("ticker", 1), ("period_type", 1), ("period_end", 1)],
+        unique=True
+    )
+    await db.ticker_valuations_cache.create_index("ticker", unique=True)
+
     # Process tickers in batches
     batch_size = 100
     processed = 0
-    stored = 0
+    latest_views_stored = 0
+    points_stored = 0
+    quarterly_points_stored = 0
+    annual_points_stored = 0
     
     for batch_start in range(0, len(ticker_list), batch_size):
         batch = ticker_list[batch_start:batch_start + batch_size]
@@ -194,250 +461,283 @@ async def precompute_ticker_valuations(db) -> Dict[str, Any]:
         )
         async for doc in cursor:
             fundamentals_map[doc["ticker"]] = doc.get("fundamentals", {})
-        
+
+        # Fetch 5Y price history for batch (for period alignment)
+        price_rows_map: Dict[str, List[dict]] = {ticker: [] for ticker in batch_tickers}
+        price_cursor = db.stock_prices.find(
+            {"ticker": {"$in": batch_tickers}},
+            {"_id": 0, "ticker": 1, "date": 1, "adjusted_close": 1, "close": 1}
+        )
+        async for row in price_cursor:
+            ticker = row.get("ticker")
+            if ticker in price_rows_map:
+                price_rows_map[ticker].append(row)
+
         # Process each ticker in batch
         for t in batch:
             ticker = t["ticker"]
             sector = t.get("sector")
             industry = t.get("industry")
-            price = prices.get(ticker)
             fund = fundamentals_map.get(ticker, {})
+            price_rows = price_rows_map.get(ticker, [])
             
             processed += 1
             
-            if not price or not fund:
+            if not fund or not price_rows:
                 continue
-            
-            # Extract data
-            shares_stats = fund.get("SharesStats", {})
+
+            price_dates, price_values = _build_price_index(price_rows)
+            if not price_dates:
+                continue
+
             financials = fund.get("Financials", {})
             earnings = fund.get("Earnings", {})
-            
-            # Shares outstanding
-            shares = safe_float(shares_stats.get("SharesOutstanding"))
-            if not shares:
-                outstanding = fund.get("outstandingShares", {}).get("annual", {})
-                if outstanding:
-                    latest_year = sorted(outstanding.keys(), reverse=True)[0] if outstanding else None
-                    if latest_year:
-                        shares = safe_float(outstanding[latest_year].get("shares"))
-            
-            if not shares:
-                continue
-            
-            # Market cap
-            market_cap = price * shares
-            
-            # Financial statements
             income_stmt = financials.get("Income_Statement", {})
             quarterly_income = income_stmt.get("quarterly", {})
+            yearly_income = income_stmt.get("yearly", {})
             balance_sheet = financials.get("Balance_Sheet", {})
             quarterly_balance = balance_sheet.get("quarterly", {})
+            earnings_history = earnings.get("History", {})
             cash_flow = financials.get("Cash_Flow", {})
             quarterly_cashflow = cash_flow.get("quarterly", {})
-            
-            # TTM values from Income Statement
-            revenue_ttm = get_ttm_sum(quarterly_income, "totalRevenue")
-            net_income_ttm = get_ttm_sum(quarterly_income, "netIncome")
-            ebitda_ttm = get_ttm_sum(quarterly_income, "ebitda")
-            
-            # If EBITDA not available, compute from operating income + D&A
-            if not ebitda_ttm:
-                operating_income = get_ttm_sum(quarterly_income, "operatingIncome")
-                depreciation = get_ttm_sum(quarterly_cashflow, "depreciation")
-                if operating_income:
-                    ebitda_ttm = operating_income + abs(depreciation or 0)
-            
-            # Balance sheet values (latest)
-            # BINDING: Correct key is "totalStockholderEquity" not "equity"
-            total_equity = get_latest_value(quarterly_balance, "totalStockholderEquity")
-            
-            total_debt = get_latest_value(quarterly_balance, "totalDebt")
-            if not total_debt:
-                short_term = get_latest_value(quarterly_balance, "shortTermDebt") or 0
-                long_term = get_latest_value(quarterly_balance, "longTermDebt") or 0
-                total_debt = short_term + long_term if (short_term or long_term) else 0
-            
-            cash = get_latest_value(quarterly_balance, "cash")
-            if not cash:
-                cash = get_latest_value(quarterly_balance, "cashAndShortTermInvestments") or 0
-            
-            # EPS TTM from Earnings History (more accurate than computed)
-            eps_ttm = None
-            earnings_history = earnings.get("History", {})
-            if earnings_history:
-                sorted_q = sorted(earnings_history.keys(), reverse=True)[:4]
-                eps_values = []
-                for q in sorted_q:
-                    eps_val = safe_float(earnings_history[q].get("epsActual"))
-                    if eps_val is not None and eps_val != 0:
-                        eps_values.append(eps_val)
-                
-                if len(eps_values) >= 3:  # Allow 1 missing quarter
-                    eps_ttm = sum(eps_values)
-            
-            # Fallback: compute EPS from net income / shares
-            if not eps_ttm and net_income_ttm and shares:
-                eps_ttm = net_income_ttm / shares
-            
-            # Enterprise Value
-            enterprise_value = market_cap + (total_debt or 0) - (cash or 0)
-            
-            # =================================================================
-            # COMPUTE 5 METRICS WITH GUARDRAILS (P0 - 2026-02-27)
-            # =================================================================
-            metrics = {}
-            metric_statuses = {}
-            
-            # SHARES GUARD: Check shares before market_cap/EV dependent metrics
-            shares_valid = shares is not None and shares > 0
-            market_cap_valid = shares_valid and market_cap is not None and market_cap > 0
-            ev_valid = market_cap_valid and enterprise_value is not None
-            
-            # -----------------------------------------------------------------
-            # P/E (Price to Earnings)
-            # Denominator: eps_ttm (requires positive)
-            # Does NOT require shares (price / eps_ttm)
-            # -----------------------------------------------------------------
-            pe_val, pe_status = safe_divide(price, eps_ttm, require_positive_denominator=True)
-            if pe_val is not None:
-                metrics["pe"] = pe_val
-            metric_statuses["pe"] = pe_status
-            
-            # -----------------------------------------------------------------
-            # P/S (Price to Sales = Market Cap / Revenue TTM)
-            # REQUIRES valid market_cap (which requires shares)
-            # -----------------------------------------------------------------
-            if not market_cap_valid:
-                ps_val, ps_status = None, MetricStatus.MISSING_SHARES
-            else:
-                ps_val, ps_status = safe_divide(market_cap, revenue_ttm, require_positive_denominator=True)
-            if ps_val is not None:
-                metrics["ps"] = ps_val
-            metric_statuses["ps"] = ps_status
-            
-            # -----------------------------------------------------------------
-            # P/B (Price to Book = Market Cap / Total Equity)
-            # REQUIRES valid market_cap
-            # -----------------------------------------------------------------
-            if not market_cap_valid:
-                pb_val, pb_status = None, MetricStatus.MISSING_SHARES
-            else:
-                pb_val, pb_status = safe_divide(market_cap, total_equity, require_positive_denominator=True)
-            if pb_val is not None:
-                metrics["pb"] = pb_val
-            metric_statuses["pb"] = pb_status
-            
-            # -----------------------------------------------------------------
-            # EV/EBITDA (Enterprise Value / EBITDA TTM)
-            # REQUIRES valid EV (which requires market_cap → shares)
-            # -----------------------------------------------------------------
-            if not ev_valid:
-                ev_ebitda_val, ev_ebitda_status = None, MetricStatus.MISSING_SHARES
-            else:
-                ev_ebitda_val, ev_ebitda_status = safe_divide(enterprise_value, ebitda_ttm, require_positive_denominator=True)
-            if ev_ebitda_val is not None:
-                metrics["ev_ebitda"] = ev_ebitda_val
-            metric_statuses["ev_ebitda"] = ev_ebitda_status
-            
-            # -----------------------------------------------------------------
-            # EV/Revenue (Enterprise Value / Revenue TTM)
-            # REQUIRES valid EV
-            # -----------------------------------------------------------------
-            if not ev_valid:
-                ev_revenue_val, ev_revenue_status = None, MetricStatus.MISSING_SHARES
-            else:
-                ev_revenue_val, ev_revenue_status = safe_divide(enterprise_value, revenue_ttm, require_positive_denominator=True)
-            if ev_revenue_val is not None:
-                metrics["ev_revenue"] = ev_revenue_val
-            metric_statuses["ev_revenue"] = ev_revenue_status
-            
-            if not metrics:
-                continue
-            
-            # =================================================================
-            # COMPARE VS PEERS
-            # =================================================================
-            peer_bench = peer_benchmarks.get(industry) or peer_benchmarks.get(f"sector:{sector}") or {}
-            
-            vs_peers = {}
-            for metric_name, current_val in metrics.items():
-                peer_key = f"{metric_name}_median"
-                peer_val = peer_bench.get(peer_key)
-                
-                if peer_val and peer_val > 0:
-                    ratio = current_val / peer_val
-                    if ratio < 0.85:
-                        vs_peers[metric_name] = "cheaper"
-                    elif ratio > 1.15:
-                        vs_peers[metric_name] = "more_expensive"
-                    else:
-                        vs_peers[metric_name] = "around"
-            
-            # Overall vs peers (majority rule)
-            if vs_peers:
-                counts = {"cheaper": 0, "around": 0, "more_expensive": 0}
-                for v in vs_peers.values():
-                    counts[v] += 1
-                
-                total = sum(counts.values())
-                if counts["more_expensive"] / total >= 0.6:
-                    eval_vs_peers = "more_expensive"
-                elif counts["cheaper"] / total >= 0.6:
-                    eval_vs_peers = "cheaper"
+            yearly_balance = balance_sheet.get("yearly", {})
+            yearly_cashflow = cash_flow.get("yearly", {})
+            yearly_earnings = earnings.get("Annual", {})
+
+            quarterly_periods = _sorted_date_keys(quarterly_income, 20)
+            annual_periods = _sorted_date_keys(yearly_income, 5)
+
+            quarterly_points: List[dict] = []
+            annual_points: List[dict] = []
+
+            # ---- Quarterly (20Q) points ----
+            for period_end in quarterly_periods:
+                price_used, price_date_used = _price_on_or_before(price_dates, price_values, period_end)
+                shares_used = _extract_shares_as_of(fund, period_end)
+                net_income_used = _ttm_sum_as_of(quarterly_income, "netIncome", period_end)
+                revenue_used = _ttm_sum_as_of(quarterly_income, "totalRevenue", period_end)
+                ebitda_used = _ttm_sum_as_of(quarterly_income, "ebitda", period_end)
+
+                if ebitda_used is None:
+                    op_income = _ttm_sum_as_of(quarterly_income, "operatingIncome", period_end)
+                    depreciation = _ttm_sum_as_of(quarterly_cashflow, "depreciation", period_end) or 0
+                    if op_income is not None:
+                        ebitda_used = op_income + abs(depreciation)
+
+                book_value_used = _latest_value_on_or_before(quarterly_balance, "totalStockholderEquity", period_end)
+                total_debt_used = _latest_value_on_or_before(quarterly_balance, "totalDebt", period_end)
+                if total_debt_used is None:
+                    short_term = _latest_value_on_or_before(quarterly_balance, "shortTermDebt", period_end) or 0
+                    long_term = _latest_value_on_or_before(quarterly_balance, "longTermDebt", period_end) or 0
+                    total_debt_used = short_term + long_term if (short_term or long_term) else None
+                cash_used = _latest_value_on_or_before(quarterly_balance, "cash", period_end)
+                if cash_used is None:
+                    cash_used = _latest_value_on_or_before(quarterly_balance, "cashAndShortTermInvestments", period_end)
+
+                # EPS TTM from earnings history, fallback net_income/shares handled in metric compute
+                eps_ttm = _eps_ttm_as_of(earnings_history, period_end)
+                if eps_ttm is not None and shares_used is not None:
+                    # Convert EPS back to net income equivalent so one input contract stays consistent
+                    net_income_for_pe = eps_ttm * shares_used
                 else:
-                    eval_vs_peers = "around"
-            else:
-                eval_vs_peers = None
-            
-            # =================================================================
-            # STORE IN CACHE
-            # =================================================================
+                    net_income_for_pe = net_income_used
+
+                metrics, statuses, inputs_used = _compute_point_metrics(
+                    price_used=price_used,
+                    shares_used=shares_used,
+                    net_income_used=net_income_for_pe,
+                    revenue_used=revenue_used,
+                    book_value_used=book_value_used,
+                    ebitda_used=ebitda_used,
+                    total_debt_used=total_debt_used,
+                    cash_used=cash_used,
+                )
+
+                point_doc = {
+                    "ticker": ticker,
+                    "period_type": "quarterly",
+                    "period_end": period_end,
+                    "price_date_used": price_date_used,
+                    "metrics": metrics,
+                    "metric_statuses": statuses,
+                    "reason_codes": {k: (None if v == MetricStatus.OK else v) for k, v in statuses.items()},
+                    "inputs_used": inputs_used,
+                    "sector": sector,
+                    "industry": industry,
+                    "computed_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "local_raw_facts",
+                }
+                await db.ticker_valuation_timeseries.replace_one(
+                    {"ticker": ticker, "period_type": "quarterly", "period_end": period_end},
+                    point_doc,
+                    upsert=True
+                )
+                quarterly_points.append(point_doc)
+                quarterly_points_stored += 1
+                points_stored += 1
+
+            # ---- Annual (5Y) points ----
+            for period_end in annual_periods:
+                price_used, price_date_used = _price_on_or_before(price_dates, price_values, period_end)
+                shares_used = _extract_shares_as_of(fund, period_end)
+                net_income_used = safe_float((yearly_income.get(period_end) or {}).get("netIncome"))
+                revenue_used = safe_float((yearly_income.get(period_end) or {}).get("totalRevenue"))
+                ebitda_used = safe_float((yearly_income.get(period_end) or {}).get("ebitda"))
+                if ebitda_used is None:
+                    op_income = safe_float((yearly_income.get(period_end) or {}).get("operatingIncome"))
+                    depreciation = safe_float((yearly_cashflow.get(period_end) or {}).get("depreciation")) or 0
+                    if op_income is not None:
+                        ebitda_used = op_income + abs(depreciation)
+
+                book_value_used = safe_float((yearly_balance.get(period_end) or {}).get("totalStockholderEquity"))
+                total_debt_used = safe_float((yearly_balance.get(period_end) or {}).get("totalDebt"))
+                if total_debt_used is None:
+                    short_term = safe_float((yearly_balance.get(period_end) or {}).get("shortTermDebt")) or 0
+                    long_term = safe_float((yearly_balance.get(period_end) or {}).get("longTermDebt")) or 0
+                    total_debt_used = short_term + long_term if (short_term or long_term) else None
+                cash_used = safe_float((yearly_balance.get(period_end) or {}).get("cash"))
+                if cash_used is None:
+                    cash_used = safe_float((yearly_balance.get(period_end) or {}).get("cashAndShortTermInvestments"))
+
+                # If annual earnings exists for same period, prefer it for PE component
+                earnings_annual_val = safe_float((yearly_earnings.get(period_end) or {}).get("epsActual"))
+                if earnings_annual_val is not None and shares_used is not None:
+                    net_income_for_pe = earnings_annual_val * shares_used
+                else:
+                    net_income_for_pe = net_income_used
+
+                metrics, statuses, inputs_used = _compute_point_metrics(
+                    price_used=price_used,
+                    shares_used=shares_used,
+                    net_income_used=net_income_for_pe,
+                    revenue_used=revenue_used,
+                    book_value_used=book_value_used,
+                    ebitda_used=ebitda_used,
+                    total_debt_used=total_debt_used,
+                    cash_used=cash_used,
+                )
+
+                point_doc = {
+                    "ticker": ticker,
+                    "period_type": "annual",
+                    "period_end": period_end,
+                    "price_date_used": price_date_used,
+                    "metrics": metrics,
+                    "metric_statuses": statuses,
+                    "reason_codes": {k: (None if v == MetricStatus.OK else v) for k, v in statuses.items()},
+                    "inputs_used": inputs_used,
+                    "sector": sector,
+                    "industry": industry,
+                    "computed_at": datetime.now(timezone.utc).isoformat(),
+                    "source": "local_raw_facts",
+                }
+                await db.ticker_valuation_timeseries.replace_one(
+                    {"ticker": ticker, "period_type": "annual", "period_end": period_end},
+                    point_doc,
+                    upsert=True
+                )
+                annual_points.append(point_doc)
+                annual_points_stored += 1
+                points_stored += 1
+
+            if not quarterly_points and not annual_points:
+                continue
+
+            # -----------------------------------------------------------------
+            # Materialized latest view (derived only from timeseries)
+            # -----------------------------------------------------------------
+            latest_point = quarterly_points[0] if quarterly_points else annual_points[0]
+            latest_metrics_full = latest_point.get("metrics", {})
+            latest_metrics = {k: v for k, v in latest_metrics_full.items() if v is not None}
+            latest_statuses = latest_point.get("metric_statuses", {})
+            latest_inputs = latest_point.get("inputs_used", {})
+
+            peer_bench = peer_benchmarks.get(industry) or peer_benchmarks.get(f"sector:{sector}") or {}
+            vs_peers = {}
+            for metric_name, current_val in latest_metrics.items():
+                peer_val = safe_float(peer_bench.get(f"{metric_name}_median"))
+                cls = _classify_relative(current_val, peer_val)
+                if cls:
+                    vs_peers[metric_name] = cls
+            eval_vs_peers = _majority_badge(list(vs_peers.values()))
+
+            # 5Y comparison from quarterly source-of-truth points (excluding latest)
+            history_pool = quarterly_points[1:] if len(quarterly_points) > 1 else quarterly_points
+            metric_avgs: Dict[str, Optional[float]] = {}
+            vs_5y = {}
+            for metric_name in ["pe", "ps", "pb", "ev_ebitda", "ev_revenue"]:
+                vals = [safe_float((p.get("metrics") or {}).get(metric_name)) for p in history_pool]
+                vals = [v for v in vals if v is not None]
+                metric_avgs[metric_name] = round(sum(vals) / len(vals), 4) if vals else None
+                cls = _classify_relative(latest_metrics.get(metric_name), metric_avgs[metric_name])
+                if cls:
+                    vs_5y[metric_name] = cls
+            eval_vs_5y = _majority_badge(list(vs_5y.values()))
+
             cache_doc = {
                 "_id": ticker,
                 "ticker": ticker,
                 "sector": sector,
                 "industry": industry,
-                "current_price": price,
-                "market_cap": round(market_cap, 0),
-                "current_metrics": metrics,
-                "metric_statuses": metric_statuses,  # P0: Store guardrail statuses
+                "period_type": latest_point.get("period_type"),
+                "period_end": latest_point.get("period_end"),
+                "price_date_used": latest_point.get("price_date_used"),
+                "current_price": latest_inputs.get("price_used"),
+                "market_cap": round(latest_inputs.get("market_cap_used"), 0) if latest_inputs.get("market_cap_used") else None,
+                "current_metrics": latest_metrics,
+                "metric_statuses": latest_statuses,
                 "peer_benchmarks": {f"{k}_median": v for k, v in peer_bench.items()} if peer_bench else None,
                 "vs_peers": vs_peers if vs_peers else None,
                 "eval_vs_peers": eval_vs_peers,
-                "eval_vs_5y": None,  # TODO: Implement 5Y average comparison
-                # P0 FIX: Store raw_inputs for Net Debt/EBITDA calculation in mobile_data
+                "vs_5y": vs_5y if vs_5y else None,
+                "metric_5y_averages": metric_avgs,
+                "eval_vs_5y": eval_vs_5y,
+                # Backward-compatible raw_inputs shape expected by server
                 "raw_inputs": {
-                    "ebitda_ttm": ebitda_ttm,
-                    "total_debt": total_debt,
-                    "cash": cash,
-                    "enterprise_value": enterprise_value if ev_valid else None,
-                    "shares_outstanding": shares,
+                    "ebitda_ttm": latest_inputs.get("ebitda_used"),
+                    "total_debt": latest_inputs.get("total_debt"),
+                    "cash": latest_inputs.get("cash"),
+                    "enterprise_value": latest_inputs.get("enterprise_value"),
+                    "shares_outstanding": latest_inputs.get("shares_outstanding"),
                 },
-                "computed_at": datetime.now(timezone.utc).isoformat()
+                "timeseries_source": {
+                    "collection": "ticker_valuation_timeseries",
+                    "latest_period_type": latest_point.get("period_type"),
+                    "latest_period_end": latest_point.get("period_end"),
+                    "quarterly_points": len(quarterly_points),
+                    "annual_points": len(annual_points),
+                },
+                "computed_at": datetime.now(timezone.utc).isoformat(),
+                "source": "materialized_from_timeseries",
             }
-            
+
             await db.ticker_valuations_cache.replace_one(
                 {"_id": ticker},
                 cache_doc,
                 upsert=True
             )
-            stored += 1
-        
+            latest_views_stored += 1
+
         if processed % 500 == 0:
-            logger.info(f"  Processed {processed}/{len(ticker_list)} tickers, stored {stored}")
-    
-    # Create index for fast lookups
-    await db.ticker_valuations_cache.create_index("ticker", unique=True)
+            logger.info(
+                f"  Processed {processed}/{len(ticker_list)} tickers, "
+                f"timeseries_points={points_stored}, latest_views={latest_views_stored}"
+            )
     
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
     
-    logger.info(f"Valuation pre-computation completed: {stored} tickers in {elapsed:.1f}s")
+    logger.info(
+        f"M-06 valuation pre-computation completed: latest_views={latest_views_stored}, "
+        f"timeseries_points={points_stored} in {elapsed:.1f}s"
+    )
     
     return {
         "status": "success",
         "tickers_processed": processed,
-        "tickers_stored": stored,
+        "tickers_stored": latest_views_stored,
+        "timeseries_points_stored": points_stored,
+        "quarterly_points_stored": quarterly_points_stored,
+        "annual_points_stored": annual_points_stored,
         "elapsed_seconds": round(elapsed, 1)
     }
 
