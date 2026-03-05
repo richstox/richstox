@@ -652,6 +652,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     Does NOT do a full refresh of all tickers.
     """
     from batch_jobs_service import sync_single_ticker_fundamentals
+    from visibility_rules import recompute_visibility_all
     
     started_at = datetime.now(timezone.utc)
     job_name = "fundamentals_sync"
@@ -714,17 +715,6 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 event_type = event.get("event_type") or "unknown"
                 requested_event_types[event_type] = requested_event_types.get(event_type, 0) + 1
         
-        if not tickers_to_sync:
-            logger.info(f"{job_name}: No pending events to process")
-            return {
-                "job_name": job_name,
-                "status": "completed",
-                "message": "No pending events",
-                "processed": 0,
-                "classification_events_enqueued": class_enqueue.get("inserted", 0),
-                "started_at": started_at.isoformat(),
-            }
-        
         # Process tickers
         result = {
             "job_name": job_name,
@@ -737,36 +727,69 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "requested_event_types": requested_event_types,
             "started_at": started_at.isoformat(),
         }
-        
-        for ticker in tickers_to_sync:
-            # Check kill switch between tickers (manual endpoints can bypass)
-            if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
-                result["status"] = "interrupted"
-                result["reason"] = "kill_switch_engaged"
-                break
-            
-            ticker_result = await sync_single_ticker_fundamentals(
-                db,
-                ticker,
-                source_job=job_name,
-            )
-            result["processed"] += 1
-            
-            if ticker_result["success"]:
-                result["success"] += 1
-                # Mark selected pending events for this ticker as completed.
-                event_ids = [
-                    e.get("_id")
-                    for e in events_by_ticker.get(f"{ticker}.US", [])
-                    if e.get("_id")
-                ]
-                if event_ids:
-                    await db.fundamentals_events.update_many(
-                        {"_id": {"$in": event_ids}},
-                        {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}}
-                    )
-            else:
-                result["failed"] += 1
+
+        if not tickers_to_sync:
+            logger.info(f"{job_name}: No pending events to process")
+            result["message"] = "No pending events"
+        else:
+            for ticker in tickers_to_sync:
+                # Check kill switch between tickers (manual endpoints can bypass)
+                if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
+                    result["status"] = "interrupted"
+                    result["reason"] = "kill_switch_engaged"
+                    break
+
+                ticker_result = await sync_single_ticker_fundamentals(
+                    db,
+                    ticker,
+                    source_job=job_name,
+                )
+                result["processed"] += 1
+
+                if ticker_result["success"]:
+                    result["success"] += 1
+                    # Mark selected pending events for this ticker as completed.
+                    event_ids = [
+                        e.get("_id")
+                        for e in events_by_ticker.get(f"{ticker}.US", [])
+                        if e.get("_id")
+                    ]
+                    if event_ids:
+                        await db.fundamentals_events.update_many(
+                            {"_id": {"$in": event_ids}},
+                            {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}}
+                        )
+                else:
+                    result["failed"] += 1
+
+        # Step 4 auto-chain: after successful Step 3 completion, recompute visibility.
+        step4_chain = {
+            "triggered": False,
+            "status": "skipped",
+        }
+        if result["status"] == "completed":
+            try:
+                visibility_result = await recompute_visibility_all(db)
+                step4_chain = {
+                    "triggered": True,
+                    "status": "completed",
+                    "job_id": visibility_result.get("job_id"),
+                    "duration_seconds": visibility_result.get("duration_seconds"),
+                    "changed": visibility_result.get("stats", {}).get("changed"),
+                    "now_visible": visibility_result.get("after", {}).get("visible_count"),
+                }
+                logger.info(
+                    f"{job_name}: Step 4 auto-chain completed "
+                    f"(job_id={step4_chain.get('job_id')}, changed={step4_chain.get('changed')})"
+                )
+            except Exception as step4_error:
+                step4_chain = {
+                    "triggered": True,
+                    "status": "failed",
+                    "error": str(step4_error),
+                }
+                logger.error(f"{job_name}: Step 4 auto-chain failed: {step4_error}")
+        result["step4_visibility"] = step4_chain
         
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
         
