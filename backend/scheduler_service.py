@@ -130,7 +130,7 @@ async def log_scheduled_job(
     return str(result.inserted_id)
 
 
-async def run_daily_price_sync(db) -> Dict[str, Any]:
+async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
     Run daily price sync job with GAP DETECTION AND BULK CATCHUP.
     
@@ -151,8 +151,8 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
     logger.info(f"Starting {job_name} with gap detection and bulk catchup")
     
     try:
-        # Check kill switch
-        if not await get_scheduler_enabled(db):
+        # Check kill switch (manual endpoints can explicitly bypass)
+        if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
             logger.warning(f"{job_name} skipped: kill switch engaged")
             return {
                 "job_name": job_name,
@@ -288,7 +288,7 @@ async def sync_has_price_data_flags(db) -> Dict[str, int]:
     }
 
 
-async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, Any]:
+async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
     
@@ -306,8 +306,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, A
     logger.info(f"Starting {job_name}")
     
     try:
-        # Check kill switch
-        if not await get_scheduler_enabled(db):
+        # Check kill switch (manual endpoints can explicitly bypass)
+        if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
             logger.warning(f"{job_name} skipped: kill switch engaged")
             return {
                 "job_name": job_name,
@@ -345,8 +345,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, A
         }
         
         for ticker in tickers_to_sync:
-            # Check kill switch between tickers
-            if not await get_scheduler_enabled(db):
+            # Check kill switch between tickers (manual endpoints can bypass)
+            if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
                 result["status"] = "interrupted"
                 result["reason"] = "kill_switch_engaged"
                 break
@@ -439,7 +439,7 @@ async def get_tickers_needing_backfill(db, limit: int = 100) -> List[str]:
     return tickers_to_backfill[:limit]
 
 
-async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
+async def run_price_backfill_gaps(db, batch_size: int = 50, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
     Run price backfill for tickers that need it.
     
@@ -458,8 +458,8 @@ async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
     logger.info(f"Starting {job_name}")
     
     try:
-        # Check kill switch
-        if not await get_scheduler_enabled(db):
+        # Check kill switch (manual endpoints can explicitly bypass)
+        if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
             logger.warning(f"{job_name} skipped: kill switch engaged")
             return {
                 "job_name": job_name,
@@ -494,8 +494,8 @@ async def run_price_backfill_gaps(db, batch_size: int = 50) -> Dict[str, Any]:
         }
         
         for ticker in tickers_to_backfill:
-            # Check kill switch between tickers
-            if not await get_scheduler_enabled(db):
+            # Check kill switch between tickers (manual endpoints can bypass)
+            if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
                 result["status"] = "interrupted"
                 result["reason"] = "kill_switch_engaged"
                 break

@@ -4831,11 +4831,11 @@ async def admin_manual_price_sync(background_tasks: BackgroundTasks, wait: bool 
     Cost: 1 API credit (bulk endpoint)
     """
     if wait:
-        result = await run_daily_price_sync(db)
+        result = await run_daily_price_sync(db, ignore_kill_switch=True)
         return result
     
     # Run in background to avoid timeout
-    background_tasks.add_task(run_daily_price_sync, db)
+    background_tasks.add_task(run_daily_price_sync, db, True)
     return {
         "status": "started",
         "job_type": "price_sync",
@@ -4853,10 +4853,10 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
     Cost: ~10 API credits per ticker
     """
     if wait:
-        result = await run_fundamentals_changes_sync(db, batch_size=batch_size)
+        result = await run_fundamentals_changes_sync(db, batch_size=batch_size, ignore_kill_switch=True)
         return result
     
-    background_tasks.add_task(run_fundamentals_changes_sync, db, batch_size)
+    background_tasks.add_task(run_fundamentals_changes_sync, db, batch_size, True)
     return {
         "status": "started",
         "job_type": "fundamentals_sync",
@@ -4879,10 +4879,10 @@ async def admin_manual_price_backfill(background_tasks: BackgroundTasks, batch_s
     Cost: 1 API credit per ticker
     """
     if wait:
-        result = await run_price_backfill_gaps(db, batch_size=batch_size)
+        result = await run_price_backfill_gaps(db, batch_size=batch_size, ignore_kill_switch=True)
         return result
     
-    background_tasks.add_task(run_price_backfill_gaps, db, batch_size)
+    background_tasks.add_task(run_price_backfill_gaps, db, batch_size, True)
     return {
         "status": "started",
         "job_type": "price_backfill",
