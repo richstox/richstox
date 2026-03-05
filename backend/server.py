@@ -2052,7 +2052,7 @@ async def admin_run_universe_seed(request: Request):
 
     try:
         result = await sync_ticker_whitelist(db, dry_run=False)
-        status = "completed"
+        status = "completed" if result.get("status") == "success" else "failed"
     except Exception as e:
         result = {"error": str(e)}
         status = "failed"
