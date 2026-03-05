@@ -28,6 +28,9 @@ interface JobRun {
 }
 
 interface OverviewData {
+  health?: {
+    scheduler_active?: boolean;
+  };
   job_last_runs?: Record<string, JobRun>;
   jobs?: {
     registry?: any[];
@@ -119,6 +122,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [runningJob, setRunningJob] = useState<string | null>(null);
   const [downloadingReport, setDownloadingReport] = useState(false);
+  const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [runResult, setRunResult] = useState<Record<string, string>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
 
@@ -176,6 +180,34 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   };
 
   const hasExclusionRows = (exclusionReport?.total_rows ?? 0) > 0;
+  const schedulerActive = data?.health?.scheduler_active;
+
+  const handleSchedulerToggle = async () => {
+    if (schedulerUpdating) return;
+    if (typeof schedulerActive !== 'boolean') {
+      Alert.alert('Scheduler status unavailable', 'Please refresh and try again.');
+      return;
+    }
+    setSchedulerUpdating(true);
+    try {
+      const targetEnabled = !schedulerActive;
+      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+      const res = await fetch(
+        `${API_URL}/api/admin/scheduler/kill-switch?enabled=${targetEnabled ? 'true' : 'false'}`,
+        { method: 'POST', headers: requestHeaders }
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload?.detail || payload?.message || res.statusText);
+      }
+      await fetchData();
+      Alert.alert('Scheduler updated', targetEnabled ? 'Scheduler resumed.' : 'Scheduler paused.');
+    } catch (e: any) {
+      Alert.alert('Update failed', e?.message || 'Could not update scheduler state');
+    } finally {
+      setSchedulerUpdating(false);
+    }
+  };
 
   const handleRunNow = async (jobName: string) => {
     if (runningJob) return;
@@ -370,6 +402,24 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           <View style={[s.progressFill, { width: `${healthPct}%` as any, backgroundColor: healthColor }]} />
         </View>
         <Text style={s.healthSub}>{completedCount}/5 steps completed today</Text>
+        <View style={s.schedulerControlRow}>
+          <Text style={s.schedulerControlText}>
+            Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
+          </Text>
+          <TouchableOpacity
+            style={[
+              s.schedulerBtn,
+              schedulerActive ? s.schedulerPauseBtn : s.schedulerResumeBtn,
+              (schedulerUpdating || typeof schedulerActive !== 'boolean') && s.schedulerBtnDisabled,
+            ]}
+            onPress={handleSchedulerToggle}
+            disabled={schedulerUpdating || typeof schedulerActive !== 'boolean'}
+          >
+            {schedulerUpdating
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={s.schedulerBtnText}>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
+          </TouchableOpacity>
+        </View>
         {/* Mini funnel summary */}
         <View style={s.miniSummary}>
           <View style={s.miniItem}>
@@ -699,6 +749,13 @@ const s = StyleSheet.create({
   progressBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 6 },
   progressFill: { height: 6, borderRadius: 3 },
   healthSub: { fontSize: 11, color: COLORS.textMuted, marginBottom: 10 },
+  schedulerControlRow: { marginBottom: 10, gap: 8 },
+  schedulerControlText: { fontSize: 11, color: COLORS.textMuted },
+  schedulerBtn: { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 7, minWidth: 140, alignItems: 'center' },
+  schedulerPauseBtn: { backgroundColor: '#EF4444' },
+  schedulerResumeBtn: { backgroundColor: '#22C55E' },
+  schedulerBtnDisabled: { opacity: 0.6 },
+  schedulerBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
   miniItem: { alignItems: 'center', flex: 1 },

@@ -4,10 +4,10 @@
  * 3 tabs: Dashboard · Pipeline · Customers
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, SafeAreaView, Alert,
+  RefreshControl, ActivityIndicator, SafeAreaView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
@@ -82,18 +82,13 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const [stats, setStats] = useState<StatsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [schedulerUpdating, setSchedulerUpdating] = useState(false);
-
-  const headers = useMemo(
-    () => (sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
-    [sessionToken]
-  );
 
   const fetchAll = useCallback(async () => {
     try {
+      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
       const [ovRes, statsRes] = await Promise.allSettled([
-        fetch(`${API_URL}/api/admin/overview`, { headers }),
-        fetch(`${API_URL}/api/admin/stats`, { headers }),
+        fetch(`${API_URL}/api/admin/overview`, { headers: requestHeaders }),
+        fetch(`${API_URL}/api/admin/stats`, { headers: requestHeaders }),
       ]);
       if (ovRes.status === 'fulfilled' && ovRes.value.ok) setOverview(await ovRes.value.json());
       if (statsRes.status === 'fulfilled' && statsRes.value.ok) setStats(await statsRes.value.json());
@@ -103,7 +98,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [headers]);
+  }, [sessionToken]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
   const onRefresh = () => { setRefreshing(true); fetchAll(); };
@@ -120,32 +115,6 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const failedCount = overview?.jobs?.failed?.length ?? 0;
   const visibleCount = overview?.universe_funnel?.counts?.visible_tickers ?? 0;
   const schedulerActive = overview?.health?.scheduler_active;
-
-  const handleSchedulerToggle = useCallback(async () => {
-    if (schedulerUpdating) return;
-    if (typeof schedulerActive !== 'boolean') {
-      Alert.alert('Scheduler status unavailable', 'Please refresh the dashboard and try again.');
-      return;
-    }
-    setSchedulerUpdating(true);
-    try {
-      const targetEnabled = !schedulerActive;
-      const res = await fetch(
-        `${API_URL}/api/admin/scheduler/kill-switch?enabled=${targetEnabled ? 'true' : 'false'}`,
-        { method: 'POST', headers }
-      );
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(payload?.detail || payload?.message || res.statusText);
-      }
-      await fetchAll();
-      Alert.alert('Scheduler updated', targetEnabled ? 'Scheduler resumed.' : 'Scheduler paused.');
-    } catch (e: any) {
-      Alert.alert('Update failed', e?.message || 'Could not update scheduler state');
-    } finally {
-      setSchedulerUpdating(false);
-    }
-  }, [schedulerUpdating, schedulerActive, headers, fetchAll]);
 
   // Build alerts
   const alerts: { color: string; icon: string; text: string }[] = [];
@@ -217,24 +186,6 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             <View style={[d.progressFill, { width: `${healthPct}%` as any, backgroundColor: healthColor }]} />
           </View>
           <Text style={d.progressLabel}>{completedSteps}/5 steps completed today</Text>
-        </View>
-        <View style={d.schedulerControlRow}>
-          <Text style={d.schedulerControlText}>
-            Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
-          </Text>
-          <TouchableOpacity
-            style={[
-              d.schedulerBtn,
-              schedulerActive ? d.schedulerPauseBtn : d.schedulerResumeBtn,
-              schedulerUpdating && d.schedulerBtnDisabled,
-            ]}
-            onPress={handleSchedulerToggle}
-            disabled={schedulerUpdating || typeof schedulerActive !== 'boolean'}
-          >
-            {schedulerUpdating
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={d.schedulerBtnText}>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
-          </TouchableOpacity>
         </View>
       </View>
 
@@ -341,13 +292,6 @@ const d = StyleSheet.create({
   progressBg: { height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' },
   progressFill: { height: 4, borderRadius: 2 },
   progressLabel: { fontSize: 10, color: COLORS.textMuted },
-  schedulerControlRow: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border, gap: 8 },
-  schedulerControlText: { fontSize: 11, color: COLORS.textMuted },
-  schedulerBtn: { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 7, minWidth: 140, alignItems: 'center' },
-  schedulerPauseBtn: { backgroundColor: '#EF4444' },
-  schedulerResumeBtn: { backgroundColor: '#22C55E' },
-  schedulerBtnDisabled: { opacity: 0.6 },
-  schedulerBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   statCard: { width: '30.5%', backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', gap: 4 },
