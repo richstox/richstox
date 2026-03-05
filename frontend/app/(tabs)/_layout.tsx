@@ -1,7 +1,7 @@
 import React from 'react';
 import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS } from '../_layout';
+import { COLORS, FONTS } from '../_layout';
 import { Platform, ActivityIndicator, View } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -35,7 +35,7 @@ export default function TabsLayout() {
         },
         tabBarLabelStyle: {
           fontSize: 11,
-          fontWeight: '500',
+          fontFamily: FONTS.bodyMedium,
         },
         headerShown: false,
       }}

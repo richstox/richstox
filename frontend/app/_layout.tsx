@@ -33,6 +33,22 @@ export const FONTS = {
   bodyBold: 'Inter_700Bold',
 };
 
+export const TYPOGRAPHY = {
+  h1: { fontFamily: FONTS.heading, fontSize: 48, letterSpacing: 0 },
+  h2: { fontFamily: FONTS.heading, fontSize: 28, letterSpacing: 0 },
+  h3: { fontFamily: FONTS.heading, fontSize: 22, letterSpacing: 0 },
+  subtitle: { fontFamily: FONTS.body, fontSize: 18, color: '#444444' },
+  body: { fontFamily: FONTS.body, fontSize: 14 },
+  bodyLarge: { fontFamily: FONTS.body, fontSize: 16 },
+  label: { fontFamily: FONTS.bodyMedium, fontSize: 13 },
+  button: { fontFamily: FONTS.bodyMedium, fontSize: 16 },
+  caption: { fontFamily: FONTS.body, fontSize: 12 },
+  tabLabel: { fontFamily: FONTS.bodyMedium, fontSize: 11 },
+  metric: { fontFamily: FONTS.bodySemiBold, fontSize: 20 },
+  metricSmall: { fontFamily: FONTS.bodySemiBold, fontSize: 14 },
+  sectionTitle: { fontFamily: FONTS.bodyBold, fontSize: 14, letterSpacing: 0.5, textTransform: 'uppercase' as const },
+};
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     DMSerifDisplay_400Regular,
