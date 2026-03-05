@@ -2063,6 +2063,9 @@ async def admin_run_universe_seed(request: Request):
         "job_name": "universe_seed",
         "started_at": started_at,
         "finished_at": finished_at,
+        "started_at_prague": started_at.isoformat(),
+        "finished_at_prague": finished_at.isoformat(),
+        "log_timezone": "Europe/Prague",
         "duration_sec": (finished_at - started_at).total_seconds(),
         "status": status,
         "result": result,
@@ -4706,6 +4709,9 @@ async def admin_get_job_status(job_name: str):
 async def create_job_audit_entry(database, job_name: str, triggered_by: str = "admin_api") -> str:
     """Create initial audit entry for manual job run with inventory snapshot."""
     from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+    started_at = datetime.now(timezone.utc)
     
     # Get inventory snapshot BEFORE
     inventory_before = {
@@ -4718,8 +4724,11 @@ async def create_job_audit_entry(database, job_name: str, triggered_by: str = "a
     audit_doc = {
         "job_name": job_name,
         "job_type": "manual_ad_hoc",
-        "started_at": datetime.now(timezone.utc),
+        "started_at": started_at,
+        "started_at_prague": started_at.astimezone(PRAGUE).isoformat(),
         "finished_at": None,
+        "finished_at_prague": None,
+        "log_timezone": "Europe/Prague",
         "triggered_by": triggered_by,
         "trigger_source": "Admin Panel",
         "tickers_targeted": 0,
@@ -4742,6 +4751,9 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
     """Update audit entry after job completion with inventory snapshot AFTER."""
     from datetime import datetime, timezone
     from bson import ObjectId
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+    finished_at = datetime.now(timezone.utc)
     
     # Get inventory snapshot AFTER
     inventory_after = {
@@ -4752,7 +4764,8 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
     }
     
     update_doc = {
-        "finished_at": datetime.now(timezone.utc),
+        "finished_at": finished_at,
+        "finished_at_prague": finished_at.astimezone(PRAGUE).isoformat(),
         "inventory_snapshot_after": inventory_after,
         "status": "error" if error else "completed",
     }

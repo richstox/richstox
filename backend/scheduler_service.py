@@ -42,6 +42,14 @@ PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP2_REPORT_STEP = "Step 2 - Price Sync"
 
 
+def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(PRAGUE_TZ).isoformat()
+
+
 async def get_scheduler_enabled(db) -> bool:
     """
     Check if scheduler is enabled (kill switch NOT engaged).
@@ -125,6 +133,9 @@ async def log_scheduled_job(
         "details": details,
         "started_at": started_at,
         "finished_at": end_time,
+        "started_at_prague": _to_prague_iso(started_at),
+        "finished_at_prague": _to_prague_iso(end_time),
+        "log_timezone": "Europe/Prague",
         "duration_seconds": duration,
         "error": error,
         "created_at": now,
@@ -425,11 +436,15 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
         result["fundamentals_events_enqueued"] = event_detector_summary.get("enqueued_total", 0)
 
         # Log to ops_job_runs
+        finished_at = datetime.now(timezone.utc)
         await db.ops_job_runs.insert_one({
             "job_name": job_name,
             "source": "scheduler",
             "started_at": started_at,
-            "finished_at": datetime.now(timezone.utc),
+            "finished_at": finished_at,
+            "started_at_prague": _to_prague_iso(started_at),
+            "finished_at_prague": _to_prague_iso(finished_at),
+            "log_timezone": "Europe/Prague",
             "status": result.get("status", "completed"),
             "details": {
                 "config": result.get("config"),

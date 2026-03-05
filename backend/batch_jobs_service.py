@@ -14,6 +14,7 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 import asyncio
+from zoneinfo import ZoneInfo
 
 from fundamentals_service import (
     fetch_fundamentals_from_eodhd,
@@ -24,6 +25,7 @@ from fundamentals_service import (
 )
 
 logger = logging.getLogger("richstox.batch_jobs")
+PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 # Kill switch - set to True to pause all batch jobs
 BATCH_JOB_KILL_SWITCH = False
@@ -42,6 +44,14 @@ def set_kill_switch(enabled: bool):
     logger.info(f"Kill switch {'ENABLED' if enabled else 'DISABLED'}")
 
 
+def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(PRAGUE_TZ).isoformat()
+
+
 async def log_job_run(
     db,
     job_name: str,
@@ -51,12 +61,16 @@ async def log_job_run(
     finished_at: Optional[datetime] = None
 ):
     """Log job run to ops_job_runs collection."""
+    end_time = finished_at or datetime.now(timezone.utc)
     doc = {
         "job_name": job_name,
         "status": status,
         "details": details,
         "started_at": started_at,
-        "finished_at": finished_at or datetime.now(timezone.utc),
+        "finished_at": end_time,
+        "started_at_prague": _to_prague_iso(started_at),
+        "finished_at_prague": _to_prague_iso(end_time),
+        "log_timezone": "Europe/Prague",
         "created_at": datetime.now(timezone.utc),
     }
     await db.ops_job_runs.insert_one(doc)

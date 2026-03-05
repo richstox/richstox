@@ -159,6 +159,15 @@ def get_prague_time() -> datetime:
     return datetime.now(TIMEZONE)
 
 
+def to_prague_iso(dt: datetime | None) -> str | None:
+    """Format datetime as Prague ISO string for audit logs."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(TIMEZONE).isoformat()
+
+
 def is_sunday() -> bool:
     """Check if today is Sunday (universe seed day)."""
     return get_prague_time().weekday() == UNIVERSE_SEED_DAY
@@ -209,6 +218,9 @@ async def log_job_execution(db, job_name: str, status: str, start_time: datetime
         "status": status,
         "start_time": start_time,
         "end_time": end_time,
+        "start_time_prague": to_prague_iso(start_time),
+        "end_time_prague": to_prague_iso(end_time),
+        "log_timezone": "Europe/Prague",
         "duration_seconds": round(duration, 2),
         "records_processed": records_processed,
         "error_message": error_message,
@@ -261,6 +273,9 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
                 "status": result.get("status", "completed"),
                 "started_at": started_at,
                 "completed_at": completed_at,
+                "started_at_prague": to_prague_iso(started_at),
+                "completed_at_prague": to_prague_iso(completed_at),
+                "log_timezone": "Europe/Prague",
                 "duration_seconds": (completed_at - started_at).total_seconds(),
                 "result": result if isinstance(result, dict) else {"value": str(result)},
                 "details": {
@@ -292,6 +307,9 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
         "status": "failed",
         "started_at": started_at,
         "completed_at": completed_at,
+        "started_at_prague": to_prague_iso(started_at),
+        "completed_at_prague": to_prague_iso(completed_at),
+        "log_timezone": "Europe/Prague",
         "duration_seconds": (completed_at - started_at).total_seconds(),
         "details": {"error": error_msg}
     })
