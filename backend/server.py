@@ -6233,7 +6233,7 @@ async def admin_get_pipeline_exclusion_report(
     cursor = db.pipeline_exclusion_report.find(
         query,
         {"_id": 0}
-    ).sort([("step", 1), ("ticker", 1)]).skip(offset).limit(limit)
+    ).sort([("created_at", -1), ("step", 1), ("ticker", 1)]).skip(offset).limit(limit)
     rows = await cursor.to_list(length=limit)
 
     by_step: Dict[str, int] = {}
@@ -6325,7 +6325,7 @@ async def admin_download_pipeline_exclusion_report(
     cursor = db.pipeline_exclusion_report.find(
         query,
         {"_id": 0, "ticker": 1, "name": 1, "step": 1, "reason": 1}
-    ).sort([("step", 1), ("ticker", 1)])
+    ).sort([("created_at", -1), ("step", 1), ("ticker", 1)])
 
     async for doc in cursor:
         writer.writerow([
