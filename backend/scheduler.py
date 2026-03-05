@@ -262,6 +262,7 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
                 "started_at": started_at,
                 "completed_at": completed_at,
                 "duration_seconds": (completed_at - started_at).total_seconds(),
+                "result": result if isinstance(result, dict) else {"value": str(result)},
                 "details": {
                     "api_calls": result.get("api_calls"),
                     "records_updated": records_processed,

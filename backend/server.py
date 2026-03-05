@@ -6199,6 +6199,116 @@ async def admin_full_history_backfill_status():
 # VISIBLE UNIVERSE ADMIN ENDPOINTS
 # =============================================================================
 
+@api_router.get("/admin/pipeline/exclusion-report")
+async def admin_get_pipeline_exclusion_report(
+    report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to Prague today)"),
+    step: str = Query(None, description="Optional step filter, e.g. 'Step 1 - Universe Seed'"),
+    limit: int = Query(100, ge=1, le=2000),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Get pipeline exclusion report rows (Ticker | Name | Step | Reason).
+    Shared report collection across all pipeline steps.
+    """
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+
+    if not report_date:
+        report_date = datetime.now(PRAGUE).strftime("%Y-%m-%d")
+
+    query = {"report_date": report_date}
+    if step:
+        query["step"] = step
+
+    total_rows = await db.pipeline_exclusion_report.count_documents(query)
+    cursor = db.pipeline_exclusion_report.find(
+        query,
+        {"_id": 0}
+    ).sort([("step", 1), ("ticker", 1)]).skip(offset).limit(limit)
+    rows = await cursor.to_list(length=limit)
+
+    by_step: Dict[str, int] = {}
+    by_reason: Dict[str, int] = {}
+
+    async for doc in db.pipeline_exclusion_report.aggregate([
+        {"$match": query},
+        {"$group": {"_id": "$step", "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]):
+        by_step[doc["_id"]] = doc["count"]
+
+    async for doc in db.pipeline_exclusion_report.aggregate([
+        {"$match": query},
+        {"$group": {"_id": "$reason", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+    ]):
+        by_reason[doc["_id"]] = doc["count"]
+
+    available_dates = await db.pipeline_exclusion_report.distinct("report_date")
+    available_dates = sorted([d for d in available_dates if d], reverse=True)[:30]
+
+    return {
+        "report_date": report_date,
+        "total_rows": total_rows,
+        "offset": offset,
+        "limit": limit,
+        "by_step": by_step,
+        "by_reason": by_reason,
+        "available_dates": available_dates,
+        "rows": rows,
+    }
+
+
+@api_router.get("/admin/pipeline/exclusion-report/download")
+async def admin_download_pipeline_exclusion_report(
+    report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to Prague today)"),
+    step: str = Query(None, description="Optional step filter"),
+):
+    """
+    Download pipeline exclusion report as CSV.
+    """
+    from zoneinfo import ZoneInfo
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+
+    PRAGUE = ZoneInfo("Europe/Prague")
+
+    if not report_date:
+        report_date = datetime.now(PRAGUE).strftime("%Y-%m-%d")
+
+    query = {"report_date": report_date}
+    if step:
+        query["step"] = step
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Ticker", "Name", "Step", "Reason"])
+
+    cursor = db.pipeline_exclusion_report.find(
+        query,
+        {"_id": 0, "ticker": 1, "name": 1, "step": 1, "reason": 1}
+    ).sort([("step", 1), ("ticker", 1)])
+
+    async for doc in cursor:
+        writer.writerow([
+            doc.get("ticker", ""),
+            doc.get("name", ""),
+            doc.get("step", ""),
+            doc.get("reason", ""),
+        ])
+
+    output.seek(0)
+    safe_step = (step or "all_steps").replace(" ", "_").replace("/", "_")
+    filename = f"pipeline_exclusion_report_{report_date}_{safe_step}.csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+
 @api_router.get("/admin/excluded-tickers")
 async def admin_get_excluded_tickers(
     reason: str = Query(None, description="Filter by exclusion reason"),

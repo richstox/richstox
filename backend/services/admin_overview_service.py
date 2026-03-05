@@ -40,8 +40,11 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             "status":       {"$first": "$status"},
             "started_at":   {"$first": "$started_at"},
             "finished_at":  {"$first": "$finished_at"},
+            "completed_at": {"$first": "$completed_at"},
             "duration_sec": {"$first": "$duration_sec"},
+            "duration_seconds": {"$first": "$duration_seconds"},
             "result":       {"$first": "$result"},
+            "details":      {"$first": "$details"},
             "triggered_by": {"$first": "$triggered_by"},
         }},
     ]
@@ -53,11 +56,11 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         if not job_name:
             continue
         started = doc.get("started_at")
-        finished = doc.get("finished_at")
-        result = doc.get("result") or {}
+        finished = doc.get("finished_at") or doc.get("completed_at")
+        result = doc.get("result") or doc.get("details") or {}
         doc["start_time"] = started.isoformat() if hasattr(started, "isoformat") else str(started) if started else None
         doc["end_time"] = finished.isoformat() if hasattr(finished, "isoformat") else str(finished) if finished else None
-        doc["duration_seconds"] = doc.get("duration_sec")
+        doc["duration_seconds"] = doc.get("duration_sec") or doc.get("duration_seconds")
         doc["records_processed"] = (
             result.get("added_pending") or
             result.get("processed") or
