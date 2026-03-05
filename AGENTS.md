@@ -82,3 +82,10 @@ mongod --fork --logpath /var/log/mongod.log --dbpath /data/db
 - A `package-lock.json` may also exist in `frontend/` — yarn will emit a warning about it; this is harmless.
 - The `Makefile` at the repo root uses `/app/` paths (Railway production paths), not `/workspace/`. For local development, run commands directly.
 - `~/.local/bin` must be on PATH for `ruff`, `uvicorn`, and other pip-installed CLI tools.
+
+### Git branch continuity (important)
+
+- Do **not** create a new `cursor/*` branch for follow-up tasks unless Richard explicitly asks for it.
+- Continue on the branch already checked out in the workspace for that session.
+- If multiple `cursor/*` branches exist and one is stale/merged, consolidate by moving changes to the active branch and deleting the stale branch.
+- Before committing, verify branch + tracking with `git status --branch` and `git branch -vv`.
