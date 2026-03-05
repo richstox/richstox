@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator,
+  RefreshControl, ActivityIndicator, Alert, Linking, Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
@@ -43,6 +43,20 @@ interface OverviewData {
       visible_tickers?: number;
     };
   };
+}
+
+interface PipelineExclusionRow {
+  ticker: string;
+  name: string;
+  step: string;
+  reason: string;
+}
+
+interface PipelineExclusionReport {
+  report_date: string;
+  total_rows: number;
+  rows: PipelineExclusionRow[];
+  by_reason: Record<string, number>;
 }
 
 function getNextRun(hour: number, minute: number): string {
@@ -93,18 +107,24 @@ function fmt(n?: number): string {
 
 export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [data, setData] = useState<OverviewData | null>(null);
+  const [exclusionReport, setExclusionReport] = useState<PipelineExclusionReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [runningJob, setRunningJob] = useState<string | null>(null);
+  const [downloadingReport, setDownloadingReport] = useState(false);
   const [runResult, setRunResult] = useState<Record<string, string>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
 
-  const headers = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/admin/overview`, { headers });
-      if (res.ok) setData(await res.json());
+      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+      const [overviewRes, exclusionRes] = await Promise.all([
+        fetch(`${API_URL}/api/admin/overview`, { headers: requestHeaders }),
+        fetch(`${API_URL}/api/admin/pipeline/exclusion-report?limit=20`, { headers: requestHeaders }),
+      ]);
+
+      if (overviewRes.ok) setData(await overviewRes.json());
+      if (exclusionRes.ok) setExclusionReport(await exclusionRes.json());
     } catch (e) {
       console.error(e);
     } finally {
@@ -117,11 +137,43 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const onRefresh = () => { setRefreshing(true); fetchData(); };
 
+  const handleDownloadExclusionReport = async () => {
+    if (!exclusionReport?.report_date || downloadingReport) return;
+    setDownloadingReport(true);
+    try {
+      const params = new URLSearchParams({ report_date: exclusionReport.report_date });
+      const downloadUrl = `${API_URL}/api/admin/pipeline/exclusion-report/download?${params.toString()}`;
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+        const response = await fetch(downloadUrl, { headers: requestHeaders });
+        if (!response.ok) {
+          throw new Error(`Download failed (${response.status})`);
+        }
+        const blob = await response.blob();
+        const objectUrl = window.URL.createObjectURL(blob);
+        const link = window.document.createElement('a');
+        link.href = objectUrl;
+        link.download = `pipeline_exclusion_report_${exclusionReport.report_date}.csv`;
+        window.document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(objectUrl);
+      } else {
+        await Linking.openURL(downloadUrl);
+      }
+    } catch (e: any) {
+      Alert.alert('Download failed', e?.message || 'Could not open report download');
+    } finally {
+      setDownloadingReport(false);
+    }
+  };
+
   const handleRunNow = async (jobName: string) => {
     if (runningJob) return;
     setRunningJob(jobName);
     setRunResult(prev => ({ ...prev, [jobName]: '' }));
     try {
+      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
       const SYNC_JOBS = ['price_sync', 'fundamentals_sync', 'news_refresh'];
       const useWait = SYNC_JOBS.includes(jobName);
       let endpoint = jobName === 'universe_seed'
@@ -130,7 +182,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (useWait) endpoint += '?wait=true';
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...headers },
+        headers: { 'Content-Type': 'application/json', ...requestHeaders },
       });
       const json = await res.json();
       if (res.ok) {
@@ -149,7 +201,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const toggleExpand = (step: number) => {
     setExpandedSteps(prev => {
       const next = new Set(prev);
-      next.has(step) ? next.delete(step) : next.add(step);
+      if (next.has(step)) {
+        next.delete(step);
+      } else {
+        next.add(step);
+      }
       return next;
     });
   };
@@ -184,15 +240,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       job_name: 'universe_seed',
       title: 'Universe Seed',
       schedule: 'Mon–Sat 23:00 Prague',
-      scheduledHour: 4,
+      scheduledHour: 23,
       scheduledMinute: 0,
       icon: 'globe-outline' as const,
       color: '#6366F1',
       apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
       inputLabel: 'Raw symbols (EODHD)',
-      inputCount: undefined as number | undefined, // Step 1 = funnel start, no prior input
+      inputCount: rawSymbols,
       outputCount: seeded,
-      outputLabel: 'seeded',
+      outputLabel: 'seeded tickers',
       filters: [
         'Type ≠ "Common Stock"',
         'Ticker contains dot (ADR / preferred)',
@@ -308,6 +364,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         {/* Mini funnel summary */}
         <View style={s.miniSummary}>
           <View style={s.miniItem}>
+            <Text style={s.miniNum}>{fmt(rawSymbols)}</Text>
+            <Text style={s.miniLabel}>raw</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
+          <View style={s.miniItem}>
             <Text style={s.miniNum}>{fmt(seeded)}</Text>
             <Text style={s.miniLabel}>seeded</Text>
           </View>
@@ -339,9 +400,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const inCount = step.inputCount;
         const outCount = step.outputCount;
         const droppedCount = (inCount !== undefined && outCount !== undefined)
-          ? inCount - outCount
+          ? Math.max(inCount - outCount, 0)
           : undefined;
-        const passPct = (inCount && outCount !== undefined)
+        const passPct = (inCount !== undefined && inCount > 0 && outCount !== undefined)
           ? Math.round((outCount / inCount) * 100)
           : null;
 
@@ -386,7 +447,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               ) : null}
 
               {/* ── Integrated Funnel Row ── */}
-              {/* Step 1: no input box — funnel starts here */}
               {/* Steps 2+: waiting state if previous step has 0 output */}
               {inCount === 0 && step.step > 1 ? (
                 <View style={s.waitingRow}>
@@ -395,8 +455,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               ) : (
                 <View style={s.funnelRow}>
-                  {/* INPUT — hidden for Step 1 */}
-                  {inCount !== undefined && step.step > 1 && (
+                  {/* INPUT */}
+                  {inCount !== undefined && (
                     <View style={s.funnelBox}>
                       <Text style={s.funnelBoxNum}>{fmt(inCount)}</Text>
                       <Text style={s.funnelBoxLabel}>{step.inputLabel}</Text>
@@ -404,7 +464,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   )}
 
                   {/* Arrow + pass rate — only when we have both sides */}
-                  {inCount !== undefined && step.step > 1 && (
+                  {inCount !== undefined && (
                     <View style={s.funnelArrow}>
                       <Ionicons name="arrow-forward" size={16} color={step.color} />
                       {passPct !== null && (
@@ -416,15 +476,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   )}
 
                   {/* OUTPUT */}
-                  <View style={[s.funnelBox, s.funnelBoxOut, { borderColor: step.color + '88', flex: step.step === 1 ? 1 : 2.5 }]}>
+                  <View style={[s.funnelBox, s.funnelBoxOut, { borderColor: step.color + '88', flex: 2.5 }]}>
                     <Text style={[s.funnelBoxNum, { color: step.color }]}>
                       {outCount !== undefined ? fmt(outCount) : '—'}
                     </Text>
                     <Text style={s.funnelBoxLabel}>{step.outputLabel}</Text>
-                    {/* Step 1: show raw EODHD count as subtitle */}
-                    {step.step === 1 && rawSymbols !== undefined && (
-                      <Text style={s.funnelRawNote}>from {fmt(rawSymbols)} raw symbols</Text>
-                    )}
                   </View>
 
                   {/* DROPPED */}
@@ -513,6 +569,49 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           </View>
         );
       })}
+
+      {/* Exclusion Report */}
+      <View style={s.reportCard}>
+        <View style={s.reportHeader}>
+          <View>
+            <Text style={s.reportTitle}>Filtered-out tickers report</Text>
+            <Text style={s.reportMeta}>
+              {exclusionReport
+                ? `${exclusionReport.report_date} · ${fmt(exclusionReport.total_rows)} rows`
+                : 'No report generated yet'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            style={[s.downloadBtn, downloadingReport && s.runBtnDisabled]}
+            onPress={handleDownloadExclusionReport}
+            disabled={!exclusionReport || downloadingReport}
+          >
+            {downloadingReport
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={s.downloadBtnText}>Download CSV</Text>}
+          </TouchableOpacity>
+        </View>
+
+        {exclusionReport?.rows?.length ? (
+          <View style={s.reportList}>
+            <View style={s.reportListHeader}>
+              <Text style={[s.reportHeadCell, { flex: 1.1 }]}>Ticker</Text>
+              <Text style={[s.reportHeadCell, { flex: 2.2 }]}>Name</Text>
+              <Text style={[s.reportHeadCell, { flex: 1.7 }]}>Reason</Text>
+            </View>
+            {exclusionReport.rows.slice(0, 8).map((row, idx) => (
+              <View key={`${row.ticker}-${row.reason}-${idx}`} style={s.reportListRow}>
+                <Text style={[s.reportCellTicker, { flex: 1.1 }]}>{row.ticker}</Text>
+                <Text style={[s.reportCell, { flex: 2.2 }]} numberOfLines={1}>{row.name}</Text>
+                <Text style={[s.reportCell, { flex: 1.7 }]} numberOfLines={1}>{row.reason}</Text>
+              </View>
+            ))}
+            <Text style={s.reportFootnote}>Showing first 8 rows from latest report</Text>
+          </View>
+        ) : (
+          <Text style={s.reportEmpty}>No filtered-out rows available for the selected report date.</Text>
+        )}
+      </View>
 
       {/* Morning Fresh — independent job, not part of universe pipeline */}
       <View style={[s.stepCard, { marginTop: 16, borderLeftColor: '#06B6D4', borderLeftWidth: 3 }]}>
@@ -605,7 +704,6 @@ const s = StyleSheet.create({
 
   waitingRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, marginBottom: 6, paddingVertical: 8, paddingHorizontal: 10, backgroundColor: COLORS.border + '33', borderRadius: 8 },
   waitingText: { fontSize: 11, color: COLORS.textMuted, fontStyle: 'italic' },
-  funnelRawNote: { fontSize: 9, color: COLORS.textMuted, marginTop: 3, textAlign: 'center' },
   funnelBarWrap: { height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden', marginBottom: 8 },
   funnelBar: { height: 4, borderRadius: 2 },
 
@@ -623,6 +721,21 @@ const s = StyleSheet.create({
   detailValue: { fontSize: 11, color: COLORS.text, marginBottom: 2 },
   apiText: { fontSize: 10, color: '#6366F1', fontFamily: 'monospace', marginBottom: 1 },
   filterText: { fontSize: 10, color: '#EF4444', marginBottom: 1 },
+
+  reportCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
+  reportHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 },
+  reportTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  reportMeta: { fontSize: 10, color: COLORS.textMuted, marginTop: 2 },
+  downloadBtn: { backgroundColor: '#6366F1', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
+  downloadBtnText: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  reportList: { marginTop: 10, borderWidth: 1, borderColor: COLORS.border, borderRadius: 8, overflow: 'hidden' },
+  reportListHeader: { flexDirection: 'row', backgroundColor: COLORS.border + '55', paddingHorizontal: 8, paddingVertical: 6 },
+  reportHeadCell: { fontSize: 9, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase' },
+  reportListRow: { flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, borderTopWidth: 1, borderTopColor: COLORS.border + '66' },
+  reportCell: { fontSize: 10, color: COLORS.text },
+  reportCellTicker: { fontSize: 10, color: '#6366F1', fontWeight: '700' },
+  reportFootnote: { fontSize: 9, color: COLORS.textMuted, paddingHorizontal: 8, paddingVertical: 6, borderTopWidth: 1, borderTopColor: COLORS.border + '66' },
+  reportEmpty: { fontSize: 10, color: COLORS.textMuted, fontStyle: 'italic', marginTop: 8 },
 
   arrow: { alignItems: 'center', paddingVertical: 4 },
   arrowLine: { width: 1, height: 8, backgroundColor: COLORS.border },

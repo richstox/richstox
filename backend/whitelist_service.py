@@ -77,8 +77,9 @@ Pipeline:
 import os
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import httpx
+from zoneinfo import ZoneInfo
 
 from visibility_rules import get_canonical_sieve_query
 
@@ -89,6 +90,8 @@ EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
 # Exchanges to sync
 SUPPORTED_EXCHANGES = ["NYSE", "NASDAQ"]
+PRAGUE_TZ = ZoneInfo("Europe/Prague")
+STEP1_REPORT_STEP = "Step 1 - Universe Seed"
 
 # Filter criteria for whitelist candidates
 WHITELIST_FILTERS = {
@@ -180,9 +183,19 @@ async def fetch_fundamentals(ticker: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def filter_whitelist_candidates(symbols: List[Dict[str, Any]], exchange: str) -> List[Dict[str, Any]]:
-    """Filter symbols to only include whitelist candidates."""
+def filter_whitelist_candidates(
+    symbols: List[Dict[str, Any]],
+    exchange: str,
+    include_exclusions: bool = False
+) -> List[Dict[str, Any]] | Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Filter symbols to only include whitelist candidates.
+
+    If include_exclusions=True, also returns rows for exclusion report:
+    Ticker | Name | Step | Reason
+    """
     candidates = []
+    exclusions = []
     
     # Patterns to exclude (warrants, preferred, units, rights, etc.)
     EXCLUDE_PATTERNS = [
@@ -192,26 +205,44 @@ def filter_whitelist_candidates(symbols: List[Dict[str, Any]], exchange: str) ->
         "-R", "-RI",          # Rights
         ".A", ".B", ".C",     # Class shares with dots
     ]
+
+    def append_exclusion(sym: Dict[str, Any], reason: str) -> None:
+        if not include_exclusions:
+            return
+        raw_code = (sym.get("Code") or "").strip().upper()
+        exclusions.append({
+            "ticker": raw_code if raw_code else "(empty)",
+            "name": (sym.get("Name") or "").strip() or "(unknown)",
+            "step": STEP1_REPORT_STEP,
+            "reason": reason,
+            "exchange": exchange,
+        })
     
     for sym in symbols:
         code = sym.get("Code", "").strip()
         if not code:
+            append_exclusion(sym, "Empty ticker code")
             continue
         
         # Skip tickers with dots (usually ADRs, preferred shares, units)
         if "." in code:
+            append_exclusion(sym, "Ticker contains dot")
             continue
         
         # Skip tickers matching exclude patterns
         skip = False
+        matched_pattern = None
         for pattern in EXCLUDE_PATTERNS:
             if pattern in code.upper():
                 skip = True
+                matched_pattern = pattern
                 break
         if skip:
+            append_exclusion(sym, f"Excluded pattern ({matched_pattern})")
             continue
         
         if sym.get("Type") != WHITELIST_FILTERS["type"]:
+            append_exclusion(sym, f"Type != {WHITELIST_FILTERS['type']}")
             continue
         
         candidates.append({
@@ -226,7 +257,47 @@ def filter_whitelist_candidates(symbols: List[Dict[str, Any]], exchange: str) ->
         })
     
     logger.info(f"Filtered {len(candidates)} candidates from {exchange}")
+    if include_exclusions:
+        return candidates, exclusions
     return candidates
+
+
+async def save_universe_seed_exclusion_report(
+    db,
+    rows: List[Dict[str, Any]],
+    now: datetime
+) -> Dict[str, Any]:
+    """
+    Save Step 1 exclusion rows to shared pipeline exclusion report collection.
+    One report date can include multiple steps; this function rewrites only Step 1 rows.
+    """
+    report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
+    run_id = f"universe_seed_{now.strftime('%Y%m%d_%H%M%S')}"
+
+    await db.pipeline_exclusion_report.delete_many({
+        "report_date": report_date,
+        "step": STEP1_REPORT_STEP,
+    })
+
+    if not rows:
+        return {"exclusion_report_date": report_date, "exclusion_report_rows": 0, "exclusion_report_run_id": run_id}
+
+    docs = []
+    for row in rows:
+        docs.append({
+            "ticker": row.get("ticker", "(empty)"),
+            "name": row.get("name", "(unknown)"),
+            "step": row.get("step", STEP1_REPORT_STEP),
+            "reason": row.get("reason", "Unknown"),
+            "exchange": row.get("exchange"),
+            "report_date": report_date,
+            "source_job": "universe_seed",
+            "run_id": run_id,
+            "created_at": now,
+        })
+
+    await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
+    return {"exclusion_report_date": report_date, "exclusion_report_rows": len(docs), "exclusion_report_run_id": run_id}
 
 
 def extract_fundamentals_cache(fundamentals: Dict[str, Any], ticker: str) -> Dict[str, Any]:
@@ -293,6 +364,7 @@ async def sync_ticker_whitelist(
         "exchanges": exchanges,
         "fetched": 0,
         "filtered": 0,
+        "filtered_out": 0,
         "added_pending": 0,
         "already_exists": 0,
         "reactivated": 0,
@@ -303,6 +375,7 @@ async def sync_ticker_whitelist(
     
     # Collect all candidates
     all_candidates = []
+    all_exclusions = []
     for exchange in exchanges:
         symbols = await fetch_exchange_symbols(exchange)
         result["fetched"] += len(symbols)
@@ -311,16 +384,22 @@ async def sync_ticker_whitelist(
             result["errors"].append(f"No symbols returned from {exchange}")
             continue
         
-        candidates = filter_whitelist_candidates(symbols, exchange)
+        candidates, exclusions = filter_whitelist_candidates(symbols, exchange, include_exclusions=True)
         result["filtered"] += len(candidates)
+        result["filtered_out"] += len(exclusions)
         all_candidates.extend(candidates)
+        all_exclusions.extend(exclusions)
     
     if not all_candidates:
         result["errors"].append("No candidates after filtering")
+        result["seeded_total"] = 0
+        if not dry_run:
+            result.update(await save_universe_seed_exclusion_report(db, all_exclusions, now))
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
         return result
     
     candidate_tickers = {c["ticker"] for c in all_candidates}
+    result["seeded_total"] = len(candidate_tickers)
     logger.info(f"Total whitelist candidates: {len(candidate_tickers)}")
     
     if dry_run:
@@ -339,6 +418,7 @@ async def sync_ticker_whitelist(
             else:
                 result["already_exists"] += 1
         
+        result["exclusion_report_rows_preview"] = len(all_exclusions)
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
         return result
     
@@ -430,6 +510,7 @@ async def sync_ticker_whitelist(
         }
     )
     result["deactivated"] = deactivate_result.modified_count
+    result.update(await save_universe_seed_exclusion_report(db, all_exclusions, now))
     
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
     
