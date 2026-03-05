@@ -121,6 +121,11 @@ function fmt(n?: number): string {
   return n.toLocaleString();
 }
 
+function safeCount(v: any): number {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  return 0;
+}
+
 export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [exclusionReport, setExclusionReport] = useState<PipelineExclusionReport | null>(null);
@@ -475,6 +480,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const prevRunOk = !!prevRun && (prevRun.status === 'success' || prevRun.status === 'completed');
         const prevRunTs = prevRun?.start_time ? Date.parse(prevRun.start_time) : 0;
         const currentRunTs = run?.start_time ? Date.parse(run.start_time) : 0;
+        const eventDetectors = step.job_name === 'price_sync'
+          ? ((run as any)?.details?.event_detectors || {})
+          : {};
+        const splitDetector = eventDetectors?.step_2_2_split || {};
+        const dividendDetector = eventDetectors?.step_2_4_dividend || {};
+        const earningsDetector = eventDetectors?.step_2_6_earnings || {};
+        const hasStep2DetectorPayload = Object.keys(eventDetectors || {}).length > 0;
         const nextRunLabel = step.step === 1
           ? getNextRun(step.scheduledHour, step.scheduledMinute, true)
           : (!prevRunOk || inCount === 0)
@@ -620,27 +632,43 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {step.job_name === 'price_sync' && run?.details?.event_detectors && (
+              {step.job_name === 'price_sync' && (
                 <View style={s.substepsCard}>
-                  <Text style={s.substepsTitle}>Step 2 sub-steps (event detectors)</Text>
-                  <View style={s.substepRow}>
-                    <Text style={s.substepName}>2.2 Splits</Text>
+                  <Text style={s.substepsTitle}>Step 2 sub-steps (clear view)</Text>
+                  <Text style={s.substepMeta}>Main source URL: https://eodhd.com/api/eod-bulk-last-day/US</Text>
+
+                  <View style={s.substepBlock}>
+                    <Text style={s.substepName}>2.2 Split detector</Text>
+                    <Text style={s.substepMeta}>What we do: compare latest vs previous close for split-like jumps.</Text>
+                    <Text style={s.substepMeta}>Result:</Text>
                     <Text style={s.substepValue}>
-                      {fmt(run.details.event_detectors?.step_2_2_split?.candidate_tickers)} candidates · {fmt(run.details.event_detectors?.step_2_2_split?.enqueued)} queued
+                      {fmt(safeCount(splitDetector?.checked_tickers))} checked · {fmt(safeCount(splitDetector?.candidate_tickers))} candidates · {fmt(safeCount(splitDetector?.enqueued))} queued
                     </Text>
                   </View>
-                  <View style={s.substepRow}>
-                    <Text style={s.substepName}>2.4 Dividends</Text>
+
+                  <View style={s.substepBlock}>
+                    <Text style={s.substepName}>2.4 Dividend detector</Text>
+                    <Text style={s.substepMeta}>What we do: check ex-dividend window in cached fundamentals.</Text>
+                    <Text style={s.substepMeta}>Fundamentals source URL: https://eodhd.com/api/fundamentals/{'{TICKER}'}.US</Text>
+                    <Text style={s.substepMeta}>Result:</Text>
                     <Text style={s.substepValue}>
-                      {fmt(run.details.event_detectors?.step_2_4_dividend?.candidate_tickers)} candidates · {fmt(run.details.event_detectors?.step_2_4_dividend?.enqueued)} queued
+                      {fmt(safeCount(dividendDetector?.checked_tickers))} checked · {fmt(safeCount(dividendDetector?.candidate_tickers))} candidates · {fmt(safeCount(dividendDetector?.enqueued))} queued
                     </Text>
                   </View>
-                  <View style={s.substepRow}>
-                    <Text style={s.substepName}>2.6 Earnings</Text>
+
+                  <View style={s.substepBlock}>
+                    <Text style={s.substepName}>2.6 Earnings refresh detector</Text>
+                    <Text style={s.substepMeta}>What we do: detect stale fundamentals and queue refresh.</Text>
+                    <Text style={s.substepMeta}>Refresh URL used later: https://eodhd.com/api/fundamentals/{'{TICKER}'}.US</Text>
+                    <Text style={s.substepMeta}>Result:</Text>
                     <Text style={s.substepValue}>
-                      {fmt(run.details.event_detectors?.step_2_6_earnings?.candidate_tickers)} candidates · {fmt(run.details.event_detectors?.step_2_6_earnings?.enqueued)} queued
+                      {fmt(safeCount(earningsDetector?.checked_tickers))} checked · {fmt(safeCount(earningsDetector?.candidate_tickers))} candidates · {fmt(safeCount(earningsDetector?.enqueued))} queued
                     </Text>
                   </View>
+
+                  {!hasStep2DetectorPayload && (
+                    <Text style={s.substepMeta}>No detector payload found in this run record yet. Values shown as 0.</Text>
+                  )}
                 </View>
               )}
 
@@ -855,6 +883,18 @@ const s = StyleSheet.create({
     color: COLORS.textMuted,
     marginBottom: 4,
     textTransform: 'uppercase',
+  },
+  substepBlock: {
+    marginTop: 4,
+    marginBottom: 4,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border + '66',
+  },
+  substepMeta: {
+    fontSize: 10,
+    color: COLORS.textMuted,
+    marginBottom: 2,
   },
   substepRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 2 },
   substepName: { fontSize: 11, color: COLORS.text, flex: 1 },
