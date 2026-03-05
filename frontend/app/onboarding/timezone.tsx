@@ -83,9 +83,9 @@ export default function TimezoneOnboarding() {
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.title}>Vyberte svou zemi</Text>
+        <Text style={styles.title}>Select your country</Text>
         <Text style={styles.subtitle}>
-          Časy v aplikaci budou zobrazeny ve vašem místním časovém pásmu
+          Times in the app will be shown in your local timezone
         </Text>
       </View>
 
@@ -94,7 +94,7 @@ export default function TimezoneOnboarding() {
         <Ionicons name="search" size={20} color={COLORS.textMuted} />
         <TextInput
           style={styles.searchInput}
-          placeholder="Hledat zemi..."
+          placeholder="Search country..."
           placeholderTextColor={COLORS.textMuted}
           value={searchQuery}
           onChangeText={setSearchQuery}
@@ -137,7 +137,7 @@ export default function TimezoneOnboarding() {
           data-testid="continue-btn"
         >
           <Text style={styles.continueButtonText}>
-            {isLoading ? 'Ukládám...' : 'Pokračovat'}
+            {isLoading ? 'Saving...' : 'Continue'}
           </Text>
         </TouchableOpacity>
 
@@ -146,7 +146,7 @@ export default function TimezoneOnboarding() {
           onPress={handleSkip}
           data-testid="skip-timezone-btn"
         >
-          <Text style={styles.skipText}>Přeskočit</Text>
+          <Text style={styles.skipText}>Skip</Text>
         </TouchableOpacity>
       </View>
     </View>

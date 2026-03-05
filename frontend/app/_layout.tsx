@@ -1,7 +1,7 @@
 import React from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider } from '../contexts/AuthContext';
 
@@ -27,52 +27,63 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <SafeAreaProvider>
-        <View style={styles.container}>
-          <StatusBar style="dark" />
-          <Stack
-            screenOptions={{
-              headerShown: false,
-              contentStyle: { backgroundColor: COLORS.background },
-              animation: 'fade',
-            }}
-          >
-            <Stack.Screen name="index" />
-            <Stack.Screen name="login" />
-            <Stack.Screen name="auth/callback" />
-            <Stack.Screen name="onboarding" />
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen 
-              name="position/[id]" 
-              options={{
-                headerShown: true,
-                headerTitle: 'Position Details',
-                headerStyle: { backgroundColor: COLORS.background },
-                headerTintColor: COLORS.text,
-                headerShadowVisible: false,
-              }}
-            />
-            <Stack.Screen 
-              name="ticker-not-found" 
-              options={{
-                presentation: 'modal',
-              }}
-            />
-            <Stack.Screen 
-              name="admin" 
-              options={{
+        <View style={styles.outerContainer}>
+          <View style={styles.container}>
+            <StatusBar style="dark" />
+            <Stack
+              screenOptions={{
                 headerShown: false,
+                contentStyle: { backgroundColor: COLORS.background },
+                animation: 'fade',
               }}
-            />
-          </Stack>
+            >
+              <Stack.Screen name="index" />
+              <Stack.Screen name="login" />
+              <Stack.Screen name="auth/callback" />
+              <Stack.Screen name="onboarding" />
+              <Stack.Screen name="(tabs)" />
+              <Stack.Screen 
+                name="position/[id]" 
+                options={{
+                  headerShown: true,
+                  headerTitle: 'Position Details',
+                  headerStyle: { backgroundColor: COLORS.background },
+                  headerTintColor: COLORS.text,
+                  headerShadowVisible: false,
+                }}
+              />
+              <Stack.Screen 
+                name="ticker-not-found" 
+                options={{
+                  presentation: 'modal',
+                }}
+              />
+              <Stack.Screen 
+                name="admin" 
+                options={{
+                  headerShown: false,
+                }}
+              />
+            </Stack>
+          </View>
         </View>
       </SafeAreaProvider>
     </AuthProvider>
   );
 }
 
+const WEB_MAX_WIDTH = 480;
+
 const styles = StyleSheet.create({
+  outerContainer: {
+    flex: 1,
+    backgroundColor: '#E8E4DF',
+    alignItems: 'center',
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+    width: '100%',
+    ...(Platform.OS === 'web' ? { maxWidth: WEB_MAX_WIDTH } : {}),
   },
 });

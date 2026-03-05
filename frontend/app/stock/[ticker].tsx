@@ -2020,7 +2020,7 @@ export default function StockDetail() {
                   return (
                     <TouchableOpacity 
                       style={styles.realityCheckMetricCompact}
-                      onPress={() => alert('RRR (Upside/Downside): kolik upsidu akcie měla vs kolik klesla, měřeno od začátku období. Čím vyšší, tím lepší.')}
+                      onPress={() => alert('RRR (Upside/Downside): how much upside the stock had vs how much it dropped, measured from the start of the period. The higher, the better.')}
                       data-testid="rrr-performance-check"
                     >
                       <Text style={styles.realityCheckLabelCompact}>RRR (Risk/Reward)</Text>
