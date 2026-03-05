@@ -400,22 +400,12 @@ export default function StockDetail() {
     setTooltipVisible(true);
   };
 
-  // NEW: Fetch mobile detail API (RAW FACTS ONLY)
   const fetchMobileDetail = async (period: PriceRange = '1Y') => {
     try {
-      // P8 FIX: Always fetch full data (lite=false) to include financials
-      const url = `${API_URL}/api/v1/ticker/${ticker}/detail?period=${period}`;
-      console.log('P8 FETCH: Calling URL:', url);
-      const response = await axios.get(url);
-      console.log('P8 FETCH: Response status:', response.status);
-      console.log('P8 FETCH: Response data keys:', Object.keys(response.data || {}));
-      console.log('P8 FETCH: financials in response.data:', response.data?.financials ? 'EXISTS' : 'MISSING');
-      if (response.data?.financials) {
-        console.log('P8 FETCH: financials.annual count:', response.data.financials.annual?.length);
-      }
+      const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/detail?period=${period}`);
       setMobileData(response.data);
     } catch (err: any) {
-      console.error('P8 FETCH ERROR:', err.message || err);
+      console.error('Error fetching mobile detail:', err.message || err);
     }
   };
 
@@ -493,73 +483,35 @@ export default function StockDetail() {
     }
   };
 
-  // P1 FINAL: Fetch MAX chart data for Reality Check RRR calculation
   const fetchMaxChartData = async () => {
     try {
-      console.log('P1 FINAL: Fetching MAX chart data for RRR...');
       const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/chart?period=MAX&include_benchmark=false`);
       const prices = response.data.prices || [];
-      console.log('P1 FINAL: Received', prices.length, 'prices for MAX');
-      
-      // Convert to expected format (no downsampling needed for RRR calculation)
       const formattedPrices = prices.map((p: any) => ({
         date: p.date,
         adjusted_close: p.adjusted_close || p.close,
       }));
-      
       setMaxChartData(formattedPrices);
-      console.log('P1 FINAL: maxChartData set with', formattedPrices.length, 'points');
     } catch (err: any) {
-      console.error('Error fetching MAX chart data for RRR:', err);
+      console.error('Error fetching MAX chart data:', err);
     }
   };
 
   // P25/P26: PAIN data now comes from ticker_pain_cache via /v1/ticker/{ticker}/detail API
 
   useEffect(() => {
-    if (!ticker) return; // Guard: wait for ticker to be defined
-    fetchStock(true);
+    if (!ticker) return;
+    fetchStock(false);
     fetchDividends();
-    fetchMobileDetail('MAX'); // P1 CRITICAL: Default to MAX
-    fetchChartData('MAX'); // P1 CRITICAL: Load MAX chart data immediately
-    
-    // P1 FINAL: Load MAX data for Reality Check RRR (inline to avoid closure issues)
-    const loadMaxChartData = async () => {
-      try {
-        console.log('P1 FINAL: Fetching MAX chart data for RRR for ticker:', ticker);
-        const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/chart?period=MAX&include_benchmark=false`);
-        const prices = response.data.prices || [];
-        console.log('P1 FINAL: Received', prices.length, 'prices for MAX');
-        
-        const formattedPrices = prices.map((p: any) => ({
-          date: p.date,
-          adjusted_close: p.adjusted_close || p.close,
-        }));
-        
-        setMaxChartData(formattedPrices);
-        console.log('P1 FINAL: maxChartData set with', formattedPrices.length, 'points');
-      } catch (err: any) {
-        console.error('Error fetching MAX chart data for RRR:', err);
-      }
-    };
-    loadMaxChartData();
+    fetchMaxChartData();
   }, [ticker]);
 
-  // Fetch chart data when ticker or range changes
   useEffect(() => {
     if (ticker) {
       fetchChartData(priceRange);
-      // Also update period_stats when range changes
       fetchMobileDetail(priceRange);
     }
   }, [ticker, priceRange]);
-
-  // P4: Single vertical scroll - always load full data
-  useEffect(() => {
-    if (data?.lite_mode) {
-      fetchStock(false);
-    }
-  }, []);
 
   // P34 Fix 5: Check if ticker is in watchlist
   const checkIfFollowed = useCallback(async () => {

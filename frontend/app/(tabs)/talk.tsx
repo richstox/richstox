@@ -315,11 +315,6 @@ export default function TalkScreen() {
     }
   };
 
-  // Fetch tickers only on mount (no re-fetch on filter change)
-  useEffect(() => {
-    fetchTickers();
-  }, []);
-
   // Fetch subscription counts from API
   const fetchSubscriptionCounts = async (token: string) => {
     if (!token) return;

@@ -73,12 +73,12 @@ export default function Search() {
   const searchTickers = async () => {
     setLoading(true);
     try {
-      // Use whitelist search - returns only synced stocks (no ETFs)
       const response = await axios.get(`${API_URL}/api/whitelist/search?q=${searchQuery}`);
       const searchResults = response.data.results || [];
       setResults(searchResults);
+      setLoading(false);
       
-      // P34 Fix 3: Check watchlist status for each result
+      // Load watchlist status in background (non-blocking)
       const watchlistChecks: Record<string, boolean> = {};
       await Promise.all(
         searchResults.slice(0, 20).map(async (item: any) => {
@@ -93,7 +93,6 @@ export default function Search() {
       setWatchlistState(watchlistChecks);
     } catch (error) {
       console.error('Error searching:', error);
-    } finally {
       setLoading(false);
     }
   };
