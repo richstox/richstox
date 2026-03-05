@@ -11,6 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { FONTS } from '../_layout';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -205,7 +206,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     flex: 1,
     fontSize: 18,
-    fontWeight: '700',
+    fontFamily: FONTS.heading,
     color: COLORS.primary,
     marginLeft: 10,
   },
@@ -361,7 +362,7 @@ const styles = StyleSheet.create({
   },
   yourRank: {
     fontSize: 36,
-    fontWeight: '700',
+    fontFamily: FONTS.heading,
     color: '#FFF',
   },
   yourRankLabel: {

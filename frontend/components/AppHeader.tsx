@@ -20,6 +20,7 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
+import { FONTS } from '../app/_layout';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -248,10 +249,10 @@ const styles = StyleSheet.create({
   headerTitle: {
     flex: 1,
     fontSize: 18,
-    fontWeight: '700',
+    fontFamily: FONTS.heading,
     color: COLORS.primary,
     marginLeft: 10,
-    letterSpacing: 1,
+    letterSpacing: 0,
   },
   headerRight: { 
     flexDirection: 'row', 
@@ -375,11 +376,12 @@ const styles = StyleSheet.create({
   },
   menuUserName: {
     fontSize: 15,
-    fontWeight: '600',
+    fontFamily: FONTS.bodySemiBold,
     color: COLORS.text,
   },
   menuUserEmail: {
     fontSize: 12,
+    fontFamily: FONTS.body,
     color: COLORS.textMuted,
     marginTop: 2,
   },
@@ -396,6 +398,7 @@ const styles = StyleSheet.create({
   },
   menuItemText: {
     fontSize: 15,
+    fontFamily: FONTS.body,
     color: COLORS.text,
   },
 });

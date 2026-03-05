@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
+import { FONTS } from '../_layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -1202,7 +1203,7 @@ const styles = StyleSheet.create({
 
   welcomeText: {
     fontSize: 22,
-    fontWeight: '600',
+    fontFamily: FONTS.heading,
     color: COLORS.text,
     marginBottom: 16,
   },
@@ -1215,9 +1216,11 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   sectionTitle: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 14,
+    fontFamily: FONTS.bodyBold,
     color: COLORS.text,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
   },
   performanceSubtitle: {
     fontSize: 12,
@@ -1240,7 +1243,7 @@ const styles = StyleSheet.create({
   },
   metricValue: {
     fontSize: 28,
-    fontWeight: '700',
+    fontFamily: FONTS.bodySemiBold,
   },
   metricDivider: {
     width: 1,
@@ -1753,11 +1756,12 @@ const styles = StyleSheet.create({
   },
   companyTicker: {
     fontSize: 14,
-    fontWeight: '700',
+    fontFamily: FONTS.bodyBold,
     color: COLORS.text,
   },
   companyName: {
     fontSize: 12,
+    fontFamily: FONTS.body,
     color: COLORS.textMuted,
     marginTop: 2,
   },

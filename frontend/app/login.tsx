@@ -10,7 +10,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Platform, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
-import { COLORS, FONTS } from './_layout';
+import { COLORS, FONTS, TYPOGRAPHY } from './_layout';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function LoginScreen() {
@@ -154,15 +154,12 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   title: {
-    fontSize: 28,
-    fontFamily: FONTS.heading,
+    ...TYPOGRAPHY.h1,
     color: COLORS.text,
     marginBottom: 8,
   },
   subtitle: {
-    fontSize: 16,
-    fontFamily: FONTS.body,
-    color: COLORS.textLight,
+    ...TYPOGRAPHY.subtitle,
     textAlign: 'center',
     fontStyle: 'italic',
   },
@@ -200,13 +197,11 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   googleButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+    ...TYPOGRAPHY.button,
     color: COLORS.text,
   },
   appleButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
+    ...TYPOGRAPHY.button,
     color: '#FFFFFF',
   },
   pendingText: {
