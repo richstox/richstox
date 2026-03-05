@@ -13,7 +13,7 @@ import { COLORS } from '../_layout';
 export default function AuthCallback() {
   const router = useRouter();
   const { processSessionId } = useAuth();
-  const [status, setStatus] = useState('Přihlašování...');
+  const [status, setStatus] = useState('Signing in...');
   const hasProcessed = useRef(false);
 
   useEffect(() => {
@@ -39,20 +39,20 @@ export default function AuthCallback() {
     }
     
     if (!sessionId) {
-      setStatus('Chyba přihlášení');
+      setStatus('Login error');
       setTimeout(() => router.replace('/login'), 1500);
       return;
     }
 
-    setStatus('Přihlašování...');
+    setStatus('Signing in...');
     const success = await processSessionId(sessionId);
     
     if (success) {
-      setStatus('Úspěch!');
+      setStatus('Success!');
       window.history.replaceState(null, '', window.location.pathname);
       setTimeout(() => router.replace('/(tabs)/dashboard'), 500);
     } else {
-      setStatus('Přihlášení selhalo');
+      setStatus('Login failed');
       setTimeout(() => router.replace('/login'), 1500);
     }
   };

@@ -38,7 +38,7 @@ export default function LoginScreen() {
 
   const handleAppleLogin = () => {
     // Apple Sign-In - pending credentials
-    alert('Apple Sign-In bude brzy k dispozici');
+    alert('Apple Sign-In coming soon');
   };
 
   return (
@@ -49,9 +49,9 @@ export default function LoginScreen() {
           style={styles.logo}
           resizeMode="contain"
         />
-        <Text style={styles.title}>Vítejte v RICHSTOX</Text>
+        <Text style={styles.title}>Welcome to RICHSTOX</Text>
         <Text style={styles.subtitle}>
-          Vaše chytrá investiční analytika
+          Your smart investment analytics
         </Text>
       </View>
 
@@ -62,7 +62,7 @@ export default function LoginScreen() {
           onPress={handleGoogleLogin}
           disabled={isLoading || isLoggingIn}
           testID="google-login-btn"
-          accessibilityLabel="Přihlásit se přes Google"
+          accessibilityLabel="Sign in with Google"
         >
           <View style={styles.buttonContent}>
             {isLoggingIn ? (
@@ -71,7 +71,7 @@ export default function LoginScreen() {
               <Ionicons name="logo-google" size={20} color="#4285F4" />
             )}
             <Text style={styles.googleButtonText}>
-              {isLoggingIn ? 'Přihlašování...' : 'Pokračovat s Google'}
+              {isLoggingIn ? 'Signing in...' : 'Continue with Google'}
             </Text>
           </View>
         </TouchableOpacity>
@@ -82,26 +82,26 @@ export default function LoginScreen() {
           onPress={handleAppleLogin}
           disabled={true}
           testID="apple-login-btn"
-          accessibilityLabel="Přihlásit se přes Apple"
+          accessibilityLabel="Sign in with Apple"
         >
           <View style={styles.buttonContent}>
             <Ionicons name="logo-apple" size={20} color="#666" />
             <Text style={[styles.appleButtonText, styles.pendingText]}>
-              Pokračovat s Apple
+              Continue with Apple
             </Text>
           </View>
           <View style={styles.pendingBadge}>
-            <Text style={styles.pendingBadgeText}>Brzy</Text>
+            <Text style={styles.pendingBadgeText}>Soon</Text>
           </View>
         </TouchableOpacity>
       </View>
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>
-          Přihlášením souhlasíte s našimi
+          By signing in, you agree to our
         </Text>
         <Text style={styles.footerLink}>
-          Podmínkami použití a Ochranou soukromí
+          Terms of Service and Privacy Policy
         </Text>
       </View>
 
@@ -111,7 +111,7 @@ export default function LoginScreen() {
         onPress={() => router.replace('/(tabs)/dashboard')}
         data-testid="skip-login-btn"
       >
-        <Text style={styles.skipText}>Pokračovat bez přihlášení</Text>
+        <Text style={styles.skipText}>Continue without signing in</Text>
       </TouchableOpacity>
     </View>
   );

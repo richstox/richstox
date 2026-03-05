@@ -423,7 +423,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.funnelBoxLabel}>{step.outputLabel}</Text>
                     {/* Step 1: show raw EODHD count as subtitle */}
                     {step.step === 1 && rawSymbols !== undefined && (
-                      <Text style={s.funnelRawNote}>z {fmt(rawSymbols)} raw symbolů</Text>
+                      <Text style={s.funnelRawNote}>from {fmt(rawSymbols)} raw symbols</Text>
                     )}
                   </View>
 
