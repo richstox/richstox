@@ -62,6 +62,8 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         doc["end_time"] = finished.isoformat() if hasattr(finished, "isoformat") else str(finished) if finished else None
         doc["duration_seconds"] = doc.get("duration_sec") or doc.get("duration_seconds")
         doc["records_processed"] = (
+            result.get("tickers_with_price_data") or
+            result.get("tickers_processed") or
             result.get("added_pending") or
             result.get("processed") or
             result.get("records_upserted") or 0
@@ -161,6 +163,7 @@ JOB_REGISTRY = {
     },
     "price_sync": {
         "hour": 4, "minute": 0, "sunday_only": False, "has_api_calls": True,
+        "dependency_on": "universe_seed",
         "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?period=d&fmt=json"
     },
     "sp500tr_update": {
@@ -169,6 +172,7 @@ JOB_REGISTRY = {
     },
     "fundamentals_sync": {
         "hour": 4, "minute": 30, "sunday_only": False, "has_api_calls": True,
+        "dependency_on": "price_sync",
         "api_endpoint": "https://eodhd.com/api/fundamentals/{SYMBOL}.US?fmt=json"
     },
     "backfill_gaps": {
@@ -340,6 +344,10 @@ async def get_admin_overview(db) -> Dict[str, Any]:
         reg = JOB_REGISTRY.get(job_name)
         if not reg:
             return False
+        dependency_job = reg.get("dependency_on")
+        if dependency_job:
+            # Dependency jobs become expected only after predecessor runs today.
+            return find_matching_run(dependency_job) is not None
         if reg.get("sunday_only") and day_of_week != 6:
             return False
         if current_hour > reg["hour"]:
@@ -370,19 +378,29 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     for job_name, reg in JOB_REGISTRY.items():
         is_sunday_only = reg.get("sunday_only", False)
         is_manual = reg.get("schedule_type") == "manual" or reg.get("is_manual") is True
+        dependency_job = reg.get("dependency_on")
         expected = is_expected_by_now(job_name) if not is_manual else False  # Manual jobs never "expected"
-        sched_time = "Manual" if is_manual else f"{reg['hour']:02d}:{reg['minute']:02d}"
-        next_run = get_next_run_datetime(job_name, now_prague)
+        dependency_text = None
+        if dependency_job == "universe_seed":
+            dependency_text = "After Step 1 completion"
+        elif dependency_job == "price_sync":
+            dependency_text = "After Step 2 completion"
+        else:
+            dependency_text = f"After {dependency_job}" if dependency_job else None
+
+        sched_time = "Manual" if is_manual else (dependency_text or f"{reg['hour']:02d}:{reg['minute']:02d}")
+        next_run = None if dependency_job else get_next_run_datetime(job_name, now_prague)
         
         matching_run = find_matching_run(job_name)
         
         job_data = {
             "name": job_name,
             "scheduled_time": sched_time,
-            "next_run": "On demand" if is_manual else next_run.strftime("%Y-%m-%d %H:%M"),
-            "next_run_iso": next_run.isoformat() if not is_manual else None,
+            "next_run": "On demand" if is_manual else (dependency_text or next_run.strftime("%Y-%m-%d %H:%M")),
+            "next_run_iso": next_run.isoformat() if (next_run and not is_manual) else None,
             "has_api_calls": reg.get("has_api_calls", False),
             "sunday_only": is_sunday_only,
+            "dependency_on": dependency_job,
             "api_endpoint": reg.get("api_endpoint"),  # P53: API endpoint template
             "schedule_type": reg.get("schedule_type", "auto"),  # "auto" | "manual"
             "is_manual": is_manual,
@@ -422,7 +440,13 @@ async def get_admin_overview(db) -> Dict[str, Any]:
                     pass
             
             # Records
-            records = details.get("processed") or details.get("records_upserted") or details.get("total_tickers")
+            records = (
+                details.get("tickers_with_price_data") or
+                details.get("tickers_processed") or
+                details.get("processed") or
+                details.get("records_upserted") or
+                details.get("total_tickers")
+            )
             if records:
                 job_data["records_updated"] = records
             

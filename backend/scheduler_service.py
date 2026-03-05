@@ -35,6 +35,7 @@ logger = logging.getLogger("richstox.scheduler")
 
 # Constants
 SCHEDULER_CONFIG_KEY = "scheduler_enabled"
+SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
 
 
 async def get_scheduler_enabled(db) -> bool:
@@ -163,6 +164,12 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
         # Run the NEW bulk catchup with gap detection
         result = await run_daily_bulk_catchup(db)
         
+        # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
+        price_flag_summary = await sync_has_price_data_flags(db)
+        result["tickers_seeded_total"] = price_flag_summary["seeded_total"]
+        result["tickers_with_price_data"] = price_flag_summary["with_price_data"]
+        result["tickers_without_price_data"] = price_flag_summary["without_price_data"]
+
         # Log to ops_job_runs
         await db.ops_job_runs.insert_one({
             "job_name": job_name,
@@ -175,6 +182,9 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
                 "gap_analysis": result.get("gap_analysis"),
                 "dates_processed": result.get("dates_processed", 0),
                 "records_upserted": result.get("records_upserted", 0),
+                "tickers_seeded_total": result.get("tickers_seeded_total", 0),
+                "tickers_with_price_data": result.get("tickers_with_price_data", 0),
+                "tickers_without_price_data": result.get("tickers_without_price_data", 0),
                 "api_calls": result.get("api_calls", 0),
                 "bulk_writes": result.get("bulk_writes", 0),
             }
@@ -188,6 +198,9 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
             "job_name": job_name,
             "status": result.get("status", "completed"),
             "records_upserted": result.get("records_upserted", 0),
+            "tickers_seeded_total": result.get("tickers_seeded_total", 0),
+            "tickers_with_price_data": result.get("tickers_with_price_data", 0),
+            "tickers_without_price_data": result.get("tickers_without_price_data", 0),
             "dates_processed": result.get("dates_processed", 0),
             "api_calls": result.get("api_calls", 0),
             "started_at": started_at.isoformat(),
@@ -213,6 +226,38 @@ async def run_daily_price_sync(db) -> Dict[str, Any]:
             "error": error_msg,
             "started_at": started_at.isoformat(),
         }
+
+
+async def sync_has_price_data_flags(db) -> Dict[str, int]:
+    """
+    Recompute has_price_data for seeded US Common Stock universe from stock_prices.
+    Step 2 canonical: has_price_data=true only for tickers with price rows.
+    """
+    seeded_tickers = await db.tracked_tickers.distinct("ticker", SEED_QUERY)
+    seeded_total = len(seeded_tickers)
+    if seeded_total == 0:
+        return {"seeded_total": 0, "with_price_data": 0, "without_price_data": 0}
+
+    tickers_with_prices = await db.stock_prices.distinct("ticker", {"ticker": {"$in": seeded_tickers}})
+    with_price_set = set(tickers_with_prices)
+
+    # Reset all seeded tickers to false, then enable only those with prices.
+    await db.tracked_tickers.update_many(
+        {"ticker": {"$in": seeded_tickers}},
+        {"$set": {"has_price_data": False, "updated_at": datetime.now(timezone.utc)}},
+    )
+    if with_price_set:
+        await db.tracked_tickers.update_many(
+            {"ticker": {"$in": list(with_price_set)}},
+            {"$set": {"has_price_data": True, "updated_at": datetime.now(timezone.utc)}},
+        )
+
+    with_price_data = len(with_price_set)
+    return {
+        "seeded_total": seeded_total,
+        "with_price_data": with_price_data,
+        "without_price_data": max(seeded_total - with_price_data, 0),
+    }
 
 
 async def run_fundamentals_changes_sync(db, batch_size: int = 50) -> Dict[str, Any]:

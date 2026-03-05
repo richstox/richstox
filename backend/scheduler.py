@@ -374,6 +374,14 @@ async def scheduler_loop():
         if current_hour == scheduled_hour and current_minute >= scheduled_minute:
             return True
         return False
+
+    def should_run_after_dependency(job_name: str, dependency_job: str, last_run: dict, today_str: str) -> bool:
+        """
+        Check if dependent job should run immediately after dependency completes.
+        """
+        if last_run.get(job_name) == today_str:
+            return False
+        return last_run.get(dependency_job) == today_str
     
     # Load persistent state from DB (survives restarts)
     last_run = await get_last_run_state()
@@ -447,9 +455,9 @@ async def scheduler_loop():
                 last_run["universe_seed"] = today_str
                 await set_last_run_state(last_run)
 
-            # STEP 2: Price sync at 04:00 (catch-up enabled)
-            if should_run("price_sync", PRICE_SYNC_HOUR, PRICE_SYNC_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering price_sync (hour={current_hour}, scheduled={PRICE_SYNC_HOUR}:{PRICE_SYNC_MINUTE:02d})")
+            # STEP 2: Price sync immediately after Step 1 completes
+            if should_run_after_dependency("price_sync", "universe_seed", last_run, today_str):
+                logger.info("Triggering price_sync (dependency: universe_seed completed)")
                 await run_job_with_retry("price_sync", run_daily_price_sync, db)
                 last_run["price_sync"] = today_str
                 await set_last_run_state(last_run)
@@ -462,9 +470,9 @@ async def scheduler_loop():
                 last_run["sp500tr_update"] = today_str
                 await set_last_run_state(last_run)
             
-            # Fundamentals sync at 04:30 (catch-up enabled)
-            if should_run("fundamentals_sync", FUNDAMENTALS_SYNC_HOUR, FUNDAMENTALS_SYNC_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering fundamentals_sync (hour={current_hour}, scheduled={FUNDAMENTALS_SYNC_HOUR}:{FUNDAMENTALS_SYNC_MINUTE:02d})")
+            # STEP 3: Fundamentals sync immediately after Step 2 completes
+            if should_run_after_dependency("fundamentals_sync", "price_sync", last_run, today_str):
+                logger.info("Triggering fundamentals_sync (dependency: price_sync completed)")
                 await run_job_with_retry("fundamentals_sync", run_fundamentals_changes_sync, db)
                 last_run["fundamentals_sync"] = today_str
                 await set_last_run_state(last_run)

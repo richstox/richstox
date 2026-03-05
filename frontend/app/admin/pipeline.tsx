@@ -61,13 +61,18 @@ interface PipelineExclusionReport {
   by_reason: Record<string, number>;
 }
 
-function getNextRun(hour: number, minute: number): string {
+function getNextRun(hour: number, minute: number, skipSunday: boolean = false): string {
   try {
     const now = new Date();
     const pragueNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Prague' }));
     const nextRun = new Date(pragueNow);
     nextRun.setHours(hour, minute, 0, 0);
     if (nextRun <= pragueNow) nextRun.setDate(nextRun.getDate() + 1);
+    if (skipSunday) {
+      while (nextRun.getDay() === 0) {
+        nextRun.setDate(nextRun.getDate() + 1);
+      }
+    }
     return nextRun.toLocaleString('en-GB', {
       timeZone: 'Europe/Prague', month: 'short', day: 'numeric',
       hour: '2-digit', minute: '2-digit'
@@ -266,7 +271,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       step: 2,
       job_name: 'price_sync',
       title: 'Price Sync',
-      schedule: 'Mon–Sat 04:00 Prague',
+      schedule: 'After Step 1 completion',
       scheduledHour: 4,
       scheduledMinute: 0,
       icon: 'trending-up-outline' as const,
@@ -285,7 +290,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       step: 3,
       job_name: 'fundamentals_sync',
       title: 'Fundamentals Sync',
-      schedule: 'Mon–Sat 04:30 Prague',
+      schedule: 'After Step 2 completion',
       scheduledHour: 4,
       scheduledMinute: 30,
       icon: 'library-outline' as const,
@@ -305,7 +310,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       step: 4,
       job_name: 'compute_visible_universe',
       title: 'Compute Visible Universe',
-      schedule: 'Mon–Sat 04:30 Prague',
+      schedule: 'After Step 3 completion',
       scheduledHour: 4,
       scheduledMinute: 30,
       icon: 'eye-outline' as const,
@@ -325,7 +330,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       step: 5,
       job_name: 'peer_medians',
       title: 'Peer Medians',
-      schedule: 'Mon–Sat 05:30 Prague',
+      schedule: 'After Step 4 completion',
       scheduledHour: 5,
       scheduledMinute: 30,
       icon: 'stats-chart-outline' as const,
@@ -409,6 +414,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const passPct = (inCount !== undefined && inCount > 0 && outCount !== undefined)
           ? Math.round((outCount / inCount) * 100)
           : null;
+        const prevStep = idx > 0 ? steps[idx - 1] : null;
+        const prevRun = prevStep ? jobRuns[prevStep.job_name] : null;
+        const prevRunOk = !!prevRun && (prevRun.status === 'success' || prevRun.status === 'completed');
+        const prevRunTs = prevRun?.start_time ? Date.parse(prevRun.start_time) : 0;
+        const currentRunTs = run?.start_time ? Date.parse(run.start_time) : 0;
+        const nextRunLabel = step.step === 1
+          ? getNextRun(step.scheduledHour, step.scheduledMinute, true)
+          : (!prevRunOk || inCount === 0)
+            ? `After Step ${step.step - 1} completion`
+            : (!run || currentRunTs < prevRunTs)
+              ? 'Ready now'
+              : `After next Step ${step.step - 1} completion`;
+        const processedCount = outCount ?? run?.records_processed;
+        const processedLabel = step.job_name === 'price_sync' ? 'Processed tickers:' : 'Processed:';
 
         return (
           <View key={step.job_name}>
@@ -522,15 +541,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.runValue}>{run.triggered_by}</Text>
                     </View>
                   )}
-                  {run.records_processed !== undefined && run.records_processed > 0 && (
+                  {processedCount !== undefined && processedCount > 0 && (
                     <View style={s.runInfoRow}>
-                      <Text style={s.runLabel}>Processed:</Text>
-                      <Text style={s.runValue}>{run.records_processed.toLocaleString()}</Text>
+                      <Text style={s.runLabel}>{processedLabel}</Text>
+                      <Text style={s.runValue}>{processedCount.toLocaleString()}</Text>
                     </View>
                   )}
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Next run:</Text>
-                    <Text style={s.runValue}>{getNextRun(step.scheduledHour, step.scheduledMinute)}</Text>
+                    <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
                   {run.error_message && (
                     <Text style={s.errorText}>⚠️ {run.error_message}</Text>
@@ -540,7 +559,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Next run:</Text>
-                    <Text style={s.runValue}>{getNextRun(step.scheduledHour, step.scheduledMinute)}</Text>
+                    <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
                 </View>
               )}
