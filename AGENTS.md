@@ -12,6 +12,12 @@
 - **Raw facts only** — EODHD provides raw data (prices, dividends, statements). All derived metrics (market cap, P/E, margins, etc.) are computed locally by the backend
 - **Canonical pipeline only** — peer medians come from `compute_peer_benchmarks_v3` → `peer_benchmarks` collection, never computed on-the-fly in API routes
 
+### Admin approval authority (top priority)
+- **Final decision authority is Admin Richard** (`kurtarichard@gmail.com`).
+- **Any logic, architecture, workflow, or product decision MUST be explicitly approved by Richard before implementation.**
+- Agents must not invent or enforce their own policy decisions without Richard's approval.
+- If requirements are ambiguous, agents must ask Richard for approval/clarification before proceeding.
+
 ### Pipeline steps (canonical definition)
 
 The Universe Pipeline has sequential steps. Each step runs ONLY after the previous completes successfully.
