@@ -159,7 +159,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const devLogin = async () => {
-    // Dev login disabled
+    try {
+      setIsLoading(true);
+      const response = await fetch(`${API_URL}/api/auth/dev-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!response.ok) throw new Error('Dev login failed');
+      const data = await response.json();
+      setStorage(SESSION_TOKEN_KEY, data.session_token);
+      setStorage(USER_DATA_KEY, JSON.stringify(data.user));
+      setUser(data.user);
+      setSessionToken(data.session_token);
+    } catch (error) {
+      console.error('Dev login error:', error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const value: AuthContextType = {
