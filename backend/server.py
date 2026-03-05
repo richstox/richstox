@@ -6255,15 +6255,34 @@ async def admin_get_pipeline_exclusion_report(
 
     available_dates = await db.pipeline_exclusion_report.distinct("report_date")
     available_dates = sorted([d for d in available_dates if d], reverse=True)[:30]
+    latest_universe_seed_run = await db.ops_job_runs.find_one(
+        {"job_name": "universe_seed"},
+        {"_id": 0, "started_at": 1, "status": 1, "triggered_by": 1},
+        sort=[("started_at", -1)],
+    )
+    latest_universe_seed_started_at = (
+        latest_universe_seed_run.get("started_at").isoformat()
+        if latest_universe_seed_run and latest_universe_seed_run.get("started_at")
+        else None
+    )
+    empty_report_hint = None
+    if total_rows == 0:
+        empty_report_hint = (
+            "No filtered-out rows are stored for this date. "
+            "Run Step 1 (Universe Seed) again to generate the exclusion report."
+        )
 
     return {
         "report_date": report_date,
         "total_rows": total_rows,
+        "has_rows": total_rows > 0,
         "offset": offset,
         "limit": limit,
         "by_step": by_step,
         "by_reason": by_reason,
         "available_dates": available_dates,
+        "latest_universe_seed_started_at": latest_universe_seed_started_at,
+        "empty_report_hint": empty_report_hint,
         "rows": rows,
     }
 

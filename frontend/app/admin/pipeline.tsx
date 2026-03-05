@@ -55,6 +55,8 @@ interface PipelineExclusionRow {
 interface PipelineExclusionReport {
   report_date: string;
   total_rows: number;
+  has_rows?: boolean;
+  empty_report_hint?: string | null;
   rows: PipelineExclusionRow[];
   by_reason: Record<string, number>;
 }
@@ -167,6 +169,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setDownloadingReport(false);
     }
   };
+
+  const hasExclusionRows = (exclusionReport?.total_rows ?? 0) > 0;
 
   const handleRunNow = async (jobName: string) => {
     if (runningJob) return;
@@ -582,13 +586,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             </Text>
           </View>
           <TouchableOpacity
-            style={[s.downloadBtn, downloadingReport && s.runBtnDisabled]}
+            style={[
+              s.downloadBtn,
+              (!hasExclusionRows || downloadingReport) && s.downloadBtnDisabled,
+            ]}
             onPress={handleDownloadExclusionReport}
-            disabled={!exclusionReport || downloadingReport}
+            disabled={!exclusionReport || downloadingReport || !hasExclusionRows}
           >
             {downloadingReport
               ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={s.downloadBtnText}>Download CSV</Text>}
+              : <Text style={[s.downloadBtnText, !hasExclusionRows && s.downloadBtnTextDisabled]}>Download CSV</Text>}
           </TouchableOpacity>
         </View>
 
@@ -609,7 +616,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             <Text style={s.reportFootnote}>Showing first 8 rows from latest report</Text>
           </View>
         ) : (
-          <Text style={s.reportEmpty}>No filtered-out rows available for the selected report date.</Text>
+          <Text style={s.reportEmpty}>
+            {exclusionReport?.empty_report_hint || 'No report rows yet. Run Step 1 (Universe Seed) to generate filtered-out rows.'}
+          </Text>
         )}
       </View>
 
@@ -728,6 +737,8 @@ const s = StyleSheet.create({
   reportMeta: { fontSize: 10, color: COLORS.textMuted, marginTop: 2 },
   downloadBtn: { backgroundColor: '#6366F1', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
   downloadBtnText: { color: '#fff', fontSize: 10, fontWeight: '700' },
+  downloadBtnDisabled: { backgroundColor: COLORS.border },
+  downloadBtnTextDisabled: { color: COLORS.textMuted },
   reportList: { marginTop: 10, borderWidth: 1, borderColor: COLORS.border, borderRadius: 8, overflow: 'hidden' },
   reportListHeader: { flexDirection: 'row', backgroundColor: COLORS.border + '55', paddingHorizontal: 8, paddingVertical: 6 },
   reportHeadCell: { fontSize: 9, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase' },
