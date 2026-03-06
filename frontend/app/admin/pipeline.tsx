@@ -607,15 +607,19 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <View style={s.stepTitleRow}>
                     <Text style={s.stepNum}>STEP {step.step}</Text>
                     <Text style={s.stepTitle}>{step.title}</Text>
-                    {status && (
+                    {isRunning ? (
+                      <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
+                    ) : status ? (
                       <Ionicons
                         name={getStatusIcon(status) as any}
                         size={14} color={getStatusColor(status)}
                         style={{ marginLeft: 4 }}
                       />
-                    )}
+                    ) : null}
                   </View>
-                  <Text style={s.stepSchedule}>{step.schedule}</Text>
+                  <Text style={s.stepSchedule}>
+                    {isRunning ? 'Running…' : step.schedule}
+                  </Text>
                 </View>
                 <View style={s.jobBtnGroup}>
                   {isRunning ? (
