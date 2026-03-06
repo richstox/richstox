@@ -78,6 +78,7 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             result.get("records_upserted") or 0
         )
         doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
+        doc["reason"] = result.get("reason") or None
         # Raw symbols fetched from EODHD before filtering (universe_seed only)
         doc["raw_symbols_fetched"] = result.get("fetched") or None
         last_runs[job_name] = doc

@@ -19,6 +19,7 @@ interface PipelineProps {
 
 interface JobRun {
   status: string;
+  reason?: string;
   start_time?: string;
   end_time?: string;
   duration_seconds?: number;
@@ -107,12 +108,14 @@ function getStatusColor(status?: string): string {
   if (!status) return COLORS.textMuted;
   if (status === 'success' || status === 'completed') return '#22C55E';
   if (status === 'failed' || status === 'error') return '#EF4444';
+  if (status === 'interrupted') return '#F97316';
   return '#F59E0B';
 }
 
 function getStatusIcon(status?: string): string {
   if (status === 'success' || status === 'completed') return 'checkmark-circle';
   if (status === 'failed' || status === 'error') return 'close-circle';
+  if (status === 'interrupted') return 'stop-circle-outline';
   return 'time-outline';
 }
 
@@ -132,6 +135,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [runningJob, setRunningJob] = useState<string | null>(null);
+  const [stoppingJob, setStoppingJob] = useState<string | null>(null);
   const [downloadingReport, setDownloadingReport] = useState(false);
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [runResult, setRunResult] = useState<Record<string, string>>({});
@@ -247,6 +251,28 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setRunResult(prev => ({ ...prev, [jobName]: `❌ ${e.message}` }));
     } finally {
       setRunningJob(null);
+    }
+  };
+
+  const handleStopJob = async (jobName: string) => {
+    if (stoppingJob) return;
+    setStoppingJob(jobName);
+    try {
+      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+      const res = await fetch(`${API_URL}/api/admin/job/${jobName}/stop`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...requestHeaders },
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setRunResult(prev => ({ ...prev, [jobName]: '⏹ Stop requested — job will finish current ticker and exit' }));
+      } else {
+        setRunResult(prev => ({ ...prev, [jobName]: `❌ ${json.detail || json.error || res.statusText}` }));
+      }
+    } catch (e: any) {
+      setRunResult(prev => ({ ...prev, [jobName]: `❌ ${e.message}` }));
+    } finally {
+      setStoppingJob(null);
     }
   };
 
@@ -466,6 +492,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const status = run?.status;
         const isExpanded = expandedSteps.has(step.step);
         const isRunning = runningJob === step.job_name;
+        const isStopping = stoppingJob === step.job_name;
+        const STOPPABLE_JOBS = new Set(['universe_seed', 'price_sync', 'fundamentals_sync']);
+        const canStop = isRunning && STOPPABLE_JOBS.has(step.job_name);
 
         const inCount = step.inputCount;
         const outCount = step.outputCount;
@@ -520,16 +549,30 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>
                   <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
-                <TouchableOpacity
-                  style={[s.runBtn, { backgroundColor: step.color }, isRunning && s.runBtnDisabled]}
-                  onPress={() => handleRunNow(step.job_name)}
-                  disabled={!!runningJob}
-                >
-                  {isRunning
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={s.runBtnText}>▶ Run</Text>
-                  }
-                </TouchableOpacity>
+                <View style={s.btnGroup}>
+                  <TouchableOpacity
+                    style={[s.runBtn, { backgroundColor: step.color }, (!!runningJob || isStopping) && s.runBtnDisabled]}
+                    onPress={() => handleRunNow(step.job_name)}
+                    disabled={!!runningJob || isStopping}
+                  >
+                    {isRunning
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <Text style={s.runBtnText}>▶ Run</Text>
+                    }
+                  </TouchableOpacity>
+                  {canStop && (
+                    <TouchableOpacity
+                      style={[s.stopBtn, isStopping && s.runBtnDisabled]}
+                      onPress={() => handleStopJob(step.job_name)}
+                      disabled={isStopping}
+                    >
+                      {isStopping
+                        ? <ActivityIndicator size="small" color="#fff" />
+                        : <Text style={s.runBtnText}>⏹ Stop</Text>
+                      }
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
 
               {/* Run Result */}
@@ -619,6 +662,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.runLabel}>Next run:</Text>
                     <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
+                  {run.status === 'interrupted' && (
+                    <Text style={s.interruptedText}>
+                      ⏹ Interrupted{run.reason === 'stop_requested' ? ' — stopped by admin' : run.reason === 'kill_switch_engaged' ? ' — kill switch' : run.reason ? ` — ${run.reason}` : ''}
+                    </Text>
+                  )}
                   {run.error_message && (
                     <Text style={s.errorText}>⚠️ {run.error_message}</Text>
                   )}
@@ -841,7 +889,9 @@ const s = StyleSheet.create({
   stepTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text },
   stepSchedule: { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
 
+  btnGroup: { flexDirection: 'row', gap: 6, alignItems: 'center' },
   runBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center' },
+  stopBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center', backgroundColor: '#EF4444' },
   runBtnDisabled: { opacity: 0.5 },
   runBtnText: { color: '#fff', fontSize: 11, fontWeight: '600' },
   runResultText: { fontSize: 11, marginTop: 6, color: COLORS.textMuted },
@@ -867,6 +917,7 @@ const s = StyleSheet.create({
   runLabel: { fontSize: 11, color: COLORS.textMuted, width: 80 },
   runValue: { fontSize: 11, color: COLORS.text, flex: 1 },
   errorText: { fontSize: 11, color: '#EF4444', marginTop: 4 },
+  interruptedText: { fontSize: 11, color: '#F97316', marginTop: 4 },
   neverRun: { fontSize: 11, color: COLORS.textMuted, marginTop: 8, fontStyle: 'italic' },
   substepsCard: {
     marginTop: 8,

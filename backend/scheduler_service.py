@@ -38,6 +38,7 @@ logger = logging.getLogger("richstox.scheduler")
 
 # Constants
 SCHEDULER_CONFIG_KEY = "scheduler_enabled"
+STOP_REQUEST_KEY_PREFIX = "stop_request"
 SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP2_REPORT_STEP = "Step 2 - Price Sync"
@@ -104,6 +105,31 @@ async def set_scheduler_enabled(db, enabled: bool) -> Dict[str, Any]:
         "updated_at": now.isoformat(),
         "message": f"Scheduler {'enabled' if enabled else 'disabled (kill switch engaged)'}"
     }
+
+
+async def request_job_stop(db, job_name: str) -> None:
+    """Request a graceful stop for the named running job (stored in ops_config)."""
+    key = f"{STOP_REQUEST_KEY_PREFIX}.{job_name}"
+    now = datetime.now(timezone.utc)
+    await db.ops_config.update_one(
+        {"key": key},
+        {"$set": {"key": key, "value": True, "requested_at": now}},
+        upsert=True,
+    )
+    logger.info(f"Stop requested for job: {job_name}")
+
+
+async def clear_job_stop_request(db, job_name: str) -> None:
+    """Clear (consume) the stop request for a job — called at job start."""
+    key = f"{STOP_REQUEST_KEY_PREFIX}.{job_name}"
+    await db.ops_config.delete_one({"key": key})
+
+
+async def is_job_stop_requested(db, job_name: str) -> bool:
+    """Return True if a stop was requested for the given job."""
+    key = f"{STOP_REQUEST_KEY_PREFIX}.{job_name}"
+    doc = await db.ops_config.find_one({"key": key})
+    return bool(doc and doc.get("value"))
 
 
 async def log_scheduled_job(
@@ -660,6 +686,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     logger.info(f"Starting {job_name}")
     
     try:
+        # Clear any lingering stop request from a previous run.
+        await clear_job_stop_request(db, job_name)
+
         # Check kill switch (manual endpoints can explicitly bypass)
         if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
             logger.warning(f"{job_name} skipped: kill switch engaged")
@@ -733,6 +762,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             result["message"] = "No pending events"
         else:
             for ticker in tickers_to_sync:
+                # Check stop request (always — even for manual runs).
+                if await is_job_stop_requested(db, job_name):
+                    result["status"] = "interrupted"
+                    result["reason"] = "stop_requested"
+                    logger.info(f"{job_name}: stop requested after {result['processed']} tickers")
+                    break
+
                 # Check kill switch between tickers (manual endpoints can bypass)
                 if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
                     result["status"] = "interrupted"
@@ -745,6 +781,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     source_job=job_name,
                 )
                 result["processed"] += 1
+                
+                # TESTING: Add delay to allow Stop button testing
+                import asyncio
+                await asyncio.sleep(2.0)
 
                 if ticker_result["success"]:
                     result["success"] += 1

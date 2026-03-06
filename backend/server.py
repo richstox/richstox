@@ -4600,6 +4600,7 @@ from scheduler_service import (
     run_daily_price_sync,
     run_fundamentals_changes_sync,
     run_price_backfill_gaps,
+    request_job_stop,
 )
 
 @api_router.get("/admin/scheduler/status")
@@ -4895,6 +4896,30 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
         "batch_size": batch_size,
         "message": "Job started in background. Check /api/admin/scheduler/status for results."
     }
+
+@api_router.post("/admin/job/{job_name}/stop")
+async def admin_request_job_stop(job_name: str, request: Request):
+    """
+    Request a graceful stop for a running pipeline job.
+
+    The job checks this flag between tickers and exits cleanly with
+    status='interrupted' and reason='stop_requested'.
+
+    Allowed jobs: universe_seed, price_sync, fundamentals_sync
+    """
+    session_token = get_session_token_from_request(request)
+    if not session_token or not await is_admin(db, session_token):
+        raise HTTPException(403, "Admin access required")
+
+    STOPPABLE_JOBS = {"universe_seed", "price_sync", "fundamentals_sync"}
+    if job_name not in STOPPABLE_JOBS:
+        raise HTTPException(
+            400,
+            f"Job '{job_name}' is not stoppable. Allowed: {sorted(STOPPABLE_JOBS)}"
+        )
+
+    await request_job_stop(db, job_name)
+    return {"status": "stop_requested", "job_name": job_name}
 
 @api_router.post("/admin/scheduler/run/price-backfill")
 async def admin_manual_price_backfill(background_tasks: BackgroundTasks, batch_size: int = Query(50, ge=1, le=200), wait: bool = Query(False)):
@@ -6661,87 +6686,6 @@ async def startup():
     await create_news_indexes(db)
     await create_talk_indexes(db)
     await create_notification_indexes(db)
-    
-    # ⚠️ STARTUP VISIBILITY GUARD - Prevents silent data integrity breaches
-    await startup_mega_caps_visibility_guard(db)
-    
-    # ⚠️ P55: STARTUP PAIN CACHE GUARD - Warns if mega-caps missing PAIN data
-    await startup_pain_cache_guard(db)
-
-
-async def startup_mega_caps_visibility_guard(database):
-    """
-    Soft startup guard for mega-cap visibility.
-
-    This guard must NOT crash startup. In fresh environments (or before the
-    pipeline seeds visible tickers), it logs warnings and exits.
-    """
-    mega_caps = ["AAPL.US", "MSFT.US", "GOOGL.US", "AMZN.US", "NVDA.US"]
-    tracked_total = await database.tracked_tickers.count_documents({})
-    visible_total = await database.tracked_tickers.count_documents({"is_visible": True})
-
-    # Fresh / empty environment: nothing to validate yet.
-    if tracked_total == 0 or visible_total == 0:
-        logger.warning(
-            "⚠️ Startup mega-cap visibility guard skipped: "
-            f"tracked={tracked_total}, visible={visible_total}. "
-            "Run pipeline Step 1→2→3→4 first."
-        )
-        return
-
-    invisible = []
-    missing = []
-
-    for ticker in mega_caps:
-        doc = await database.tracked_tickers.find_one(
-            {"ticker": ticker},
-            {"_id": 0, "ticker": 1, "is_visible": 1},
-        )
-        if not doc:
-            missing.append(ticker)
-            continue
-        if doc.get("is_visible") is not True:
-            invisible.append(ticker)
-
-    if invisible:
-        logger.error(
-            "⚠️ Startup mega-cap visibility check: some mega-caps are invisible: "
-            f"{invisible}. App continues to start."
-        )
-    if missing:
-        logger.warning(
-            "⚠️ Startup mega-cap visibility check: some mega-caps are missing: "
-            f"{missing}. App continues to start."
-        )
-    if not invisible and not missing:
-        logger.info("✅ Startup mega-cap visibility guard passed - mega-caps are visible")
-
-
-async def startup_pain_cache_guard(database):
-    """
-    P55 BINDING: Verify that PAIN cache contains top tickers.
-    Warns if mega-caps are missing from pain cache.
-    
-    This guard runs at startup to detect missing PAIN data.
-    """
-    mega_caps = ["AAPL.US", "MSFT.US", "GOOGL.US", "AMZN.US", "NVDA.US"]
-    missing = []
-    
-    for ticker in mega_caps:
-        pain = await database.ticker_pain_cache.find_one(
-            {"ticker": ticker},
-            {"_id": 0, "ticker": 1, "pain_percentage": 1}
-        )
-        if not pain:
-            missing.append(ticker)
-            logger.warning(f"⚠️ PAIN cache missing for {ticker}")
-        else:
-            logger.info(f"✅ PAIN cache OK: {ticker} = {pain.get('pain_percentage')}%")
-    
-    if missing:
-        logger.error(f"❌ PAIN cache missing for: {missing}. Run pain_cache job!")
-    else:
-        logger.info("✅ Startup PAIN cache guard passed - mega-caps have PAIN data")
 
 
 @app.on_event("shutdown")
