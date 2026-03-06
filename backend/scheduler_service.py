@@ -950,6 +950,112 @@ async def save_price_sync_exclusion_report(
     }
 
 
+STEP3_REPORT_STEP = "Step 3 - Fundamentals Sync"
+STEP4_REPORT_STEP = "Step 4 - Visible Universe"
+
+
+async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
+    """
+    Write Step 3 exclusion rows: seeded tickers with price data but no sector/industry
+    after fundamentals sync. These were not classified by EODHD.
+    """
+    report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
+    run_id = f"fundamentals_sync_{now.strftime('%Y%m%d_%H%M%S')}"
+
+    docs_cursor = db.tracked_tickers.find(
+        {
+            **SEED_QUERY,
+            "has_price_data": True,
+            "$or": [
+                {"sector": {"$in": [None, ""]}},
+                {"industry": {"$in": [None, ""]}},
+            ],
+        },
+        {"_id": 0, "ticker": 1, "name": 1, "sector": 1, "industry": 1},
+    )
+
+    await db.pipeline_exclusion_report.delete_many(
+        {"report_date": report_date, "step": STEP3_REPORT_STEP}
+    )
+
+    docs = []
+    async for doc in docs_cursor:
+        ticker = doc.get("ticker", "(unknown)")
+        sector = (doc.get("sector") or "").strip()
+        industry = (doc.get("industry") or "").strip()
+        if not sector and not industry:
+            reason = "No sector or industry from EODHD"
+        elif not sector:
+            reason = "Sector missing from EODHD"
+        else:
+            reason = "Industry missing from EODHD"
+        docs.append({
+            "ticker": ticker,
+            "name": doc.get("name", ""),
+            "step": STEP3_REPORT_STEP,
+            "reason": reason,
+            "report_date": report_date,
+            "source_job": "fundamentals_sync",
+            "run_id": run_id,
+            "created_at": now,
+        })
+
+    if docs:
+        await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
+
+    return {"step3_exclusion_rows": len(docs), "report_date": report_date}
+
+
+async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
+    """
+    Write Step 4 exclusion rows: tickers that failed the visibility sieve.
+    Reads visibility_failed_reason from tracked_tickers (set by recompute_visibility_all).
+    Excludes reasons already covered by Steps 1-3 (NO_PRICE_DATA, MISSING_SECTOR, etc.).
+    """
+    report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
+    run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
+
+    # Only Step 4-specific reasons (delisted, missing shares, missing currency)
+    step4_reasons = ["DELISTED", "MISSING_SHARES", "MISSING_FINANCIAL_CURRENCY"]
+
+    docs_cursor = db.tracked_tickers.find(
+        {
+            "is_visible": False,
+            "visibility_failed_reason": {"$in": step4_reasons},
+        },
+        {"_id": 0, "ticker": 1, "name": 1, "visibility_failed_reason": 1},
+    )
+
+    await db.pipeline_exclusion_report.delete_many(
+        {"report_date": report_date, "step": STEP4_REPORT_STEP}
+    )
+
+    reason_labels = {
+        "DELISTED": "Ticker is delisted",
+        "MISSING_SHARES": "Shares outstanding missing or zero",
+        "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
+    }
+
+    docs = []
+    async for doc in docs_cursor:
+        raw_reason = doc.get("visibility_failed_reason", "Unknown")
+        docs.append({
+            "ticker": doc.get("ticker", "(unknown)"),
+            "name": doc.get("name", ""),
+            "step": STEP4_REPORT_STEP,
+            "reason": reason_labels.get(raw_reason, raw_reason),
+            "report_date": report_date,
+            "source_job": "compute_visible_universe",
+            "run_id": run_id,
+            "created_at": now,
+        })
+
+    if docs:
+        await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
+
+    return {"step4_exclusion_rows": len(docs), "report_date": report_date}
+
+
 async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
@@ -1071,6 +1177,11 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 else:
                     result["failed"] += 1
 
+        # Step 3 exclusion report: tickers still missing sector/industry after sync
+        now_step3 = datetime.now(timezone.utc)
+        step3_report = await save_step3_exclusion_report(db, now_step3)
+        result["step3_exclusion_rows"] = step3_report.get("step3_exclusion_rows", 0)
+
         # Step 4 auto-chain: after successful Step 3 completion, recompute visibility.
         step4_chain = {
             "triggered": False,
@@ -1091,6 +1202,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     f"{job_name}: Step 4 auto-chain completed "
                     f"(job_id={step4_chain.get('job_id')}, changed={step4_chain.get('changed')})"
                 )
+                # Step 4 exclusion report: tickers filtered by visibility sieve
+                now_step4 = datetime.now(timezone.utc)
+                step4_report = await save_step4_exclusion_report(db, now_step4)
+                step4_chain["exclusion_rows"] = step4_report.get("step4_exclusion_rows", 0)
             except Exception as step4_error:
                 step4_chain = {
                     "triggered": True,
