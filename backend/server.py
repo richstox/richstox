@@ -41,6 +41,7 @@ from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from admin_middleware import AdminAuthMiddleware
+from auth_guard import UserAuthMiddleware
 import os
 import logging
 from pathlib import Path
@@ -329,7 +330,6 @@ class StockPrice(BaseModel):
 
 class PortfolioCreate(BaseModel):
     name: str
-    user_id: Optional[str] = "anonymous"
 
 class PositionCreate(BaseModel):
     portfolio_id: str
@@ -1281,13 +1281,14 @@ async def calculate_portfolio_value(
 # ----- Portfolio Endpoints -----
 
 @api_router.post("/portfolios")
-async def create_portfolio(portfolio: PortfolioCreate):
-    """Create a new portfolio."""
+async def create_portfolio(request: Request, portfolio: PortfolioCreate):
+    """Create a new portfolio. Auth: UserAuthMiddleware (user_id from session)."""
+    user = request.state.user
     portfolio_id = str(uuid.uuid4())
     doc = {
         "id": portfolio_id,
         "name": portfolio.name,
-        "user_id": portfolio.user_id,
+        "user_id": user["user_id"],
         "created_at": datetime.utcnow(),
         "updated_at": datetime.utcnow()
     }
@@ -1295,49 +1296,50 @@ async def create_portfolio(portfolio: PortfolioCreate):
     return {"id": portfolio_id, "name": portfolio.name}
 
 @api_router.get("/portfolios")
-async def list_portfolios(user_id: str = "anonymous"):
-    """List all portfolios for a user."""
+async def list_portfolios(request: Request):
+    """List all portfolios for the authenticated user."""
+    user = request.state.user
     portfolios = await db.portfolios.find(
-        {"user_id": user_id},
+        {"user_id": user["user_id"]},
         {"_id": 0}
     ).to_list(100)
     return {"count": len(portfolios), "portfolios": portfolios}
 
 @api_router.get("/portfolios/{portfolio_id}")
-async def get_portfolio(portfolio_id: str):
-    """Get portfolio with positions and live valuations."""
-    portfolio = await db.portfolios.find_one({"id": portfolio_id}, {"_id": 0})
+async def get_portfolio(portfolio_id: str, request: Request):
+    """Get portfolio with positions and live valuations. Scoped to authenticated user."""
+    user = request.state.user
+    portfolio = await db.portfolios.find_one(
+        {"id": portfolio_id, "user_id": user["user_id"]}, {"_id": 0}
+    )
     if not portfolio:
         raise HTTPException(404, "Portfolio not found")
-    
-    # Get positions
+
     positions = await db.positions.find(
         {"portfolio_id": portfolio_id},
         {"_id": 0}
     ).to_list(100)
-    
-    # Get live prices and calculate values
+
     total_value = 0
     total_cost = 0
     enriched_positions = []
-    
+
     for pos in positions:
         ticker = pos.get("ticker", "")
         shares = pos.get("shares", 0)
         buy_price = pos.get("buy_price", 0)
-        
-        # Get current price
+
         prices = await eodhd.get_eod_prices(ticker, days=5)
         current_price = prices[-1].get("adjusted_close", buy_price) if prices else buy_price
-        
+
         market_value = shares * current_price
         cost_basis = shares * buy_price
         gain_loss = market_value - cost_basis
         gain_loss_pct = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
-        
+
         total_value += market_value
         total_cost += cost_basis
-        
+
         enriched_positions.append({
             **pos,
             "current_price": round(current_price, 2),
@@ -1346,23 +1348,25 @@ async def get_portfolio(portfolio_id: str):
             "gain_loss": round(gain_loss, 2),
             "gain_loss_pct": round(gain_loss_pct, 2)
         })
-    
+
     portfolio["positions"] = enriched_positions
     portfolio["total_value"] = round(total_value, 2)
     portfolio["total_cost"] = round(total_cost, 2)
     portfolio["total_gain_loss"] = round(total_value - total_cost, 2)
     portfolio["total_gain_loss_pct"] = round(((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0, 2)
-    
+
     return portfolio
 
 @api_router.post("/positions")
-async def create_position(position: PositionCreate):
-    """Add a position to a portfolio."""
-    # Verify portfolio exists
-    portfolio = await db.portfolios.find_one({"id": position.portfolio_id})
+async def create_position(request: Request, position: PositionCreate):
+    """Add a position to a portfolio. Anti-enumeration: 404 if not owned."""
+    user = request.state.user
+    portfolio = await db.portfolios.find_one(
+        {"id": position.portfolio_id, "user_id": user["user_id"]}
+    )
     if not portfolio:
         raise HTTPException(404, "Portfolio not found")
-    
+
     position_id = str(uuid.uuid4())
     doc = {
         "id": position_id,
@@ -1390,7 +1394,6 @@ async def create_position(position: PositionCreate):
 
 from zoneinfo import ZoneInfo
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
-ADMIN_EMAIL = "kurtarichard@gmail.com"
 
 
 def get_prague_now():
@@ -1409,71 +1412,57 @@ def is_before_market_close_prague():
 
 
 @api_router.get("/v1/watchlist/check/{ticker}")
-async def check_if_followed(ticker: str):
-    """
-    P33: Check if a ticker is in user's watchlist (followed).
-    Source of truth: user_watchlist collection ONLY.
-    """
+async def check_if_followed(ticker: str, request: Request):
+    """P33: Check if a ticker is in the authenticated user's watchlist."""
+    user = request.state.user
     ticker_clean = ticker.upper().replace(".US", "")
-    
-    followed = await db.user_watchlist.find_one({"ticker": ticker_clean})
-    
+    followed = await db.user_watchlist.find_one(
+        {"ticker": ticker_clean, "user_id": user["user_id"]}
+    )
     return {"ticker": ticker_clean, "is_followed": bool(followed)}
 
 
-# Keep old endpoint for backwards compatibility
 @api_router.get("/v1/positions/check/{ticker}")
-async def check_if_followed_legacy(ticker: str):
-    """Legacy endpoint - redirects to new watchlist check."""
-    return await check_if_followed(ticker)
+async def check_if_followed_legacy(ticker: str, request: Request):
+    """Legacy alias for watchlist check."""
+    return await check_if_followed(ticker, request)
 
 
 @api_router.post("/v1/watchlist/{ticker}")
-async def follow_ticker(ticker: str):
-    """
-    P33: Add a ticker to user's watchlist (follow).
-    
-    Schema:
-    - user_email: admin email (kurtarichard@gmail.com)
-    - ticker: ticker symbol (without .US suffix)
-    - followed_at: datetime in Europe/Prague timezone
-    - follow_price_close: closing price on follow date
-    - follow_price_date: date of the close price (DD/MM/YYYY format stored as YYYY-MM-DD)
-    """
+async def follow_ticker(ticker: str, request: Request):
+    """P33: Add a ticker to the authenticated user's watchlist."""
+    user = request.state.user
+    user_id = user["user_id"]
     ticker_clean = ticker.upper().replace(".US", "")
-    
-    # Check if already followed
-    existing = await db.user_watchlist.find_one({"ticker": ticker_clean})
+
+    existing = await db.user_watchlist.find_one(
+        {"ticker": ticker_clean, "user_id": user_id}
+    )
     if existing:
         return {"ticker": ticker_clean, "status": "already_followed"}
-    
-    # Verify ticker is visible
+
     ticker_full = f"{ticker_clean}.US"
     tracked = await db.tracked_tickers.find_one(
         {"ticker": ticker_full, "is_visible": True}
     )
     if not tracked:
         raise HTTPException(400, f"Ticker {ticker_clean} is not visible or doesn't exist")
-    
-    # Get the follow price - today's close if before 21:00 Prague time
+
     prague_now = get_prague_now()
     follow_price_close = None
     follow_price_date = None
-    
-    # Try to get latest price from stock_prices collection
+
     latest_price = await db.stock_prices.find_one(
         {"ticker": ticker_full},
         sort=[("date", -1)]
     )
-    
     if latest_price:
         follow_price_close = latest_price.get("adjusted_close") or latest_price.get("close")
         follow_price_date = latest_price.get("date")
-    
-    # Add to user_watchlist with P33 required fields
+
     doc = {
         "id": str(uuid.uuid4()),
-        "user_email": ADMIN_EMAIL,
+        "user_id": user_id,
         "ticker": ticker_clean,
         "followed_at": prague_now.isoformat(),
         "follow_price_close": follow_price_close,
@@ -1481,56 +1470,52 @@ async def follow_ticker(ticker: str):
         "created_at": datetime.utcnow()
     }
     await db.user_watchlist.insert_one(doc)
-    
+
     return {
-        "ticker": ticker_clean, 
+        "ticker": ticker_clean,
         "status": "followed",
         "followed_at": prague_now.strftime("%d/%m/%Y %H:%M"),
         "follow_price_close": follow_price_close,
-        "follow_price_date": follow_price_date
+        "follow_price_date": follow_price_date,
     }
 
 
-# Keep old endpoint for backwards compatibility
 @api_router.post("/v1/positions/follow/{ticker}")
-async def follow_ticker_legacy(ticker: str):
-    """Legacy endpoint - redirects to new watchlist follow."""
-    return await follow_ticker(ticker)
+async def follow_ticker_legacy(ticker: str, request: Request):
+    """Legacy alias for watchlist follow."""
+    return await follow_ticker(ticker, request)
 
 
 @api_router.delete("/v1/watchlist/{ticker}")
-async def unfollow_ticker(ticker: str):
-    """P33: Remove a ticker from user's watchlist (unfollow)."""
+async def unfollow_ticker(ticker: str, request: Request):
+    """P33: Remove a ticker from the authenticated user's watchlist. 404 = anti-enum."""
+    user = request.state.user
     ticker_clean = ticker.upper().replace(".US", "")
-    
-    result = await db.user_watchlist.delete_one({"ticker": ticker_clean})
-    
+
+    result = await db.user_watchlist.delete_one(
+        {"ticker": ticker_clean, "user_id": user["user_id"]}
+    )
     if result.deleted_count == 0:
-        return {"ticker": ticker_clean, "status": "not_followed"}
-    
+        raise HTTPException(404, "Ticker not found in your watchlist")
+
     return {"ticker": ticker_clean, "status": "unfollowed"}
 
 
-# Keep old endpoint for backwards compatibility
 @api_router.delete("/v1/positions/unfollow/{ticker}")
-async def unfollow_ticker_legacy(ticker: str):
-    """Legacy endpoint - redirects to new watchlist unfollow."""
-    return await unfollow_ticker(ticker)
+async def unfollow_ticker_legacy(ticker: str, request: Request):
+    """Legacy alias for watchlist unfollow."""
+    return await unfollow_ticker(ticker, request)
 
 
 @api_router.get("/v1/watchlist")
-async def get_watchlist():
+async def get_watchlist(request: Request):
     """
     P33: Get full watchlist with follow details for "See all" page.
-    
-    Returns all followed tickers with:
-    - ticker, name, logo_url
-    - followed_at (DD/MM/YYYY)
-    - follow_price_close, follow_price_date
-    - current_price, change_since_follow (%)
+    Scoped to the authenticated user.
     """
+    user = request.state.user
     watchlist_docs = await db.user_watchlist.find(
-        {},
+        {"user_id": user["user_id"]},
         {"_id": 0}
     ).sort("followed_at", -1).to_list(length=None)
     
@@ -6710,6 +6695,8 @@ app.include_router(feed_router, prefix="/api")
 app.include_router(talk_router, prefix="/api")
 app.include_router(user_router, prefix="/api")
 
+# Security: User auth middleware — protects /api/portfolios, /api/positions, /api/v1/watchlist
+app.add_middleware(UserAuthMiddleware, db=db)
 # Security: Admin auth middleware — protects ALL /api/admin/* endpoints (Zero Trust)
 app.add_middleware(AdminAuthMiddleware, db=db)
 
