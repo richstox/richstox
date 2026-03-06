@@ -269,10 +269,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     timerRef.current = setInterval(() => {
       setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
     }, 1000);
-    let pollTick = 0;
     pollRef.current = setInterval(async () => {
       try {
-        pollTick += 1;
         const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
         const res = await fetch(`${API_URL}/api/admin/jobs/${jobName}/status`, { headers: requestHeaders });
         if (!res.ok) return;
@@ -289,8 +287,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             // Update live progress message from server (timer shown separately)
             const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
             setLiveProgress(progressMsg);
-            // Refresh overview data every ~9s (every 3rd poll) so counts update live
-            if (pollTick % 3 === 0) {
+            // Refresh overview data every 10s so counts (classified, prices, etc.) update live
+            if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
               fetchData();
             }
             return; // keep polling

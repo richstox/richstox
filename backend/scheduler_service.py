@@ -178,47 +178,38 @@ async def _enqueue_fundamentals_events(
     detector_step: str,
 ) -> Dict[str, int]:
     """
-    Enqueue fundamentals events idempotently using bulk_write for speed.
+    Enqueue fundamentals events idempotently.
     Creates one pending event per (ticker, event_type) while pending/processing exists.
     """
-    from pymongo import UpdateOne
-
-    normalized = sorted({t for t in tickers if t})
-    if not normalized:
-        return {"inserted": 0, "already_pending": 0}
-
-    CHUNK = 500
     inserted = 0
     existing = 0
-    for i in range(0, len(normalized), CHUNK):
-        chunk = normalized[i:i + CHUNK]
-        ops = [
-            UpdateOne(
-                {
+    normalized = sorted({t for t in tickers if t})
+    for ticker in normalized:
+        result = await db.fundamentals_events.update_one(
+            {
+                "ticker": ticker,
+                "event_type": event_type,
+                "status": {"$in": ["pending", "processing"]},
+            },
+            {
+                "$setOnInsert": {
                     "ticker": ticker,
                     "event_type": event_type,
-                    "status": {"$in": ["pending", "processing"]},
+                    "status": "pending",
+                    "source_job": source_job,
+                    "detector_step": detector_step,
+                    "created_at": now,
                 },
-                {
-                    "$setOnInsert": {
-                        "ticker": ticker,
-                        "event_type": event_type,
-                        "status": "pending",
-                        "source_job": source_job,
-                        "detector_step": detector_step,
-                        "created_at": now,
-                    },
-                    "$set": {
-                        "updated_at": now,
-                    },
+                "$set": {
+                    "updated_at": now,
                 },
-                upsert=True,
-            )
-            for ticker in chunk
-        ]
-        result = await db.fundamentals_events.bulk_write(ops, ordered=False)
-        inserted += result.upserted_count
-        existing += result.matched_count
+            },
+            upsert=True,
+        )
+        if result.upserted_id is not None:
+            inserted += 1
+        else:
+            existing += 1
     return {"inserted": inserted, "already_pending": existing}
 
 
@@ -1267,15 +1258,14 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 else:
                     result["failed"] += 1
 
-                # Progress update every 25 tickers (frequent enough for live UI)
-                if done_count % 25 == 0 or done_count == total:
+                # Progress update every 100 tickers
+                if done_count % 100 == 0:
                     await _progress(
                         f"Fundamentals sync: {done_count}/{total} done "
                         f"(✓{result['success']} ✗{result['failed']})"
                     )
 
         # Step 3 exclusion report: tickers still missing sector/industry after sync
-        await _progress(f"Step 3 done ({result['success']}✓ {result['failed']}✗). Writing exclusion report…")
         now_step3 = datetime.now(timezone.utc)
         step3_report = await save_step3_exclusion_report(db, now_step3)
         result["step3_exclusion_rows"] = step3_report.get("step3_exclusion_rows", 0)
@@ -1287,7 +1277,6 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         }
         if result["status"] == "completed":
             try:
-                await _progress("Step 3 complete. Running Step 4 (visibility recompute)…")
                 visibility_result = await recompute_visibility_all(db)
                 step4_chain = {
                     "triggered": True,

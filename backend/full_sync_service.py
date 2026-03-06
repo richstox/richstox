@@ -213,142 +213,95 @@ async def run_full_price_history_sync(db, ignore_kill_switch: bool = False) -> D
         return {"job_name": job_name, "status": "skipped", "reason": "no_api_key",
                 "started_at": started_at.isoformat()}
 
-    # Running sentinel so frontend poll detects job start immediately
-    _running_doc_id = (await db.ops_job_runs.insert_one({
-        "job_name": job_name,
-        "status": "running",
-        "started_at": started_at,
-        "source": "admin",
-        "progress": "Starting full price history download…",
-    })).inserted_id
+    # 1. Cleanup invisible tickers
+    cleanup = await cleanup_invisible_ticker_data(db)
 
-    async def _progress(msg: str) -> None:
-        await db.ops_job_runs.update_one(
-            {"_id": _running_doc_id}, {"$set": {"progress": msg}}
-        )
+    # 2. Get tickers needing download
+    docs = await db.tracked_tickers.find(
+        {
+            "is_visible": True,
+            "$or": [
+                {"price_history_complete": {"$ne": True}},
+                {"needs_price_redownload": True},
+            ],
+        },
+        {"ticker": 1, "needs_price_redownload": 1, "_id": 0},
+    ).to_list(None)
 
-    final_status = "completed"
+    tickers = [(d["ticker"], bool(d.get("needs_price_redownload"))) for d in docs]
+    total = len(tickers)
+    logger.info(f"{job_name}: {total} tickers to process")
 
-    try:
-        # 1. Cleanup invisible tickers
-        await _progress("Cleaning up invisible ticker data…")
-        cleanup = await cleanup_invisible_ticker_data(db)
+    if not tickers:
+        return {
+            "job_name": job_name, "status": "completed",
+            "total": 0, "success": 0, "failed": 0,
+            "cleanup": cleanup, "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
 
-        # 2. Get tickers needing download
-        docs = await db.tracked_tickers.find(
-            {
-                "is_visible": True,
-                "$or": [
-                    {"price_history_complete": {"$ne": True}},
-                    {"needs_price_redownload": True},
-                ],
-            },
-            {"ticker": 1, "needs_price_redownload": 1, "_id": 0},
-        ).to_list(None)
+    # 3. Dynamic concurrency parallel download
+    semaphore = asyncio.Semaphore(START_CONCURRENCY)
+    concurrency_holder = [START_CONCURRENCY]
+    success_count = 0
+    failed_count = 0
+    rate_limited_count = 0
+    processed = 0
+    job_start = time.monotonic()
 
-        tickers = [(d["ticker"], bool(d.get("needs_price_redownload"))) for d in docs]
-        total = len(tickers)
-        logger.info(f"{job_name}: {total} tickers to process")
+    async def worker(ticker: str, needs_redownload: bool) -> Dict:
+        async with semaphore:
+            return await _process_price_ticker(db, ticker, job_name, needs_redownload)
 
-        if not tickers:
-            finished_at = datetime.now(timezone.utc)
-            summary = {
-                "job_name": job_name, "status": "completed",
-                "total": 0, "success": 0, "failed": 0,
-                "cleanup": cleanup, "started_at": started_at.isoformat(),
-                "finished_at": finished_at.isoformat(),
-            }
-            await db.ops_job_runs.update_one(
-                {"_id": _running_doc_id},
-                {"$set": {"status": "completed", "finished_at": finished_at,
-                          "details": summary, "progress": None}},
-            )
-            return summary
+    tasks = [asyncio.create_task(worker(t, r)) for t, r in tickers]
 
-        await _progress(f"Downloading prices: 0/{total} tickers queued")
+    for i, coro in enumerate(asyncio.as_completed(tasks)):
+        # Runtime safety stop
+        if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
+            logger.error(f"{job_name}: max runtime exceeded, stopping")
+            for t in tasks:
+                t.cancel()
+            break
 
-        # 3. Dynamic concurrency parallel download
-        semaphore = asyncio.Semaphore(START_CONCURRENCY)
-        concurrency_holder = [START_CONCURRENCY]
-        success_count = 0
-        failed_count = 0
-        rate_limited_count = 0
-        processed = 0
-        job_start = time.monotonic()
+        # Cancel check every 50 tickers
+        if i % 50 == 0 and await _is_cancelled(db, job_name):
+            logger.info(f"{job_name}: cancelled by user")
+            for t in tasks:
+                t.cancel()
+            break
 
-        async def worker(ticker: str, needs_redownload: bool) -> Dict:
-            async with semaphore:
-                return await _process_price_ticker(db, ticker, job_name, needs_redownload)
-
-        tasks = [asyncio.create_task(worker(t, r)) for t, r in tickers]
-
-        for i, coro in enumerate(asyncio.as_completed(tasks)):
-            # Runtime safety stop
-            if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
-                logger.error(f"{job_name}: max runtime exceeded, stopping")
-                final_status = "failed"
-                for t in tasks:
-                    t.cancel()
-                break
-
-            # Cancel check every 50 tickers
-            if i % 50 == 0 and await _is_cancelled(db, job_name):
-                logger.info(f"{job_name}: cancelled by user")
-                final_status = "cancelled"
-                for t in tasks:
-                    t.cancel()
-                break
-
-            result = await coro
-            processed += 1
-            if result.get("rate_limited"):
-                rate_limited_count += 1
-                await asyncio.sleep(5)
-                concurrency_holder[0] = max(5, concurrency_holder[0] // 2)
+        result = await coro
+        processed += 1
+        if result.get("rate_limited"):
+            rate_limited_count += 1
+            await asyncio.sleep(5)
+            # Reduce concurrency on rate limit
+            concurrency_holder[0] = max(5, concurrency_holder[0] // 2)
+            semaphore._value = concurrency_holder[0]
+        elif result.get("success"):
+            success_count += 1
+            # Scale up concurrency on sustained success
+            if success_count % 100 == 0 and concurrency_holder[0] < MAX_CONCURRENCY:
+                concurrency_holder[0] = min(MAX_CONCURRENCY, concurrency_holder[0] + 5)
                 semaphore._value = concurrency_holder[0]
-            elif result.get("success"):
-                success_count += 1
-                if success_count % 100 == 0 and concurrency_holder[0] < MAX_CONCURRENCY:
-                    concurrency_holder[0] = min(MAX_CONCURRENCY, concurrency_holder[0] + 5)
-                    semaphore._value = concurrency_holder[0]
-            else:
-                failed_count += 1
+        else:
+            failed_count += 1
 
-            # Progress update every 25 tickers
-            if processed % 25 == 0 or processed == total:
-                pct = round(processed / total * 100, 1) if total else 0
-                elapsed = int(time.monotonic() - job_start)
-                rate = processed / elapsed if elapsed > 0 else 0
-                eta = int((total - processed) / rate) if rate > 0 else 0
-                eta_str = f"{eta // 60}m{eta % 60:02d}s" if eta > 0 else "—"
-                await _progress(
-                    f"Prices: {processed}/{total} ({pct}%) "
-                    f"✓{success_count} ✗{failed_count} "
-                    f"⏱{elapsed}s ETA {eta_str}"
-                )
+        if processed % PROGRESS_INTERVAL == 0:
+            logger.info(f"{job_name}: {processed}/{total} done, "
+                        f"ok={success_count} fail={failed_count} concurrency={concurrency_holder[0]}")
 
-            # Error rate safety stop
-            if processed > 50 and (failed_count / processed * 100) > MAX_ERROR_RATE_PCT:
-                logger.error(f"{job_name}: error rate {failed_count/processed*100:.1f}% exceeded, stopping")
-                final_status = "failed"
-                for t in tasks:
-                    t.cancel()
-                break
-
-    except Exception as exc:
-        logger.error(f"{job_name} error: {exc}")
-        final_status = "failed"
-        cleanup = {}
-        total = 0
-        processed = 0
-        success_count = 0
-        failed_count = 0
-        rate_limited_count = 0
+        # Error rate safety stop
+        if processed > 50 and (failed_count / processed * 100) > MAX_ERROR_RATE_PCT:
+            logger.error(f"{job_name}: error rate {failed_count/processed*100:.1f}% exceeded, stopping")
+            for t in tasks:
+                t.cancel()
+            break
 
     finished_at = datetime.now(timezone.utc)
     summary = {
         "job_name": job_name,
-        "status": final_status,
+        "status": "completed",
         "total": total,
         "processed": processed,
         "success": success_count,
@@ -361,15 +314,13 @@ async def run_full_price_history_sync(db, ignore_kill_switch: bool = False) -> D
         "duration_seconds": (finished_at - started_at).total_seconds(),
     }
 
-    await db.ops_job_runs.update_one(
-        {"_id": _running_doc_id},
-        {"$set": {
-            "status": final_status,
-            "finished_at": finished_at,
-            "details": summary,
-            "progress": None,
-        }},
-    )
+    await db.ops_job_runs.insert_one({
+        "job_name": job_name,
+        "status": summary["status"],
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "details": summary,
+    })
 
     logger.info(f"{job_name} done: {success_count}/{total} ok, {failed_count} failed")
     return summary
@@ -474,140 +425,91 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         return {"job_name": job_name, "status": "skipped", "reason": "no_api_key",
                 "started_at": started_at.isoformat()}
 
-    # Running sentinel so frontend poll detects job start immediately
-    _running_doc_id = (await db.ops_job_runs.insert_one({
-        "job_name": job_name,
-        "status": "running",
-        "started_at": started_at,
-        "source": "admin",
-        "progress": "Starting full fundamentals download…",
-    })).inserted_id
+    # 1. Cleanup
+    cleanup = await cleanup_invisible_ticker_data(db)
 
-    async def _progress(msg: str) -> None:
-        await db.ops_job_runs.update_one(
-            {"_id": _running_doc_id}, {"$set": {"progress": msg}}
-        )
+    # 2. Tickers needing fundamentals (refresh first, then missing)
+    refresh_docs = await db.tracked_tickers.find(
+        {"is_visible": True, "needs_fundamentals_refresh": True},
+        {"ticker": 1, "_id": 0},
+    ).to_list(None)
+    missing_docs = await db.tracked_tickers.find(
+        {"is_visible": True, "fundamentals_complete": {"$ne": True},
+         "needs_fundamentals_refresh": {"$ne": True}},
+        {"ticker": 1, "_id": 0},
+    ).to_list(None)
 
-    final_status = "completed"
+    refresh_tickers = [d["ticker"] for d in refresh_docs]
+    missing_tickers = [d["ticker"] for d in missing_docs]
+    tickers = refresh_tickers + missing_tickers
+    total = len(tickers)
+    logger.info(f"{job_name}: {total} tickers ({len(refresh_tickers)} refresh + {len(missing_tickers)} missing)")
 
-    try:
-        # 1. Cleanup
-        await _progress("Cleaning up invisible ticker data…")
-        cleanup = await cleanup_invisible_ticker_data(db)
+    if not tickers:
+        return {
+            "job_name": job_name, "status": "completed",
+            "total": 0, "success": 0, "failed": 0,
+            "cleanup": cleanup, "started_at": started_at.isoformat(),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        }
 
-        # 2. Tickers needing fundamentals (refresh first, then missing)
-        refresh_docs = await db.tracked_tickers.find(
-            {"is_visible": True, "needs_fundamentals_refresh": True},
-            {"ticker": 1, "_id": 0},
-        ).to_list(None)
-        missing_docs = await db.tracked_tickers.find(
-            {"is_visible": True, "fundamentals_complete": {"$ne": True},
-             "needs_fundamentals_refresh": {"$ne": True}},
-            {"ticker": 1, "_id": 0},
-        ).to_list(None)
+    # 3. Parallel download — start at 10, scale to MAX_CONCURRENCY
+    semaphore = asyncio.Semaphore(START_CONCURRENCY)
+    concurrency_holder = [START_CONCURRENCY]
+    success_count = 0
+    failed_count = 0
+    rate_limited_count = 0
+    processed = 0
+    job_start = time.monotonic()
 
-        refresh_tickers = [d["ticker"] for d in refresh_docs]
-        missing_tickers = [d["ticker"] for d in missing_docs]
-        tickers = refresh_tickers + missing_tickers
-        total = len(tickers)
-        logger.info(f"{job_name}: {total} tickers ({len(refresh_tickers)} refresh + {len(missing_tickers)} missing)")
+    async def worker(ticker: str) -> Dict:
+        async with semaphore:
+            return await _process_fundamentals_ticker(db, ticker, job_name)
 
-        if not tickers:
-            finished_at = datetime.now(timezone.utc)
-            summary = {
-                "job_name": job_name, "status": "completed",
-                "total": 0, "success": 0, "failed": 0,
-                "cleanup": cleanup, "started_at": started_at.isoformat(),
-                "finished_at": finished_at.isoformat(),
-            }
-            await db.ops_job_runs.update_one(
-                {"_id": _running_doc_id},
-                {"$set": {"status": "completed", "finished_at": finished_at,
-                          "details": summary, "progress": None}},
-            )
-            return summary
+    tasks = [asyncio.create_task(worker(t)) for t in tickers]
 
-        await _progress(f"Downloading fundamentals: 0/{total} (queued {len(refresh_tickers)} refresh + {len(missing_tickers)} missing)")
+    for i, coro in enumerate(asyncio.as_completed(tasks)):
+        if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
+            logger.error(f"{job_name}: max runtime exceeded, stopping")
+            for t in tasks:
+                t.cancel()
+            break
 
-        # 3. Parallel download — start at 10, scale to MAX_CONCURRENCY
-        semaphore = asyncio.Semaphore(START_CONCURRENCY)
-        concurrency_holder = [START_CONCURRENCY]
-        success_count = 0
-        failed_count = 0
-        rate_limited_count = 0
-        processed = 0
-        job_start = time.monotonic()
+        if i % 50 == 0 and await _is_cancelled(db, job_name):
+            logger.info(f"{job_name}: cancelled by user")
+            for t in tasks:
+                t.cancel()
+            break
 
-        async def worker(ticker: str) -> Dict:
-            async with semaphore:
-                return await _process_fundamentals_ticker(db, ticker, job_name)
-
-        tasks = [asyncio.create_task(worker(t)) for t in tickers]
-
-        for i, coro in enumerate(asyncio.as_completed(tasks)):
-            if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
-                logger.error(f"{job_name}: max runtime exceeded, stopping")
-                final_status = "failed"
-                for t in tasks:
-                    t.cancel()
-                break
-
-            if i % 50 == 0 and await _is_cancelled(db, job_name):
-                logger.info(f"{job_name}: cancelled by user")
-                final_status = "cancelled"
-                for t in tasks:
-                    t.cancel()
-                break
-
-            result = await coro
-            processed += 1
-            if result.get("rate_limited"):
-                rate_limited_count += 1
-                await asyncio.sleep(10)
-                concurrency_holder[0] = max(5, concurrency_holder[0] // 2)
+        result = await coro
+        processed += 1
+        if result.get("rate_limited"):
+            rate_limited_count += 1
+            await asyncio.sleep(10)
+            concurrency_holder[0] = max(5, concurrency_holder[0] // 2)
+            semaphore._value = concurrency_holder[0]
+        elif result.get("success"):
+            success_count += 1
+            if success_count % 50 == 0 and concurrency_holder[0] < MAX_CONCURRENCY:
+                concurrency_holder[0] = min(MAX_CONCURRENCY, concurrency_holder[0] + 2)
                 semaphore._value = concurrency_holder[0]
-            elif result.get("success"):
-                success_count += 1
-                if success_count % 50 == 0 and concurrency_holder[0] < MAX_CONCURRENCY:
-                    concurrency_holder[0] = min(MAX_CONCURRENCY, concurrency_holder[0] + 2)
-                    semaphore._value = concurrency_holder[0]
-            else:
-                failed_count += 1
+        else:
+            failed_count += 1
 
-            # Progress update every 25 tickers (frequent enough for live UI)
-            if processed % 25 == 0 or processed == total:
-                pct = round(processed / total * 100, 1) if total else 0
-                elapsed = int(time.monotonic() - job_start)
-                rate = processed / elapsed if elapsed > 0 else 0
-                eta = int((total - processed) / rate) if rate > 0 else 0
-                eta_str = f"{eta // 60}m{eta % 60:02d}s" if eta > 0 else "—"
-                await _progress(
-                    f"Fundamentals: {processed}/{total} ({pct}%) "
-                    f"✓{success_count} ✗{failed_count} "
-                    f"⏱{elapsed}s ETA {eta_str}"
-                )
+        if processed % PROGRESS_INTERVAL == 0:
+            logger.info(f"{job_name}: {processed}/{total} done, "
+                        f"ok={success_count} fail={failed_count} concurrency={concurrency_holder[0]}")
 
-            if processed > 50 and (failed_count / processed * 100) > MAX_ERROR_RATE_PCT:
-                logger.error(f"{job_name}: error rate exceeded, stopping")
-                final_status = "failed"
-                for t in tasks:
-                    t.cancel()
-                break
-
-    except Exception as exc:
-        logger.error(f"{job_name} error: {exc}")
-        final_status = "failed"
-        cleanup = {}
-        total = 0
-        processed = 0
-        success_count = 0
-        failed_count = 0
-        rate_limited_count = 0
+        if processed > 50 and (failed_count / processed * 100) > MAX_ERROR_RATE_PCT:
+            logger.error(f"{job_name}: error rate exceeded, stopping")
+            for t in tasks:
+                t.cancel()
+            break
 
     finished_at = datetime.now(timezone.utc)
     summary = {
         "job_name": job_name,
-        "status": final_status,
+        "status": "completed",
         "total": total,
         "processed": processed,
         "success": success_count,
@@ -620,15 +522,13 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         "duration_seconds": (finished_at - started_at).total_seconds(),
     }
 
-    await db.ops_job_runs.update_one(
-        {"_id": _running_doc_id},
-        {"$set": {
-            "status": final_status,
-            "finished_at": finished_at,
-            "details": summary,
-            "progress": None,
-        }},
-    )
+    await db.ops_job_runs.insert_one({
+        "job_name": job_name,
+        "status": summary["status"],
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "details": summary,
+    })
 
     logger.info(f"{job_name} done: {success_count}/{total} ok, credits={success_count * 10}")
     return summary
