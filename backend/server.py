@@ -40,6 +40,7 @@ from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Query
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from admin_middleware import AdminAuthMiddleware
 import os
 import logging
 from pathlib import Path
@@ -2072,12 +2073,8 @@ async def _run_universe_seed_bg(db):
 
 
 @api_router.post("/admin/jobs/universe-seed")
-async def admin_run_universe_seed(request: Request, background_tasks: BackgroundTasks):
-    """Admin-only: Manually trigger Universe Seed job (runs in background)."""
-    session_token = get_session_token_from_request(request)
-    if not session_token or not await is_admin(db, session_token):
-        raise HTTPException(403, "Admin access required")
-
+async def admin_run_universe_seed(background_tasks: BackgroundTasks):
+    """Manually trigger Universe Seed job (runs in background). Auth: AdminAuthMiddleware."""
     background_tasks.add_task(_run_universe_seed_bg, db)
     return {
         "status": "started",
@@ -2555,7 +2552,7 @@ async def admin_scan_data_gaps(
     result = await scan_all_tickers_for_gaps(db, limit)
     return result
 
-@api_router.get("/admin/data-gaps/daily-report")
+@api_router.post("/admin/data-gaps/daily-report")
 async def admin_daily_data_gaps_report():
     """Generate and store daily data gaps report."""
     result = await generate_daily_report(db)
@@ -6580,11 +6577,8 @@ async def admin_visible_universe_stats():
 # ============================================================================
 
 @api_router.get("/admin/users")
-async def admin_list_users(request: Request, limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
-    """Admin-only: List all users with their stats."""
-    session_token = get_session_token_from_request(request)
-    if not session_token or not await is_admin(db, session_token):
-        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+async def admin_list_users(limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+    """List all users with their stats. Auth: AdminAuthMiddleware."""
 
     users = await db.users.find({}, {"_id": 0}).skip(offset).limit(limit).to_list(limit)
 
@@ -6611,10 +6605,7 @@ async def admin_list_users(request: Request, limit: int = Query(100, ge=1, le=50
 
 @api_router.patch("/admin/users/{user_id}/tier")
 async def admin_update_user_tier(user_id: str, request: Request):
-    """Admin-only: Change user subscription tier (free <-> pro)."""
-    session_token = get_session_token_from_request(request)
-    if not session_token or not await is_admin(db, session_token):
-        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+    """Change user subscription tier (free <-> pro). Auth: AdminAuthMiddleware."""
 
     body = await request.json()
     new_tier = body.get("subscription_tier")
@@ -6647,10 +6638,7 @@ async def admin_update_user_tier(user_id: str, request: Request):
 
 @api_router.post("/admin/users/{user_id}/suspend")
 async def admin_suspend_user(user_id: str, request: Request):
-    """Admin-only: Suspend or unsuspend a user account."""
-    session_token = get_session_token_from_request(request)
-    if not session_token or not await is_admin(db, session_token):
-        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+    """Suspend or unsuspend a user account. Auth: AdminAuthMiddleware."""
 
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if not user:
@@ -6679,10 +6667,7 @@ async def admin_suspend_user(user_id: str, request: Request):
 
 @api_router.delete("/admin/users/{user_id}")
 async def admin_delete_user(user_id: str, request: Request):
-    """Admin-only: Permanently delete a user and all their data."""
-    session_token = get_session_token_from_request(request)
-    if not session_token or not await is_admin(db, session_token):
-        raise HTTPException(403, detail={"error": "Admin access required", "code": "FORBIDDEN"})
+    """Permanently delete a user and all their data. Auth: AdminAuthMiddleware."""
 
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if not user:
@@ -6725,7 +6710,10 @@ app.include_router(feed_router, prefix="/api")
 app.include_router(talk_router, prefix="/api")
 app.include_router(user_router, prefix="/api")
 
-# CORS
+# Security: Admin auth middleware — protects ALL /api/admin/* endpoints (Zero Trust)
+app.add_middleware(AdminAuthMiddleware, db=db)
+
+# CORS (must be registered after AdminAuthMiddleware so it runs first in the chain)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

@@ -18,6 +18,13 @@
 - Agents must not invent or enforce their own policy decisions without Richard's approval.
 - If requirements are ambiguous, agents must ask Richard for approval/clarification before proceeding.
 
+### Change approval workflow (MANDATORY)
+- **Every code change MUST be proposed to Richard first** — describe WHAT will change and WHY.
+- **Richard will review the proposal** (optionally with a Dev AI reviewer) and explicitly approve or reject.
+- **Only after Richard's explicit approval** may the agent implement and commit the change.
+- **Never commit directly without prior approval.** This applies to ALL changes — bug fixes, refactors, new features, config changes.
+- The only exception is trivial formatting fixes (whitespace, typos in comments) that do not affect behavior.
+
 ### Pipeline steps (canonical definition)
 
 The Universe Pipeline has sequential steps. Each step runs ONLY after the previous completes successfully.
