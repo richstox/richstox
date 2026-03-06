@@ -267,9 +267,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         if (runStart >= startedAt) {
           const st = lastRun.status || 'completed';
           if (st === 'running') {
-            // Job started on server — show elapsed time feedback
+            // Job started on server — show live progress message
             const elapsed = Math.round((Date.now() - startedAt) / 1000);
-            setRunResult(prev => ({ ...prev, [jobName]: `⏳ Running on server… ${elapsed}s` }));
+            const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
+            setRunResult(prev => ({ ...prev, [jobName]: `⏳ ${progressMsg} (${elapsed}s)` }));
             return; // keep polling
           }
           stopPolling();

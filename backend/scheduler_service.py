@@ -551,7 +551,7 @@ async def _get_missed_trading_dates(db, today_str: str, max_lookback_days: int =
     return missed
 
 
-async def run_step2_event_detectors(db) -> Dict[str, Any]:
+async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
     """
     Execute Step 2 sub-steps with REAL EODHD API calls.
     2.2: bulk splits → needs_price_redownload + needs_fundamentals_refresh
@@ -567,6 +567,10 @@ async def run_step2_event_detectors(db) -> Dict[str, Any]:
     today_str = datetime.now(PRAGUE_TZ).strftime("%Y-%m-%d")
     now = datetime.now(timezone.utc)
 
+    async def _p(msg: str) -> None:
+        if progress_cb:
+            await progress_cb(msg)
+
     # Determine all missed trading dates since last successful run
     missed_dates = await _get_missed_trading_dates(db, today_str)
     # Always include today; missed_dates may already include it
@@ -580,7 +584,8 @@ async def run_step2_event_detectors(db) -> Dict[str, Any]:
     split_all_in_universe: List[str] = []
     split_flagged_total = 0
     split_endpoints: List[str] = []
-    for date_str in missed_dates:
+    for i, date_str in enumerate(missed_dates):
+        await _p(f"2.2 Split detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
         s = await _detect_split_candidates_eodhd(db, date_str)
         split_raw_total += s.get("raw_count", 0)
         split_all_in_universe.extend(s.get("tickers", []))
@@ -589,12 +594,15 @@ async def run_step2_event_detectors(db) -> Dict[str, Any]:
             split_endpoints.append(s["api_endpoint"])
     split_all_in_universe = list(dict.fromkeys(split_all_in_universe))  # dedup
 
+    await _p(f"2.2 Done: {split_flagged_total} split(s) flagged. Running 2.4 Dividend detector…")
+
     # --- 2.4 DIVIDEND DETECTOR (per-day calls, merge results) ---
     div_raw_total = 0
     div_all_in_universe: List[str] = []
     div_flagged_total = 0
     div_endpoints: List[str] = []
-    for date_str in missed_dates:
+    for i, date_str in enumerate(missed_dates):
+        await _p(f"2.4 Dividend detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
         d = await _detect_dividend_candidates_eodhd(db, date_str)
         div_raw_total += d.get("raw_count", 0)
         div_all_in_universe.extend(d.get("tickers", []))
@@ -603,8 +611,11 @@ async def run_step2_event_detectors(db) -> Dict[str, Any]:
             div_endpoints.append(d["api_endpoint"])
     div_all_in_universe = list(dict.fromkeys(div_all_in_universe))
 
+    await _p(f"2.4 Done: {div_flagged_total} dividend(s) flagged. Running 2.6 Earnings detector…")
+
     # --- 2.6 EARNINGS DETECTOR (single range call: from=first_missed to=today) ---
     from_date = missed_dates[0] if missed_dates else today_str
+    await _p(f"2.6 Earnings detector: calling EODHD calendar {from_date} → {today_str}…")
     earnings = await _detect_earnings_candidates_eodhd(db, today_str, from_date=from_date)
 
     split = {
@@ -737,9 +748,24 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
                 "started_at": started_at.isoformat(),
             }
 
+        # Progress helper: update running sentinel so UI poll can show status
+        async def _progress(msg: str) -> None:
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {"progress": msg}},
+            )
+
+        await _progress("2.1 Detecting price gaps (last 30 days)…")
+
         # Run the NEW bulk catchup with gap detection
         result = await run_daily_bulk_catchup(db)
-        
+
+        await _progress(
+            f"2.1 Prices synced: {result.get('records_upserted', 0)} records "
+            f"across {result.get('dates_processed', 0)} date(s). "
+            "Updating has_price_data flags…"
+        )
+
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
         price_flag_summary = await sync_has_price_data_flags(db, include_exclusions=True)
         result["tickers_seeded_total"] = price_flag_summary["seeded_total"]
@@ -753,8 +779,13 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
                 now=datetime.now(timezone.utc),
             )
         )
+        await _progress(
+            f"2.1 Done: {price_flag_summary.get('with_price_data', 0)} tickers with price data. "
+            "Running 2.2 Split detector (EODHD API)…"
+        )
+
         # Step 2.2 / 2.4 / 2.6 detectors -> enqueue fundamentals refresh events.
-        event_detector_summary = await run_step2_event_detectors(db)
+        event_detector_summary = await run_step2_event_detectors(db, progress_cb=_progress)
         result["event_detectors"] = event_detector_summary
         result["fundamentals_events_enqueued"] = event_detector_summary.get("enqueued_total", 0)
 
