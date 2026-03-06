@@ -2036,19 +2036,15 @@ async def admin_whitelist_sync(dry_run: bool = Query(True)):
     result = await sync_ticker_whitelist(db, dry_run=dry_run)
     return result
 
-@api_router.post("/admin/jobs/universe-seed")
-async def admin_run_universe_seed(request: Request):
-    """Admin-only: Manually trigger Universe Seed job."""
-    session_token = get_session_token_from_request(request)
-    if not session_token or not await is_admin(db, session_token):
-        raise HTTPException(403, "Admin access required")
-
+async def _run_universe_seed_bg(db):
+    """Background task wrapper for universe seed — logs to ops_job_runs."""
     import uuid as _uuid
     from zoneinfo import ZoneInfo
     PRAGUE = ZoneInfo("Europe/Prague")
 
     job_id = f"universe_seed_{_uuid.uuid4().hex[:8]}"
     started_at = datetime.now(PRAGUE)
+    logger.info(f"Universe Seed started (job_id={job_id})")
 
     try:
         result = await sync_ticker_whitelist(db, dry_run=False)
@@ -2056,6 +2052,7 @@ async def admin_run_universe_seed(request: Request):
     except Exception as e:
         result = {"error": str(e)}
         status = "failed"
+        logger.error(f"Universe Seed failed: {e}")
 
     finished_at = datetime.now(PRAGUE)
     await db.ops_job_runs.insert_one({
@@ -2071,7 +2068,22 @@ async def admin_run_universe_seed(request: Request):
         "result": result,
         "triggered_by": "admin_manual",
     })
-    return {"status": status, "job": "universe_seed", "job_id": job_id, "result": result}
+    logger.info(f"Universe Seed completed: status={status}, job_id={job_id}")
+
+
+@api_router.post("/admin/jobs/universe-seed")
+async def admin_run_universe_seed(request: Request, background_tasks: BackgroundTasks):
+    """Admin-only: Manually trigger Universe Seed job (runs in background)."""
+    session_token = get_session_token_from_request(request)
+    if not session_token or not await is_admin(db, session_token):
+        raise HTTPException(403, "Admin access required")
+
+    background_tasks.add_task(_run_universe_seed_bg, db)
+    return {
+        "status": "started",
+        "job_name": "universe_seed",
+        "message": "Universe Seed started in background. Poll /api/admin/jobs/universe_seed/status for result.",
+    }
 
 @api_router.get("/admin/whitelist/preview")
 async def admin_whitelist_preview():
