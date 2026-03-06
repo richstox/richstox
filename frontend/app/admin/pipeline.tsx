@@ -265,9 +265,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         if (!lastRun) return;
         const runStart = lastRun.started_at ? Date.parse(lastRun.started_at) : 0;
         if (runStart >= startedAt) {
+          const st = lastRun.status || 'completed';
+          if (st === 'running') {
+            // Job started on server — show elapsed time feedback
+            const elapsed = Math.round((Date.now() - startedAt) / 1000);
+            setRunResult(prev => ({ ...prev, [jobName]: `⏳ Running on server… ${elapsed}s` }));
+            return; // keep polling
+          }
           stopPolling();
           setRunningJob(null);
-          const st = lastRun.status || 'completed';
           if (st === 'cancelled') {
             setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancelled' }));
           } else if (st === 'failed' || st === 'error') {

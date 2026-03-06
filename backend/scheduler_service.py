@@ -695,16 +695,27 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
     - coverage_threshold (default: 0.80)
     """
     from price_ingestion_service import run_daily_bulk_catchup
-    
+
     started_at = datetime.now(timezone.utc)
     job_name = "price_sync"
-    
+
     logger.info(f"Starting {job_name} with gap detection and bulk catchup")
-    
+
+    # Insert "running" sentinel so the frontend poll detects the job started
+    _running_doc_id = (await db.ops_job_runs.insert_one({
+        "job_name": job_name,
+        "status": "running",
+        "started_at": started_at,
+        "source": "scheduler",
+    })).inserted_id
+
     try:
         # Check kill switch (manual endpoints can explicitly bypass)
         if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
             logger.warning(f"{job_name} skipped: kill switch engaged")
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id}, {"$set": {"status": "skipped"}}
+            )
             return {
                 "job_name": job_name,
                 "status": "skipped",
@@ -717,6 +728,9 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
         if cancel_flag:
             await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
             logger.info(f"{job_name} cancelled before start")
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id}, {"$set": {"status": "cancelled"}}
+            )
             return {
                 "job_name": job_name,
                 "status": "cancelled",
@@ -746,31 +760,32 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
 
         # Log to ops_job_runs
         finished_at = datetime.now(timezone.utc)
-        await db.ops_job_runs.insert_one({
-            "job_name": job_name,
-            "source": "scheduler",
-            "started_at": started_at,
-            "finished_at": finished_at,
-            "started_at_prague": _to_prague_iso(started_at),
-            "finished_at_prague": _to_prague_iso(finished_at),
-            "log_timezone": "Europe/Prague",
-            "status": result.get("status", "completed"),
-            "details": {
-                "config": result.get("config"),
-                "gap_analysis": result.get("gap_analysis"),
-                "dates_processed": result.get("dates_processed", 0),
-                "records_upserted": result.get("records_upserted", 0),
-                "tickers_seeded_total": result.get("tickers_seeded_total", 0),
-                "tickers_with_price_data": result.get("tickers_with_price_data", 0),
-                "tickers_without_price_data": result.get("tickers_without_price_data", 0),
-                "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
-                "exclusion_report_rows": result.get("exclusion_report_rows", 0),
-                "api_calls": result.get("api_calls", 0),
-                "bulk_writes": result.get("bulk_writes", 0),
-                "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
-                "event_detectors": result.get("event_detectors", {}),
-            }
-        })
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {
+                "source": "scheduler",
+                "finished_at": finished_at,
+                "started_at_prague": _to_prague_iso(started_at),
+                "finished_at_prague": _to_prague_iso(finished_at),
+                "log_timezone": "Europe/Prague",
+                "status": result.get("status", "completed"),
+                "details": {
+                    "config": result.get("config"),
+                    "gap_analysis": result.get("gap_analysis"),
+                    "dates_processed": result.get("dates_processed", 0),
+                    "records_upserted": result.get("records_upserted", 0),
+                    "tickers_seeded_total": result.get("tickers_seeded_total", 0),
+                    "tickers_with_price_data": result.get("tickers_with_price_data", 0),
+                    "tickers_without_price_data": result.get("tickers_without_price_data", 0),
+                    "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
+                    "exclusion_report_rows": result.get("exclusion_report_rows", 0),
+                    "api_calls": result.get("api_calls", 0),
+                    "bulk_writes": result.get("bulk_writes", 0),
+                    "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
+                    "event_detectors": result.get("event_detectors", {}),
+                },
+            }}
+        )
         
         logger.info(f"{job_name} completed: {result.get('records_upserted', 0)} records, "
                    f"{result.get('dates_processed', 0)} gap dates processed, "
@@ -792,11 +807,15 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
-        
+
     except Exception as e:
         error_msg = str(e)
         logger.error(f"{job_name} failed: {error_msg}")
-        
+
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {"status": "failed", "finished_at": datetime.now(timezone.utc), "error": error_msg}},
+        )
         await log_scheduled_job(
             db,
             job_name=job_name,
@@ -805,7 +824,7 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
             started_at=started_at,
             error=error_msg
         )
-        
+
         return {
             "job_name": job_name,
             "status": "failed",
