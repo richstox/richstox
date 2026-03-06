@@ -259,7 +259,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       timerRef.current = null;
     }
     setElapsedSeconds(0);
-    setJobStartTime(null);
     setLiveProgress('');
   };
 
