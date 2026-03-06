@@ -292,15 +292,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (!res.ok) return;
       const progress: FundamentalsProgress = await res.json();
 
-      // If the backend reports no active run (ops_config was cleaned up after job end),
-      // stop polling but DO NOT overwrite the last known state — the UI should keep
-      // showing the final 100% snapshot rather than collapsing to zeros.
+      // No active run — stop polling and preserve last known state.
+      // Covers both normal completion and post-cancel cleanup.
       if (!progress.run_active || progress.total_queued === 0) {
         if (fundProgressPollRef.current) {
           clearInterval(fundProgressPollRef.current);
           fundProgressPollRef.current = null;
         }
-        return; // preserve existing fundamentalsProgress state
+        return;
       }
 
       setFundamentalsProgress(progress);
@@ -319,13 +318,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     stopPolling();
     setElapsedSeconds(0);
 
-    // Launch fundamentals progress polling when the full fundamentals sync starts
-    if (jobName === 'full_fundamentals_sync') {
-      pollFundamentalsProgress(); // immediate first fetch
+    // Start fundamentals-progress polling for both Step 3 job variants.
+    // For fundamentals_sync (scheduled), run_active will be false so it auto-stops
+    // after one call — harmless. For full_fundamentals_sync it drives the live bar.
+    if (jobName === 'full_fundamentals_sync' || jobName === 'fundamentals_sync') {
+      pollFundamentalsProgress();
       fundProgressPollRef.current = setInterval(pollFundamentalsProgress, 2000);
     }
 
-    // Local 1-second timer for elapsed display
     timerRef.current = setInterval(() => {
       setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
     }, 1000);
@@ -341,11 +341,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const json = await res.json();
         const lastRun = json.last_run;
         if (!lastRun) return;
-        // MongoDB datetimes may lack timezone suffix — force UTC interpretation
+
         const rawStart = lastRun.started_at || '';
-        const utcStart = rawStart.endsWith('Z') || rawStart.includes('+') ? rawStart : rawStart + 'Z';
+        const utcStart = rawStart.endsWith('Z') || rawStart.includes('+')
+          ? rawStart : rawStart + 'Z';
         const runStart = utcStart ? Date.parse(utcStart) : 0;
-        if (runStart >= startedAt) {
+
+        // Allow up to 10 s of server/client clock skew so we never miss a run
+        // that the server started just before the client received the response.
+        if (runStart >= startedAt - 10_000) {
           const st = lastRun.status || 'completed';
           if (st === 'running') {
             const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
@@ -353,7 +357,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
               fetchData();
             }
-            return; // keep polling
+            return;
           }
           stopPolling();
           setRunningJob(null);
@@ -432,8 +436,37 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         { method: 'POST' },
         sessionToken,
       );
-      setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancel requested…' }));
-    } catch { /* ignore */ }
+    } catch { /* ignore network errors — cancel flag still likely set */ }
+
+    // Immediately clean up UI — do not wait for the next poll cycle.
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    setElapsedSeconds(0);
+    setLiveProgress('');
+
+    // Remove spinner immediately; fundProgressPollRef keeps running and
+    // auto-stops once the backend clears ops_config (run_active → false).
+    setRunningJob(null);
+    setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancelling…' }));
+
+    // One deferred confirmation check (~4 s) to flip "Cancelling" → "Cancelled"
+    // once the backend cancel_event has propagated and the job has stopped.
+    setTimeout(async () => {
+      try {
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/jobs/${jobName}/status`,
+          {},
+          sessionToken,
+        );
+        if (!res.ok) return;
+        const json = await res.json();
+        const st = json.last_run?.status;
+        if (st && st !== 'running') {
+          setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancelled' }));
+          fetchData();
+        }
+      } catch {}
+    }, 4000);
   };
 
   const handleFullSync = async (jobName: string) => {
