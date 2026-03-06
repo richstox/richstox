@@ -19,6 +19,7 @@ Both jobs:
 
 import os
 import time
+import uuid
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
@@ -340,25 +341,26 @@ async def run_full_price_history_sync(db, ignore_kill_switch: bool = False) -> D
 
 
 # ---------------------------------------------------------------------------
-# Job B: Full Fundamentals  (state-machine, atomic claiming)
+# Job B: Full Fundamentals  (run_id state-machine, atomic claiming)
 # ---------------------------------------------------------------------------
 
-def _build_claim_filter() -> Dict[str, Any]:
+OPS_CONFIG_RUN_KEY = "active_fundamentals_run"
+
+
+def _build_claim_filter(current_run_id: str) -> Dict[str, Any]:
     """
-    Build the MongoDB filter used to atomically claim the next ticker.
+    Build the MongoDB filter used to atomically claim the next ticker for
+    a specific run.  The run_id scope replaces the old _QUEUED_FILTER guard —
+    only tickers tagged for this run are eligible.
 
-    Claimable states:
-      - fundamentals_status is null / missing / "pending" / "error"
-      - OR fundamentals_status == "processing" AND processing started > ZOMBIE_THRESHOLD_MINUTES ago
-        (zombie lock recovery)
-
-    The outer $and enforces that the ticker is in the queue at all
-    (not complete and no refresh needed).
+    Claimable status values:
+      - null / missing / "pending" / "error"  → ready to process
+      - "processing" AND started_at < stale_cutoff  → zombie recovery
     """
     stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=ZOMBIE_THRESHOLD_MINUTES)
     return {
         "$and": [
-            _QUEUED_FILTER,
+            {"fundamentals_run_id": current_run_id},
             {
                 "$or": [
                     {"fundamentals_status": {"$in": [None, "pending", "error"]}},
@@ -372,14 +374,16 @@ def _build_claim_filter() -> Dict[str, Any]:
     }
 
 
-async def _claim_next_ticker(db) -> Optional[str]:
+async def _claim_next_ticker(db, current_run_id: str) -> Optional[str]:
     """
-    Atomically claim the next available ticker from the fundamentals queue.
-    Returns the ticker string, or None if the queue is exhausted.
+    Atomically claim the next available ticker from the current run's queue.
+    Returns the ticker string, or None when the queue is exhausted.
+    The `fundamentals_processing_started_at` timestamp is always overwritten
+    with UTC now — this resets the zombie clock for re-claimed stuck tickers.
     """
     now = datetime.now(timezone.utc)
     doc = await db.tracked_tickers.find_one_and_update(
-        _build_claim_filter(),
+        _build_claim_filter(current_run_id),
         {"$set": {
             "fundamentals_status": "processing",
             "fundamentals_processing_started_at": now,
@@ -394,8 +398,10 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
     """
     Fetch, parse, and persist complete fundamentals for one ticker.
     The ticker must already be claimed (status == "processing") before calling this.
-    On success sets fundamentals_status = "complete".
-    On failure sets fundamentals_status = "error".
+    On success  → fundamentals_status = "complete",  fundamentals_complete = True.
+    On failure  → fundamentals_status = "error".
+    fundamentals_run_id is intentionally NOT cleared so the progress endpoint
+    can keep counting this ticker in the run's aggregation.
     """
     ticker_us = ticker if ticker.endswith(".US") else f"{ticker}.US"
 
@@ -488,11 +494,18 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
     """
     Download complete fundamentals for all queued tickers.
 
-    Queue = tracked_tickers where fundamentals_complete != true OR needs_fundamentals_refresh == true.
+    Queue definition: tracked_tickers where
+      fundamentals_complete != true  OR  needs_fundamentals_refresh == true
 
-    Workers atomically claim individual tickers via findOneAndUpdate (no read-then-write).
-    Zombie locks (stuck in "processing" > ZOMBIE_THRESHOLD_MINUTES) are automatically
-    re-claimed by the next available worker.
+    Run-ID architecture:
+      1. Concurrency guard — abort if another non-stale run is already active.
+      2. Stamp all queued tickers with fundamentals_run_id = current_run_id.
+         Only set fundamentals_status = "pending" where it is currently null/missing
+         (preserves existing "error" history for diagnostics).
+      3. Workers atomically claim tickers belonging to this run_id only.
+      4. Progress endpoint aggregates on fundamentals_run_id — total_queued is
+         stable because tagged tickers never leave the run's aggregation set.
+      5. On job end (success / cancel / error) clear ops_config run marker.
     """
     job_name = "full_fundamentals_sync"
     started_at = datetime.now(timezone.utc)
@@ -501,47 +514,87 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         return {"job_name": job_name, "status": "skipped", "reason": "no_api_key",
                 "started_at": started_at.isoformat()}
 
-    # 1. Cleanup invisible tickers first
-    cleanup = await cleanup_invisible_ticker_data(db)
+    # ── 1. Concurrency guard ─────────────────────────────────────────────────
+    existing_run = await db.ops_config.find_one({"key": OPS_CONFIG_RUN_KEY})
+    if existing_run:
+        age_seconds = (started_at - existing_run["started_at"].replace(tzinfo=timezone.utc)
+                       if existing_run["started_at"].tzinfo is None
+                       else (started_at - existing_run["started_at"]).total_seconds())
+        if not isinstance(age_seconds, float):
+            age_seconds = age_seconds.total_seconds() if hasattr(age_seconds, 'total_seconds') else MAX_RUNTIME_SECONDS
+        if age_seconds < MAX_RUNTIME_SECONDS:
+            logger.warning(f"{job_name}: another run is active ({existing_run['run_id']}), aborting")
+            return {
+                "job_name": job_name, "status": "skipped",
+                "reason": "another_run_active",
+                "active_run_id": existing_run["run_id"],
+                "started_at": started_at.isoformat(),
+            }
 
-    # 2. Count total queue size (for logging; workers self-drain via claim loop)
-    total_queued = await db.tracked_tickers.count_documents(_QUEUED_FILTER)
-    logger.info(f"{job_name}: {total_queued} tickers in queue")
-
-    if total_queued == 0:
+    # ── 2. Early-exit check ──────────────────────────────────────────────────
+    total_to_process = await db.tracked_tickers.count_documents(_QUEUED_FILTER)
+    if total_to_process == 0:
+        logger.info(f"{job_name}: queue is empty, nothing to do")
         return {
             "job_name": job_name, "status": "completed",
             "total": 0, "success": 0, "failed": 0,
-            "cleanup": cleanup, "started_at": started_at.isoformat(),
+            "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    # 3. Shared counters (mutated inside coroutines — GIL safe for simple int increments)
+    # ── 3. Generate run_id and register it in ops_config ────────────────────
+    current_run_id = (
+        f"frun_{started_at.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    )
+    await db.ops_config.replace_one(
+        {"key": OPS_CONFIG_RUN_KEY},
+        {
+            "key": OPS_CONFIG_RUN_KEY,
+            "run_id": current_run_id,
+            "started_at": started_at,
+        },
+        upsert=True,
+    )
+    logger.info(f"{job_name}: started run_id={current_run_id}, queue={total_to_process}")
+
+    # ── 4. Cleanup invisible tickers ────────────────────────────────────────
+    cleanup = await cleanup_invisible_ticker_data(db)
+
+    # ── 5. Tag all queued tickers with current_run_id ────────────────────────
+    # Op A: stamp every queued ticker with the run_id (no status change).
+    await db.tracked_tickers.update_many(
+        _QUEUED_FILTER,
+        {"$set": {"fundamentals_run_id": current_run_id}},
+    )
+    # Op B: for tickers with no status yet (null/missing), initialise to "pending".
+    #       Existing "error", "processing", "complete" values are deliberately preserved.
+    await db.tracked_tickers.update_many(
+        {"$and": [_QUEUED_FILTER, {"fundamentals_status": None}]},
+        {"$set": {"fundamentals_status": "pending"}},
+    )
+
+    # ── 6. Shared counters & concurrency primitives ──────────────────────────
     counters: Dict[str, int] = {
         "success": 0, "failed": 0, "rate_limited": 0, "processed": 0
     }
     job_start = time.monotonic()
     cancelled = False
 
-    # Dynamic concurrency — each worker controls its own slot via a shared semaphore
     semaphore = asyncio.Semaphore(START_CONCURRENCY)
     concurrency_holder = [START_CONCURRENCY]
 
+    # ── 7. Drain-worker definition ───────────────────────────────────────────
     async def drain_worker() -> None:
-        """
-        A single drain worker: repeatedly claims one ticker and processes it
-        until the queue is empty, cancelled, or a safety stop fires.
-        """
         nonlocal cancelled
         while True:
             if cancelled:
                 return
+
             if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
                 logger.error(f"{job_name}: max runtime exceeded, stopping")
                 cancelled = True
                 return
 
-            # Cancel-flag check every 50 processed tickers
             if counters["processed"] > 0 and counters["processed"] % 50 == 0:
                 if await _is_cancelled(db, job_name):
                     logger.info(f"{job_name}: cancelled by user")
@@ -549,9 +602,9 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
                     return
 
             async with semaphore:
-                ticker = await _claim_next_ticker(db)
+                ticker = await _claim_next_ticker(db, current_run_id)
                 if ticker is None:
-                    return  # queue exhausted
+                    return  # queue for this run is exhausted
 
                 result = await _process_fundamentals_ticker(db, ticker, job_name)
 
@@ -577,7 +630,6 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
                     f"concurrency={concurrency_holder[0]}"
                 )
 
-            # Error-rate safety stop
             if counters["processed"] > 50:
                 err_pct = counters["failed"] / counters["processed"] * 100
                 if err_pct > MAX_ERROR_RATE_PCT:
@@ -585,14 +637,20 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
                     cancelled = True
                     return
 
-    # Launch START_CONCURRENCY parallel drain workers
-    await asyncio.gather(*[drain_worker() for _ in range(START_CONCURRENCY)])
+    # ── 8. Run workers, always clean up ops_config in finally ────────────────
+    try:
+        await asyncio.gather(*[drain_worker() for _ in range(START_CONCURRENCY)])
+    finally:
+        await db.ops_config.delete_one({"key": OPS_CONFIG_RUN_KEY})
+        logger.info(f"{job_name}: cleared active run marker (run_id={current_run_id})")
 
+    # ── 9. Persist summary ───────────────────────────────────────────────────
     finished_at = datetime.now(timezone.utc)
     summary = {
         "job_name": job_name,
+        "run_id": current_run_id,
         "status": "completed",
-        "total": total_queued,
+        "total": total_to_process,
         "processed": counters["processed"],
         "success": counters["success"],
         "failed": counters["failed"],
@@ -612,6 +670,9 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         "details": summary,
     })
 
-    logger.info(f"{job_name} done: {counters['success']}/{total_queued} ok, "
-                f"credits={counters['success'] * 10}")
+    logger.info(
+        f"{job_name} done: run_id={current_run_id}, "
+        f"{counters['success']}/{total_to_process} ok, "
+        f"credits={counters['success'] * 10}"
+    )
     return summary

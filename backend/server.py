@@ -6469,25 +6469,33 @@ async def admin_get_pipeline_exclusion_report(
 @api_router.get("/admin/pipeline/fundamentals-progress")
 async def admin_get_fundamentals_progress():
     """
-    Return live progress counts for the fundamentals sync queue.
+    Return live progress counts for the active fundamentals sync run.
 
-    The "queued set" is every tracked ticker where:
-      fundamentals_complete != true  OR  needs_fundamentals_refresh == true
-
-    fundamentals_status values outside {"processing","complete","error"} — including
-    null, missing, or any legacy string — are normalised to "pending".
+    Uses the run_id architecture:
+      1. Read active_fundamentals_run from ops_config to get the current run_id.
+         If no active run exists, return zeros with run_active=False.
+      2. Aggregate tracked_tickers WHERE fundamentals_run_id == active_run_id.
+         This set is stable — tickers tagged at job start are never un-tagged,
+         so total_queued is fixed and complete grows as workers finish.
+      3. Any fundamentals_status value outside {"processing","complete","error"}
+         (including null/missing or legacy strings) is normalised to "pending".
     """
-    KNOWN_STATUSES = {"processing", "complete", "error"}
+    _KNOWN_STATUSES = {"processing", "complete", "error"}
 
-    queued_filter = {
-        "$or": [
-            {"fundamentals_complete": {"$ne": True}},
-            {"needs_fundamentals_refresh": True},
-        ]
-    }
+    # ── Resolve active run ────────────────────────────────────────────────────
+    run_doc = await db.ops_config.find_one({"key": "active_fundamentals_run"})
+    if not run_doc:
+        return {
+            "total_queued": 0, "pending": 0, "processing": 0,
+            "complete": 0, "error": 0, "percentage": 0,
+            "run_active": False,
+        }
 
+    active_run_id: str = run_doc["run_id"]
+
+    # ── Aggregate by normalised status for this run ───────────────────────────
     agg_pipeline = [
-        {"$match": queued_filter},
+        {"$match": {"fundamentals_run_id": active_run_id}},
         {
             "$group": {
                 "_id": {
@@ -6514,8 +6522,8 @@ async def admin_get_fundamentals_progress():
 
     counts: Dict[str, int] = {"pending": 0, "processing": 0, "complete": 0, "error": 0}
     async for doc in db.tracked_tickers.aggregate(agg_pipeline):
-        bucket = doc["_id"] if doc["_id"] in KNOWN_STATUSES else "pending"
-        counts[bucket] = counts.get(bucket, 0) + doc["count"]
+        bucket = doc["_id"] if doc["_id"] in _KNOWN_STATUSES else "pending"
+        counts[bucket] += doc["count"]
 
     total_queued = counts["pending"] + counts["processing"] + counts["complete"] + counts["error"]
     percentage = round(counts["complete"] / total_queued * 100) if total_queued > 0 else 0
@@ -6527,6 +6535,8 @@ async def admin_get_fundamentals_progress():
         "complete":     counts["complete"],
         "error":        counts["error"],
         "percentage":   percentage,
+        "run_active":   True,
+        "run_id":       active_run_id,
     }
 
 

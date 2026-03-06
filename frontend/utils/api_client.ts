@@ -146,6 +146,13 @@ export async function authenticatedFetch(
     return response;
   }
 
+  // Never intercept 401s from the refresh endpoint itself — that would cause
+  // an infinite loop and must hard-logout immediately instead.
+  if (url.includes('/api/auth/refresh')) {
+    _forceLogout();
+    return response;
+  }
+
   // --- 401 received — attempt silent refresh ---
   try {
     const newToken = await _refreshSession();

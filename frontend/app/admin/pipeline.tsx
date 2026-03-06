@@ -81,6 +81,8 @@ interface FundamentalsProgress {
   complete: number;
   error: number;
   percentage: number;
+  run_active?: boolean;
+  run_id?: string;
 }
 
 interface PipelineExclusionRow {
@@ -287,15 +289,26 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       );
       if (!res.ok) return;
       const progress: FundamentalsProgress = await res.json();
+
+      // If the backend reports no active run (ops_config was cleaned up after job end),
+      // stop polling but DO NOT overwrite the last known state — the UI should keep
+      // showing the final 100% snapshot rather than collapsing to zeros.
+      if (!progress.run_active || progress.total_queued === 0) {
+        if (fundProgressPollRef.current) {
+          clearInterval(fundProgressPollRef.current);
+          fundProgressPollRef.current = null;
+        }
+        return; // preserve existing fundamentalsProgress state
+      }
+
       setFundamentalsProgress(progress);
 
-      // Auto-stop once the queue is fully drained (no pending or processing left)
+      // Queue fully drained — stop polling, preserve final state
       if (progress.pending === 0 && progress.processing === 0) {
         if (fundProgressPollRef.current) {
           clearInterval(fundProgressPollRef.current);
           fundProgressPollRef.current = null;
         }
-        // State intentionally preserved — shows final 100% snapshot
       }
     } catch { /* ignore transient poll errors */ }
   }, [sessionToken]);
