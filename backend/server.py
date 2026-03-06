@@ -4887,7 +4887,7 @@ async def admin_manual_price_sync(background_tasks: BackgroundTasks, wait: bool 
     }
 
 @api_router.post("/admin/scheduler/run/fundamentals-sync")
-async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batch_size: int = Query(2000, ge=1, le=10000), wait: bool = Query(False)):
+async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batch_size: int = Query(10000, ge=1, le=10000), wait: bool = Query(False)):
     """
     Manually trigger fundamentals sync for pending events.
     
