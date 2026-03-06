@@ -22,6 +22,7 @@ interface JobRun {
   status: string;
   start_time?: string;
   end_time?: string;
+  last_run_finished?: string;
   duration_seconds?: number;
   records_processed?: number;
   error_message?: string;
@@ -395,6 +396,22 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       );
       const json = await res.json();
       if (res.ok) {
+        // Immediately overwrite the stale last_run entry so the UI shows
+        // "running" without waiting for the first 3s poll interval.
+        setData(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            job_last_runs: {
+              ...(prev.job_last_runs || {}),
+              [jobName]: {
+                ...((prev.job_last_runs || {})[jobName] || {}),
+                status: 'running',
+                start_time: new Date().toISOString(),
+              },
+            },
+          };
+        });
         setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || '⏳ Running…' }));
         startPolling(jobName, triggeredAt);
       } else {
@@ -853,6 +870,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.substepMeta}>No data yet — run Step 2 to populate.</Text>
                   )}
 
+                  {(() => {
+                    const priceSyncRun = jobRuns['price_sync'] as any;
+                    const substepTs: string | undefined =
+                      priceSyncRun?.last_run_finished ||
+                      priceSyncRun?.end_time ||
+                      priceSyncRun?.start_time;
+                    const substepLastRunLabel = substepTs
+                      ? `Last run: ${formatTime(substepTs)}`
+                      : null;
+
+                    return (
+                      <>
                   {/* 2.2 Split Detector */}
                   <View style={s.substepBlock}>
                     <View style={s.substepHeaderRow}>
@@ -861,6 +890,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         <View style={s.mockBadge}><Text style={s.mockBadgeText}>NO API KEY</Text></View>
                       )}
                     </View>
+                    {substepLastRunLabel && (
+                      <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
+                    )}
                     <Text style={s.substepDesc}>Detects stock splits today. Flagged tickers need full price history re-download (adjusted prices change).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {splitDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date=${eventDetectors.today || todayStr}`}
@@ -902,6 +934,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         <View style={s.mockBadge}><Text style={s.mockBadgeText}>NO API KEY</Text></View>
                       )}
                     </View>
+                    {substepLastRunLabel && (
+                      <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
+                    )}
                     <Text style={s.substepDesc}>Detects ex-dividend events today. Flagged tickers need fundamentals refresh (dividend yield, payout ratio).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {dividendDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date=${eventDetectors.today || todayStr}`}
@@ -943,6 +978,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         <View style={s.mockBadge}><Text style={s.mockBadgeText}>NO API KEY</Text></View>
                       )}
                     </View>
+                    {substepLastRunLabel && (
+                      <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
+                    )}
                     <Text style={s.substepDesc}>Detects earnings reports due today. Flagged tickers need fundamentals refresh (EPS, revenue, guidance).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {earningsDetector.api_endpoint || `https://eodhd.com/api/calendar/earnings?from=${eventDetectors.today || todayStr}&to=${eventDetectors.today || todayStr}`}
@@ -972,6 +1010,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       </Text>
                     )}
                   </View>
+                      </>
+                    );
+                  })()}
                 </View>
               )}
 
@@ -1386,6 +1427,7 @@ const s = StyleSheet.create({
   substepValue: { fontSize: 10, color: COLORS.textMuted },
   mockBadge: { backgroundColor: '#F59E0B33', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 },
   mockBadgeText: { fontSize: 8, fontWeight: '700', color: '#F59E0B' },
+  substepLastRun: { fontSize: 9, color: COLORS.textMuted, marginBottom: 3, fontStyle: 'italic' },
   catchupBadge: { fontSize: 9, color: '#6366F1', marginBottom: 4, fontStyle: 'italic' },
 
   fullSyncBlock: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 },
