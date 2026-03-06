@@ -287,10 +287,19 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }, 3000);
   };
 
+  const JOB_DESCRIPTIONS: Record<string, string> = {
+    universe_seed: 'Fetching NYSE + NASDAQ symbols from EODHD…',
+    price_sync: 'Downloading bulk prices + running split/dividend/earnings detectors…',
+    fundamentals_sync: 'Syncing fundamentals for queued tickers…',
+    compute_visible_universe: 'Computing visibility rules for all tickers…',
+    peer_medians: 'Computing peer benchmark medians…',
+    news_refresh: 'Fetching news and sentiment…',
+  };
+
   const handleRunNow = async (jobName: string) => {
     if (runningJob) return;
     setRunningJob(jobName);
-    setRunResult(prev => ({ ...prev, [jobName]: '' }));
+    setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || 'Starting…' }));
     const triggeredAt = Date.now();
     try {
       const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
@@ -303,7 +312,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       });
       const json = await res.json();
       if (res.ok) {
-        setRunResult(prev => ({ ...prev, [jobName]: '⏳ Running…' }));
+        setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || '⏳ Running…' }));
         startPolling(jobName, triggeredAt);
       } else {
         setRunResult(prev => ({ ...prev, [jobName]: `❌ ${json.error || json.detail || res.statusText}` }));
@@ -367,6 +376,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const jobRuns = data?.job_last_runs || {};
   const counts = data?.universe_funnel?.counts || {};
   const syncStatus = data?.pipeline_sync_status || {};
+  const todayStr = new Date().toISOString().split('T')[0];
 
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
   const seeded = counts.seeded_us_total;
@@ -623,9 +633,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       />
                     ) : null}
                   </View>
-                  <Text style={s.stepSchedule}>
-                    {isRunning ? 'Running…' : step.schedule}
-                  </Text>
+                  <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
                 <View style={s.jobBtnGroup}>
                   {isRunning ? (
@@ -649,7 +657,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {/* Run Result */}
               {runResult[step.job_name] ? (
-                <Text style={s.runResultText}>{runResult[step.job_name]}</Text>
+                <Text style={[s.runResultText, isRunning && { color: '#F59E0B' }]}>{runResult[step.job_name]}</Text>
               ) : null}
 
               {/* ── Integrated Funnel Row ── */}
@@ -765,7 +773,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     </View>
                     <Text style={s.substepDesc}>Detects stock splits today. Flagged tickers need full price history re-download (adjusted prices change).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
-                      {splitDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date=${eventDetectors.today || 'TODAY'}`}
+                      {splitDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date=${eventDetectors.today || todayStr}`}
                     </Text>
                     {(splitDetector.dates_checked?.length ?? 0) > 1 && (
                       <Text style={s.catchupBadge}>↩ Catchup: {splitDetector.dates_checked?.length} days ({splitDetector.dates_checked?.[0]} → {splitDetector.dates_checked?.slice(-1)[0]})</Text>
@@ -806,7 +814,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     </View>
                     <Text style={s.substepDesc}>Detects ex-dividend events today. Flagged tickers need fundamentals refresh (dividend yield, payout ratio).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
-                      {dividendDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date=${eventDetectors.today || 'TODAY'}`}
+                      {dividendDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date=${eventDetectors.today || todayStr}`}
                     </Text>
                     {(dividendDetector.dates_checked?.length ?? 0) > 1 && (
                       <Text style={s.catchupBadge}>↩ Catchup: {dividendDetector.dates_checked?.length} days ({dividendDetector.dates_checked?.[0]} → {dividendDetector.dates_checked?.slice(-1)[0]})</Text>
@@ -847,7 +855,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     </View>
                     <Text style={s.substepDesc}>Detects earnings reports due today. Flagged tickers need fundamentals refresh (EPS, revenue, guidance).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
-                      {earningsDetector.api_endpoint || `https://eodhd.com/api/calendar/earnings?from=${eventDetectors.today || 'TODAY'}&to=${eventDetectors.today || 'TODAY'}`}
+                      {earningsDetector.api_endpoint || `https://eodhd.com/api/calendar/earnings?from=${eventDetectors.today || todayStr}&to=${eventDetectors.today || todayStr}`}
                     </Text>
                     <View style={s.substepStatsRow}>
                       <View style={s.substepStat}>
