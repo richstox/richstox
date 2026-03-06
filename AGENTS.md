@@ -18,12 +18,23 @@
 - Agents must not invent or enforce their own policy decisions without Richard's approval.
 - If requirements are ambiguous, agents must ask Richard for approval/clarification before proceeding.
 
-### Change approval workflow (MANDATORY)
-- **Every code change MUST be proposed to Richard first** — describe WHAT will change and WHY.
-- **Richard will review the proposal** (optionally with a Dev AI reviewer) and explicitly approve or reject.
-- **Only after Richard's explicit approval** may the agent implement and commit the change.
-- **Never commit directly without prior approval.** This applies to ALL changes — bug fixes, refactors, new features, config changes.
+### Working protocol (MANDATORY — top priority)
+
+**ZERO TRUST & PROPOSE BEFORE CODING**
+- The AI must NEVER execute large code changes, DB migrations, or pipeline logic without explicitly proposing the architecture, queries, or schema changes FIRST and waiting for Richard's explicit "GO".
+- Every code change MUST be proposed to Richard — describe WHAT will change, WHY, and WHICH files are affected.
+- Richard will review the proposal (optionally with a Dev AI reviewer) and explicitly approve or reject.
+- Only after Richard's explicit approval may the agent implement and commit.
+- This applies to ALL changes — bug fixes, refactors, new features, config changes, migrations.
 - The only exception is trivial formatting fixes (whitespace, typos in comments) that do not affect behavior.
+
+**NO SILENT ASSUMPTIONS**
+- If a requirement is ambiguous, STOP and ASK. Do not guess, infer, or make architectural decisions unilaterally.
+- If the agent is unsure about scope, impact, or intent — ask Richard for clarification before writing any code.
+
+**ONE TASK AT A TIME**
+- Do not open or attempt to solve a second problem until the first one is fully resolved, tested, and explicitly closed by Richard.
+- Each task follows the cycle: Propose → Approve → Implement → Test → Richard confirms done.
 
 ### Pipeline steps (canonical definition)
 
@@ -85,7 +96,10 @@ mongod --fork --logpath /var/log/mongod.log --dbpath /data/db
 
 ### Testing
 
-- **Backend**: `pytest` (run from `backend/`). No test files exist at this time.
+- **Backend**: `pytest` (run from `backend/`). Existing test suites:
+  - `tests/test_admin_auth_middleware.py` — 4 tests (admin middleware: unauth, forbidden, happy, bootstrap guard)
+  - `tests/test_user_auth_guard.py` — 6 tests (user middleware: portfolio unauth/happy/IDOR, watchlist unauth/IDOR/happy)
+  - `tests/test_provider_debug_snapshot.py` — provider debug snapshot tests
 - **Frontend**: `yarn test` or `jest` (run from `frontend/`). No test files exist at this time.
 
 ### Gotchas
