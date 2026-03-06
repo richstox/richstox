@@ -84,6 +84,7 @@ interface FundamentalsProgress {
   percentage: number;
   run_active?: boolean;
   run_id?: string;
+  zombies_reclaimed?: number;
 }
 
 interface PipelineExclusionRow {
@@ -1082,14 +1083,26 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     {/* Live / persisted fundamentals progress bar */}
                     {fundamentalsProgress !== null && (
                       <View style={s.fundProgressWrap}>
+                        {/* Header: percentage + total queued + zombies reset */}
+                        <View style={s.fundProgressHeaderRow}>
+                          <Text style={s.fundProgressPct}>
+                            {fundamentalsProgress.percentage}%
+                          </Text>
+                          <Text style={s.fundProgressTotal}>
+                            {fmt(fundamentalsProgress.total_queued)} queued
+                            {(fundamentalsProgress.zombies_reclaimed ?? 0) > 0
+                              ? ` · ${fmt(fundamentalsProgress.zombies_reclaimed)} reset` : ''}
+                          </Text>
+                        </View>
+                        {/* Progress bar */}
                         <View style={s.fundProgressBarBg}>
                           <View style={[
                             s.fundProgressBarFill,
                             { width: `${Math.min(fundamentalsProgress.percentage, 100)}%` as any },
                           ]} />
                         </View>
+                        {/* State counts */}
                         <View style={s.fundProgressCountRow}>
-                          <Text style={s.fundProgressPct}>{fundamentalsProgress.percentage}%</Text>
                           <Text style={s.fundProgressCounts}>
                             {fmt(fundamentalsProgress.complete)} done
                             {fundamentalsProgress.processing > 0
@@ -1439,10 +1452,12 @@ const s = StyleSheet.create({
   fullSyncBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   fundProgressWrap: { marginTop: 8, marginBottom: 4 },
+  fundProgressHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   fundProgressBarBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 4 },
   fundProgressBarFill: { height: 6, borderRadius: 3, backgroundColor: '#F59E0B' },
   fundProgressCountRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   fundProgressPct: { fontSize: 12, fontWeight: '700', color: '#F59E0B', minWidth: 36 },
+  fundProgressTotal: { fontSize: 10, color: COLORS.textMuted },
   fundProgressCounts: { fontSize: 10, color: COLORS.textMuted, flex: 1 },
 
   syncCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
