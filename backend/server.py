@@ -4896,6 +4896,40 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
         "message": "Job started in background. Check /api/admin/scheduler/status for results."
     }
 
+@api_router.post("/admin/jobs/full-price-history-sync")
+async def admin_full_price_history_sync(background_tasks: BackgroundTasks):
+    """
+    Download complete EOD price history (IPO → today) for all visible tickers.
+    Runs cleanup first (removes data for invisible/delisted tickers).
+    Runs in background — poll /api/admin/jobs/full_price_history_sync/status.
+    Credits: ~1 per ticker (~6,435 credits total).
+    """
+    from full_sync_service import run_full_price_history_sync
+    background_tasks.add_task(run_full_price_history_sync, db, True)
+    return {
+        "status": "started",
+        "job_name": "full_price_history_sync",
+        "message": "Full price history download started in background.",
+    }
+
+
+@api_router.post("/admin/jobs/full-fundamentals-sync")
+async def admin_full_fundamentals_sync(background_tasks: BackgroundTasks):
+    """
+    Download complete fundamentals for all visible tickers.
+    Runs cleanup first (removes data for invisible/delisted tickers).
+    Runs in background — poll /api/admin/jobs/full_fundamentals_sync/status.
+    Credits: ~10 per ticker (~64,350 credits total).
+    """
+    from full_sync_service import run_full_fundamentals_sync
+    background_tasks.add_task(run_full_fundamentals_sync, db, True)
+    return {
+        "status": "started",
+        "job_name": "full_fundamentals_sync",
+        "message": "Full fundamentals download started in background.",
+    }
+
+
 @api_router.post("/admin/jobs/{job_name}/cancel")
 async def admin_cancel_job(job_name: str):
     """

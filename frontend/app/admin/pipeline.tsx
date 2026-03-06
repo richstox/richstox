@@ -320,6 +320,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     } catch { /* ignore */ }
   };
 
+  const handleFullSync = async (jobName: string) => {
+    if (runningJob) return;
+    setRunningJob(jobName);
+    setRunResult(prev => ({ ...prev, [jobName]: '' }));
+    const triggeredAt = Date.now();
+    try {
+      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+      const endpoint = `${API_URL}/api/admin/jobs/${jobName.replace(/_/g, '-')}`;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...requestHeaders },
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setRunResult(prev => ({ ...prev, [jobName]: '⏳ Running… (may take 15–30 min)' }));
+        startPolling(jobName, triggeredAt);
+      } else {
+        setRunResult(prev => ({ ...prev, [jobName]: `❌ ${json.detail || res.statusText}` }));
+        setRunningJob(null);
+      }
+    } catch (e: any) {
+      setRunResult(prev => ({ ...prev, [jobName]: `❌ ${e.message}` }));
+      setRunningJob(null);
+    }
+  };
+
   const toggleExpand = (step: number) => {
     setExpandedSteps(prev => {
       const next = new Set(prev);
@@ -853,6 +879,64 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
+              {/* Full Price History button — Step 2 only */}
+              {step.job_name === 'price_sync' && (
+                <View style={s.fullSyncBlock}>
+                  <View style={s.fullSyncInfo}>
+                    <Text style={s.fullSyncTitle}>Full Price History Download</Text>
+                    <Text style={s.fullSyncDesc}>
+                      Downloads complete EOD history (IPO → today) for all visible tickers.{'\n'}
+                      ~{fmt(safeCount(syncStatus.total_visible_tickers))} tickers · ~1 credit each · ~15 min
+                    </Text>
+                    {runResult['full_price_history_sync'] ? (
+                      <Text style={s.fullSyncResult}>{runResult['full_price_history_sync']}</Text>
+                    ) : null}
+                  </View>
+                  {runningJob === 'full_price_history_sync' ? (
+                    <TouchableOpacity style={s.cancelBtn} onPress={() => handleCancelJob('full_price_history_sync')}>
+                      <Text style={s.cancelBtnText}>■ Stop</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[s.fullSyncBtn, !!runningJob && s.runBtnDisabled]}
+                      onPress={() => handleFullSync('full_price_history_sync')}
+                      disabled={!!runningJob}
+                    >
+                      <Text style={s.fullSyncBtnText}>⬇ Full Sync</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
+
+              {/* Full Fundamentals button — Step 3 only */}
+              {step.job_name === 'fundamentals_sync' && (
+                <View style={s.fullSyncBlock}>
+                  <View style={s.fullSyncInfo}>
+                    <Text style={s.fullSyncTitle}>Full Fundamentals Download</Text>
+                    <Text style={s.fullSyncDesc}>
+                      Downloads complete fundamentals for all visible tickers.{'\n'}
+                      ~{fmt(safeCount(syncStatus.total_visible_tickers))} tickers · ~10 credits each · ~20 min
+                    </Text>
+                    {runResult['full_fundamentals_sync'] ? (
+                      <Text style={s.fullSyncResult}>{runResult['full_fundamentals_sync']}</Text>
+                    ) : null}
+                  </View>
+                  {runningJob === 'full_fundamentals_sync' ? (
+                    <TouchableOpacity style={s.cancelBtn} onPress={() => handleCancelJob('full_fundamentals_sync')}>
+                      <Text style={s.cancelBtnText}>■ Stop</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[s.fullSyncBtn, !!runningJob && s.runBtnDisabled]}
+                      onPress={() => handleFullSync('full_fundamentals_sync')}
+                      disabled={!!runningJob}
+                    >
+                      <Text style={s.fullSyncBtnText}>⬇ Full Sync</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
+
               {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
                 <Text style={s.expandText}>Filter details</Text>
@@ -1149,6 +1233,14 @@ const s = StyleSheet.create({
   mockBadge: { backgroundColor: '#F59E0B33', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 },
   mockBadgeText: { fontSize: 8, fontWeight: '700', color: '#F59E0B' },
   catchupBadge: { fontSize: 9, color: '#6366F1', marginBottom: 4, fontStyle: 'italic' },
+
+  fullSyncBlock: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  fullSyncInfo: { flex: 1 },
+  fullSyncTitle: { fontSize: 11, fontWeight: '700', color: COLORS.text, marginBottom: 2 },
+  fullSyncDesc: { fontSize: 10, color: COLORS.textMuted, lineHeight: 14 },
+  fullSyncResult: { fontSize: 10, color: '#10B981', marginTop: 3 },
+  fullSyncBtn: { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6, alignItems: 'center', minWidth: 70 },
+  fullSyncBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   syncCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
   syncTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, marginBottom: 10 },
