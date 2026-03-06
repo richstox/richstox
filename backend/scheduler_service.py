@@ -27,12 +27,13 @@ Kill Switch:
 """
 
 import os
+import time
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List
 import asyncio
 from zoneinfo import ZoneInfo
-from collections import defaultdict
+import httpx
 
 logger = logging.getLogger("richstox.scheduler")
 
@@ -41,6 +42,9 @@ SCHEDULER_CONFIG_KEY = "scheduler_enabled"
 SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP2_REPORT_STEP = "Step 2 - Price Sync"
+
+EODHD_BASE_URL = "https://eodhd.com/api"
+EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -80,7 +84,7 @@ async def set_scheduler_enabled(db, enabled: bool) -> Dict[str, Any]:
     """
     now = datetime.now(timezone.utc)
     
-    result = await db.ops_config.update_one(
+    await db.ops_config.update_one(
         {"key": SCHEDULER_CONFIG_KEY},
         {
             "$set": {
@@ -95,7 +99,7 @@ async def set_scheduler_enabled(db, enabled: bool) -> Dict[str, Any]:
         },
         upsert=True
     )
-    
+
     logger.info(f"Scheduler {'ENABLED' if enabled else 'DISABLED (kill switch engaged)'}")
     
     return {
@@ -209,178 +213,370 @@ async def _enqueue_fundamentals_events(
     return {"inserted": inserted, "already_pending": existing}
 
 
-async def _detect_split_candidates(db, max_candidates: int = 500) -> Dict[str, Any]:
+async def _fetch_eodhd_bulk(
+    endpoint: str, params: Dict[str, Any]
+) -> tuple:
     """
-    Step 2.2: detect probable split/reverse-split from two latest trading closes.
+    Execute one EODHD bulk API call.
+    Returns (data_list, http_status, duration_ms).
+    In MOCK mode (no API key) returns ([], 0, 0) with status "mock".
     """
-    date_rows = await db.stock_prices.aggregate([
-        {"$group": {"_id": "$date"}},
-        {"$sort": {"_id": -1}},
-        {"$limit": 2},
-    ]).to_list(2)
-    dates = [d.get("_id") for d in date_rows if d.get("_id")]
-    if len(dates) < 2:
-        return {"checked_tickers": 0, "candidates": [], "latest_date": None, "previous_date": None}
+    if not EODHD_API_KEY:
+        return [], 0, 0, "mock"
 
-    latest_date, previous_date = dates[0], dates[1]
+    url = f"{EODHD_BASE_URL}/{endpoint}"
+    all_params = {"api_token": EODHD_API_KEY, "fmt": "json", **params}
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.get(url, params=all_params)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        if resp.status_code == 429:
+            return [], 429, duration_ms, "429"
+        resp.raise_for_status()
+        data = resp.json()
+        if not isinstance(data, list):
+            data = data.get("earnings", []) if isinstance(data, dict) else []
+        return data, resp.status_code, duration_ms, "success"
+    except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        logger.error(f"EODHD bulk call failed [{endpoint}]: {exc}")
+        return [], 0, duration_ms, "error"
+
+
+async def _detect_split_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
+    """
+    Step 2.2: Fetch today's splits from EODHD bulk splits endpoint.
+    API: GET /api/eod-bulk-last-day/US?type=splits&date=TODAY
+    Credits: 1
+    Flags set (flagging only — NO deletion):
+      needs_price_redownload = true
+      needs_fundamentals_refresh = true
+      price_history_complete = false
+      price_history_status = "pending"
+      last_split_detected = today
+    """
+    from credit_log_service import log_api_credit
+
+    endpoint = "eod-bulk-last-day/US"
+    api_url = f"{EODHD_BASE_URL}/{endpoint}?type=splits&date={today_str}"
+
+    data, http_status, duration_ms, call_status = await _fetch_eodhd_bulk(
+        endpoint, {"type": "splits", "date": today_str}
+    )
+
+    await log_api_credit(
+        db,
+        job_name="step2_splits",
+        operation="bulk_splits",
+        api_endpoint=api_url,
+        credits_used=1,
+        http_status=http_status,
+        status=call_status,
+        duration_ms=duration_ms,
+    )
+
+    if call_status == "mock":
+        return {
+            "mock_mode": True,
+            "api_endpoint": api_url,
+            "raw_count": 0,
+            "universe_count": 0,
+            "flagged_count": 0,
+            "tickers": [],
+        }
+
+    # Build set of codes from EODHD response — field is "code" (without .US)
+    split_codes = {
+        str(row.get("code", "")).upper()
+        for row in data
+        if row.get("code")
+    }
+
+    if not split_codes:
+        return {
+            "mock_mode": False,
+            "api_endpoint": api_url,
+            "raw_count": len(data),
+            "universe_count": 0,
+            "flagged_count": 0,
+            "tickers": [],
+        }
+
+    # Find which of these are in our seeded universe
     seed_docs = await db.tracked_tickers.find(
         {**SEED_QUERY, "has_price_data": True},
         {"_id": 0, "ticker": 1},
     ).to_list(None)
-    seeded = {d.get("ticker") for d in seed_docs if d.get("ticker")}
-    if not seeded:
-        return {"checked_tickers": 0, "candidates": [], "latest_date": latest_date, "previous_date": previous_date}
 
-    rows = await db.stock_prices.find(
-        {"ticker": {"$in": list(seeded)}, "date": {"$in": [latest_date, previous_date]}},
-        {"_id": 0, "ticker": 1, "date": 1, "close": 1, "adjusted_close": 1},
-    ).to_list(None)
+    # tracked_tickers stores tickers as "AAPL.US"
+    universe_set = {d["ticker"].replace(".US", "") for d in seed_docs if d.get("ticker")}
+    in_universe = [code for code in split_codes if code in universe_set]
 
-    by_ticker: Dict[str, Dict[str, float]] = defaultdict(dict)
-    for row in rows:
-        ticker = row.get("ticker")
-        date = row.get("date")
-        price = _pick_price(row)
-        if ticker and date and price is not None:
-            by_ticker[ticker][date] = price
-
-    candidates: List[str] = []
-    checked = 0
-    for ticker, values in by_ticker.items():
-        if latest_date not in values or previous_date not in values:
-            continue
-        prev_price = values[previous_date]
-        latest_price = values[latest_date]
-        if prev_price <= 0:
-            continue
-        checked += 1
-        ratio = latest_price / prev_price
-        # 2:1, 3:1, 4:1 and reverse-split-like jumps.
-        if ratio >= 1.8 or ratio <= 0.56:
-            candidates.append(ticker)
-            if len(candidates) >= max_candidates:
-                break
+    flagged = 0
+    if in_universe:
+        tickers_us = [f"{t}.US" for t in in_universe]
+        result = await db.tracked_tickers.update_many(
+            {"ticker": {"$in": tickers_us}},
+            {"$set": {
+                "needs_price_redownload": True,
+                "needs_fundamentals_refresh": True,
+                "price_history_complete": False,
+                "price_history_status": "pending",
+                "last_split_detected": today_str,
+            }},
+        )
+        flagged = result.modified_count
 
     return {
-        "checked_tickers": checked,
-        "candidates": candidates,
-        "latest_date": latest_date,
-        "previous_date": previous_date,
+        "mock_mode": False,
+        "api_endpoint": api_url,
+        "raw_count": len(data),
+        "universe_count": len(in_universe),
+        "flagged_count": flagged,
+        "tickers": in_universe[:50],
     }
 
 
-async def _detect_dividend_candidates(db, lookback_days: int = 2, lookahead_days: int = 7, max_candidates: int = 500) -> Dict[str, Any]:
+async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
     """
-    Step 2.4: detect ex-dividend window from cached fundamentals.
+    Step 2.4: Fetch today's ex-dividend events from EODHD bulk dividends endpoint.
+    API: GET /api/eod-bulk-last-day/US?type=dividends&date=TODAY
+    Credits: 1
+    Flags set:
+      needs_fundamentals_refresh = true
+      last_dividend_detected = today
     """
-    today = datetime.now(PRAGUE_TZ).date()
-    start = (today - timedelta(days=lookback_days)).isoformat()
-    end = (today + timedelta(days=lookahead_days)).isoformat()
+    from credit_log_service import log_api_credit
 
-    docs = await db.company_fundamentals_cache.find(
-        {"ex_dividend_date": {"$gte": start, "$lte": end}},
-        {"_id": 0, "ticker": 1, "ex_dividend_date": 1},
-    ).limit(max_candidates).to_list(max_candidates)
-    candidates = [d.get("ticker") for d in docs if d.get("ticker")]
-    return {
-        "window_start": start,
-        "window_end": end,
-        "candidates": candidates,
-        "checked_tickers": len(docs),
+    endpoint = "eod-bulk-last-day/US"
+    api_url = f"{EODHD_BASE_URL}/{endpoint}?type=dividends&date={today_str}"
+
+    data, http_status, duration_ms, call_status = await _fetch_eodhd_bulk(
+        endpoint, {"type": "dividends", "date": today_str}
+    )
+
+    await log_api_credit(
+        db,
+        job_name="step2_dividends",
+        operation="bulk_dividends",
+        api_endpoint=api_url,
+        credits_used=1,
+        http_status=http_status,
+        status=call_status,
+        duration_ms=duration_ms,
+    )
+
+    if call_status == "mock":
+        return {
+            "mock_mode": True,
+            "api_endpoint": api_url,
+            "raw_count": 0,
+            "universe_count": 0,
+            "flagged_count": 0,
+            "tickers": [],
+        }
+
+    div_codes = {
+        str(row.get("code", "")).upper()
+        for row in data
+        if row.get("code")
     }
 
+    if not div_codes:
+        return {
+            "mock_mode": False,
+            "api_endpoint": api_url,
+            "raw_count": len(data),
+            "universe_count": 0,
+            "flagged_count": 0,
+            "tickers": [],
+        }
 
-async def _detect_earnings_candidates(db, stale_days: int = 95, max_candidates: int = 500) -> Dict[str, Any]:
-    """
-    Step 2.6: detect stale fundamentals likely requiring earnings refresh.
-    """
-    stale_cutoff = datetime.now(timezone.utc) - timedelta(days=stale_days)
-    docs = await db.tracked_tickers.find(
-        {
-            **SEED_QUERY,
-            "has_price_data": True,
-            "$or": [
-                {"fundamentals_updated_at": {"$exists": False}},
-                {"fundamentals_updated_at": None},
-                {"fundamentals_updated_at": {"$lt": stale_cutoff}},
-            ],
-        },
+    seed_docs = await db.tracked_tickers.find(
+        {**SEED_QUERY, "has_price_data": True},
         {"_id": 0, "ticker": 1},
-    ).sort("fundamentals_updated_at", 1).limit(max_candidates).to_list(max_candidates)
+    ).to_list(None)
+    universe_set = {d["ticker"].replace(".US", "") for d in seed_docs if d.get("ticker")}
+    in_universe = [code for code in div_codes if code in universe_set]
 
-    candidates = [d.get("ticker") for d in docs if d.get("ticker")]
+    flagged = 0
+    if in_universe:
+        tickers_us = [f"{t}.US" for t in in_universe]
+        result = await db.tracked_tickers.update_many(
+            {"ticker": {"$in": tickers_us}},
+            {"$set": {
+                "needs_fundamentals_refresh": True,
+                "last_dividend_detected": today_str,
+            }},
+        )
+        flagged = result.modified_count
+
     return {
-        "stale_cutoff": stale_cutoff.isoformat(),
-        "checked_tickers": len(docs),
-        "candidates": candidates,
+        "mock_mode": False,
+        "api_endpoint": api_url,
+        "raw_count": len(data),
+        "universe_count": len(in_universe),
+        "flagged_count": flagged,
+        "tickers": in_universe[:50],
+    }
+
+
+async def _detect_earnings_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
+    """
+    Step 2.6: Fetch today's earnings reports from EODHD earnings calendar.
+    API: GET /api/calendar/earnings?from=TODAY&to=TODAY
+    Note: today only — no forward window in state machine (UI-only lookahead is read-only).
+    Credits: 1
+    Flags set:
+      needs_fundamentals_refresh = true
+      last_earnings_detected = today
+    """
+    from credit_log_service import log_api_credit
+
+    endpoint = "calendar/earnings"
+    api_url = f"{EODHD_BASE_URL}/{endpoint}?from={today_str}&to={today_str}"
+
+    data, http_status, duration_ms, call_status = await _fetch_eodhd_bulk(
+        endpoint, {"from": today_str, "to": today_str}
+    )
+
+    await log_api_credit(
+        db,
+        job_name="step2_earnings",
+        operation="earnings_calendar",
+        api_endpoint=api_url,
+        credits_used=1,
+        http_status=http_status,
+        status=call_status,
+        duration_ms=duration_ms,
+    )
+
+    if call_status == "mock":
+        return {
+            "mock_mode": True,
+            "api_endpoint": api_url,
+            "raw_count": 0,
+            "universe_count": 0,
+            "flagged_count": 0,
+            "tickers": [],
+        }
+
+    # Earnings calendar response: list of objects with "code" field like "AAPL.US"
+    earnings_codes = set()
+    for row in data:
+        code = str(row.get("code", "")).upper()
+        # Strip exchange suffix if present
+        code = code.replace(".US", "").replace(".NYSE", "").replace(".NASDAQ", "")
+        if code:
+            earnings_codes.add(code)
+
+    if not earnings_codes:
+        return {
+            "mock_mode": False,
+            "api_endpoint": api_url,
+            "raw_count": len(data),
+            "universe_count": 0,
+            "flagged_count": 0,
+            "tickers": [],
+        }
+
+    seed_docs = await db.tracked_tickers.find(
+        {**SEED_QUERY, "has_price_data": True},
+        {"_id": 0, "ticker": 1},
+    ).to_list(None)
+    universe_set = {d["ticker"].replace(".US", "") for d in seed_docs if d.get("ticker")}
+    in_universe = [code for code in earnings_codes if code in universe_set]
+
+    flagged = 0
+    if in_universe:
+        tickers_us = [f"{t}.US" for t in in_universe]
+        result = await db.tracked_tickers.update_many(
+            {"ticker": {"$in": tickers_us}},
+            {"$set": {
+                "needs_fundamentals_refresh": True,
+                "last_earnings_detected": today_str,
+            }},
+        )
+        flagged = result.modified_count
+
+    return {
+        "mock_mode": False,
+        "api_endpoint": api_url,
+        "raw_count": len(data),
+        "universe_count": len(in_universe),
+        "flagged_count": flagged,
+        "tickers": in_universe[:50],
     }
 
 
 async def run_step2_event_detectors(db) -> Dict[str, Any]:
     """
-    Execute Step 2 sub-steps and enqueue fundamentals refresh events:
-    2.2 split detector, 2.4 dividend detector, 2.6 earnings detector.
+    Execute Step 2 sub-steps with REAL EODHD API calls.
+    2.2: bulk splits → needs_price_redownload + needs_fundamentals_refresh
+    2.4: bulk dividends → needs_fundamentals_refresh
+    2.6: earnings calendar (today only) → needs_fundamentals_refresh
+
+    STRICT RULE: This step ONLY sets flags. No data deletion. No price flushing.
+    The Backfill job handles DELETE → FETCH → INSERT atomically.
     """
+    today_str = datetime.now(PRAGUE_TZ).strftime("%Y-%m-%d")
     now = datetime.now(timezone.utc)
 
-    split = await _detect_split_candidates(db)
-    dividend = await _detect_dividend_candidates(db)
-    earnings = await _detect_earnings_candidates(db)
+    split = await _detect_split_candidates_eodhd(db, today_str)
+    dividend = await _detect_dividend_candidates_eodhd(db, today_str)
+    earnings = await _detect_earnings_candidates_eodhd(db, today_str)
 
-    split_enqueue = await _enqueue_fundamentals_events(
-        db,
-        event_type="split_detected",
-        tickers=split.get("candidates", []),
-        now=now,
-        source_job="price_sync",
-        detector_step="2.2",
-    )
-    dividend_enqueue = await _enqueue_fundamentals_events(
-        db,
-        event_type="dividend_detected",
-        tickers=dividend.get("candidates", []),
-        now=now,
-        source_job="price_sync",
-        detector_step="2.4",
-    )
-    earnings_enqueue = await _enqueue_fundamentals_events(
-        db,
-        event_type="earnings_refresh_due",
-        tickers=earnings.get("candidates", []),
-        now=now,
-        source_job="price_sync",
-        detector_step="2.6",
-    )
+    # Still enqueue to fundamentals_events collection for Step 3 (backwards compat)
+    all_flagged: List[str] = []
+    for result, event_type, step in [
+        (split, "split_detected", "2.2"),
+        (dividend, "dividend_detected", "2.4"),
+        (earnings, "earnings_refresh_due", "2.6"),
+    ]:
+        tickers = [f"{t}.US" for t in result.get("tickers", [])]
+        if tickers:
+            await _enqueue_fundamentals_events(
+                db,
+                event_type=event_type,
+                tickers=tickers,
+                now=now,
+                source_job="price_sync",
+                detector_step=step,
+            )
+            all_flagged.extend(tickers)
 
     return {
         "step_2_2_split": {
-            "checked_tickers": split.get("checked_tickers", 0),
-            "candidate_tickers": len(split.get("candidates", [])),
-            "enqueued": split_enqueue.get("inserted", 0),
-            "already_pending": split_enqueue.get("already_pending", 0),
-            "latest_date": split.get("latest_date"),
-            "previous_date": split.get("previous_date"),
+            "mock_mode": split.get("mock_mode", False),
+            "api_endpoint": split.get("api_endpoint", ""),
+            "raw_count": split.get("raw_count", 0),
+            "universe_count": split.get("universe_count", 0),
+            "flagged_count": split.get("flagged_count", 0),
+            "tickers_sample": split.get("tickers", [])[:10],
         },
         "step_2_4_dividend": {
-            "checked_tickers": dividend.get("checked_tickers", 0),
-            "candidate_tickers": len(dividend.get("candidates", [])),
-            "enqueued": dividend_enqueue.get("inserted", 0),
-            "already_pending": dividend_enqueue.get("already_pending", 0),
-            "window_start": dividend.get("window_start"),
-            "window_end": dividend.get("window_end"),
+            "mock_mode": dividend.get("mock_mode", False),
+            "api_endpoint": dividend.get("api_endpoint", ""),
+            "raw_count": dividend.get("raw_count", 0),
+            "universe_count": dividend.get("universe_count", 0),
+            "flagged_count": dividend.get("flagged_count", 0),
+            "tickers_sample": dividend.get("tickers", [])[:10],
         },
         "step_2_6_earnings": {
-            "checked_tickers": earnings.get("checked_tickers", 0),
-            "candidate_tickers": len(earnings.get("candidates", [])),
-            "enqueued": earnings_enqueue.get("inserted", 0),
-            "already_pending": earnings_enqueue.get("already_pending", 0),
-            "stale_cutoff": earnings.get("stale_cutoff"),
+            "mock_mode": earnings.get("mock_mode", False),
+            "api_endpoint": earnings.get("api_endpoint", ""),
+            "raw_count": earnings.get("raw_count", 0),
+            "universe_count": earnings.get("universe_count", 0),
+            "flagged_count": earnings.get("flagged_count", 0),
+            "tickers_sample": earnings.get("tickers", [])[:10],
         },
         "enqueued_total": (
-            split_enqueue.get("inserted", 0)
-            + dividend_enqueue.get("inserted", 0)
-            + earnings_enqueue.get("inserted", 0)
+            split.get("flagged_count", 0)
+            + dividend.get("flagged_count", 0)
+            + earnings.get("flagged_count", 0)
         ),
+        "today": today_str,
     }
 
 
@@ -480,6 +676,7 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
             "dates_processed": result.get("dates_processed", 0),
             "api_calls": result.get("api_calls", 0),
             "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
+            "event_detectors": result.get("event_detectors", {}),
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -1117,13 +1314,13 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
     started_at = datetime.now(timezone.utc)
     job_name = "fundamentals_sync"
     
-    logger.info(f"[DELTA FUNDAMENTALS] Starting...")
+    logger.info("[DELTA FUNDAMENTALS] Starting...")
     
     # Get tickers needing update
     tickers = await get_tickers_needing_fundamentals_update(db, batch_size)
     
     if not tickers:
-        logger.info(f"[DELTA FUNDAMENTALS] All tickers up-to-date")
+        logger.info("[DELTA FUNDAMENTALS] All tickers up-to-date")
         return {
             "status": "success",
             "job_name": job_name,

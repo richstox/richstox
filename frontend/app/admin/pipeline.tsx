@@ -27,6 +27,28 @@ interface JobRun {
   triggered_by?: string;
 }
 
+interface Step2SubStep {
+  mock_mode?: boolean;
+  api_endpoint?: string;
+  raw_count?: number;
+  universe_count?: number;
+  flagged_count?: number;
+  tickers_sample?: string[];
+}
+
+interface PipelineSyncStatus {
+  total_visible_tickers?: number;
+  price_history_complete?: number;
+  price_history_pct?: number;
+  fundamentals_complete?: number;
+  fundamentals_pct?: number;
+  needs_price_redownload?: number;
+  needs_fundamentals_refresh?: number;
+  credits_today?: number;
+  credits_limit?: number;
+  credits_pct?: number;
+}
+
 interface OverviewData {
   health?: {
     scheduler_active?: boolean;
@@ -46,6 +68,7 @@ interface OverviewData {
       visible_tickers?: number;
     };
   };
+  pipeline_sync_status?: PipelineSyncStatus;
 }
 
 interface PipelineExclusionRow {
@@ -264,6 +287,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const jobRuns = data?.job_last_runs || {};
   const counts = data?.universe_funnel?.counts || {};
+  const syncStatus = data?.pipeline_sync_status || {};
 
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
   const seeded = counts.seeded_us_total;
@@ -483,9 +507,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const eventDetectors = step.job_name === 'price_sync'
           ? ((run as any)?.details?.event_detectors || {})
           : {};
-        const splitDetector = eventDetectors?.step_2_2_split || {};
-        const dividendDetector = eventDetectors?.step_2_4_dividend || {};
-        const earningsDetector = eventDetectors?.step_2_6_earnings || {};
+        const splitDetector: Step2SubStep = eventDetectors?.step_2_2_split || {};
+        const dividendDetector: Step2SubStep = eventDetectors?.step_2_4_dividend || {};
+        const earningsDetector: Step2SubStep = eventDetectors?.step_2_6_earnings || {};
         const hasStep2DetectorPayload = Object.keys(eventDetectors || {}).length > 0;
         const nextRunLabel = step.step === 1
           ? getNextRun(step.scheduledHour, step.scheduledMinute, true)
@@ -634,41 +658,122 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {step.job_name === 'price_sync' && (
                 <View style={s.substepsCard}>
-                  <Text style={s.substepsTitle}>Step 2 sub-steps</Text>
-                  <Text style={s.substepMeta}>Price URL: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode</Text>
-                  <Text style={s.substepMeta}>Splits URL: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode&type=splits</Text>
-                  <Text style={s.substepMeta}>Dividends URL: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode&type=dividends</Text>
-                  <Text style={s.substepMeta}>Date option: https://eodhd.com/api/eod-bulk-last-day/US?api_token=APIcode&date=YYYY-MM-DD</Text>
-                  <Text style={s.substepMeta}>Earnings URL: https://eodhd.com/api/calendar/earnings?from=YYYY-MM-DD&to=YYYY-MM-DD&api_token=APIcode&fmt=json</Text>
-                  <Text style={s.substepMeta}>Earnings note: without dates = today + 7 days</Text>
-
-                  <View style={s.substepBlock}>
-                    <Text style={s.substepName}>2.2 Split detector</Text>
-                    <Text style={s.substepMeta}>Result:</Text>
-                    <Text style={s.substepValue}>
-                      {fmt(safeCount(splitDetector?.checked_tickers))} checked · {fmt(safeCount(splitDetector?.candidate_tickers))} candidates · {fmt(safeCount(splitDetector?.enqueued))} queued
-                    </Text>
-                  </View>
-
-                  <View style={s.substepBlock}>
-                    <Text style={s.substepName}>2.4 Dividend detector</Text>
-                    <Text style={s.substepMeta}>Result:</Text>
-                    <Text style={s.substepValue}>
-                      {fmt(safeCount(dividendDetector?.checked_tickers))} checked · {fmt(safeCount(dividendDetector?.candidate_tickers))} candidates · {fmt(safeCount(dividendDetector?.enqueued))} queued
-                    </Text>
-                  </View>
-
-                  <View style={s.substepBlock}>
-                    <Text style={s.substepName}>2.6 Earnings refresh detector</Text>
-                    <Text style={s.substepMeta}>Result:</Text>
-                    <Text style={s.substepValue}>
-                      {fmt(safeCount(earningsDetector?.checked_tickers))} checked · {fmt(safeCount(earningsDetector?.candidate_tickers))} candidates · {fmt(safeCount(earningsDetector?.enqueued))} queued
-                    </Text>
-                  </View>
+                  <Text style={s.substepsTitle}>Step 2 Sub-Steps</Text>
 
                   {!hasStep2DetectorPayload && (
-                    <Text style={s.substepMeta}>No detector payload found in this run record yet. Values shown as 0.</Text>
+                    <Text style={s.substepMeta}>No data yet — run Step 2 to populate.</Text>
                   )}
+
+                  {/* 2.2 Split Detector */}
+                  <View style={s.substepBlock}>
+                    <View style={s.substepHeaderRow}>
+                      <Text style={s.substepName}>2.2 Split Detector</Text>
+                      {splitDetector.mock_mode && (
+                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>MOCK</Text></View>
+                      )}
+                    </View>
+                    {splitDetector.api_endpoint ? (
+                      <Text style={s.substepEndpoint} numberOfLines={1}>{splitDetector.api_endpoint}</Text>
+                    ) : null}
+                    <View style={s.substepStatsRow}>
+                      <View style={s.substepStat}>
+                        <Text style={s.substepStatNum}>{fmt(safeCount(splitDetector.raw_count))}</Text>
+                        <Text style={s.substepStatLabel}>in feed</Text>
+                      </View>
+                      <Text style={s.substepStatSep}>→</Text>
+                      <View style={s.substepStat}>
+                        <Text style={s.substepStatNum}>{fmt(safeCount(splitDetector.universe_count))}</Text>
+                        <Text style={s.substepStatLabel}>in universe</Text>
+                      </View>
+                      <Text style={s.substepStatSep}>→</Text>
+                      <View style={s.substepStat}>
+                        <Text style={[s.substepStatNum, { color: safeCount(splitDetector.flagged_count) > 0 ? '#F59E0B' : COLORS.textMuted }]}>
+                          {fmt(safeCount(splitDetector.flagged_count))}
+                        </Text>
+                        <Text style={s.substepStatLabel}>flagged</Text>
+                      </View>
+                    </View>
+                    {(splitDetector.tickers_sample?.length ?? 0) > 0 && (
+                      <Text style={s.substepTickers} numberOfLines={1}>
+                        {splitDetector.tickers_sample?.slice(0, 8).join(', ')}
+                        {(splitDetector.tickers_sample?.length ?? 0) > 8 ? '…' : ''}
+                      </Text>
+                    )}
+                  </View>
+
+                  {/* 2.4 Dividend Detector */}
+                  <View style={s.substepBlock}>
+                    <View style={s.substepHeaderRow}>
+                      <Text style={s.substepName}>2.4 Dividend Detector</Text>
+                      {dividendDetector.mock_mode && (
+                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>MOCK</Text></View>
+                      )}
+                    </View>
+                    {dividendDetector.api_endpoint ? (
+                      <Text style={s.substepEndpoint} numberOfLines={1}>{dividendDetector.api_endpoint}</Text>
+                    ) : null}
+                    <View style={s.substepStatsRow}>
+                      <View style={s.substepStat}>
+                        <Text style={s.substepStatNum}>{fmt(safeCount(dividendDetector.raw_count))}</Text>
+                        <Text style={s.substepStatLabel}>in feed</Text>
+                      </View>
+                      <Text style={s.substepStatSep}>→</Text>
+                      <View style={s.substepStat}>
+                        <Text style={s.substepStatNum}>{fmt(safeCount(dividendDetector.universe_count))}</Text>
+                        <Text style={s.substepStatLabel}>in universe</Text>
+                      </View>
+                      <Text style={s.substepStatSep}>→</Text>
+                      <View style={s.substepStat}>
+                        <Text style={[s.substepStatNum, { color: safeCount(dividendDetector.flagged_count) > 0 ? '#10B981' : COLORS.textMuted }]}>
+                          {fmt(safeCount(dividendDetector.flagged_count))}
+                        </Text>
+                        <Text style={s.substepStatLabel}>flagged</Text>
+                      </View>
+                    </View>
+                    {(dividendDetector.tickers_sample?.length ?? 0) > 0 && (
+                      <Text style={s.substepTickers} numberOfLines={1}>
+                        {dividendDetector.tickers_sample?.slice(0, 8).join(', ')}
+                        {(dividendDetector.tickers_sample?.length ?? 0) > 8 ? '…' : ''}
+                      </Text>
+                    )}
+                  </View>
+
+                  {/* 2.6 Earnings Detector */}
+                  <View style={[s.substepBlock, { borderBottomWidth: 0 }]}>
+                    <View style={s.substepHeaderRow}>
+                      <Text style={s.substepName}>2.6 Earnings Detector</Text>
+                      {earningsDetector.mock_mode && (
+                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>MOCK</Text></View>
+                      )}
+                    </View>
+                    {earningsDetector.api_endpoint ? (
+                      <Text style={s.substepEndpoint} numberOfLines={1}>{earningsDetector.api_endpoint}</Text>
+                    ) : null}
+                    <View style={s.substepStatsRow}>
+                      <View style={s.substepStat}>
+                        <Text style={s.substepStatNum}>{fmt(safeCount(earningsDetector.raw_count))}</Text>
+                        <Text style={s.substepStatLabel}>in feed</Text>
+                      </View>
+                      <Text style={s.substepStatSep}>→</Text>
+                      <View style={s.substepStat}>
+                        <Text style={s.substepStatNum}>{fmt(safeCount(earningsDetector.universe_count))}</Text>
+                        <Text style={s.substepStatLabel}>in universe</Text>
+                      </View>
+                      <Text style={s.substepStatSep}>→</Text>
+                      <View style={s.substepStat}>
+                        <Text style={[s.substepStatNum, { color: safeCount(earningsDetector.flagged_count) > 0 ? '#6366F1' : COLORS.textMuted }]}>
+                          {fmt(safeCount(earningsDetector.flagged_count))}
+                        </Text>
+                        <Text style={s.substepStatLabel}>flagged</Text>
+                      </View>
+                    </View>
+                    {(earningsDetector.tickers_sample?.length ?? 0) > 0 && (
+                      <Text style={s.substepTickers} numberOfLines={1}>
+                        {earningsDetector.tickers_sample?.slice(0, 8).join(', ')}
+                        {(earningsDetector.tickers_sample?.length ?? 0) > 8 ? '…' : ''}
+                      </Text>
+                    )}
+                  </View>
                 </View>
               )}
 
@@ -759,6 +864,72 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             {exclusionReport?.empty_report_hint || 'No report rows yet. Run Step 1 (Universe Seed) to generate filtered-out rows.'}
           </Text>
         )}
+      </View>
+
+      {/* Data Completeness Dashboard */}
+      <View style={s.syncCard}>
+        <Text style={s.syncTitle}>Data Completeness</Text>
+
+        {/* Price History */}
+        <View style={s.syncRow}>
+          <View style={s.syncLabelRow}>
+            <Text style={s.syncLabel}>Price History</Text>
+            <Text style={s.syncCount}>
+              {fmt(syncStatus.price_history_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
+              {(syncStatus.price_history_pct !== undefined) ? `  ${syncStatus.price_history_pct}%` : ''}
+            </Text>
+          </View>
+          <View style={s.syncBarBg}>
+            <View style={[s.syncBarFill, {
+              width: `${Math.min(syncStatus.price_history_pct ?? 0, 100)}%` as any,
+              backgroundColor: (syncStatus.price_history_pct ?? 0) >= 100 ? '#22C55E' : '#10B981',
+            }]} />
+          </View>
+          {(syncStatus.needs_price_redownload ?? 0) > 0 && (
+            <Text style={s.syncQueueText}>
+              ⚠ {fmt(syncStatus.needs_price_redownload)} pending re-download (splits)
+            </Text>
+          )}
+        </View>
+
+        {/* Fundamentals */}
+        <View style={[s.syncRow, { marginTop: 10 }]}>
+          <View style={s.syncLabelRow}>
+            <Text style={s.syncLabel}>Fundamentals</Text>
+            <Text style={s.syncCount}>
+              {fmt(syncStatus.fundamentals_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
+              {(syncStatus.fundamentals_pct !== undefined) ? `  ${syncStatus.fundamentals_pct}%` : ''}
+            </Text>
+          </View>
+          <View style={s.syncBarBg}>
+            <View style={[s.syncBarFill, {
+              width: `${Math.min(syncStatus.fundamentals_pct ?? 0, 100)}%` as any,
+              backgroundColor: (syncStatus.fundamentals_pct ?? 0) >= 100 ? '#22C55E' : '#F59E0B',
+            }]} />
+          </View>
+          {(syncStatus.needs_fundamentals_refresh ?? 0) > 0 && (
+            <Text style={s.syncQueueText}>
+              🔄 {fmt(syncStatus.needs_fundamentals_refresh)} pending refresh (events)
+            </Text>
+          )}
+        </View>
+
+        {/* API Credits */}
+        <View style={[s.syncRow, { marginTop: 10 }]}>
+          <View style={s.syncLabelRow}>
+            <Text style={s.syncLabel}>API Credits Today</Text>
+            <Text style={s.syncCount}>
+              {fmt(syncStatus.credits_today ?? 0)} / {fmt(syncStatus.credits_limit ?? 100000)}
+              {(syncStatus.credits_pct !== undefined) ? `  ${syncStatus.credits_pct}%` : ''}
+            </Text>
+          </View>
+          <View style={s.syncBarBg}>
+            <View style={[s.syncBarFill, {
+              width: `${Math.min(syncStatus.credits_pct ?? 0, 100)}%` as any,
+              backgroundColor: (syncStatus.credits_pct ?? 0) >= 90 ? '#EF4444' : (syncStatus.credits_pct ?? 0) >= 70 ? '#F59E0B' : '#6366F1',
+            }]} />
+          </View>
+        </View>
       </View>
 
       {/* Morning Fresh — independent job, not part of universe pipeline */}
@@ -885,9 +1056,9 @@ const s = StyleSheet.create({
     textTransform: 'uppercase',
   },
   substepBlock: {
-    marginTop: 4,
+    marginTop: 6,
     marginBottom: 4,
-    paddingBottom: 6,
+    paddingBottom: 8,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border + '66',
   },
@@ -896,9 +1067,29 @@ const s = StyleSheet.create({
     color: COLORS.textMuted,
     marginBottom: 2,
   },
+  substepHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
+  substepName: { fontSize: 11, fontWeight: '600', color: COLORS.text, flex: 1 },
+  substepEndpoint: { fontSize: 9, color: '#6366F1', fontFamily: 'monospace', marginBottom: 4 },
+  substepStatsRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  substepStat: { alignItems: 'center', flex: 1 },
+  substepStatNum: { fontSize: 14, fontWeight: '700', color: COLORS.text },
+  substepStatLabel: { fontSize: 8, color: COLORS.textMuted, marginTop: 1 },
+  substepStatSep: { fontSize: 11, color: COLORS.textMuted },
+  substepTickers: { fontSize: 9, color: COLORS.textMuted, marginTop: 4, fontFamily: 'monospace' },
   substepRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 2 },
-  substepName: { fontSize: 11, color: COLORS.text, flex: 1 },
   substepValue: { fontSize: 10, color: COLORS.textMuted },
+  mockBadge: { backgroundColor: '#F59E0B33', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 },
+  mockBadgeText: { fontSize: 8, fontWeight: '700', color: '#F59E0B' },
+
+  syncCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
+  syncTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, marginBottom: 10 },
+  syncRow: {},
+  syncLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  syncLabel: { fontSize: 11, color: COLORS.text },
+  syncCount: { fontSize: 10, color: COLORS.textMuted },
+  syncBarBg: { height: 5, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden' },
+  syncBarFill: { height: 5, borderRadius: 3 },
+  syncQueueText: { fontSize: 9, color: '#F59E0B', marginTop: 3 },
 
   expandBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start' },
   expandText: { fontSize: 11, color: COLORS.textMuted },

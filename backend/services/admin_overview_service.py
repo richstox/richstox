@@ -17,10 +17,11 @@ import asyncio
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Optional
 from zoneinfo import ZoneInfo
 
-from services.universe_counts_service import get_universe_counts, VISIBLE_UNIVERSE_QUERY
+from services.universe_counts_service import get_universe_counts
+from credit_log_service import get_pipeline_sync_status
 
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
@@ -153,7 +154,7 @@ def get_env_info() -> Dict[str, str]:
         else:
             host_part = mongo_url.replace('mongodb://', '')
         db_host = host_part.split('/')[0]
-    except:
+    except Exception:
         db_host = 'unknown'
     
     return {
@@ -248,7 +249,7 @@ def to_prague_str(dt) -> Optional[str]:
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d %H:%M:%S")
         return str(dt)
-    except:
+    except Exception:
         return str(dt)
 
 
@@ -290,7 +291,6 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     
     now_utc = datetime.now(timezone.utc)
     now_prague = datetime.now(PRAGUE_TZ)
-    today_str = now_prague.strftime("%Y-%m-%d")
     day_of_week = now_prague.weekday()
     current_hour = now_prague.hour
     current_minute = now_prague.minute
@@ -332,17 +332,20 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     
     # NEW: Job last runs from system_job_logs (observability layer)
     job_last_runs_task = get_job_last_runs(db)
-    
+
     # NEW: System health from system_job_logs
     system_health_task = compute_system_health(db)
-    
+
+    # Pipeline sync status (price history + fundamentals completion + credits)
+    pipeline_sync_task = get_pipeline_sync_status(db)
+
     results = await asyncio.gather(
         universe_counts_task, scheduler_config_task, latest_price_task,
         job_runs_task, last_universe_seed_task, api_guard_task, job_last_runs_task,
-        system_health_task
+        system_health_task, pipeline_sync_task
     )
-    
-    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health = results
+
+    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status = results
     
     scheduler_enabled = scheduler_config.get("value", True) if scheduler_config else True
     latest_date = latest_price.get("date") if latest_price else None
@@ -447,7 +450,7 @@ async def get_admin_overview(db) -> Dict[str, Any]:
             if started_at and finished_at:
                 try:
                     job_data["duration_ms"] = int((finished_at - started_at).total_seconds() * 1000)
-                except:
+                except Exception:
                     pass
             
             # Records
@@ -592,7 +595,10 @@ async def get_admin_overview(db) -> Dict[str, Any]:
         
         # NEW: System health computed from system_job_logs (last 24h)
         "system_health": system_health,
-        
+
+        # Pipeline sync status: price history + fundamentals completion + credit usage
+        "pipeline_sync_status": pipeline_sync_status,
+
         # For Talk compatibility
         "visible_universe_count": universe_data["visible_universe_count"],
     }
