@@ -557,7 +557,7 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    # ── 3. Generate run_id and register it in ops_config ────────────────────
+    # ── 3. Generate run_id and register it in ops_config (zombies_reclaimed added after init)
     current_run_id = (
         f"frun_{started_at.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     )
@@ -567,6 +567,7 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
             "key": OPS_CONFIG_RUN_KEY,
             "run_id": current_run_id,
             "started_at": started_at,
+            "zombies_reclaimed": 0,
         },
         upsert=True,
     )
@@ -575,17 +576,59 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
     # ── 4. Cleanup invisible tickers ────────────────────────────────────────
     cleanup = await cleanup_invisible_ticker_data(db)
 
-    # ── 5. Tag all queued tickers with current_run_id ────────────────────────
-    # Op A: stamp every queued ticker with the run_id (no status change).
+    # ── 5. Initialize run: tag queued tickers + reset stale/zombie/error → pending
+    now_init = datetime.now(timezone.utc)
+    stale_processing_cutoff = now_init - timedelta(minutes=ZOMBIE_THRESHOLD_MINUTES)  # 15 min
+    stale_pending_cutoff    = now_init - timedelta(minutes=60)                         # 60 min
+
+    # Op A: stamp ALL queued tickers with current_run_id (status unchanged)
     await db.tracked_tickers.update_many(
         _QUEUED_FILTER,
         {"$set": {"fundamentals_run_id": current_run_id}},
     )
-    # Op B: for tickers with no status yet (null/missing), initialise to "pending".
-    #       Existing "error", "processing", "complete" values are deliberately preserved.
-    await db.tracked_tickers.update_many(
-        {"$and": [_QUEUED_FILTER, {"fundamentals_status": None}]},
-        {"$set": {"fundamentals_status": "pending"}},
+
+    # Op B: reset to "pending" + record enqueue timestamp for:
+    #   - null / missing status  (never processed)
+    #   - "error"                (failed in a previous run — retry)
+    #   - zombie "processing"    (claimed > ZOMBIE_THRESHOLD_MINUTES ago without completing)
+    #   - stale "pending"        (enqueued > 60 min ago without being claimed)
+    # "complete" is never touched.
+    reset_filter = {
+        "$and": [
+            {"fundamentals_run_id": current_run_id},
+            {
+                "$or": [
+                    {"fundamentals_status": None},
+                    {"fundamentals_status": "error"},
+                    {
+                        "fundamentals_status": "processing",
+                        "fundamentals_processing_started_at": {"$lt": stale_processing_cutoff},
+                    },
+                    {
+                        "fundamentals_status": "pending",
+                        "fundamentals_processing_started_at": {"$lt": stale_pending_cutoff},
+                    },
+                ]
+            },
+        ]
+    }
+    reset_result = await db.tracked_tickers.update_many(
+        reset_filter,
+        {"$set": {
+            "fundamentals_status": "pending",
+            "fundamentals_processing_started_at": now_init,
+        }},
+    )
+    zombies_reclaimed = reset_result.modified_count
+
+    # Patch zombies_reclaimed into the ops_config record so the progress endpoint can expose it
+    await db.ops_config.update_one(
+        {"key": OPS_CONFIG_RUN_KEY},
+        {"$set": {"zombies_reclaimed": zombies_reclaimed}},
+    )
+    logger.info(
+        f"{job_name}: tagged={total_to_process}, "
+        f"reset_to_pending={zombies_reclaimed} (errors+zombies+stale)"
     )
 
     # ── 6. Cancel event + counters + concurrency primitives ─────────────────
@@ -692,6 +735,7 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         "run_id": current_run_id,
         "status": final_status,
         "total": total_to_process,
+        "zombies_reclaimed": zombies_reclaimed,
         "processed": counters["processed"],
         "success": counters["success"],
         "failed": counters["failed"],

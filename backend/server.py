@@ -6492,6 +6492,7 @@ async def admin_get_fundamentals_progress():
         }
 
     active_run_id: str = run_doc["run_id"]
+    zombies_reclaimed: int = run_doc.get("zombies_reclaimed", 0)
 
     # ── Aggregate by normalised status for this run ───────────────────────────
     agg_pipeline = [
@@ -6529,14 +6530,15 @@ async def admin_get_fundamentals_progress():
     percentage = round(counts["complete"] / total_queued * 100) if total_queued > 0 else 0
 
     return {
-        "total_queued": total_queued,
-        "pending":      counts["pending"],
-        "processing":   counts["processing"],
-        "complete":     counts["complete"],
-        "error":        counts["error"],
-        "percentage":   percentage,
-        "run_active":   True,
-        "run_id":       active_run_id,
+        "total_queued":     total_queued,
+        "pending":          counts["pending"],
+        "processing":       counts["processing"],
+        "complete":         counts["complete"],
+        "error":            counts["error"],
+        "percentage":       percentage,
+        "run_active":       True,
+        "run_id":           active_run_id,
+        "zombies_reclaimed": zombies_reclaimed,
     }
 
 
