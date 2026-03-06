@@ -610,7 +610,18 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
                 "reason": "kill_switch_engaged",
                 "started_at": started_at.isoformat(),
             }
-        
+
+        # Check for cancel request
+        cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+        if cancel_flag:
+            await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
+            logger.info(f"{job_name} cancelled before start")
+            return {
+                "job_name": job_name,
+                "status": "cancelled",
+                "started_at": started_at.isoformat(),
+            }
+
         # Run the NEW bulk catchup with gap detection
         result = await run_daily_bulk_catchup(db)
         

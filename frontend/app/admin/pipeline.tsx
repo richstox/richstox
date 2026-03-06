@@ -3,7 +3,7 @@
  * Universe Pipeline — 5-step sequential process with integrated funnel per step
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   RefreshControl, ActivityIndicator, Alert, Linking, Platform,
@@ -159,6 +159,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [runResult, setRunResult] = useState<Record<string, string>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -243,34 +244,78 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
+  const stopPolling = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  };
+
+  const startPolling = (jobName: string, startedAt: number) => {
+    stopPolling();
+    pollRef.current = setInterval(async () => {
+      try {
+        const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+        const res = await fetch(`${API_URL}/api/admin/jobs/${jobName}/status`, { headers: requestHeaders });
+        if (!res.ok) return;
+        const json = await res.json();
+        const lastRun = json.last_run;
+        if (!lastRun) return;
+        const runStart = lastRun.started_at ? Date.parse(lastRun.started_at) : 0;
+        if (runStart >= startedAt) {
+          stopPolling();
+          setRunningJob(null);
+          const st = lastRun.status || 'completed';
+          if (st === 'cancelled') {
+            setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancelled' }));
+          } else if (st === 'failed' || st === 'error') {
+            setRunResult(prev => ({ ...prev, [jobName]: `❌ ${st}` }));
+          } else {
+            setRunResult(prev => ({ ...prev, [jobName]: `✅ ${st}` }));
+          }
+          fetchData();
+        }
+      } catch { /* ignore poll errors */ }
+    }, 3000);
+  };
+
   const handleRunNow = async (jobName: string) => {
     if (runningJob) return;
     setRunningJob(jobName);
     setRunResult(prev => ({ ...prev, [jobName]: '' }));
+    const triggeredAt = Date.now();
     try {
       const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-      const SYNC_JOBS = ['price_sync', 'fundamentals_sync', 'news_refresh'];
-      const useWait = SYNC_JOBS.includes(jobName);
-      let endpoint = jobName === 'universe_seed'
+      const endpoint = jobName === 'universe_seed'
         ? `${API_URL}/api/admin/jobs/universe-seed`
         : `${API_URL}/api/admin/scheduler/run/${jobName.replace(/_/g, '-')}`;
-      if (useWait) endpoint += '?wait=true';
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...requestHeaders },
       });
       const json = await res.json();
       if (res.ok) {
-        setRunResult(prev => ({ ...prev, [jobName]: `✅ ${json.status || 'Triggered'}` }));
-        setTimeout(fetchData, 2000);
+        setRunResult(prev => ({ ...prev, [jobName]: '⏳ Running…' }));
+        startPolling(jobName, triggeredAt);
       } else {
-        setRunResult(prev => ({ ...prev, [jobName]: `❌ ${json.error || res.statusText}` }));
+        setRunResult(prev => ({ ...prev, [jobName]: `❌ ${json.error || json.detail || res.statusText}` }));
+        setRunningJob(null);
       }
     } catch (e: any) {
       setRunResult(prev => ({ ...prev, [jobName]: `❌ ${e.message}` }));
-    } finally {
       setRunningJob(null);
     }
+  };
+
+  const handleCancelJob = async (jobName: string) => {
+    try {
+      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+      await fetch(`${API_URL}/api/admin/jobs/${jobName}/cancel`, {
+        method: 'POST',
+        headers: requestHeaders,
+      });
+      setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancel requested…' }));
+    } catch { /* ignore */ }
   };
 
   const toggleExpand = (step: number) => {
@@ -544,16 +589,24 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>
                   <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
-                <TouchableOpacity
-                  style={[s.runBtn, { backgroundColor: step.color }, isRunning && s.runBtnDisabled]}
-                  onPress={() => handleRunNow(step.job_name)}
-                  disabled={!!runningJob}
-                >
-                  {isRunning
-                    ? <ActivityIndicator size="small" color="#fff" />
-                    : <Text style={s.runBtnText}>▶ Run</Text>
-                  }
-                </TouchableOpacity>
+                <View style={s.jobBtnGroup}>
+                  {isRunning ? (
+                    <TouchableOpacity
+                      style={s.cancelBtn}
+                      onPress={() => handleCancelJob(step.job_name)}
+                    >
+                      <Text style={s.cancelBtnText}>■ Stop</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[s.runBtn, { backgroundColor: step.color }, !!runningJob && s.runBtnDisabled]}
+                      onPress={() => handleRunNow(step.job_name)}
+                      disabled={!!runningJob}
+                    >
+                      <Text style={s.runBtnText}>▶ Run</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
 
               {/* Run Result */}
@@ -1015,9 +1068,12 @@ const s = StyleSheet.create({
   stepTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text },
   stepSchedule: { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
 
+  jobBtnGroup: { flexDirection: 'row', gap: 6 },
   runBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center' },
   runBtnDisabled: { opacity: 0.5 },
   runBtnText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  cancelBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center', backgroundColor: '#EF4444' },
+  cancelBtnText: { color: '#fff', fontSize: 11, fontWeight: '600' },
   runResultText: { fontSize: 11, marginTop: 6, color: COLORS.textMuted },
 
   funnelRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4, gap: 6 },

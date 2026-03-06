@@ -4896,6 +4896,48 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
         "message": "Job started in background. Check /api/admin/scheduler/status for results."
     }
 
+@api_router.post("/admin/jobs/{job_name}/cancel")
+async def admin_cancel_job(job_name: str):
+    """
+    Request cancellation of a running job.
+    Sets a cancellation flag in ops_config. Running jobs check this flag
+    and abort gracefully at the next safe checkpoint.
+    """
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    await db.ops_config.update_one(
+        {"key": f"cancel_job_{job_name}"},
+        {"$set": {"key": f"cancel_job_{job_name}", "value": True, "requested_at": now}},
+        upsert=True,
+    )
+    logger.info(f"Cancel requested for job: {job_name}")
+    return {"job_name": job_name, "cancel_requested": True, "requested_at": now.isoformat()}
+
+
+@api_router.delete("/admin/jobs/{job_name}/cancel")
+async def admin_clear_cancel_flag(job_name: str):
+    """Clear the cancellation flag for a job (called after job stops)."""
+    await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
+    return {"job_name": job_name, "cancel_cleared": True}
+
+
+@api_router.get("/admin/jobs/{job_name}/status")
+async def admin_job_status(job_name: str):
+    """Get the latest run status for a specific job."""
+    run = await db.ops_job_runs.find_one(
+        {"job_name": job_name},
+        {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
+         "details": 1, "records_upserted": 1},
+        sort=[("started_at", -1)],
+    )
+    cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+    return {
+        "job_name": job_name,
+        "last_run": run,
+        "cancel_requested": bool(cancel_flag),
+    }
+
+
 @api_router.post("/admin/scheduler/run/price-backfill")
 async def admin_manual_price_backfill(background_tasks: BackgroundTasks, batch_size: int = Query(50, ge=1, le=200), wait: bool = Query(False)):
     """
