@@ -161,7 +161,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [runResult, setRunResult] = useState<Record<string, string>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [liveProgress, setLiveProgress] = useState<string>('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -251,10 +254,22 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setElapsedSeconds(0);
+    setJobStartTime(null);
+    setLiveProgress('');
   };
 
   const startPolling = (jobName: string, startedAt: number) => {
     stopPolling();
+    setElapsedSeconds(0);
+    // Local 1-second timer for elapsed display
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
+    }, 1000);
     pollRef.current = setInterval(async () => {
       try {
         const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
@@ -267,10 +282,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         if (runStart >= startedAt) {
           const st = lastRun.status || 'completed';
           if (st === 'running') {
-            // Job started on server — show live progress message
-            const elapsed = Math.round((Date.now() - startedAt) / 1000);
+            // Update live progress message from server (timer shown separately)
             const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
-            setRunResult(prev => ({ ...prev, [jobName]: `⏳ ${progressMsg} (${elapsed}s)` }));
+            setLiveProgress(progressMsg);
             return; // keep polling
           }
           stopPolling();
@@ -657,7 +671,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               </View>
 
               {/* Run Result */}
-              {runResult[step.job_name] ? (
+              {isRunning ? (
+                <View style={s.progressRow}>
+                  <Text style={s.progressText}>
+                    {liveProgress || runResult[step.job_name] || JOB_DESCRIPTIONS[step.job_name] || 'Starting…'}
+                  </Text>
+                  <Text style={s.elapsedText}>{elapsedSeconds}s</Text>
+                </View>
+              ) : runResult[step.job_name] ? (
                 <Text style={[s.runResultText, isRunning && { color: '#F59E0B' }]}>{runResult[step.job_name]}</Text>
               ) : null}
 
@@ -1186,6 +1207,9 @@ const s = StyleSheet.create({
   cancelBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center', backgroundColor: '#EF4444' },
   cancelBtnText: { color: '#fff', fontSize: 11, fontWeight: '600' },
   runResultText: { fontSize: 11, marginTop: 6, color: COLORS.textMuted },
+  progressRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 8 },
+  progressText: { flex: 1, fontSize: 11, color: '#F59E0B' },
+  elapsedText: { fontSize: 13, fontWeight: '700', color: '#F59E0B', minWidth: 36, textAlign: 'right' },
 
   funnelRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4, gap: 6 },
   funnelBox: { alignItems: 'center', flex: 2.5, backgroundColor: COLORS.border + '44', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 4 },
