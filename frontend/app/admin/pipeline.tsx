@@ -726,9 +726,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       )}
                     </View>
                     <Text style={s.substepDesc}>Detects stock splits today. Flagged tickers need full price history re-download (adjusted prices change).</Text>
-                    {splitDetector.api_endpoint ? (
-                      <Text style={s.substepEndpoint} numberOfLines={1}>{splitDetector.api_endpoint}</Text>
-                    ) : null}
+                    <Text style={s.substepEndpoint} numberOfLines={1}>
+                      {splitDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date=${eventDetectors.today || 'TODAY'}`}
+                    </Text>
                     <View style={s.substepStatsRow}>
                       <View style={s.substepStat}>
                         <Text style={s.substepStatNum}>{fmt(safeCount(splitDetector.raw_count))}</Text>
@@ -764,9 +764,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       )}
                     </View>
                     <Text style={s.substepDesc}>Detects ex-dividend events today. Flagged tickers need fundamentals refresh (dividend yield, payout ratio).</Text>
-                    {dividendDetector.api_endpoint ? (
-                      <Text style={s.substepEndpoint} numberOfLines={1}>{dividendDetector.api_endpoint}</Text>
-                    ) : null}
+                    <Text style={s.substepEndpoint} numberOfLines={1}>
+                      {dividendDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date=${eventDetectors.today || 'TODAY'}`}
+                    </Text>
                     <View style={s.substepStatsRow}>
                       <View style={s.substepStat}>
                         <Text style={s.substepStatNum}>{fmt(safeCount(dividendDetector.raw_count))}</Text>
@@ -802,9 +802,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       )}
                     </View>
                     <Text style={s.substepDesc}>Detects earnings reports due today. Flagged tickers need fundamentals refresh (EPS, revenue, guidance).</Text>
-                    {earningsDetector.api_endpoint ? (
-                      <Text style={s.substepEndpoint} numberOfLines={1}>{earningsDetector.api_endpoint}</Text>
-                    ) : null}
+                    <Text style={s.substepEndpoint} numberOfLines={1}>
+                      {earningsDetector.api_endpoint || `https://eodhd.com/api/calendar/earnings?from=${eventDetectors.today || 'TODAY'}&to=${eventDetectors.today || 'TODAY'}`}
+                    </Text>
                     <View style={s.substepStatsRow}>
                       <View style={s.substepStat}>
                         <Text style={s.substepStatNum}>{fmt(safeCount(earningsDetector.raw_count))}</Text>
