@@ -309,6 +309,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     compute_visible_universe: 'Computing visibility rules for all tickers…',
     peer_medians: 'Computing peer benchmark medians…',
     news_refresh: 'Fetching news and sentiment…',
+    full_price_history_sync: 'Downloading complete price history per ticker (eod/{TICKER}.US)…',
+    full_fundamentals_sync: 'Downloading complete fundamentals per ticker (fundamentals/{TICKER}.US)…',
   };
 
   const handleRunNow = async (jobName: string) => {
@@ -928,7 +930,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       Downloads complete EOD history (IPO → today) for all visible tickers.{'\n'}
                       ~{fmt(safeCount(syncStatus.total_visible_tickers))} tickers · ~1 credit each · ~15 min
                     </Text>
-                    {runResult['full_price_history_sync'] ? (
+                    <Text style={s.substepEndpoint} numberOfLines={1}>
+                      https://eodhd.com/api/eod/{'{'+'TICKER'+'}'}.US?fmt=json&period=d
+                    </Text>
+                    {runningJob === 'full_price_history_sync' && (
+                      <View style={s.progressRow}>
+                        <Text style={s.progressText}>{liveProgress || JOB_DESCRIPTIONS['full_price_history_sync'] || 'Downloading…'}</Text>
+                        <Text style={s.elapsedText}>{elapsedSeconds}s</Text>
+                      </View>
+                    )}
+                    {runResult['full_price_history_sync'] && runningJob !== 'full_price_history_sync' ? (
                       <Text style={s.fullSyncResult}>{runResult['full_price_history_sync']}</Text>
                     ) : null}
                   </View>
@@ -957,7 +968,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       Downloads complete fundamentals for all visible tickers.{'\n'}
                       ~{fmt(safeCount(syncStatus.total_visible_tickers))} tickers · ~10 credits each · ~20 min
                     </Text>
-                    {runResult['full_fundamentals_sync'] ? (
+                    <Text style={s.substepEndpoint} numberOfLines={1}>
+                      https://eodhd.com/api/fundamentals/{'{'+'TICKER'+'}'}.US?fmt=json
+                    </Text>
+                    {runningJob === 'full_fundamentals_sync' && (
+                      <View style={s.progressRow}>
+                        <Text style={s.progressText}>{liveProgress || JOB_DESCRIPTIONS['full_fundamentals_sync'] || 'Downloading…'}</Text>
+                        <Text style={s.elapsedText}>{elapsedSeconds}s</Text>
+                      </View>
+                    )}
+                    {runResult['full_fundamentals_sync'] && runningJob !== 'full_fundamentals_sync' ? (
                       <Text style={s.fullSyncResult}>{runResult['full_fundamentals_sync']}</Text>
                     ) : null}
                   </View>
