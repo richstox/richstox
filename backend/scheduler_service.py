@@ -1147,7 +1147,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 ],
             },
             {"_id": 0, "ticker": 1},
-        ).limit(batch_size * 2).to_list(batch_size * 2)
+        ).to_list(None)  # No limit — enqueue ALL tickers missing classification
         class_candidate_tickers = [d.get("ticker") for d in class_candidates if d.get("ticker")]
         class_enqueue = await _enqueue_fundamentals_events(
             db,
@@ -1158,11 +1158,11 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             detector_step="3.0",
         )
 
-        # Get tickers with pending events (not full refresh)
+        # Get ALL pending events up to batch_size tickers
         pending_events = await db.fundamentals_events.find(
             {"status": "pending"},
             {"ticker": 1, "event_type": 1, "created_at": 1}
-        ).sort("created_at", 1).limit(batch_size * 5).to_list(length=batch_size * 5)
+        ).sort("created_at", 1).to_list(None)  # fetch all, deduplicate by ticker below
 
         events_by_ticker: Dict[str, List[dict]] = {}
         for event in pending_events:
