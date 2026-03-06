@@ -277,7 +277,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const json = await res.json();
         const lastRun = json.last_run;
         if (!lastRun) return;
-        const runStart = lastRun.started_at ? Date.parse(lastRun.started_at) : 0;
+        // MongoDB datetimes may lack timezone suffix — force UTC interpretation
+        const rawStart = lastRun.started_at || '';
+        const utcStart = rawStart.endsWith('Z') || rawStart.includes('+') ? rawStart : rawStart + 'Z';
+        const runStart = utcStart ? Date.parse(utcStart) : 0;
         if (runStart >= startedAt) {
           const st = lastRun.status || 'completed';
           if (st === 'running') {
