@@ -1218,52 +1218,70 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             CONCURRENCY = 20
             semaphore = asyncio.Semaphore(CONCURRENCY)
 
+            # Shared cancel event — set once by the monitor when the DB flag is found.
+            cancel_event = asyncio.Event()
+
+            async def _cancel_monitor_sched() -> None:
+                """Poll DB every 2 s; consume flag ONCE and set cancel_event."""
+                while not cancel_event.is_set():
+                    await asyncio.sleep(2)
+                    doc = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+                    if doc:
+                        await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
+                        logger.info(f"{job_name}: cancel flag consumed by monitor")
+                        cancel_event.set()
+                        return
+
             async def _process_one(ticker: str) -> dict:
-                # Check cancel flag
-                cancel = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
-                if cancel:
+                # Fast in-memory check — no DB round-trip
+                if cancel_event.is_set():
                     return {"ticker": ticker, "success": False, "cancelled": True}
                 async with semaphore:
                     return await sync_single_ticker_fundamentals(db, ticker, source_job=job_name)
 
+            monitor_task_sched = asyncio.create_task(_cancel_monitor_sched())
             tasks = [asyncio.create_task(_process_one(t)) for t in tickers_to_sync]
             done_count = 0
 
-            for coro in asyncio.as_completed(tasks):
-                ticker_result = await coro
+            try:
+                for coro in asyncio.as_completed(tasks):
+                    ticker_result = await coro
 
-                if ticker_result.get("cancelled"):
-                    result["status"] = "cancelled"
-                    for t in tasks:
-                        t.cancel()
-                    await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
-                    break
+                    if ticker_result.get("cancelled"):
+                        result["status"] = "cancelled"
+                        result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+                        logger.info(f"{job_name}: cancelled after {done_count} tickers")
+                        # Do NOT call t.cancel() — in-flight tasks finish naturally;
+                        # cancel_event prevents any new ones from starting.
+                        break
 
-                result["processed"] += 1
-                done_count += 1
+                    result["processed"] += 1
+                    done_count += 1
 
-                if ticker_result.get("success"):
-                    result["success"] += 1
-                    ticker_us = f"{ticker_result.get('ticker', '')}.US"
-                    event_ids = [
-                        e.get("_id")
-                        for e in events_by_ticker.get(ticker_us, [])
-                        if e.get("_id")
-                    ]
-                    if event_ids:
-                        await db.fundamentals_events.update_many(
-                            {"_id": {"$in": event_ids}},
-                            {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}}
+                    if ticker_result.get("success"):
+                        result["success"] += 1
+                        ticker_us = f"{ticker_result.get('ticker', '')}.US"
+                        event_ids = [
+                            e.get("_id")
+                            for e in events_by_ticker.get(ticker_us, [])
+                            if e.get("_id")
+                        ]
+                        if event_ids:
+                            await db.fundamentals_events.update_many(
+                                {"_id": {"$in": event_ids}},
+                                {"$set": {"status": "completed", "completed_at": datetime.now(timezone.utc)}}
+                            )
+                    else:
+                        result["failed"] += 1
+
+                    # Progress update every 100 tickers
+                    if done_count % 100 == 0:
+                        await _progress(
+                            f"Fundamentals sync: {done_count}/{total} done "
+                            f"(✓{result['success']} ✗{result['failed']})"
                         )
-                else:
-                    result["failed"] += 1
-
-                # Progress update every 100 tickers
-                if done_count % 100 == 0:
-                    await _progress(
-                        f"Fundamentals sync: {done_count}/{total} done "
-                        f"(✓{result['success']} ✗{result['failed']})"
-                    )
+            finally:
+                monitor_task_sched.cancel()
 
         # Step 3 exclusion report: tickers still missing sector/industry after sync
         now_step3 = datetime.now(timezone.utc)
@@ -1305,15 +1323,21 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         
         finished_at = datetime.now(timezone.utc)
         result["finished_at"] = finished_at.isoformat()
+        result["started_at_prague"] = _to_prague_iso(started_at)
+        result["finished_at_prague"] = _to_prague_iso(finished_at)
+        result["log_timezone"] = "Europe/Prague"
 
-        # Update running sentinel to final status
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
             {"$set": {
                 "status": result["status"],
                 "finished_at": finished_at,
+                "started_at_prague": _to_prague_iso(started_at),
+                "finished_at_prague": _to_prague_iso(finished_at),
+                "log_timezone": "Europe/Prague",
                 "details": result,
                 "progress": None,
+                **({"cancelled_at": finished_at} if result["status"] == "cancelled" else {}),
             }}
         )
 
@@ -1326,7 +1350,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             finished_at=finished_at,
         )
 
-        logger.info(f"{job_name} completed: processed={result['processed']}, success={result['success']}")
+        logger.info(
+            f"{job_name} {result['status']}: "
+            f"processed={result['processed']}, success={result['success']}"
+        )
 
         return result
 

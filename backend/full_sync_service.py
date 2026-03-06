@@ -394,12 +394,15 @@ async def _claim_next_ticker(db, current_run_id: str) -> Optional[str]:
     return doc["ticker"] if doc else None
 
 
-async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[str, Any]:
+async def _process_fundamentals_ticker(
+    db, ticker: str, job_name: str, cancel_event: asyncio.Event
+) -> Dict[str, Any]:
     """
     Fetch, parse, and persist complete fundamentals for one ticker.
-    The ticker must already be claimed (status == "processing") before calling this.
+    cancel_event is set by the runner-level monitor (never deleted here).
     On success  → fundamentals_status = "complete",  fundamentals_complete = True.
     On failure  → fundamentals_status = "error".
+    On cancel   → returns {"cancelled": True} without writing partial data.
     fundamentals_run_id is intentionally NOT cleared so the progress endpoint
     can keep counting this ticker in the run's aggregation.
     """
@@ -408,6 +411,11 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
     url = f"{EODHD_BASE_URL}/fundamentals/{ticker_us}"
     params = {"api_token": EODHD_API_KEY, "fmt": "json"}
     data, http_status, duration_ms, ok = await _fetch_one(url, params)
+
+    # Cancel check 1: immediately after API fetch, before any writes
+    if cancel_event.is_set():
+        logger.info(f"[{job_name}] Cancel signalled after fetch — {ticker_us}")
+        return {"ticker": ticker_us, "success": False, "rate_limited": False, "cancelled": True}
 
     await _log_credit(
         db, job_name=job_name, operation="fundamentals",
@@ -443,6 +451,10 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
 
     fin_rows = parse_financials(ticker_plain, data)
     if fin_rows:
+        # Cancel check 2: before financials bulk_write
+        if cancel_event.is_set():
+            logger.info(f"[{job_name}] Cancel signalled before financials write — {ticker_us}")
+            return {"ticker": ticker_us, "success": False, "rate_limited": False, "cancelled": True}
         fin_ops = [
             UpdateOne(
                 {"ticker": r["ticker"], "period_type": r["period_type"], "period_date": r["period_date"]},
@@ -454,6 +466,10 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
 
     earn_rows = parse_earnings_history(ticker_plain, data)
     if earn_rows:
+        # Cancel check 3: before earnings bulk_write
+        if cancel_event.is_set():
+            logger.info(f"[{job_name}] Cancel signalled before earnings write — {ticker_us}")
+            return {"ticker": ticker_us, "success": False, "rate_limited": False, "cancelled": True}
         earn_ops = [
             UpdateOne(
                 {"ticker": r["ticker"], "quarter_date": r["quarter_date"]},
@@ -469,7 +485,6 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
             {"ticker": ticker_us}, {"$set": insider_doc}, upsert=True
         )
 
-    # Strict non-empty string check with .strip() for classification
     sector = (company_doc.get("sector") or "").strip()
     industry = (company_doc.get("industry") or "").strip()
     has_classification = bool(sector and industry)
@@ -573,7 +588,8 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         {"$set": {"fundamentals_status": "pending"}},
     )
 
-    # ── 6. Shared counters & concurrency primitives ──────────────────────────
+    # ── 6. Cancel event + counters + concurrency primitives ─────────────────
+    cancel_event = asyncio.Event()
     counters: Dict[str, int] = {
         "success": 0, "failed": 0, "rate_limited": 0, "processed": 0
     }
@@ -583,11 +599,29 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
     semaphore = asyncio.Semaphore(START_CONCURRENCY)
     concurrency_holder = [START_CONCURRENCY]
 
-    # ── 7. Drain-worker definition ───────────────────────────────────────────
+    # ── 7. Background cancel monitor ─────────────────────────────────────────
+    async def _cancel_monitor() -> None:
+        """
+        Poll ops_config every 2 s for the cancel flag.
+        Consumes (deletes) the flag EXACTLY ONCE, then sets cancel_event
+        so all workers stop at their next safe checkpoint.
+        """
+        while not cancel_event.is_set():
+            await asyncio.sleep(2)
+            doc = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+            if doc:
+                await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
+                logger.info(f"{job_name}: cancel flag consumed by monitor, setting cancel_event")
+                cancel_event.set()
+                return
+
+    # ── 8. Drain-worker definition ───────────────────────────────────────────
     async def drain_worker() -> None:
         nonlocal cancelled
         while True:
-            if cancelled:
+            # Fast in-memory check — no DB round-trip
+            if cancel_event.is_set():
+                cancelled = True
                 return
 
             if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
@@ -595,18 +629,19 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
                 cancelled = True
                 return
 
-            if counters["processed"] > 0 and counters["processed"] % 50 == 0:
-                if await _is_cancelled(db, job_name):
-                    logger.info(f"{job_name}: cancelled by user")
-                    cancelled = True
-                    return
-
             async with semaphore:
                 ticker = await _claim_next_ticker(db, current_run_id)
                 if ticker is None:
                     return  # queue for this run is exhausted
 
-                result = await _process_fundamentals_ticker(db, ticker, job_name)
+                result = await _process_fundamentals_ticker(
+                    db, ticker, job_name, cancel_event
+                )
+
+            # Propagate cancellation detected inside the ticker processor
+            if result.get("cancelled"):
+                cancelled = True
+                return
 
             counters["processed"] += 1
 
@@ -637,19 +672,25 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
                     cancelled = True
                     return
 
-    # ── 8. Run workers, always clean up ops_config in finally ────────────────
+    # ── 9. Run monitor + workers; always clean up in finally ─────────────────
+    monitor_task = asyncio.create_task(_cancel_monitor())
     try:
         await asyncio.gather(*[drain_worker() for _ in range(START_CONCURRENCY)])
     finally:
+        monitor_task.cancel()
         await db.ops_config.delete_one({"key": OPS_CONFIG_RUN_KEY})
         logger.info(f"{job_name}: cleared active run marker (run_id={current_run_id})")
 
-    # ── 9. Persist summary ───────────────────────────────────────────────────
+    # ── 10. Persist summary ──────────────────────────────────────────────────
     finished_at = datetime.now(timezone.utc)
+    from zoneinfo import ZoneInfo
+    PRAGUE = ZoneInfo("Europe/Prague")
+    final_status = "cancelled" if cancelled else "completed"
+
     summary = {
         "job_name": job_name,
         "run_id": current_run_id,
-        "status": "completed",
+        "status": final_status,
         "total": total_to_process,
         "processed": counters["processed"],
         "success": counters["success"],
@@ -659,19 +700,26 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         "credits_used": counters["success"] * 10,
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
+        "started_at_prague": started_at.astimezone(PRAGUE).isoformat(),
+        "finished_at_prague": finished_at.astimezone(PRAGUE).isoformat(),
+        "log_timezone": "Europe/Prague",
         "duration_seconds": (finished_at - started_at).total_seconds(),
+        **({"cancelled_at": finished_at.isoformat()} if cancelled else {}),
     }
 
     await db.ops_job_runs.insert_one({
         "job_name": job_name,
-        "status": summary["status"],
+        "status": final_status,
         "started_at": started_at,
         "finished_at": finished_at,
+        "started_at_prague": summary["started_at_prague"],
+        "finished_at_prague": summary["finished_at_prague"],
+        "log_timezone": "Europe/Prague",
         "details": summary,
     })
 
     logger.info(
-        f"{job_name} done: run_id={current_run_id}, "
+        f"{job_name} {final_status}: run_id={current_run_id}, "
         f"{counters['success']}/{total_to_process} ok, "
         f"credits={counters['success'] * 10}"
     )
