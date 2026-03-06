@@ -669,9 +669,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <View style={s.substepHeaderRow}>
                       <Text style={s.substepName}>2.2 Split Detector</Text>
                       {splitDetector.mock_mode && (
-                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>MOCK</Text></View>
+                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>NO API KEY</Text></View>
                       )}
                     </View>
+                    <Text style={s.substepDesc}>Detects stock splits today. Flagged tickers need full price history re-download (adjusted prices change).</Text>
                     {splitDetector.api_endpoint ? (
                       <Text style={s.substepEndpoint} numberOfLines={1}>{splitDetector.api_endpoint}</Text>
                     ) : null}
@@ -706,9 +707,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <View style={s.substepHeaderRow}>
                       <Text style={s.substepName}>2.4 Dividend Detector</Text>
                       {dividendDetector.mock_mode && (
-                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>MOCK</Text></View>
+                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>NO API KEY</Text></View>
                       )}
                     </View>
+                    <Text style={s.substepDesc}>Detects ex-dividend events today. Flagged tickers need fundamentals refresh (dividend yield, payout ratio).</Text>
                     {dividendDetector.api_endpoint ? (
                       <Text style={s.substepEndpoint} numberOfLines={1}>{dividendDetector.api_endpoint}</Text>
                     ) : null}
@@ -743,9 +745,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <View style={s.substepHeaderRow}>
                       <Text style={s.substepName}>2.6 Earnings Detector</Text>
                       {earningsDetector.mock_mode && (
-                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>MOCK</Text></View>
+                        <View style={s.mockBadge}><Text style={s.mockBadgeText}>NO API KEY</Text></View>
                       )}
                     </View>
+                    <Text style={s.substepDesc}>Detects earnings reports due today. Flagged tickers need fundamentals refresh (EPS, revenue, guidance).</Text>
                     {earningsDetector.api_endpoint ? (
                       <Text style={s.substepEndpoint} numberOfLines={1}>{earningsDetector.api_endpoint}</Text>
                     ) : null}
@@ -1069,6 +1072,7 @@ const s = StyleSheet.create({
   },
   substepHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 },
   substepName: { fontSize: 11, fontWeight: '600', color: COLORS.text, flex: 1 },
+  substepDesc: { fontSize: 10, color: COLORS.textMuted, marginBottom: 4, lineHeight: 14 },
   substepEndpoint: { fontSize: 9, color: '#6366F1', fontFamily: 'monospace', marginBottom: 4 },
   substepStatsRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   substepStat: { alignItems: 'center', flex: 1 },
