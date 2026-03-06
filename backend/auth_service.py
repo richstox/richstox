@@ -22,6 +22,7 @@ logger = logging.getLogger("richstox.auth")
 
 # Constants
 SESSION_EXPIRY_DAYS = 7
+REFRESH_TOKEN_EXPIRY_DAYS = 30
 ADMIN_EMAIL = "kurtarichard@gmail.com"
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -144,6 +145,52 @@ async def create_session(db, user_id: str, session_token: str) -> Dict[str, Any]
     await db.user_sessions.insert_one(session_doc)
     logger.info(f"Created session for user: {user_id}")
     return {"session_token": session_token, "expires_at": expires_at.isoformat()}
+
+
+async def create_refresh_token(db, user_id: str) -> str:
+    """
+    Create a long-lived refresh token for the given user (30-day expiry).
+    Stored in the refresh_tokens collection. Returns the raw token string,
+    which the caller must set as an HttpOnly cookie.
+    """
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=REFRESH_TOKEN_EXPIRY_DAYS)
+    token = f"refresh_{uuid.uuid4().hex}"
+    await db.refresh_tokens.insert_one({
+        "user_id": user_id,
+        "token": token,
+        "created_at": now,
+        "expires_at": expires_at,
+    })
+    logger.info(f"Created refresh token for user: {user_id}")
+    return token
+
+
+async def consume_refresh_token(db, token: str) -> Optional[Dict[str, Any]]:
+    """
+    Validate and consume a refresh token (one-time use — rotate on every refresh).
+    Returns the associated user dict on success, None if invalid/expired.
+    """
+    if not token:
+        return None
+    doc = await db.refresh_tokens.find_one_and_delete({"token": token})
+    if not doc:
+        return None
+    expires_at = doc.get("expires_at")
+    if isinstance(expires_at, str):
+        expires_at = datetime.fromisoformat(expires_at)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if expires_at < datetime.now(timezone.utc):
+        logger.warning(f"Refresh token expired for user: {doc.get('user_id')}")
+        return None
+    user = await db.users.find_one({"user_id": doc["user_id"]}, {"_id": 0})
+    return user
+
+
+async def delete_refresh_tokens_for_user(db, user_id: str) -> None:
+    """Remove all refresh tokens for a user (called on explicit logout)."""
+    await db.refresh_tokens.delete_many({"user_id": user_id})
 
 
 async def validate_session(db, session_token: str) -> Optional[Dict[str, Any]]:

@@ -609,6 +609,9 @@ from auth_service import (
     exchange_google_code,
     create_or_update_user,
     create_session,
+    create_refresh_token,
+    consume_refresh_token,
+    delete_refresh_tokens_for_user,
     validate_session,
     delete_session,
     is_admin,
@@ -618,6 +621,7 @@ from auth_service import (
     User,
     serialize_user,
     GOOGLE_CLIENT_ID,
+    REFRESH_TOKEN_EXPIRY_DAYS,
 )
 from fastapi import Request, Response
 
@@ -652,22 +656,67 @@ async def auth_me(request: Request):
 
 @api_router.post("/auth/logout")
 async def auth_logout(request: Request, response: Response):
-    """
-    Logout user - delete session and clear cookie.
-    """
+    """Logout: delete session + refresh token, clear both cookies."""
     session_token = get_session_token_from_request(request)
-    
     if session_token:
+        user = await validate_session(db, session_token)
+        if user:
+            await delete_refresh_tokens_for_user(db, user["user_id"])
         await delete_session(db, session_token)
-    
-    response.delete_cookie(
-        key="session_token",
-        path="/",
-        secure=True,
-        samesite="none"
-    )
-    
+
+    response.delete_cookie(key="session_token", path="/", secure=True, samesite="none")
+    response.delete_cookie(key="refresh_token", path="/api/auth/refresh", secure=True, samesite="none")
     return {"message": "Logged out"}
+
+
+@api_router.post("/auth/refresh")
+async def auth_refresh(request: Request, response: Response):
+    """
+    Silently refresh a session using the long-lived HttpOnly refresh token cookie.
+
+    Flow:
+      1. Read refresh token from HttpOnly cookie (never from body/header — XSS safe).
+      2. Validate + consume the token (one-time use; a new one is issued on success).
+      3. Create a new session token (7-day) and a new refresh token (30-day).
+      4. Return {"token": "<new_session_token>"} as JSON.
+         The new refresh token is set as an HttpOnly cookie.
+      5. On failure: 401 (frontend must redirect to login).
+    """
+    refresh_token_value = request.cookies.get("refresh_token")
+    if not refresh_token_value:
+        raise HTTPException(status_code=401, detail="No refresh token provided.")
+
+    user = await consume_refresh_token(db, refresh_token_value)
+    if not user:
+        response.delete_cookie(key="refresh_token", path="/api/auth/refresh", secure=True, samesite="none")
+        raise HTTPException(status_code=401, detail="Refresh token invalid or expired. Please sign in again.")
+
+    user_id = user["user_id"]
+    new_session_token = f"session_{uuid.uuid4().hex}"
+    await create_session(db, user_id, new_session_token)
+
+    new_refresh_token = await create_refresh_token(db, user_id)
+
+    response.set_cookie(
+        key="session_token",
+        value=new_session_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/",
+        max_age=7 * 24 * 60 * 60,
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=new_refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/api/auth/refresh",
+        max_age=REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60,
+    )
+
+    return {"token": new_session_token}
 
 @api_router.get("/auth/google")
 async def auth_google_login(request: Request):
@@ -698,12 +747,13 @@ async def auth_google_callback(code: str, request: Request, response: Response):
     auth_data = await exchange_google_code(code, redirect_uri)
     if not auth_data:
         return RedirectResponse(url=f"{frontend_url}/?error=auth_failed")
-    
+
     user = await create_or_update_user(db, auth_data)
     user_data = serialize_user(user)
     session_token = auth_data.get("session_token")
     await create_session(db, user_data["user_id"], session_token)
-    
+    refresh_token_value = await create_refresh_token(db, user_data["user_id"])
+
     response_redirect = RedirectResponse(url=f"{frontend_url}/auth/callback?session_id={session_token}")
     response_redirect.set_cookie(
         key="session_token",
@@ -712,7 +762,16 @@ async def auth_google_callback(code: str, request: Request, response: Response):
         secure=True,
         samesite="none",
         path="/",
-        max_age=7 * 24 * 60 * 60
+        max_age=7 * 24 * 60 * 60,
+    )
+    response_redirect.set_cookie(
+        key="refresh_token",
+        value=refresh_token_value,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/api/auth/refresh",
+        max_age=REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60,
     )
     return response_redirect
 
@@ -788,17 +847,12 @@ async def auth_dev_login(response: Response):
     
     if not admin:
         raise HTTPException(500, "Failed to get admin user")
-    
-    # Create session token
+
     session_token = f"dev_session_{uuid.uuid4().hex}"
-    
-    # Create session
     await create_session(db, admin["user_id"], session_token)
-    
-    # Serialize user
+    refresh_token_value = await create_refresh_token(db, admin["user_id"])
     user_data = serialize_user(admin)
-    
-    # Set cookie
+
     response.set_cookie(
         key="session_token",
         value=session_token,
@@ -806,13 +860,22 @@ async def auth_dev_login(response: Response):
         secure=True,
         samesite="none",
         path="/",
-        max_age=7 * 24 * 60 * 60
+        max_age=7 * 24 * 60 * 60,
     )
-    
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token_value,
+        httponly=True,
+        secure=True,
+        samesite="none",
+        path="/api/auth/refresh",
+        max_age=REFRESH_TOKEN_EXPIRY_DAYS * 24 * 60 * 60,
+    )
+
     return {
         "user": User(**user_data).dict(),
         "session_token": session_token,
-        "message": "Dev login successful - logged in as admin"
+        "message": "Dev login successful - logged in as admin",
     }
 
 # ----- Stock Search -----
@@ -6400,6 +6463,80 @@ async def admin_get_pipeline_exclusion_report(
         "latest_universe_seed_started_at": latest_universe_seed_started_at,
         "empty_report_hint": empty_report_hint,
         "rows": rows,
+    }
+
+
+@api_router.get("/admin/pipeline/fundamentals-progress")
+async def admin_get_fundamentals_progress():
+    """
+    Return live progress counts for the active fundamentals sync run.
+
+    Uses the run_id architecture:
+      1. Read active_fundamentals_run from ops_config to get the current run_id.
+         If no active run exists, return zeros with run_active=False.
+      2. Aggregate tracked_tickers WHERE fundamentals_run_id == active_run_id.
+         This set is stable — tickers tagged at job start are never un-tagged,
+         so total_queued is fixed and complete grows as workers finish.
+      3. Any fundamentals_status value outside {"processing","complete","error"}
+         (including null/missing or legacy strings) is normalised to "pending".
+    """
+    _KNOWN_STATUSES = {"processing", "complete", "error"}
+
+    # ── Resolve active run ────────────────────────────────────────────────────
+    run_doc = await db.ops_config.find_one({"key": "active_fundamentals_run"})
+    if not run_doc:
+        return {
+            "total_queued": 0, "pending": 0, "processing": 0,
+            "complete": 0, "error": 0, "percentage": 0,
+            "run_active": False,
+        }
+
+    active_run_id: str = run_doc["run_id"]
+
+    # ── Aggregate by normalised status for this run ───────────────────────────
+    agg_pipeline = [
+        {"$match": {"fundamentals_run_id": active_run_id}},
+        {
+            "$group": {
+                "_id": {
+                    "$let": {
+                        "vars": {
+                            "raw": {"$ifNull": ["$fundamentals_status", "pending"]}
+                        },
+                        "in": {
+                            "$switch": {
+                                "branches": [
+                                    {"case": {"$eq": ["$$raw", "processing"]}, "then": "processing"},
+                                    {"case": {"$eq": ["$$raw", "complete"]},   "then": "complete"},
+                                    {"case": {"$eq": ["$$raw", "error"]},      "then": "error"},
+                                ],
+                                "default": "pending",
+                            }
+                        },
+                    }
+                },
+                "count": {"$sum": 1},
+            }
+        },
+    ]
+
+    counts: Dict[str, int] = {"pending": 0, "processing": 0, "complete": 0, "error": 0}
+    async for doc in db.tracked_tickers.aggregate(agg_pipeline):
+        bucket = doc["_id"] if doc["_id"] in _KNOWN_STATUSES else "pending"
+        counts[bucket] += doc["count"]
+
+    total_queued = counts["pending"] + counts["processing"] + counts["complete"] + counts["error"]
+    percentage = round(counts["complete"] / total_queued * 100) if total_queued > 0 else 0
+
+    return {
+        "total_queued": total_queued,
+        "pending":      counts["pending"],
+        "processing":   counts["processing"],
+        "complete":     counts["complete"],
+        "error":        counts["error"],
+        "percentage":   percentage,
+        "run_active":   True,
+        "run_id":       active_run_id,
     }
 
 

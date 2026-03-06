@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
+import { authenticatedFetch } from '../../utils/api_client';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
@@ -71,6 +72,17 @@ interface OverviewData {
     };
   };
   pipeline_sync_status?: PipelineSyncStatus;
+}
+
+interface FundamentalsProgress {
+  total_queued: number;
+  pending: number;
+  processing: number;
+  complete: number;
+  error: number;
+  percentage: number;
+  run_active?: boolean;
+  run_id?: string;
 }
 
 interface PipelineExclusionRow {
@@ -165,13 +177,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [liveProgress, setLiveProgress] = useState<string>('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
       const [overviewRes, exclusionRes] = await Promise.all([
-        fetch(`${API_URL}/api/admin/overview`, { headers: requestHeaders }),
-        fetch(`${API_URL}/api/admin/pipeline/exclusion-report?limit=20`, { headers: requestHeaders }),
+        authenticatedFetch(`${API_URL}/api/admin/overview`, {}, sessionToken),
+        authenticatedFetch(`${API_URL}/api/admin/pipeline/exclusion-report?limit=20`, {}, sessionToken),
       ]);
 
       if (overviewRes.ok) setData(await overviewRes.json());
@@ -195,8 +208,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       const params = new URLSearchParams({ report_date: exclusionReport.report_date });
       const downloadUrl = `${API_URL}/api/admin/pipeline/exclusion-report/download?${params.toString()}`;
       if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-        const response = await fetch(downloadUrl, { headers: requestHeaders });
+        const response = await authenticatedFetch(downloadUrl, {}, sessionToken);
         if (!response.ok) {
           throw new Error(`Download failed (${response.status})`);
         }
@@ -231,10 +243,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     setSchedulerUpdating(true);
     try {
       const targetEnabled = !schedulerActive;
-      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-      const res = await fetch(
+      const res = await authenticatedFetch(
         `${API_URL}/api/admin/scheduler/kill-switch?enabled=${targetEnabled ? 'true' : 'false'}`,
-        { method: 'POST', headers: requestHeaders }
+        { method: 'POST' },
+        sessionToken,
       );
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -258,21 +270,71 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    if (fundProgressPollRef.current) {
+      clearInterval(fundProgressPollRef.current);
+      fundProgressPollRef.current = null;
+    }
     setElapsedSeconds(0);
     setLiveProgress('');
+    // NOTE: fundamentalsProgress state is intentionally NOT cleared here —
+    // we want the last progress snapshot to remain visible after the job ends.
   };
+
+  const pollFundamentalsProgress = useCallback(async () => {
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/pipeline/fundamentals-progress`,
+        {},
+        sessionToken,
+      );
+      if (!res.ok) return;
+      const progress: FundamentalsProgress = await res.json();
+
+      // If the backend reports no active run (ops_config was cleaned up after job end),
+      // stop polling but DO NOT overwrite the last known state — the UI should keep
+      // showing the final 100% snapshot rather than collapsing to zeros.
+      if (!progress.run_active || progress.total_queued === 0) {
+        if (fundProgressPollRef.current) {
+          clearInterval(fundProgressPollRef.current);
+          fundProgressPollRef.current = null;
+        }
+        return; // preserve existing fundamentalsProgress state
+      }
+
+      setFundamentalsProgress(progress);
+
+      // Queue fully drained — stop polling, preserve final state
+      if (progress.pending === 0 && progress.processing === 0) {
+        if (fundProgressPollRef.current) {
+          clearInterval(fundProgressPollRef.current);
+          fundProgressPollRef.current = null;
+        }
+      }
+    } catch { /* ignore transient poll errors */ }
+  }, [sessionToken]);
 
   const startPolling = (jobName: string, startedAt: number) => {
     stopPolling();
     setElapsedSeconds(0);
+
+    // Launch fundamentals progress polling when the full fundamentals sync starts
+    if (jobName === 'full_fundamentals_sync') {
+      pollFundamentalsProgress(); // immediate first fetch
+      fundProgressPollRef.current = setInterval(pollFundamentalsProgress, 2000);
+    }
+
     // Local 1-second timer for elapsed display
     timerRef.current = setInterval(() => {
       setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
     }, 1000);
+
     pollRef.current = setInterval(async () => {
       try {
-        const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-        const res = await fetch(`${API_URL}/api/admin/jobs/${jobName}/status`, { headers: requestHeaders });
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/jobs/${jobName}/status`,
+          {},
+          sessionToken,
+        );
         if (!res.ok) return;
         const json = await res.json();
         const lastRun = json.last_run;
@@ -284,10 +346,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         if (runStart >= startedAt) {
           const st = lastRun.status || 'completed';
           if (st === 'running') {
-            // Update live progress message from server (timer shown separately)
             const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
             setLiveProgress(progressMsg);
-            // Refresh overview data every 10s so counts (classified, prices, etc.) update live
             if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
               fetchData();
             }
@@ -325,14 +385,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || 'Starting…' }));
     const triggeredAt = Date.now();
     try {
-      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
       const endpoint = jobName === 'universe_seed'
         ? `${API_URL}/api/admin/jobs/universe-seed`
         : `${API_URL}/api/admin/scheduler/run/${jobName.replace(/_/g, '-')}`;
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...requestHeaders },
-      });
+      const res = await authenticatedFetch(
+        endpoint,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+        sessionToken,
+      );
       const json = await res.json();
       if (res.ok) {
         setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || '⏳ Running…' }));
@@ -349,11 +409,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleCancelJob = async (jobName: string) => {
     try {
-      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-      await fetch(`${API_URL}/api/admin/jobs/${jobName}/cancel`, {
-        method: 'POST',
-        headers: requestHeaders,
-      });
+      await authenticatedFetch(
+        `${API_URL}/api/admin/jobs/${jobName}/cancel`,
+        { method: 'POST' },
+        sessionToken,
+      );
       setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancel requested…' }));
     } catch { /* ignore */ }
   };
@@ -364,12 +424,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     setRunResult(prev => ({ ...prev, [jobName]: '' }));
     const triggeredAt = Date.now();
     try {
-      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
       const endpoint = `${API_URL}/api/admin/jobs/${jobName.replace(/_/g, '-')}`;
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...requestHeaders },
-      });
+      const res = await authenticatedFetch(
+        endpoint,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+        sessionToken,
+      );
       const json = await res.json();
       if (res.ok) {
         setRunResult(prev => ({ ...prev, [jobName]: '⏳ Running… (may take 15–30 min)' }));
@@ -971,12 +1031,37 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <View style={s.fullSyncInfo}>
                     <Text style={s.fullSyncTitle}>Full Fundamentals Download</Text>
                     <Text style={s.fullSyncDesc}>
-                      Downloads complete fundamentals for all visible tickers.{'\n'}
-                      ~{fmt(safeCount(syncStatus.total_visible_tickers))} tickers · ~10 credits each · ~20 min
+                      Downloads complete fundamentals for all queued tickers.{'\n'}
+                      ~{fmt(fundamentalsProgress?.total_queued ?? safeCount(syncStatus.total_visible_tickers))} tickers · ~10 credits each · ~20 min
                     </Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       https://eodhd.com/api/fundamentals/{'{'+'TICKER'+'}'}.US?fmt=json
                     </Text>
+
+                    {/* Live / persisted fundamentals progress bar */}
+                    {fundamentalsProgress !== null && (
+                      <View style={s.fundProgressWrap}>
+                        <View style={s.fundProgressBarBg}>
+                          <View style={[
+                            s.fundProgressBarFill,
+                            { width: `${Math.min(fundamentalsProgress.percentage, 100)}%` as any },
+                          ]} />
+                        </View>
+                        <View style={s.fundProgressCountRow}>
+                          <Text style={s.fundProgressPct}>{fundamentalsProgress.percentage}%</Text>
+                          <Text style={s.fundProgressCounts}>
+                            {fmt(fundamentalsProgress.complete)} done
+                            {fundamentalsProgress.processing > 0
+                              ? ` · ${fmt(fundamentalsProgress.processing)} active` : ''}
+                            {fundamentalsProgress.pending > 0
+                              ? ` · ${fmt(fundamentalsProgress.pending)} pending` : ''}
+                            {fundamentalsProgress.error > 0
+                              ? ` · ${fmt(fundamentalsProgress.error)} errors` : ''}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+
                     {runningJob === 'full_fundamentals_sync' && (
                       <View style={s.progressRow}>
                         <Text style={s.progressText}>{liveProgress || JOB_DESCRIPTIONS['full_fundamentals_sync'] || 'Downloading…'}</Text>
@@ -1310,6 +1395,13 @@ const s = StyleSheet.create({
   fullSyncResult: { fontSize: 10, color: '#10B981', marginTop: 3 },
   fullSyncBtn: { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6, alignItems: 'center', minWidth: 70 },
   fullSyncBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+
+  fundProgressWrap: { marginTop: 8, marginBottom: 4 },
+  fundProgressBarBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 4 },
+  fundProgressBarFill: { height: 6, borderRadius: 3, backgroundColor: '#F59E0B' },
+  fundProgressCountRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  fundProgressPct: { fontSize: 12, fontWeight: '700', color: '#F59E0B', minWidth: 36 },
+  fundProgressCounts: { fontSize: 10, color: COLORS.textMuted, flex: 1 },
 
   syncCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
   syncTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, marginBottom: 10 },

@@ -19,13 +19,14 @@ Both jobs:
 
 import os
 import time
+import uuid
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 
 import httpx
-from pymongo import UpdateOne
+from pymongo import UpdateOne, ReturnDocument
 
 logger = logging.getLogger("richstox.full_sync")
 
@@ -38,6 +39,19 @@ MAX_RUNTIME_SECONDS = 5 * 3600   # 5 hours safety stop
 MAX_ERROR_RATE_PCT = 5
 BULK_CHUNK = 5000
 PROGRESS_INTERVAL = 200
+
+# Tickers stuck in "processing" longer than this are treated as zombie locks
+# and re-claimed by the next available worker.
+ZOMBIE_THRESHOLD_MINUTES = 15
+
+# The set of tracked_tickers that belong to the fundamentals sync queue:
+# every ticker that is not yet complete OR is flagged for refresh.
+_QUEUED_FILTER = {
+    "$or": [
+        {"fundamentals_complete": {"$ne": True}},
+        {"needs_fundamentals_refresh": True},
+    ]
+}
 
 
 # ---------------------------------------------------------------------------
@@ -327,11 +341,68 @@ async def run_full_price_history_sync(db, ignore_kill_switch: bool = False) -> D
 
 
 # ---------------------------------------------------------------------------
-# Job B: Full Fundamentals
+# Job B: Full Fundamentals  (run_id state-machine, atomic claiming)
 # ---------------------------------------------------------------------------
 
+OPS_CONFIG_RUN_KEY = "active_fundamentals_run"
+
+
+def _build_claim_filter(current_run_id: str) -> Dict[str, Any]:
+    """
+    Build the MongoDB filter used to atomically claim the next ticker for
+    a specific run.  The run_id scope replaces the old _QUEUED_FILTER guard —
+    only tickers tagged for this run are eligible.
+
+    Claimable status values:
+      - null / missing / "pending" / "error"  → ready to process
+      - "processing" AND started_at < stale_cutoff  → zombie recovery
+    """
+    stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=ZOMBIE_THRESHOLD_MINUTES)
+    return {
+        "$and": [
+            {"fundamentals_run_id": current_run_id},
+            {
+                "$or": [
+                    {"fundamentals_status": {"$in": [None, "pending", "error"]}},
+                    {
+                        "fundamentals_status": "processing",
+                        "fundamentals_processing_started_at": {"$lt": stale_cutoff},
+                    },
+                ]
+            },
+        ]
+    }
+
+
+async def _claim_next_ticker(db, current_run_id: str) -> Optional[str]:
+    """
+    Atomically claim the next available ticker from the current run's queue.
+    Returns the ticker string, or None when the queue is exhausted.
+    The `fundamentals_processing_started_at` timestamp is always overwritten
+    with UTC now — this resets the zombie clock for re-claimed stuck tickers.
+    """
+    now = datetime.now(timezone.utc)
+    doc = await db.tracked_tickers.find_one_and_update(
+        _build_claim_filter(current_run_id),
+        {"$set": {
+            "fundamentals_status": "processing",
+            "fundamentals_processing_started_at": now,
+        }},
+        projection={"ticker": 1},
+        return_document=ReturnDocument.AFTER,
+    )
+    return doc["ticker"] if doc else None
+
+
 async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[str, Any]:
-    """Fetch + store complete fundamentals for one ticker."""
+    """
+    Fetch, parse, and persist complete fundamentals for one ticker.
+    The ticker must already be claimed (status == "processing") before calling this.
+    On success  → fundamentals_status = "complete",  fundamentals_complete = True.
+    On failure  → fundamentals_status = "error".
+    fundamentals_run_id is intentionally NOT cleared so the progress endpoint
+    can keep counting this ticker in the run's aggregation.
+    """
     ticker_us = ticker if ticker.endswith(".US") else f"{ticker}.US"
 
     url = f"{EODHD_BASE_URL}/fundamentals/{ticker_us}"
@@ -347,9 +418,12 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
     )
 
     if not ok or not data:
+        await db.tracked_tickers.update_one(
+            {"ticker": ticker_us},
+            {"$set": {"fundamentals_status": "error"}},
+        )
         return {"ticker": ticker_us, "success": False, "rate_limited": http_status == 429}
 
-    # Parse + store using existing service
     from fundamentals_service import (
         parse_company_fundamentals,
         parse_financials,
@@ -395,17 +469,21 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
             {"ticker": ticker_us}, {"$set": insider_doc}, upsert=True
         )
 
+    # Strict non-empty string check with .strip() for classification
+    sector = (company_doc.get("sector") or "").strip()
+    industry = (company_doc.get("industry") or "").strip()
+    has_classification = bool(sector and industry)
+
     await db.tracked_tickers.update_one(
         {"ticker": ticker_us},
         {"$set": {
             "fundamentals_complete": True,
-            "fundamentals_at": now,
-            "fundamentals_status": "complete",
             "needs_fundamentals_refresh": False,
+            "fundamentals_status": "complete",
             "fundamentals_updated_at": now,
-            "sector": company_doc.get("sector"),
-            "industry": company_doc.get("industry"),
-            "has_classification": bool(company_doc.get("sector") and company_doc.get("industry")),
+            "sector": sector or None,
+            "industry": industry or None,
+            "has_classification": has_classification,
         }},
     )
 
@@ -414,9 +492,20 @@ async def _process_fundamentals_ticker(db, ticker: str, job_name: str) -> Dict[s
 
 async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
-    Download complete fundamentals for all visible tickers.
-    Prioritizes: needs_fundamentals_refresh=true, then fundamentals_complete=false.
-    Runs cleanup first.
+    Download complete fundamentals for all queued tickers.
+
+    Queue definition: tracked_tickers where
+      fundamentals_complete != true  OR  needs_fundamentals_refresh == true
+
+    Run-ID architecture:
+      1. Concurrency guard — abort if another non-stale run is already active.
+      2. Stamp all queued tickers with fundamentals_run_id = current_run_id.
+         Only set fundamentals_status = "pending" where it is currently null/missing
+         (preserves existing "error" history for diagnostics).
+      3. Workers atomically claim tickers belonging to this run_id only.
+      4. Progress endpoint aggregates on fundamentals_run_id — total_queued is
+         stable because tagged tickers never leave the run's aggregation set.
+      5. On job end (success / cancel / error) clear ops_config run marker.
     """
     job_name = "full_fundamentals_sync"
     started_at = datetime.now(timezone.utc)
@@ -425,98 +514,149 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         return {"job_name": job_name, "status": "skipped", "reason": "no_api_key",
                 "started_at": started_at.isoformat()}
 
-    # 1. Cleanup
-    cleanup = await cleanup_invisible_ticker_data(db)
+    # ── 1. Concurrency guard ─────────────────────────────────────────────────
+    existing_run = await db.ops_config.find_one({"key": OPS_CONFIG_RUN_KEY})
+    if existing_run:
+        age_seconds = (started_at - existing_run["started_at"].replace(tzinfo=timezone.utc)
+                       if existing_run["started_at"].tzinfo is None
+                       else (started_at - existing_run["started_at"]).total_seconds())
+        if not isinstance(age_seconds, float):
+            age_seconds = age_seconds.total_seconds() if hasattr(age_seconds, 'total_seconds') else MAX_RUNTIME_SECONDS
+        if age_seconds < MAX_RUNTIME_SECONDS:
+            logger.warning(f"{job_name}: another run is active ({existing_run['run_id']}), aborting")
+            return {
+                "job_name": job_name, "status": "skipped",
+                "reason": "another_run_active",
+                "active_run_id": existing_run["run_id"],
+                "started_at": started_at.isoformat(),
+            }
 
-    # 2. Tickers needing fundamentals (refresh first, then missing)
-    refresh_docs = await db.tracked_tickers.find(
-        {"is_visible": True, "needs_fundamentals_refresh": True},
-        {"ticker": 1, "_id": 0},
-    ).to_list(None)
-    missing_docs = await db.tracked_tickers.find(
-        {"is_visible": True, "fundamentals_complete": {"$ne": True},
-         "needs_fundamentals_refresh": {"$ne": True}},
-        {"ticker": 1, "_id": 0},
-    ).to_list(None)
-
-    refresh_tickers = [d["ticker"] for d in refresh_docs]
-    missing_tickers = [d["ticker"] for d in missing_docs]
-    tickers = refresh_tickers + missing_tickers
-    total = len(tickers)
-    logger.info(f"{job_name}: {total} tickers ({len(refresh_tickers)} refresh + {len(missing_tickers)} missing)")
-
-    if not tickers:
+    # ── 2. Early-exit check ──────────────────────────────────────────────────
+    total_to_process = await db.tracked_tickers.count_documents(_QUEUED_FILTER)
+    if total_to_process == 0:
+        logger.info(f"{job_name}: queue is empty, nothing to do")
         return {
             "job_name": job_name, "status": "completed",
             "total": 0, "success": 0, "failed": 0,
-            "cleanup": cleanup, "started_at": started_at.isoformat(),
+            "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    # 3. Parallel download — start at 10, scale to MAX_CONCURRENCY
+    # ── 3. Generate run_id and register it in ops_config ────────────────────
+    current_run_id = (
+        f"frun_{started_at.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    )
+    await db.ops_config.replace_one(
+        {"key": OPS_CONFIG_RUN_KEY},
+        {
+            "key": OPS_CONFIG_RUN_KEY,
+            "run_id": current_run_id,
+            "started_at": started_at,
+        },
+        upsert=True,
+    )
+    logger.info(f"{job_name}: started run_id={current_run_id}, queue={total_to_process}")
+
+    # ── 4. Cleanup invisible tickers ────────────────────────────────────────
+    cleanup = await cleanup_invisible_ticker_data(db)
+
+    # ── 5. Tag all queued tickers with current_run_id ────────────────────────
+    # Op A: stamp every queued ticker with the run_id (no status change).
+    await db.tracked_tickers.update_many(
+        _QUEUED_FILTER,
+        {"$set": {"fundamentals_run_id": current_run_id}},
+    )
+    # Op B: for tickers with no status yet (null/missing), initialise to "pending".
+    #       Existing "error", "processing", "complete" values are deliberately preserved.
+    await db.tracked_tickers.update_many(
+        {"$and": [_QUEUED_FILTER, {"fundamentals_status": None}]},
+        {"$set": {"fundamentals_status": "pending"}},
+    )
+
+    # ── 6. Shared counters & concurrency primitives ──────────────────────────
+    counters: Dict[str, int] = {
+        "success": 0, "failed": 0, "rate_limited": 0, "processed": 0
+    }
+    job_start = time.monotonic()
+    cancelled = False
+
     semaphore = asyncio.Semaphore(START_CONCURRENCY)
     concurrency_holder = [START_CONCURRENCY]
-    success_count = 0
-    failed_count = 0
-    rate_limited_count = 0
-    processed = 0
-    job_start = time.monotonic()
 
-    async def worker(ticker: str) -> Dict:
-        async with semaphore:
-            return await _process_fundamentals_ticker(db, ticker, job_name)
+    # ── 7. Drain-worker definition ───────────────────────────────────────────
+    async def drain_worker() -> None:
+        nonlocal cancelled
+        while True:
+            if cancelled:
+                return
 
-    tasks = [asyncio.create_task(worker(t)) for t in tickers]
+            if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
+                logger.error(f"{job_name}: max runtime exceeded, stopping")
+                cancelled = True
+                return
 
-    for i, coro in enumerate(asyncio.as_completed(tasks)):
-        if time.monotonic() - job_start > MAX_RUNTIME_SECONDS:
-            logger.error(f"{job_name}: max runtime exceeded, stopping")
-            for t in tasks:
-                t.cancel()
-            break
+            if counters["processed"] > 0 and counters["processed"] % 50 == 0:
+                if await _is_cancelled(db, job_name):
+                    logger.info(f"{job_name}: cancelled by user")
+                    cancelled = True
+                    return
 
-        if i % 50 == 0 and await _is_cancelled(db, job_name):
-            logger.info(f"{job_name}: cancelled by user")
-            for t in tasks:
-                t.cancel()
-            break
+            async with semaphore:
+                ticker = await _claim_next_ticker(db, current_run_id)
+                if ticker is None:
+                    return  # queue for this run is exhausted
 
-        result = await coro
-        processed += 1
-        if result.get("rate_limited"):
-            rate_limited_count += 1
-            await asyncio.sleep(10)
-            concurrency_holder[0] = max(5, concurrency_holder[0] // 2)
-            semaphore._value = concurrency_holder[0]
-        elif result.get("success"):
-            success_count += 1
-            if success_count % 50 == 0 and concurrency_holder[0] < MAX_CONCURRENCY:
-                concurrency_holder[0] = min(MAX_CONCURRENCY, concurrency_holder[0] + 2)
+                result = await _process_fundamentals_ticker(db, ticker, job_name)
+
+            counters["processed"] += 1
+
+            if result.get("rate_limited"):
+                counters["rate_limited"] += 1
+                await asyncio.sleep(10)
+                concurrency_holder[0] = max(5, concurrency_holder[0] // 2)
                 semaphore._value = concurrency_holder[0]
-        else:
-            failed_count += 1
+            elif result.get("success"):
+                counters["success"] += 1
+                if counters["success"] % 50 == 0 and concurrency_holder[0] < MAX_CONCURRENCY:
+                    concurrency_holder[0] = min(MAX_CONCURRENCY, concurrency_holder[0] + 2)
+                    semaphore._value = concurrency_holder[0]
+            else:
+                counters["failed"] += 1
 
-        if processed % PROGRESS_INTERVAL == 0:
-            logger.info(f"{job_name}: {processed}/{total} done, "
-                        f"ok={success_count} fail={failed_count} concurrency={concurrency_holder[0]}")
+            if counters["processed"] % PROGRESS_INTERVAL == 0:
+                logger.info(
+                    f"{job_name}: {counters['processed']} done, "
+                    f"ok={counters['success']} fail={counters['failed']} "
+                    f"concurrency={concurrency_holder[0]}"
+                )
 
-        if processed > 50 and (failed_count / processed * 100) > MAX_ERROR_RATE_PCT:
-            logger.error(f"{job_name}: error rate exceeded, stopping")
-            for t in tasks:
-                t.cancel()
-            break
+            if counters["processed"] > 50:
+                err_pct = counters["failed"] / counters["processed"] * 100
+                if err_pct > MAX_ERROR_RATE_PCT:
+                    logger.error(f"{job_name}: error rate {err_pct:.1f}% exceeded, stopping")
+                    cancelled = True
+                    return
 
+    # ── 8. Run workers, always clean up ops_config in finally ────────────────
+    try:
+        await asyncio.gather(*[drain_worker() for _ in range(START_CONCURRENCY)])
+    finally:
+        await db.ops_config.delete_one({"key": OPS_CONFIG_RUN_KEY})
+        logger.info(f"{job_name}: cleared active run marker (run_id={current_run_id})")
+
+    # ── 9. Persist summary ───────────────────────────────────────────────────
     finished_at = datetime.now(timezone.utc)
     summary = {
         "job_name": job_name,
+        "run_id": current_run_id,
         "status": "completed",
-        "total": total,
-        "processed": processed,
-        "success": success_count,
-        "failed": failed_count,
-        "rate_limited": rate_limited_count,
+        "total": total_to_process,
+        "processed": counters["processed"],
+        "success": counters["success"],
+        "failed": counters["failed"],
+        "rate_limited": counters["rate_limited"],
         "cleanup": cleanup,
-        "credits_used": success_count * 10,
+        "credits_used": counters["success"] * 10,
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
         "duration_seconds": (finished_at - started_at).total_seconds(),
@@ -530,5 +670,9 @@ async def run_full_fundamentals_sync(db, ignore_kill_switch: bool = False) -> Di
         "details": summary,
     })
 
-    logger.info(f"{job_name} done: {success_count}/{total} ok, credits={success_count * 10}")
+    logger.info(
+        f"{job_name} done: run_id={current_run_id}, "
+        f"{counters['success']}/{total_to_process} ok, "
+        f"credits={counters['success'] * 10}"
+    )
     return summary

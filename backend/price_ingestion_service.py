@@ -931,147 +931,141 @@ async def fetch_bulk_prices_for_date(date: str) -> List[dict]:
         return []
 
 
-async def run_daily_bulk_catchup(db) -> Dict[str, Any]:
+async def run_daily_bulk_catchup(db, job_name: str = "price_sync") -> Dict[str, Any]:
     """
-    Daily bulk price catch-up job with improved gap detection.
-    
-    Logic:
-    1. Detect gaps using coverage-based analysis (configurable threshold)
-    2. For each date with < threshold coverage:
-       - Call EODHD bulk API for that date
-       - Upsert all prices for visible tickers using bulk_write
-    3. Idempotent - can run multiple times safely
-    
-    GUARDRAIL: Uses bulk_write for performance (batches of 1000).
-    GUARDRAIL: Thresholds from ops_config collection.
-    
-    Returns:
-        Summary with gap_analysis, dates_processed, records_upserted, api_calls
+    Fetch the EODHD latest-day bulk file once and upsert into stock_prices.
+
+    Cancel-flag (cancel_job_{job_name} in ops_config) is checked at two points:
+      a) Immediately after the EODHD API call returns.
+      b) Before each bulk_write batch, so an in-flight write is never interrupted.
+    On cancel: flag is deleted, job returns cleanly with status="cancelled".
     """
     from pymongo import UpdateOne
-    
-    BULK_WRITE_BATCH_SIZE = 1000  # Guardrail: bulk_write in batches
-    
-    logger.info("[BULK CATCHUP] Starting daily bulk price catch-up with gap detection...")
-    
-    # Step 1: Get config
-    config = await get_gap_detection_config(db)
-    logger.info(f"[BULK CATCHUP] Config loaded: {config}")
-    
-    # Step 2: Detect gaps
-    gap_analysis = await detect_price_gaps(db)
-    
-    dates_to_backfill = gap_analysis["dates_with_gaps"]
-    
-    if not dates_to_backfill:
-        logger.info("[BULK CATCHUP] No gaps detected - price coverage is healthy")
+
+    BULK_WRITE_BATCH_SIZE = 1000
+    cancel_key = f"cancel_job_{job_name}"
+
+    async def _cancelled() -> bool:
+        doc = await db.ops_config.find_one({"key": cancel_key})
+        if doc:
+            await db.ops_config.delete_one({"key": cancel_key})
+            logger.info("[BULK CATCHUP] Cancel flag consumed, stopping cleanly")
+            return True
+        return False
+
+    logger.info("[BULK CATCHUP] Fetching latest-day bulk prices from EODHD...")
+
+    # Single API call — no date param = EODHD returns the latest available trading day
+    bulk_data = await fetch_bulk_eod_latest("US")
+
+    # ── Cancel check 2a: immediately after the API call returns ──────────────
+    if await _cancelled():
         return {
-            "status": "success",
-            "message": "No gaps detected",
-            "config": config,
-            "gap_analysis": {
-                "dates_checked": gap_analysis["dates_checked"],
-                "visible_tickers": gap_analysis["visible_ticker_count"],
-                "coverage_threshold": config["coverage_threshold"]
-            },
+            "status": "cancelled",
+            "message": "Cancelled after API fetch, before any writes",
             "dates_processed": 0,
             "records_upserted": 0,
-            "api_calls": 0
+            "api_calls": 1,
+            "bulk_writes": 0,
         }
-    
-    logger.info(f"[BULK CATCHUP] Found {len(dates_to_backfill)} dates with gaps: {dates_to_backfill}")
-    
-    # Step 3: Get visible tickers for filtering
-    visible_tickers = set()
-    cursor = db.tracked_tickers.find(
-        {"is_whitelisted": True},
-        {"_id": 0, "ticker": 1}
-    )
-    async for doc in cursor:
+
+    if not bulk_data:
+        logger.warning("[BULK CATCHUP] No data returned from EODHD (possible holiday or API issue)")
+        return {
+            "status": "success",
+            "message": "No data returned from EODHD",
+            "dates_processed": 0,
+            "records_upserted": 0,
+            "api_calls": 1,
+            "bulk_writes": 0,
+        }
+
+    # Load seeded tickers for filtering (use has_price_data or is_whitelisted per universe)
+    visible_tickers: set = set()
+    async for doc in db.tracked_tickers.find(
+        {"is_whitelisted": True}, {"_id": 0, "ticker": 1}
+    ):
         visible_tickers.add(doc["ticker"])
-    
-    logger.info(f"[BULK CATCHUP] Tracking {len(visible_tickers)} visible tickers")
-    
-    # Step 4: Backfill each gap date
-    result = {
-        "status": "success",
-        "config": config,
-        "gap_analysis": {
-            "dates_checked": gap_analysis["dates_checked"],
-            "visible_tickers": gap_analysis["visible_ticker_count"],
-            "coverage_threshold": config["coverage_threshold"],
-            "fully_missing_dates": gap_analysis["fully_missing_dates"],
-            "partial_coverage_count": len(gap_analysis["partial_coverage_dates"])
-        },
-        "dates_processed": 0,
-        "dates": [],
-        "records_upserted": 0,
-        "api_calls": 0,
-        "bulk_writes": 0
-    }
-    
-    for date in dates_to_backfill:
-        logger.info(f"[BULK CATCHUP] Fetching bulk data for {date}...")
-        
-        # Fetch bulk data for this date
-        bulk_data = await fetch_bulk_prices_for_date(date)
-        result["api_calls"] += 1
-        
-        if not bulk_data:
-            logger.warning(f"[BULK CATCHUP] No data returned for {date} (may be holiday)")
-            result["dates"].append({"date": date, "records": 0, "note": "no_data_returned"})
+
+    logger.info(f"[BULK CATCHUP] {len(bulk_data)} raw records, {len(visible_tickers)} tracked tickers")
+
+    # Build bulk operations — filter to tracked tickers only
+    bulk_operations = []
+    date_seen: Optional[str] = None
+
+    for record in bulk_data:
+        code = record.get("code", "")
+        ticker = f"{code}.US" if code else None
+        if not ticker or ticker not in visible_tickers:
             continue
-        
-        # Filter to visible tickers and prepare bulk operations
-        bulk_operations = []
-        
-        for record in bulk_data:
-            code = record.get("code", "")
-            ticker = f"{code}.US" if code else None
-            
-            if not ticker or ticker not in visible_tickers:
-                continue
-            
-            price_doc = {
-                "ticker": ticker,
-                "date": date,
-                "open": record.get("open"),
-                "high": record.get("high"),
-                "low": record.get("low"),
-                "close": record.get("close"),
-                "adjusted_close": record.get("adjusted_close"),
-                "volume": record.get("volume")
-            }
-            
-            bulk_operations.append(
-                UpdateOne(
-                    {"ticker": ticker, "date": date},
-                    {"$set": price_doc},
-                    upsert=True
-                )
+        date = record.get("date")
+        if date:
+            date_seen = date
+        bulk_operations.append(
+            UpdateOne(
+                {"ticker": ticker, "date": date},
+                {"$set": {
+                    "ticker": ticker,
+                    "date": date,
+                    "open": record.get("open"),
+                    "high": record.get("high"),
+                    "low": record.get("low"),
+                    "close": record.get("close"),
+                    "adjusted_close": record.get("adjusted_close"),
+                    "volume": record.get("volume"),
+                }},
+                upsert=True,
             )
-        
-        # Execute bulk_write in batches (GUARDRAIL)
-        records_for_date = 0
-        
-        for i in range(0, len(bulk_operations), BULK_WRITE_BATCH_SIZE):
-            batch = bulk_operations[i:i + BULK_WRITE_BATCH_SIZE]
-            if batch:
-                write_result = await db.stock_prices.bulk_write(batch, ordered=False)
-                records_for_date += write_result.upserted_count + write_result.modified_count
-                result["bulk_writes"] += 1
-        
-        result["dates_processed"] += 1
-        result["dates"].append({"date": date, "records": records_for_date})
-        result["records_upserted"] += records_for_date
-        
-        logger.info(f"[BULK CATCHUP] {date}: {records_for_date} records upserted via bulk_write")
-        
-        # Rate limit between API calls
-        await asyncio.sleep(0.5)
-    
-    logger.info(f"[BULK CATCHUP] Complete: {result['dates_processed']} dates, "
-               f"{result['records_upserted']} records, {result['api_calls']} API calls, "
-               f"{result['bulk_writes']} bulk_write batches")
-    
-    return result
+        )
+
+    if not bulk_operations:
+        logger.info("[BULK CATCHUP] No matching tickers in bulk response")
+        return {
+            "status": "success",
+            "message": "No tracked tickers matched in bulk response",
+            "date": date_seen,
+            "dates_processed": 0,
+            "records_upserted": 0,
+            "api_calls": 1,
+            "bulk_writes": 0,
+        }
+
+    # Execute in batches — cancel check before each batch (soft stop)
+    records_upserted = 0
+    bulk_writes = 0
+
+    for i in range(0, len(bulk_operations), BULK_WRITE_BATCH_SIZE):
+        # ── Cancel check 2b: before each bulk_write batch ────────────────────
+        if await _cancelled():
+            logger.info(
+                f"[BULK CATCHUP] Cancelled before batch {i // BULK_WRITE_BATCH_SIZE + 1} "
+                f"({records_upserted} records already written)"
+            )
+            return {
+                "status": "cancelled",
+                "message": f"Cancelled during write phase after {records_upserted} records",
+                "date": date_seen,
+                "dates_processed": 1 if records_upserted > 0 else 0,
+                "records_upserted": records_upserted,
+                "api_calls": 1,
+                "bulk_writes": bulk_writes,
+            }
+
+        batch = bulk_operations[i:i + BULK_WRITE_BATCH_SIZE]
+        write_result = await db.stock_prices.bulk_write(batch, ordered=False)
+        records_upserted += write_result.upserted_count + write_result.modified_count
+        bulk_writes += 1
+
+    logger.info(
+        f"[BULK CATCHUP] Complete: date={date_seen}, "
+        f"{records_upserted} records, {bulk_writes} bulk_write batches"
+    )
+
+    return {
+        "status": "success",
+        "date": date_seen,
+        "dates_processed": 1,
+        "records_upserted": records_upserted,
+        "api_calls": 1,
+        "bulk_writes": bulk_writes,
+    }
