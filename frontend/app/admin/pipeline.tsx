@@ -30,6 +30,8 @@ interface JobRun {
 interface Step2SubStep {
   mock_mode?: boolean;
   api_endpoint?: string;
+  api_endpoints_all?: string[];
+  dates_checked?: string[];
   raw_count?: number;
   universe_count?: number;
   flagged_count?: number;
@@ -729,6 +731,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {splitDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date=${eventDetectors.today || 'TODAY'}`}
                     </Text>
+                    {(splitDetector.dates_checked?.length ?? 0) > 1 && (
+                      <Text style={s.catchupBadge}>↩ Catchup: {splitDetector.dates_checked?.length} days ({splitDetector.dates_checked?.[0]} → {splitDetector.dates_checked?.slice(-1)[0]})</Text>
+                    )}
                     <View style={s.substepStatsRow}>
                       <View style={s.substepStat}>
                         <Text style={s.substepStatNum}>{fmt(safeCount(splitDetector.raw_count))}</Text>
@@ -767,6 +772,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {dividendDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date=${eventDetectors.today || 'TODAY'}`}
                     </Text>
+                    {(dividendDetector.dates_checked?.length ?? 0) > 1 && (
+                      <Text style={s.catchupBadge}>↩ Catchup: {dividendDetector.dates_checked?.length} days ({dividendDetector.dates_checked?.[0]} → {dividendDetector.dates_checked?.slice(-1)[0]})</Text>
+                    )}
                     <View style={s.substepStatsRow}>
                       <View style={s.substepStat}>
                         <Text style={s.substepStatNum}>{fmt(safeCount(dividendDetector.raw_count))}</Text>
@@ -1140,6 +1148,7 @@ const s = StyleSheet.create({
   substepValue: { fontSize: 10, color: COLORS.textMuted },
   mockBadge: { backgroundColor: '#F59E0B33', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 },
   mockBadgeText: { fontSize: 8, fontWeight: '700', color: '#F59E0B' },
+  catchupBadge: { fontSize: 9, color: '#6366F1', marginBottom: 4, fontStyle: 'italic' },
 
   syncCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
   syncTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, marginBottom: 10 },

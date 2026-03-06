@@ -422,23 +422,24 @@ async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any
     }
 
 
-async def _detect_earnings_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
+async def _detect_earnings_candidates_eodhd(db, today_str: str, from_date: Optional[str] = None) -> Dict[str, Any]:
     """
-    Step 2.6: Fetch today's earnings reports from EODHD earnings calendar.
-    API: GET /api/calendar/earnings?from=TODAY&to=TODAY
-    Note: today only — no forward window in state machine (UI-only lookahead is read-only).
-    Credits: 1
+    Step 2.6: Fetch earnings from EODHD earnings calendar.
+    API: GET /api/calendar/earnings?from=FROM&to=TODAY
+    Supports catchup: from_date can be earlier than today to cover missed days.
+    Credits: 1 per call regardless of date range.
     Flags set:
       needs_fundamentals_refresh = true
       last_earnings_detected = today
     """
     from credit_log_service import log_api_credit
 
+    start = from_date or today_str
     endpoint = "calendar/earnings"
-    api_url = f"{EODHD_BASE_URL}/{endpoint}?from={today_str}&to={today_str}"
+    api_url = f"{EODHD_BASE_URL}/{endpoint}?from={start}&to={today_str}"
 
     data, http_status, duration_ms, call_status = await _fetch_eodhd_bulk(
-        endpoint, {"from": today_str, "to": today_str}
+        endpoint, {"from": start, "to": today_str}
     )
 
     await log_api_credit(
@@ -510,12 +511,55 @@ async def _detect_earnings_candidates_eodhd(db, today_str: str) -> Dict[str, Any
     }
 
 
+async def _get_missed_trading_dates(db, today_str: str, max_lookback_days: int = 14) -> List[str]:
+    """
+    Return list of dates (YYYY-MM-DD) that Step 2 detectors may have missed.
+    Looks at the last successful price_sync run and fills in any gap.
+    Excludes weekends. Max lookback: 14 days to avoid excessive API usage.
+    """
+    last_run = await db.ops_job_runs.find_one(
+        {"job_name": "price_sync", "status": {"$in": ["success", "completed"]}},
+        {"started_at": 1},
+        sort=[("started_at", -1)],
+    )
+
+    today = datetime.strptime(today_str, "%Y-%m-%d").date()
+
+    if last_run and last_run.get("started_at"):
+        last_dt = last_run["started_at"]
+        if hasattr(last_dt, "tzinfo") and last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=timezone.utc)
+        last_date = last_dt.astimezone(PRAGUE_TZ).date()
+    else:
+        # No previous run — only check today
+        last_date = today
+
+    # Generate all dates between last_date (exclusive) and today (inclusive)
+    missed = []
+    current = last_date + timedelta(days=1)
+    while current <= today:
+        # Skip weekends (markets closed)
+        if current.weekday() < 5:
+            missed.append(current.strftime("%Y-%m-%d"))
+        current += timedelta(days=1)
+
+    # Cap at max_lookback_days to avoid runaway API usage
+    if len(missed) > max_lookback_days:
+        logger.warning(f"Step 2 catchup: {len(missed)} missed days, capping at {max_lookback_days}")
+        missed = missed[-max_lookback_days:]
+
+    return missed
+
+
 async def run_step2_event_detectors(db) -> Dict[str, Any]:
     """
     Execute Step 2 sub-steps with REAL EODHD API calls.
     2.2: bulk splits → needs_price_redownload + needs_fundamentals_refresh
     2.4: bulk dividends → needs_fundamentals_refresh
-    2.6: earnings calendar (today only) → needs_fundamentals_refresh
+    2.6: earnings calendar (full missed range) → needs_fundamentals_refresh
+
+    GAP DETECTION: If Step 2 missed multiple days, iterates through all missed
+    trading dates for splits and dividends. Earnings uses a date range call.
 
     STRICT RULE: This step ONLY sets flags. No data deletion. No price flushing.
     The Backfill job handles DELETE → FETCH → INSERT atomically.
@@ -523,9 +567,66 @@ async def run_step2_event_detectors(db) -> Dict[str, Any]:
     today_str = datetime.now(PRAGUE_TZ).strftime("%Y-%m-%d")
     now = datetime.now(timezone.utc)
 
-    split = await _detect_split_candidates_eodhd(db, today_str)
-    dividend = await _detect_dividend_candidates_eodhd(db, today_str)
-    earnings = await _detect_earnings_candidates_eodhd(db, today_str)
+    # Determine all missed trading dates since last successful run
+    missed_dates = await _get_missed_trading_dates(db, today_str)
+    # Always include today; missed_dates may already include it
+    if today_str not in missed_dates:
+        missed_dates.append(today_str)
+
+    logger.info(f"Step 2 detectors: processing {len(missed_dates)} date(s): {missed_dates}")
+
+    # --- 2.2 SPLIT DETECTOR (per-day calls, merge results) ---
+    split_raw_total = 0
+    split_all_in_universe: List[str] = []
+    split_flagged_total = 0
+    split_endpoints: List[str] = []
+    for date_str in missed_dates:
+        s = await _detect_split_candidates_eodhd(db, date_str)
+        split_raw_total += s.get("raw_count", 0)
+        split_all_in_universe.extend(s.get("tickers", []))
+        split_flagged_total += s.get("flagged_count", 0)
+        if s.get("api_endpoint"):
+            split_endpoints.append(s["api_endpoint"])
+    split_all_in_universe = list(dict.fromkeys(split_all_in_universe))  # dedup
+
+    # --- 2.4 DIVIDEND DETECTOR (per-day calls, merge results) ---
+    div_raw_total = 0
+    div_all_in_universe: List[str] = []
+    div_flagged_total = 0
+    div_endpoints: List[str] = []
+    for date_str in missed_dates:
+        d = await _detect_dividend_candidates_eodhd(db, date_str)
+        div_raw_total += d.get("raw_count", 0)
+        div_all_in_universe.extend(d.get("tickers", []))
+        div_flagged_total += d.get("flagged_count", 0)
+        if d.get("api_endpoint"):
+            div_endpoints.append(d["api_endpoint"])
+    div_all_in_universe = list(dict.fromkeys(div_all_in_universe))
+
+    # --- 2.6 EARNINGS DETECTOR (single range call: from=first_missed to=today) ---
+    from_date = missed_dates[0] if missed_dates else today_str
+    earnings = await _detect_earnings_candidates_eodhd(db, today_str, from_date=from_date)
+
+    split = {
+        "mock_mode": not bool(EODHD_API_KEY),
+        "api_endpoint": split_endpoints[0] if split_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=splits&date={today_str}",
+        "api_endpoints_all": split_endpoints,
+        "dates_checked": missed_dates,
+        "raw_count": split_raw_total,
+        "universe_count": len(split_all_in_universe),
+        "flagged_count": split_flagged_total,
+        "tickers": split_all_in_universe[:50],
+    }
+    dividend = {
+        "mock_mode": not bool(EODHD_API_KEY),
+        "api_endpoint": div_endpoints[0] if div_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=dividends&date={today_str}",
+        "api_endpoints_all": div_endpoints,
+        "dates_checked": missed_dates,
+        "raw_count": div_raw_total,
+        "universe_count": len(div_all_in_universe),
+        "flagged_count": div_flagged_total,
+        "tickers": div_all_in_universe[:50],
+    }
 
     # Still enqueue to fundamentals_events collection for Step 3 (backwards compat)
     all_flagged: List[str] = []
