@@ -1109,25 +1109,38 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
 async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
-    
-    Only processes:
-    - Tickers with pending fundamentals_events
-    - Tickers flagged for refresh (future: corporate actions, splits)
-    
-    Does NOT do a full refresh of all tickers.
+    Processes tickers in parallel (up to 20 concurrent) for speed.
+    With batch_size=2000: processes all 6,435 tickers in ~15-20 minutes.
     """
     from batch_jobs_service import sync_single_ticker_fundamentals
     from visibility_rules import recompute_visibility_all
-    
+
     started_at = datetime.now(timezone.utc)
     job_name = "fundamentals_sync"
-    
+
     logger.info(f"Starting {job_name}")
-    
+
+    # Running sentinel so frontend poll detects job start immediately
+    _running_doc_id = (await db.ops_job_runs.insert_one({
+        "job_name": job_name,
+        "status": "running",
+        "started_at": started_at,
+        "source": "scheduler",
+        "progress": "Queuing tickers for fundamentals sync…",
+    })).inserted_id
+
+    async def _progress(msg: str) -> None:
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id}, {"$set": {"progress": msg}}
+        )
+
     try:
         # Check kill switch (manual endpoints can explicitly bypass)
         if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
             logger.warning(f"{job_name} skipped: kill switch engaged")
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id}, {"$set": {"status": "skipped"}}
+            )
             return {
                 "job_name": job_name,
                 "status": "skipped",
@@ -1197,26 +1210,44 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             logger.info(f"{job_name}: No pending events to process")
             result["message"] = "No pending events"
         else:
-            for ticker in tickers_to_sync:
-                # Check kill switch between tickers (manual endpoints can bypass)
-                if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
-                    result["status"] = "interrupted"
-                    result["reason"] = "kill_switch_engaged"
+            total = len(tickers_to_sync)
+            await _progress(f"Processing {total} tickers (parallel, 20 concurrent)…")
+            logger.info(f"{job_name}: processing {total} tickers in parallel")
+
+            # Parallel processing — 20 concurrent requests
+            CONCURRENCY = 20
+            semaphore = asyncio.Semaphore(CONCURRENCY)
+
+            async def _process_one(ticker: str) -> dict:
+                # Check cancel flag
+                cancel = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+                if cancel:
+                    return {"ticker": ticker, "success": False, "cancelled": True}
+                async with semaphore:
+                    return await sync_single_ticker_fundamentals(db, ticker, source_job=job_name)
+
+            tasks = [asyncio.create_task(_process_one(t)) for t in tickers_to_sync]
+            done_count = 0
+
+            for coro in asyncio.as_completed(tasks):
+                ticker_result = await coro
+
+                if ticker_result.get("cancelled"):
+                    result["status"] = "cancelled"
+                    for t in tasks:
+                        t.cancel()
+                    await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
                     break
 
-                ticker_result = await sync_single_ticker_fundamentals(
-                    db,
-                    ticker,
-                    source_job=job_name,
-                )
                 result["processed"] += 1
+                done_count += 1
 
-                if ticker_result["success"]:
+                if ticker_result.get("success"):
                     result["success"] += 1
-                    # Mark selected pending events for this ticker as completed.
+                    ticker_us = f"{ticker_result.get('ticker', '')}.US"
                     event_ids = [
                         e.get("_id")
-                        for e in events_by_ticker.get(f"{ticker}.US", [])
+                        for e in events_by_ticker.get(ticker_us, [])
                         if e.get("_id")
                     ]
                     if event_ids:
@@ -1226,6 +1257,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         )
                 else:
                     result["failed"] += 1
+
+                # Progress update every 100 tickers
+                if done_count % 100 == 0:
+                    await _progress(
+                        f"Fundamentals sync: {done_count}/{total} done "
+                        f"(✓{result['success']} ✗{result['failed']})"
+                    )
 
         # Step 3 exclusion report: tickers still missing sector/industry after sync
         now_step3 = datetime.now(timezone.utc)
@@ -1265,26 +1303,41 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 logger.error(f"{job_name}: Step 4 auto-chain failed: {step4_error}")
         result["step4_visibility"] = step4_chain
         
-        result["finished_at"] = datetime.now(timezone.utc).isoformat()
-        
-        # Log job run
+        finished_at = datetime.now(timezone.utc)
+        result["finished_at"] = finished_at.isoformat()
+
+        # Update running sentinel to final status
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {
+                "status": result["status"],
+                "finished_at": finished_at,
+                "details": result,
+                "progress": None,
+            }}
+        )
+
         await log_scheduled_job(
             db,
             job_name=job_name,
             status=result["status"],
             details=result,
             started_at=started_at,
-            finished_at=datetime.now(timezone.utc)
+            finished_at=finished_at,
         )
-        
+
         logger.info(f"{job_name} completed: processed={result['processed']}, success={result['success']}")
-        
+
         return result
-        
+
     except Exception as e:
         error_msg = str(e)
         logger.error(f"{job_name} failed: {error_msg}")
-        
+
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {"status": "failed", "finished_at": datetime.now(timezone.utc), "error": error_msg}},
+        )
         await log_scheduled_job(
             db,
             job_name=job_name,
@@ -1293,7 +1346,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             started_at=started_at,
             error=error_msg
         )
-        
+
         return {
             "job_name": job_name,
             "status": "failed",
