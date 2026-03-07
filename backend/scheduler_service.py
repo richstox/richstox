@@ -407,6 +407,9 @@ async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any
             {"ticker": {"$in": tickers_us}},
             {"$set": {
                 "needs_fundamentals_refresh": True,
+                "needs_price_redownload": True,
+                "price_history_complete": False,
+                "price_history_status": "pending",
                 "last_dividend_detected": today_str,
             }},
         )
