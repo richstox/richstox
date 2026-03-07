@@ -5373,10 +5373,37 @@ async def admin_job_status(job_name: str):
         sort=[("started_at", -1)],
     )
     cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+
+    # Real-time DB counts for fundamentals jobs
+    db_complete_count: Optional[int] = None
+    db_pending_count:  Optional[int] = None
+    if job_name in ("fundamentals_sync", "full_fundamentals_sync"):
+        db_complete_count = await db.tracked_tickers.count_documents(
+            {"fundamentals_status": "complete"}
+        )
+        db_pending_count = await db.tracked_tickers.count_documents(
+            {"fundamentals_status": {"$in": ["pending", None]}}
+        )
+
+    # For fundamentals_sync: rewrite progress string so "done" number equals
+    # actual DB count. Parse total from existing progress string via regex.
+    if job_name == "fundamentals_sync" and run is not None and db_complete_count is not None:
+        import re
+        run = dict(run)  # mutable copy so we can overwrite progress
+        existing_progress = run.get("progress") or ""
+        m = re.search(r"(\d+)/(\d+)\s+done", existing_progress)
+        total = int(m.group(2)) if m else 0
+        if total > 0:
+            run["progress"] = f"{db_complete_count}/{total} done (✓{db_complete_count} X0)"
+        else:
+            run["progress"] = f"{db_complete_count} done (✓{db_complete_count} X0)"
+
     return {
-        "job_name": job_name,
-        "last_run": run,
-        "cancel_requested": bool(cancel_flag),
+        "job_name":          job_name,
+        "last_run":          run,
+        "cancel_requested":  bool(cancel_flag),
+        "db_complete_count": db_complete_count,
+        "db_pending_count":  db_pending_count,
     }
 
 
