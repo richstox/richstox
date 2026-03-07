@@ -399,6 +399,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     try {
       const endpoint = jobName === 'universe_seed'
         ? `${API_URL}/api/admin/jobs/universe-seed`
+        : jobName === 'compute_visible_universe'
+        ? `${API_URL}/api/admin/job/recompute_visibility_all/run`
         : `${API_URL}/api/admin/scheduler/run/${jobName.replace(/_/g, '-')}`;
       const res = await authenticatedFetch(
         endpoint,
