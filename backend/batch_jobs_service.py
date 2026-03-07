@@ -103,6 +103,8 @@ async def sync_single_ticker_fundamentals(
         "has_financials": False,
         "has_earnings": False,
         "has_insider": False,
+        "no_financials_available": False,
+        "no_earnings_available":   False,
         "financials_count": 0,
         "earnings_count": 0,
         "error": None,
@@ -174,6 +176,18 @@ async def sync_single_ticker_fundamentals(
                 fin_bulk["error"] = str(fin_exc)
                 logger.error(f"company_financials bulk_write failed for {ticker_full}: {fin_exc}")
             result["fin_bulk_write"] = fin_bulk
+        else:
+            # parse_financials returned 0 rows — check whether provider actually
+            # has any periods or whether this is a legitimate no-data ticker.
+            raw_fin = data.get("Financials") or {}
+            provider_has_fin_periods = any(
+                isinstance((raw_fin.get(stmt) or {}).get(period), dict)
+                and bool((raw_fin[stmt])[period])
+                for stmt in ("Income_Statement", "Balance_Sheet", "Cash_Flow")
+                for period in ("yearly", "quarterly")
+                if isinstance(raw_fin.get(stmt), dict)
+            )
+            result["no_financials_available"] = not provider_has_fin_periods
 
         # 3. Earnings history → canonical collection, upsert not delete+insert
         earnings_rows = parse_earnings_history(ticker_full, data)
@@ -201,6 +215,10 @@ async def sync_single_ticker_fundamentals(
                 earn_bulk["error"] = str(earn_exc)
                 logger.error(f"company_earnings_history bulk_write failed for {ticker_full}: {earn_exc}")
             result["earn_bulk_write"] = earn_bulk
+        else:
+            # Same logic: check whether EODHD has any earnings history at all.
+            raw_earn = (data.get("Earnings") or {}).get("History") or {}
+            result["no_earnings_available"] = not bool(raw_earn)
 
         # 4. Insider activity (often empty — absence is normal)
         insider_doc = parse_insider_activity(ticker_full, data)
