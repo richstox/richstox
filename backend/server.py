@@ -6893,6 +6893,78 @@ async def admin_get_fundamentals_progress():
     }
 
 
+@api_router.get("/admin/pipeline/fundamentals-health")
+async def admin_fundamentals_health():
+    """
+    Read-only health check for all tickers with fundamentals_status == "complete".
+    Identifies how many are missing data due to the previous broken parser.
+
+    Cross-collection checks (missing_financials, missing_earnings) use
+    distinct() set-difference — efficient for ~3-4k tickers.
+    """
+    # ── 1. Baseline count ────────────────────────────────────────────────────
+    total_complete = await db.tracked_tickers.count_documents(
+        {"fundamentals_status": "complete"}
+    )
+
+    # ── 2. Missing shares_outstanding ────────────────────────────────────────
+    missing_shares = await db.tracked_tickers.count_documents({
+        "fundamentals_status": "complete",
+        "$or": [
+            {"shares_outstanding": None},
+            {"shares_outstanding": {"$exists": False}},
+        ],
+    })
+
+    # ── 3. Missing classification (sector OR industry null/empty) ─────────────
+    missing_classification = await db.tracked_tickers.count_documents({
+        "fundamentals_status": "complete",
+        "$or": [
+            {"sector":   None},
+            {"sector":   ""},
+            {"sector":   {"$exists": False}},
+            {"industry": None},
+            {"industry": ""},
+            {"industry": {"$exists": False}},
+        ],
+    })
+
+    # ── 4 & 5. Cross-collection checks ───────────────────────────────────────
+    # Fetch all complete tickers once, then diff against each collection.
+    complete_tickers: list = await db.tracked_tickers.distinct(
+        "ticker", {"fundamentals_status": "complete"}
+    )
+    complete_set = set(complete_tickers)
+
+    tickers_with_financials = set(
+        await db.company_financials.distinct(
+            "ticker", {"ticker": {"$in": complete_tickers}}
+        )
+    )
+    tickers_with_earnings = set(
+        await db.company_earnings_history.distinct(
+            "ticker", {"ticker": {"$in": complete_tickers}}
+        )
+    )
+
+    missing_financials = len(complete_set - tickers_with_financials)
+    missing_earnings   = len(complete_set - tickers_with_earnings)
+
+    # ── 6. Summary verdict ───────────────────────────────────────────────────
+    needs_reprocess = max(missing_shares, missing_financials, missing_earnings)
+
+    return {
+        "checked_at":             datetime.now(timezone.utc).isoformat(),
+        "total_complete":         total_complete,
+        "missing_shares":         missing_shares,
+        "missing_classification": missing_classification,
+        "missing_financials":     missing_financials,
+        "missing_earnings":       missing_earnings,
+        "needs_reprocess":        needs_reprocess,
+        "verdict":                "HEALTHY" if needs_reprocess == 0 else "BROKEN_DATA_DETECTED",
+    }
+
+
 @api_router.get("/admin/pipeline/exclusion-report/download")
 async def admin_download_pipeline_exclusion_report(
     report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
