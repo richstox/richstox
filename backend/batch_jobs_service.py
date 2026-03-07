@@ -151,32 +151,56 @@ async def sync_single_ticker_fundamentals(
         # 2. Financial statements → canonical collection, upsert not delete+insert
         financials_rows = parse_financials(ticker_full, data)
         if financials_rows:
-            fin_ops = [
-                _UpdateOne(
-                    {"ticker": r["ticker"], "period_type": r["period_type"], "period_date": r["period_date"]},
-                    {"$set": r},
-                    upsert=True,
-                )
-                for r in financials_rows
-            ]
-            await db.company_financials.bulk_write(fin_ops, ordered=False)
-            result["has_financials"]   = True
-            result["financials_count"] = len(financials_rows)
+            fin_bulk: Dict[str, Any] = {"rows_parsed": len(financials_rows)}
+            try:
+                fin_ops = [
+                    _UpdateOne(
+                        {"ticker": r["ticker"], "period_type": r["period_type"], "period_date": r["period_date"]},
+                        {"$set": r},
+                        upsert=True,
+                    )
+                    for r in financials_rows
+                ]
+                fin_res = await db.company_financials.bulk_write(fin_ops, ordered=False)
+                fin_bulk["upserted_count"] = fin_res.upserted_count
+                fin_bulk["matched_count"]  = fin_res.matched_count
+                fin_bulk["modified_count"] = fin_res.modified_count
+                if fin_res.matched_count == 0 and fin_res.upserted_count == 0:
+                    fin_bulk["error"] = "matched_count=0 and upserted_count=0 despite rows_parsed>0"
+                else:
+                    result["has_financials"]   = True
+                    result["financials_count"] = len(financials_rows)
+            except Exception as fin_exc:
+                fin_bulk["error"] = str(fin_exc)
+                logger.error(f"company_financials bulk_write failed for {ticker_full}: {fin_exc}")
+            result["fin_bulk_write"] = fin_bulk
 
         # 3. Earnings history → canonical collection, upsert not delete+insert
         earnings_rows = parse_earnings_history(ticker_full, data)
         if earnings_rows:
-            earn_ops = [
-                _UpdateOne(
-                    {"ticker": r["ticker"], "quarter_date": r["quarter_date"]},
-                    {"$set": r},
-                    upsert=True,
-                )
-                for r in earnings_rows
-            ]
-            await db.company_earnings_history.bulk_write(earn_ops, ordered=False)
-            result["has_earnings"]   = True
-            result["earnings_count"] = len(earnings_rows)
+            earn_bulk: Dict[str, Any] = {"rows_parsed": len(earnings_rows)}
+            try:
+                earn_ops = [
+                    _UpdateOne(
+                        {"ticker": r["ticker"], "quarter_date": r["quarter_date"]},
+                        {"$set": r},
+                        upsert=True,
+                    )
+                    for r in earnings_rows
+                ]
+                earn_res = await db.company_earnings_history.bulk_write(earn_ops, ordered=False)
+                earn_bulk["upserted_count"] = earn_res.upserted_count
+                earn_bulk["matched_count"]  = earn_res.matched_count
+                earn_bulk["modified_count"] = earn_res.modified_count
+                if earn_res.matched_count == 0 and earn_res.upserted_count == 0:
+                    earn_bulk["error"] = "matched_count=0 and upserted_count=0 despite rows_parsed>0"
+                else:
+                    result["has_earnings"]   = True
+                    result["earnings_count"] = len(earnings_rows)
+            except Exception as earn_exc:
+                earn_bulk["error"] = str(earn_exc)
+                logger.error(f"company_earnings_history bulk_write failed for {ticker_full}: {earn_exc}")
+            result["earn_bulk_write"] = earn_bulk
 
         # 4. Insider activity (often empty — absence is normal)
         insider_doc = parse_insider_activity(ticker_full, data)
