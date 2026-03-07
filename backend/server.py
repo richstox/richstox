@@ -2278,7 +2278,16 @@ async def admin_fundamentals_audit(
     tracked   = await db.tracked_tickers.find_one({"ticker": ticker_full}, {"_id": 0})
     cache_doc = await db.company_fundamentals_cache.find_one(
         {"ticker": ticker_full},
-        {"_id": 0, "ticker": 1, "name": 1, "sector": 1, "industry": 1},
+        {
+            "_id": 0,
+            "ticker": 1, "code": 1, "name": 1, "exchange": 1,
+            "currency_code": 1, "country_iso": 1,
+            "website": 1, "logo_url": 1,
+            "description": 1,
+            "sector": 1, "industry": 1,
+            "full_time_employees": 1,
+            "ipo_date": 1, "fiscal_year_end": 1, "is_delisted": 1,
+        },
     )
     fin_count  = await db.company_financials.count_documents({"ticker": ticker_full})
     earn_count = await db.company_earnings_history.count_documents({"ticker": ticker_full})
@@ -2289,6 +2298,30 @@ async def admin_fundamentals_audit(
         "financial_rows":             fin_count,
         "earnings_rows":              earn_count,
     }
+
+    # ── 2b. Cache snapshot from company_fundamentals_cache ───────────────────
+    if cache_doc:
+        desc = cache_doc.get("description") or ""
+        cache_snapshot: Dict[str, Any] = {
+            "ticker":              cache_doc.get("ticker"),
+            "code":                cache_doc.get("code"),
+            "name":                cache_doc.get("name"),
+            "exchange":            cache_doc.get("exchange"),
+            "currency_code":       cache_doc.get("currency_code"),
+            "country_iso":         cache_doc.get("country_iso"),
+            "sector":              cache_doc.get("sector"),
+            "industry":            cache_doc.get("industry"),
+            "website":             cache_doc.get("website"),
+            "logo_url":            cache_doc.get("logo_url"),
+            "description_preview": desc[:200] if desc else None,
+            "description_length":  len(desc),
+            "full_time_employees": cache_doc.get("full_time_employees"),
+            "ipo_date":            cache_doc.get("ipo_date"),
+            "fiscal_year_end":     cache_doc.get("fiscal_year_end"),
+            "is_delisted":         cache_doc.get("is_delisted"),
+        }
+    else:
+        cache_snapshot = None
 
     # ── 3. Values check — read directly from tracked_tickers ─────────────────
     values_check: Dict[str, Any] = {
@@ -2317,6 +2350,21 @@ async def admin_fundamentals_audit(
     if earn_count == 0:
         missing.append("DB company_earnings_history: 0 rows for this ticker")
 
+    # cache_snapshot required fields
+    snap = cache_snapshot or {}
+    if not snap.get("name"):
+        missing.append("company_fundamentals_cache.name is null/empty")
+    if not snap.get("sector"):
+        missing.append("company_fundamentals_cache.sector is null/empty")
+    if not snap.get("industry"):
+        missing.append("company_fundamentals_cache.industry is null/empty")
+    if not snap.get("website"):
+        missing.append("company_fundamentals_cache.website is null/empty")
+    if not snap.get("description_length"):
+        missing.append("company_fundamentals_cache.description is null/empty")
+    if not snap.get("logo_url"):
+        missing.append("company_fundamentals_cache.logo_url is null/empty (optional)")
+
     # ── 5. Mismatch (live=1 only) ─────────────────────────────────────────────
     if raw_data and tracked:
         eodhd_sector   = fetched.get("general_sector")
@@ -2336,16 +2384,17 @@ async def admin_fundamentals_audit(
             )
 
     return {
-        "ticker":       ticker_full,
-        "audit_at":     datetime.now(timezone.utc).isoformat(),
-        "live_mode":    live == 1,
-        "credits_used": credits_used,
-        "fetched":      fetched,
-        "persisted":    persisted,
-        "values_check": values_check,
-        "missing":      missing,
-        "mismatch":     mismatch,
-        "verdict":      "PASS" if not missing and not mismatch else "FAIL",
+        "ticker":         ticker_full,
+        "audit_at":       datetime.now(timezone.utc).isoformat(),
+        "live_mode":      live == 1,
+        "credits_used":   credits_used,
+        "fetched":        fetched,
+        "persisted":      persisted,
+        "cache_snapshot": cache_snapshot,
+        "values_check":   values_check,
+        "missing":        missing,
+        "mismatch":       mismatch,
+        "verdict":        "PASS" if not missing and not mismatch else "FAIL",
     }
 
 
