@@ -176,7 +176,13 @@ async def sync_single_ticker_fundamentals(
         sector = (company_doc.get("sector") or "").strip()
         industry = (company_doc.get("industry") or "").strip()
         has_classification = bool(sector and industry)
-        
+
+        logger.critical(
+            f"PARSER DEBUG: Ticker {ticker_full} -> "
+            f"Sector: '{sector}', Industry: '{industry}', "
+            f"HasClass: {has_classification}"
+        )
+
         await db.tracked_tickers.update_one(
             {"ticker": ticker_full},
             {
