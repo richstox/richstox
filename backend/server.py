@@ -2231,7 +2231,9 @@ async def admin_fundamentals_audit(
     REQUIRED_TOP_LEVEL = ["General", "SharesStats", "Financials", "Earnings"]
 
     fetched: Dict[str, Any] = {}
-    missing: list = []
+    required_missing: list = []   # blocks visibility gate
+    warnings: list = []           # cosmetic — never cause FAIL
+    integrity_failures: list = [] # data corruption — causes FAIL
     mismatch: list = []
     raw_data = None
     credits_used = 0
@@ -2265,14 +2267,14 @@ async def admin_fundamentals_audit(
 
                 for key in REQUIRED_TOP_LEVEL:
                     if not raw_data.get(key):
-                        missing.append(f"EODHD missing top-level key: {key}")
+                        required_missing.append(f"EODHD missing top-level key: {key}")
 
                 if not fetched["general_sector"]:
-                    missing.append("EODHD General.Sector is empty or null")
+                    required_missing.append("EODHD General.Sector is empty or null")
                 if not fetched["general_industry"]:
-                    missing.append("EODHD General.Industry is empty or null")
+                    required_missing.append("EODHD General.Industry is empty or null")
                 if not fetched["shares_outstanding_raw"]:
-                    missing.append("EODHD SharesStats.SharesOutstanding is empty or null")
+                    required_missing.append("EODHD SharesStats.SharesOutstanding is empty or null")
 
     # ── 2. MongoDB state ─────────────────────────────────────────────────────
     tracked   = await db.tracked_tickers.find_one({"ticker": ticker_full}, {"_id": 0})
@@ -2334,38 +2336,57 @@ async def admin_fundamentals_audit(
         "fundamentals_status":   (tracked or {}).get("fundamentals_status"),
     }
 
-    # ── 4. Missing — from MongoDB ─────────────────────────────────────────────
+    # ── 4. Classify missing fields ────────────────────────────────────────────
+    # Visibility-gate fields → required_missing (never FAIL by themselves)
     if not values_check["sector"]:
-        missing.append("DB tracked_tickers.sector is null/empty")
+        required_missing.append("DB tracked_tickers.sector is null/empty")
     if not values_check["industry"]:
-        missing.append("DB tracked_tickers.industry is null/empty")
+        required_missing.append("DB tracked_tickers.industry is null/empty")
     if not values_check["shares_outstanding"]:
-        missing.append("DB tracked_tickers.shares_outstanding is null/empty")
+        required_missing.append("DB tracked_tickers.shares_outstanding is null/empty")
     if not values_check["financial_currency"]:
-        missing.append("DB tracked_tickers.financial_currency is null/empty")
+        required_missing.append("DB tracked_tickers.financial_currency is null/empty")
     if not values_check["has_classification"]:
-        missing.append("DB tracked_tickers.has_classification is false or null")
-    if fin_count == 0:
-        missing.append("DB company_financials: 0 rows for this ticker")
-    if earn_count == 0:
-        missing.append("DB company_earnings_history: 0 rows for this ticker")
-
-    # cache_snapshot required fields
+        required_missing.append("DB tracked_tickers.has_classification is false or null")
     snap = cache_snapshot or {}
     if not snap.get("name"):
-        missing.append("company_fundamentals_cache.name is null/empty")
+        required_missing.append("company_fundamentals_cache.name is null/empty")
     if not snap.get("sector"):
-        missing.append("company_fundamentals_cache.sector is null/empty")
+        required_missing.append("company_fundamentals_cache.sector is null/empty")
     if not snap.get("industry"):
-        missing.append("company_fundamentals_cache.industry is null/empty")
-    if not snap.get("website"):
-        missing.append("company_fundamentals_cache.website is null/empty")
-    if not snap.get("description_length"):
-        missing.append("company_fundamentals_cache.description is null/empty")
-    if not snap.get("logo_url"):
-        missing.append("company_fundamentals_cache.logo_url is null/empty (optional)")
+        required_missing.append("company_fundamentals_cache.industry is null/empty")
 
-    # ── 5. Mismatch (live=1 only) ─────────────────────────────────────────────
+    # Cosmetic fields → warnings only (never FAIL)
+    if not snap.get("website"):
+        warnings.append("company_fundamentals_cache.website is null/empty")
+    if not snap.get("description_length"):
+        warnings.append("company_fundamentals_cache.description is null/empty")
+    if not snap.get("logo_url"):
+        warnings.append("company_fundamentals_cache.logo_url is null/empty (optional)")
+
+    # ── 5. Data integrity check (live=1): provider-has-data but DB-missing ───
+    if raw_data:
+        financials_live = raw_data.get("Financials") or {}
+        provider_has_fin_periods = any(
+            isinstance((financials_live.get(stmt) or {}).get(period), dict)
+            and bool((financials_live[stmt])[period])
+            for stmt in ("Income_Statement", "Balance_Sheet", "Cash_Flow")
+            for period in ("yearly", "quarterly")
+            if isinstance(financials_live.get(stmt), dict)
+        )
+        provider_has_earnings = bool(
+            (raw_data.get("Earnings") or {}).get("History")
+        )
+        if provider_has_fin_periods and fin_count == 0:
+            integrity_failures.append(
+                "CORRUPTION: provider has financial periods but company_financials has 0 rows"
+            )
+        if provider_has_earnings and earn_count == 0:
+            integrity_failures.append(
+                "CORRUPTION: provider has earnings history but company_earnings_history has 0 rows"
+            )
+
+    # ── 6. Mismatch (live=1 only) ─────────────────────────────────────────────
     if raw_data and tracked:
         eodhd_sector   = fetched.get("general_sector")
         eodhd_industry = fetched.get("general_industry")
@@ -2383,18 +2404,24 @@ async def admin_fundamentals_audit(
                 f"shares_outstanding: EODHD={eodhd_so} vs DB={values_check['shares_outstanding']}"
             )
 
+    # verdict: FAIL only on data integrity problems
+    verdict = "FAIL" if (integrity_failures or mismatch) else "PASS"
+
     return {
-        "ticker":         ticker_full,
-        "audit_at":       datetime.now(timezone.utc).isoformat(),
-        "live_mode":      live == 1,
-        "credits_used":   credits_used,
-        "fetched":        fetched,
-        "persisted":      persisted,
-        "cache_snapshot": cache_snapshot,
-        "values_check":   values_check,
-        "missing":        missing,
-        "mismatch":       mismatch,
-        "verdict":        "PASS" if not missing and not mismatch else "FAIL",
+        "ticker":              ticker_full,
+        "audit_at":            datetime.now(timezone.utc).isoformat(),
+        "live_mode":           live == 1,
+        "credits_used":        credits_used,
+        "fetched":             fetched,
+        "persisted":           persisted,
+        "cache_snapshot":      cache_snapshot,
+        "values_check":        values_check,
+        "required_missing":    required_missing,
+        "warnings":            warnings,
+        "integrity_failures":  integrity_failures,
+        "missing":             required_missing,   # backwards compat
+        "mismatch":            mismatch,
+        "verdict":             verdict,
     }
 
 
