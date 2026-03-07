@@ -7026,10 +7026,14 @@ async def admin_fundamentals_health():
             earnings   = data.get("Earnings")    or {}
             sector_raw   = (general.get("Sector")   or "").strip()
             industry_raw = (general.get("Industry") or "").strip()
-            # At least one financial statement section must contain at least one period
+            # True only if at least one statement period-dict (yearly or quarterly)
+            # contains at least one actual period — empty section dicts do not count.
             has_financials = any(
-                isinstance(financials.get(stmt), dict) and bool(financials[stmt])
+                isinstance((financials.get(stmt) or {}).get(period), dict)
+                and bool((financials[stmt])[period])
                 for stmt in ("Income_Statement", "Balance_Sheet", "Cash_Flow")
+                for period in ("yearly", "quarterly")
+                if isinstance(financials.get(stmt), dict)
             )
             return {
                 "ticker":                      ticker_full,
