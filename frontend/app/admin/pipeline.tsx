@@ -958,7 +958,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     {substepLastRunLabel && (
                       <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
                     )}
-                    <Text style={s.substepDesc}>Detects stock splits today. Flagged tickers need full price history re-download (adjusted prices change).</Text>
+                    <Text style={s.substepDesc}>Detects stock splits today. Flagged tickers need full price history re-download (adjusted prices change) and a fundamentals refresh.</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {splitDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date=${eventDetectors.today || todayStr}`}
                     </Text>
@@ -1002,7 +1002,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     {substepLastRunLabel && (
                       <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
                     )}
-                    <Text style={s.substepDesc}>Detects ex-dividend events today. Flagged tickers need fundamentals refresh (dividend yield, payout ratio).</Text>
+                    <Text style={s.substepDesc}>Detects ex-dividend events today. Flagged tickers need a full price history re-download and a fundamentals refresh (dividend yield, payout ratio).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {dividendDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date=${eventDetectors.today || todayStr}`}
                     </Text>
