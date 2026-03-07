@@ -85,12 +85,17 @@ async def sync_single_ticker_fundamentals(
 ) -> Dict[str, Any]:
     """
     Sync fundamentals for a single ticker with robust error handling.
-    Returns detailed result including which data was available/missing.
+    Writes to canonical collections (company_financials, company_earnings_history)
+    matching the full_sync_service worker. Sets fundamentals_status='complete' only
+    after ALL DB writes succeed.
     """
-    ticker_upper = ticker.upper()
-    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+    from pymongo import UpdateOne as _UpdateOne
+
+    t = ticker.upper().strip()
+    ticker_full  = t if t.endswith(".US") else f"{t}.US"
+    ticker_plain = ticker_full.replace(".US", "")
     now = datetime.now(timezone.utc)
-    
+
     result = {
         "ticker": ticker_full,
         "success": False,
@@ -104,24 +109,24 @@ async def sync_single_ticker_fundamentals(
         "error_type": None,
         "provider_debug_snapshot_stored": False,
     }
-    
+
     try:
-        # Fetch from EODHD
-        data = await fetch_fundamentals_from_eodhd(ticker_upper)
-        
+        # Fetch from EODHD (use ticker_plain for the API call)
+        data = await fetch_fundamentals_from_eodhd(ticker_plain)
+
         if not data:
             result["error"] = "No fundamentals data from EODHD"
             result["error_type"] = "no_data"
-            # Mark ticker as no_fundamentals
             await db.tracked_tickers.update_one(
                 {"ticker": ticker_full},
                 {"$set": {
                     "status": "no_fundamentals",
                     "is_active": False,
+                    "fundamentals_status": "error",
                     "fundamentals_error": "No data from EODHD",
                     "updated_at": now,
                 }},
-                upsert=True
+                upsert=True,
             )
             return result
 
@@ -132,50 +137,64 @@ async def sync_single_ticker_fundamentals(
             source_job=source_job,
         )
         result["provider_debug_snapshot_stored"] = bool(debug_result.get("stored"))
-        
-        # 1. Parse and store company fundamentals
-        company_doc = parse_company_fundamentals(ticker_upper, data)
+
+        # 1. Company fundamentals cache (use ticker_full so parser emits .US ticker)
+        company_doc = parse_company_fundamentals(ticker_full, data)
+        company_doc["updated_at"] = now
         await db.company_fundamentals_cache.update_one(
             {"ticker": ticker_full},
             {"$set": company_doc},
-            upsert=True
+            upsert=True,
         )
         result["has_fundamentals"] = True
-        
-        # 2. Parse and store financials (may be empty for some stocks)
-        financials_rows = parse_financials(ticker_upper, data)
+
+        # 2. Financial statements → canonical collection, upsert not delete+insert
+        financials_rows = parse_financials(ticker_full, data)
         if financials_rows:
-            await db.financials_cache.delete_many({"ticker": ticker_full})
-            await db.financials_cache.insert_many(financials_rows)
-            result["has_financials"] = True
+            fin_ops = [
+                _UpdateOne(
+                    {"ticker": r["ticker"], "period_type": r["period_type"], "period_date": r["period_date"]},
+                    {"$set": r},
+                    upsert=True,
+                )
+                for r in financials_rows
+            ]
+            await db.company_financials.bulk_write(fin_ops, ordered=False)
+            result["has_financials"]   = True
             result["financials_count"] = len(financials_rows)
-        
-        # 3. Parse and store earnings history (may be empty)
-        earnings_rows = parse_earnings_history(ticker_upper, data)
+
+        # 3. Earnings history → canonical collection, upsert not delete+insert
+        earnings_rows = parse_earnings_history(ticker_full, data)
         if earnings_rows:
-            await db.earnings_history_cache.delete_many({"ticker": ticker_full})
-            await db.earnings_history_cache.insert_many(earnings_rows)
-            result["has_earnings"] = True
+            earn_ops = [
+                _UpdateOne(
+                    {"ticker": r["ticker"], "quarter_date": r["quarter_date"]},
+                    {"$set": r},
+                    upsert=True,
+                )
+                for r in earnings_rows
+            ]
+            await db.company_earnings_history.bulk_write(earn_ops, ordered=False)
+            result["has_earnings"]   = True
             result["earnings_count"] = len(earnings_rows)
-        
-        # 4. Parse and store insider activity (often empty/null)
-        insider_doc = parse_insider_activity(ticker_upper, data)
+
+        # 4. Insider activity (often empty — absence is normal)
+        insider_doc = parse_insider_activity(ticker_full, data)
         if insider_doc and (insider_doc.get("buyers_count", 0) > 0 or insider_doc.get("sellers_count", 0) > 0):
             await db.insider_activity_cache.update_one(
-                {"ticker": ticker_full},
-                {"$set": insider_doc},
-                upsert=True
+                {"ticker": ticker_full}, {"$set": insider_doc}, upsert=True
             )
             result["has_insider"] = True
-        # Note: Missing insider data is normal - many stocks have no insider transactions
-        
-        # 5. Activate ticker in tracked_tickers
-        # Extract financial_currency using the new extraction utility (Option B - Persist)
+
+        # 5. tracked_tickers — full field set, status="complete" ONLY after all writes done
         from utils.currency_utils import extract_statement_currency
         financial_currency = extract_statement_currency(data)
-        sector = (company_doc.get("sector") or "").strip()
+        sector   = (company_doc.get("sector")   or "").strip()
         industry = (company_doc.get("industry") or "").strip()
         has_classification = bool(sector and industry)
+
+        shares_stats       = data.get("SharesStats") or {}
+        shares_outstanding = shares_stats.get("SharesOutstanding")
 
         logger.critical(
             f"PARSER DEBUG: Ticker {ticker_full} -> "
@@ -185,29 +204,39 @@ async def sync_single_ticker_fundamentals(
 
         await db.tracked_tickers.update_one(
             {"ticker": ticker_full},
-            {
-                "$set": {
-                    "status": "active",
-                    "is_active": True,
-                    "name": company_doc.get("name"),
-                    "sector": sector or None,
-                    "industry": industry or None,
-                    "has_classification": has_classification,
-                    "financial_currency": financial_currency,  # P1 Policy: Persist currency
-                    "fundamentals_updated_at": now,
-                    "updated_at": now,
-                }
-            },
-            upsert=True
+            {"$set": {
+                "status":                     "active",
+                "is_active":                  True,
+                "name":                       company_doc.get("name"),
+                "sector":                     sector   or None,
+                "industry":                   industry or None,
+                "has_classification":         has_classification,
+                "financial_currency":         financial_currency,
+                "shares_outstanding":         shares_outstanding,
+                # Mark complete only after all writes succeed
+                "fundamentals_status":        "complete",
+                "fundamentals_complete":      True,
+                "needs_fundamentals_refresh": False,
+                "fundamentals_updated_at":    now,
+                "updated_at":                 now,
+            }},
+            upsert=True,
         )
-        
+
         result["success"] = True
-        
+
     except Exception as e:
-        result["error"] = str(e)
+        result["error"]      = str(e)
         result["error_type"] = "exception"
         logger.error(f"Error syncing {ticker_full}: {e}")
-    
+        try:
+            await db.tracked_tickers.update_one(
+                {"ticker": ticker_full},
+                {"$set": {"fundamentals_status": "error", "updated_at": now}},
+            )
+        except Exception:
+            pass
+
     return result
 
 
