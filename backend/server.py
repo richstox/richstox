@@ -2349,6 +2349,169 @@ async def admin_fundamentals_audit(
     }
 
 
+@api_router.post("/admin/ticker/{ticker}/run-fundamentals-sync")
+async def admin_run_single_fundamentals_sync(ticker: str):
+    """
+    Run the full Step 3 persistence pipeline for exactly ONE ticker.
+    Uses the same logic as the Step 3 bulk worker (_process_fundamentals_ticker).
+
+    Writes to:
+      - company_fundamentals_cache  (upsert)
+      - company_financials          (bulk upsert; one wide row per period_type+period_date,
+                                     merging Income/Balance/CashFlow — unique key:
+                                     ticker + period_type + period_date)
+      - company_earnings_history    (bulk upsert, up to 32 quarters)
+      - insider_activity            (upsert, if data present)
+      - tracked_tickers             (sector, industry, has_classification,
+                                     shares_outstanding, financial_currency,
+                                     fundamentals_complete, fundamentals_status)
+
+    Costs 10 EODHD credits.
+    """
+    from fundamentals_service import (
+        fetch_fundamentals_from_eodhd,
+        parse_company_fundamentals,
+        parse_financials,
+        parse_earnings_history,
+        parse_insider_activity,
+    )
+    from utils.currency_utils import extract_statement_currency
+    from pymongo import UpdateOne as _UpdateOne
+
+    # ticker_full used for ALL persistence; ticker_plain only for the EODHD API call
+    t = ticker.upper().strip()
+    ticker_full  = t if t.endswith(".US") else f"{t}.US"
+    ticker_plain = ticker_full.replace(".US", "")
+
+    if not os.getenv("EODHD_API_KEY", ""):
+        raise HTTPException(status_code=503, detail="EODHD_API_KEY not configured — MOCK mode, cannot fetch.")
+
+    # ── 1. Fetch from EODHD ──────────────────────────────────────────────────
+    data = await fetch_fundamentals_from_eodhd(ticker_plain)
+    if not data:
+        raise HTTPException(status_code=404, detail=f"EODHD returned no fundamentals data for {ticker_full}.")
+
+    now = datetime.now(timezone.utc)
+
+    # ── 2. Company fundamentals cache ────────────────────────────────────────
+    company_doc = parse_company_fundamentals(ticker_full, data)
+    company_doc["updated_at"] = now
+    await db.company_fundamentals_cache.update_one(
+        {"ticker": ticker_full},
+        {"$set": company_doc},
+        upsert=True,
+    )
+
+    # ── 3. Financial statements ───────────────────────────────────────────────
+    # Schema: one wide doc per (ticker, period_type, period_date) combining
+    # Income Statement + Balance Sheet + Cash Flow. No statement_type field.
+    # Unique key matches _process_fundamentals_ticker canonical worker.
+    fin_rows = parse_financials(ticker_full, data)
+    fin_counts: Dict[str, Any] = {"upserted_count": 0, "modified_count": 0, "matched_count": 0}
+    if fin_rows:
+        fin_ops = [
+            _UpdateOne(
+                {
+                    "ticker":      r["ticker"],
+                    "period_type": r["period_type"],
+                    "period_date": r["period_date"],
+                },
+                {"$set": r},
+                upsert=True,
+            )
+            for r in fin_rows
+        ]
+        fin_result = await db.company_financials.bulk_write(fin_ops, ordered=False)
+        fin_counts = {
+            "upserted_count": fin_result.upserted_count,
+            "modified_count": fin_result.modified_count,
+            "matched_count":  fin_result.matched_count,
+        }
+
+    # ── 4. Earnings history ──────────────────────────────────────────────────
+    earn_rows = parse_earnings_history(ticker_full, data)
+    earn_counts: Dict[str, Any] = {"upserted_count": 0, "modified_count": 0, "matched_count": 0}
+    if earn_rows:
+        earn_ops = [
+            _UpdateOne(
+                {"ticker": r["ticker"], "quarter_date": r["quarter_date"]},
+                {"$set": r},
+                upsert=True,
+            )
+            for r in earn_rows
+        ]
+        earn_result = await db.company_earnings_history.bulk_write(earn_ops, ordered=False)
+        earn_counts = {
+            "upserted_count": earn_result.upserted_count,
+            "modified_count": earn_result.modified_count,
+            "matched_count":  earn_result.matched_count,
+        }
+
+    # ── 5. Insider activity ──────────────────────────────────────────────────
+    insider_doc = parse_insider_activity(ticker_full, data)
+    insider_written = 0
+    if insider_doc:
+        await db.insider_activity.update_one(
+            {"ticker": ticker_full}, {"$set": insider_doc}, upsert=True
+        )
+        insider_written = 1
+
+    # ── 6. tracked_tickers — identical field set as Step 3 worker ───────────
+    sector   = (company_doc.get("sector")   or "").strip()
+    industry = (company_doc.get("industry") or "").strip()
+    has_classification = bool(sector and industry)
+
+    shares_stats       = data.get("SharesStats") or {}
+    shares_outstanding = shares_stats.get("SharesOutstanding")
+    financial_currency = extract_statement_currency(data)
+
+    logger.critical(
+        f"PARSER DEBUG [single-sync]: Ticker {ticker_full} -> "
+        f"Sector: '{sector}', Industry: '{industry}', "
+        f"HasClass: {has_classification}, "
+        f"Shares: {shares_outstanding}, Currency: {financial_currency}"
+    )
+
+    await db.tracked_tickers.update_one(
+        {"ticker": ticker_full},
+        {"$set": {
+            "fundamentals_complete":      True,
+            "needs_fundamentals_refresh": False,
+            "fundamentals_status":        "complete",
+            "fundamentals_updated_at":    now,
+            "sector":                     sector   or None,
+            "industry":                   industry or None,
+            "has_classification":         has_classification,
+            "shares_outstanding":         shares_outstanding,
+            "financial_currency":         financial_currency,
+        }},
+    )
+
+    return {
+        "ticker":       ticker_full,
+        "synced_at":    now.isoformat(),
+        "credits_used": 10,
+        "company_fundamentals_cache": {"upserted": 1},
+        "company_financials": {
+            "rows_parsed": len(fin_rows),
+            **fin_counts,
+        },
+        "company_earnings_history": {
+            "rows_parsed": len(earn_rows),
+            **earn_counts,
+        },
+        "insider_activity": {"written": insider_written},
+        "tracked_tickers": {
+            "sector":              sector   or None,
+            "industry":            industry or None,
+            "has_classification":  has_classification,
+            "shares_outstanding":  shares_outstanding,
+            "financial_currency":  financial_currency,
+            "fundamentals_status": "complete",
+        },
+    }
+
+
 @api_router.get("/admin/fundamentals/pilot-tickers")
 async def admin_pilot_tickers():
     """Get list of pilot tickers."""
