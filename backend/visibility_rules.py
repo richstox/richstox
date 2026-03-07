@@ -131,12 +131,7 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
     # =========================================
     # DATA QUALITY: shares_outstanding > 0
     # =========================================
-    fund = ticker_doc.get("fundamentals", {})
-    shares = fund.get("SharesStats", {}).get("SharesOutstanding") if fund else None
-    if not shares:
-        shares = fund.get("Highlights", {}).get("SharesOutstanding") if fund else None
-    
-    # Check if shares is missing, empty, or <= 0
+    shares = ticker_doc.get("shares_outstanding")
     if not shares:
         return False, VisibilityFailedReason.MISSING_SHARES.value
     try:
