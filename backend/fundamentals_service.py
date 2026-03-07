@@ -77,9 +77,20 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
     shares = data.get("SharesStats") or {}
     splits_div = data.get("SplitsDividends") or {}
     address = general.get("AddressData") or {}
-    
+
     now = datetime.now(timezone.utc)
-    
+
+    # Normalise sector/industry at parse time: strip whitespace, collapse empty → None
+    sector_raw   = (general.get("Sector")   or "").strip()
+    industry_raw = (general.get("Industry") or "").strip()
+
+    # CRITICAL DEBUG: log exactly what EODHD returned so parser issues are visible
+    logger.critical(
+        f"PARSER DEBUG: Ticker {ticker} -> "
+        f"Sector: '{sector_raw}', Industry: '{industry_raw}', "
+        f"HasClass: {bool(sector_raw and industry_raw)}"
+    )
+
     # Calculate EPS TTM from earnings history
     eps_ttm = None
     earnings_data = data.get("Earnings") or {}
@@ -102,13 +113,13 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         "country_iso": general.get("CountryISO") or "US",
         "country_name": general.get("CountryName") or "USA",
         
-        # Classification
-        "sector": general.get("Sector"),
-        "industry": general.get("Industry"),
-        "gic_sector": general.get("GicSector"),
+        # Classification — stripped and None-normalised at source
+        "sector":       sector_raw   or None,
+        "industry":     industry_raw or None,
+        "gic_sector":   general.get("GicSector"),
         "gic_industry": general.get("GicIndustry"),
         "security_type": general.get("Type") or "Common Stock",
-        "asset_type": general.get("Type") or "Common Stock",  # Alias for ETF filtering
+        "asset_type":    general.get("Type") or "Common Stock",  # Alias for ETF filtering
         
         # Company details
         "description": (general.get("Description") or "")[:2000],
@@ -478,6 +489,10 @@ async def sync_ticker_fundamentals(
             result["insider_activity"] = True
         
         # 5. Activate ticker in tracked_tickers
+        sector   = (company_doc.get("sector")   or "").strip()
+        industry = (company_doc.get("industry") or "").strip()
+        has_classification = bool(sector and industry)
+
         await db.tracked_tickers.update_one(
             {"ticker": ticker_full},
             {
@@ -485,8 +500,9 @@ async def sync_ticker_fundamentals(
                     "status": "active",
                     "is_active": True,
                     "name": company_doc.get("name"),
-                    "sector": company_doc.get("sector"),
-                    "industry": company_doc.get("industry"),
+                    "sector":            sector   or None,
+                    "industry":          industry or None,
+                    "has_classification": has_classification,
                     "fundamentals_updated_at": now,
                     "updated_at": now,
                 }
