@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, Alert, Linking, Platform,
+  RefreshControl, ActivityIndicator, Alert, Linking, Platform, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
@@ -181,6 +181,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
+
+  // ── Per-ticker audit state ────────────────────────────────────────────────
+  const [auditTicker, setAuditTicker] = useState('');
+  const [auditLive, setAuditLive] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditResult, setAuditResult] = useState<Record<string, any> | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -492,6 +498,31 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     } catch (e: any) {
       setRunResult(prev => ({ ...prev, [jobName]: `❌ ${e.message}` }));
       setRunningJob(null);
+    }
+  };
+
+  const handleRunAudit = async () => {
+    const raw = auditTicker.trim().toUpperCase();
+    if (!raw) return;
+    // Append .US if the input has no dot (e.g. "EFT" → "EFT.US", "EFT.US" stays)
+    const t = raw.includes('.') ? raw : `${raw}.US`;
+    setAuditLoading(true);
+    setAuditResult(null);
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/ticker/${t}/fundamentals-audit?live=${auditLive ? 1 : 0}`,
+        {},
+        sessionToken,
+      );
+      if (res.ok) {
+        setAuditResult(await res.json());
+      } else {
+        setAuditResult({ error: `HTTP ${res.status}` });
+      }
+    } catch (e: any) {
+      setAuditResult({ error: e.message });
+    } finally {
+      setAuditLoading(false);
     }
   };
 
@@ -1175,6 +1206,107 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
+              {/* Per-ticker Fundamentals Audit — Step 3 only */}
+              {step.job_name === 'fundamentals_sync' && (
+                <View style={s.auditCard}>
+                  <Text style={s.auditTitle}>Ticker Fundamentals Audit</Text>
+                  <View style={s.auditInputRow}>
+                    <TextInput
+                      style={s.auditInput}
+                      value={auditTicker}
+                      onChangeText={setAuditTicker}
+                      placeholder="e.g. A.US"
+                      placeholderTextColor={COLORS.textMuted}
+                      autoCapitalize="characters"
+                    />
+                    <TouchableOpacity
+                      style={[s.auditLiveBtn, auditLive && s.auditLiveBtnActive]}
+                      onPress={() => setAuditLive(v => !v)}
+                    >
+                      <Text style={[s.auditLiveBtnText, auditLive && s.auditLiveBtnTextActive]}>
+                        {auditLive ? 'Live ✓' : 'DB only'}
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[s.auditRunBtn, auditLoading && s.runBtnDisabled]}
+                      onPress={handleRunAudit}
+                      disabled={auditLoading}
+                    >
+                      {auditLoading
+                        ? <ActivityIndicator size="small" color="#fff" />
+                        : <Text style={s.auditRunBtnText}>Audit</Text>}
+                    </TouchableOpacity>
+                  </View>
+
+                  {auditResult && !auditResult.error && (
+                    <>
+                      {/* Verdict badge */}
+                      <View style={s.auditVerdictRow}>
+                        <View style={[
+                          s.auditVerdictBadge,
+                          { backgroundColor: auditResult.verdict === 'PASS' ? '#22C55E22' : '#EF444422' },
+                        ]}>
+                          <Text style={[
+                            s.auditVerdictText,
+                            { color: auditResult.verdict === 'PASS' ? '#22C55E' : '#EF4444' },
+                          ]}>
+                            {auditResult.verdict}
+                            {auditResult.credits_used > 0 ? `  ·  ${auditResult.credits_used} credits` : ''}
+                          </Text>
+                        </View>
+                        <Text style={s.auditTickerLabel}>{auditResult.ticker}</Text>
+                      </View>
+
+                      {/* Integrity failures — emphasized */}
+                      {(auditResult.integrity_failures?.length ?? 0) > 0 && (
+                        <View style={s.auditSection}>
+                          <Text style={s.auditSectionTitleError}>Integrity Failures</Text>
+                          {auditResult.integrity_failures.map((msg: string, i: number) => (
+                            <Text key={i} style={s.auditItemError}>• {msg}</Text>
+                          ))}
+                        </View>
+                      )}
+
+                      {/* Required missing (visibility blockers) */}
+                      {(auditResult.required_missing ?? auditResult.missing ?? []).length > 0 && (
+                        <View style={s.auditSection}>
+                          <Text style={s.auditSectionTitleWarn}>Required (visibility blockers)</Text>
+                          {(auditResult.required_missing ?? auditResult.missing).map((msg: string, i: number) => (
+                            <Text key={i} style={s.auditItemWarn}>• {msg}</Text>
+                          ))}
+                        </View>
+                      )}
+
+                      {/* Warnings (cosmetic) */}
+                      {(auditResult.warnings?.length ?? 0) > 0 && (
+                        <View style={s.auditSection}>
+                          <Text style={s.auditSectionTitleMuted}>Warnings (optional)</Text>
+                          {auditResult.warnings.map((msg: string, i: number) => (
+                            <Text key={i} style={s.auditItemMuted}>• {msg}</Text>
+                          ))}
+                        </View>
+                      )}
+
+                      {/* Values check summary */}
+                      {auditResult.values_check && (
+                        <View style={s.auditSection}>
+                          <Text style={s.auditSectionTitleMuted}>DB values</Text>
+                          {Object.entries(auditResult.values_check as Record<string, any>).map(([k, v]) => (
+                            <Text key={k} style={s.auditItemMuted}>
+                              {k}: <Text style={{ color: v ? COLORS.text : '#EF4444' }}>{v == null ? 'null' : String(v)}</Text>
+                            </Text>
+                          ))}
+                        </View>
+                      )}
+                    </>
+                  )}
+
+                  {auditResult?.error && (
+                    <Text style={s.auditItemError}>Error: {auditResult.error}</Text>
+                  )}
+                </View>
+              )}
+
               {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
                 <Text style={s.expandText}>Filter details</Text>
@@ -1492,6 +1624,33 @@ const s = StyleSheet.create({
   fundProgressPct: { fontSize: 12, fontWeight: '700', color: '#F59E0B', minWidth: 36 },
   fundProgressTotal: { fontSize: 10, color: COLORS.textMuted },
   fundProgressCounts: { fontSize: 10, color: COLORS.textMuted, flex: 1 },
+
+  // ── Per-ticker audit panel ──────────────────────────────────────────────
+  auditCard: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
+  auditTitle: { fontSize: 11, fontWeight: '700', color: COLORS.text, marginBottom: 7 },
+  auditInputRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
+  auditInput: {
+    flex: 1, height: 32, borderWidth: 1, borderColor: COLORS.border,
+    borderRadius: 6, paddingHorizontal: 8, color: COLORS.text,
+    backgroundColor: COLORS.background, fontSize: 11,
+  },
+  auditLiveBtn: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, borderWidth: 1, borderColor: COLORS.border },
+  auditLiveBtnActive: { backgroundColor: '#6366F122', borderColor: '#6366F1' },
+  auditLiveBtnText: { fontSize: 10, color: COLORS.textMuted },
+  auditLiveBtnTextActive: { color: '#6366F1', fontWeight: '700' },
+  auditRunBtn: { backgroundColor: '#6366F1', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 },
+  auditRunBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  auditVerdictRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 },
+  auditVerdictBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 5 },
+  auditVerdictText: { fontSize: 11, fontWeight: '700' },
+  auditTickerLabel: { fontSize: 10, color: COLORS.textMuted },
+  auditSection: { marginBottom: 6 },
+  auditSectionTitleError: { fontSize: 10, fontWeight: '700', color: '#EF4444', marginBottom: 2 },
+  auditSectionTitleWarn:  { fontSize: 10, fontWeight: '700', color: '#F59E0B', marginBottom: 2 },
+  auditSectionTitleMuted: { fontSize: 10, fontWeight: '700', color: COLORS.textMuted, marginBottom: 2 },
+  auditItemError: { fontSize: 10, color: '#EF4444', marginBottom: 1 },
+  auditItemWarn:  { fontSize: 10, color: '#F59E0B', marginBottom: 1 },
+  auditItemMuted: { fontSize: 10, color: COLORS.textMuted, marginBottom: 1 },
 
   syncCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
   syncTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, marginBottom: 10 },
