@@ -7047,6 +7047,11 @@ async def admin_fundamentals_health():
         probe_results = await asyncio.gather(*[_probe(t) for t in sample])
         credits_used  = len(sample)  # 10 credits per call regardless of response content
 
+        corruption_sample_financials = [
+            r["ticker"] for r in probe_results
+            if r.get("provider_responded") and r.get("provider_has_financials") and r.get("db_missing_financials")
+        ][:10]
+
         corruption_estimate = {
             "suspect_tickers_found":  len(suspect_set),
             "sampled":                len(sample),
@@ -7078,6 +7083,7 @@ async def admin_fundamentals_health():
         "db_missing_earnings_count":       db_missing_earnings_count,
         "sample_size":                     SAMPLE_SIZE,
         "corruption_estimate":             corruption_estimate,
+        "corruption_sample_financials":    corruption_sample_financials,
     }
 
 
