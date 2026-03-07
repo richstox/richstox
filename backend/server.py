@@ -2210,6 +2210,145 @@ async def admin_sync_single_ticker(ticker: str):
     result = await sync_ticker_fundamentals(db, ticker)
     return result
 
+
+@api_router.get("/admin/ticker/{ticker}/fundamentals-audit")
+async def admin_fundamentals_audit(
+    ticker: str,
+    live: int = Query(0, ge=0, le=1, description="1 = make a live EODHD call (costs 10 credits); 0 = DB-only check"),
+):
+    """
+    Audit what Step 3 fetched from EODHD and what is persisted in MongoDB.
+
+    live=0 (default): DB-only — zero credits, instant.
+    live=1:           One live EODHD call (10 credits) + fetched block + mismatch.
+    """
+    from fundamentals_service import fetch_fundamentals_from_eodhd
+
+    # Preserve ticker identity; no hyphen stripping
+    t = ticker.upper().strip()
+    ticker_full = t if t.endswith(".US") else f"{t}.US"
+
+    REQUIRED_TOP_LEVEL = ["General", "SharesStats", "Financials", "Earnings"]
+
+    fetched: Dict[str, Any] = {}
+    missing: list = []
+    mismatch: list = []
+    raw_data = None
+    credits_used = 0
+
+    # ── 1. Optional live EODHD fetch (live=1 only) ───────────────────────────
+    if live == 1:
+        if not os.getenv("EODHD_API_KEY", ""):
+            fetched["error"] = "EODHD_API_KEY not configured — running in MOCK mode"
+        else:
+            ticker_plain = ticker_full.replace(".US", "")
+            raw_data = await fetch_fundamentals_from_eodhd(ticker_plain)
+            if not raw_data:
+                fetched["error"] = f"EODHD returned no data for {ticker_full}"
+            else:
+                credits_used = 10
+                general    = raw_data.get("General")    or {}
+                shares     = raw_data.get("SharesStats") or {}
+                financials = raw_data.get("Financials")  or {}
+                earnings   = raw_data.get("Earnings")    or {}
+
+                fetched = {
+                    "top_level_keys":            sorted(raw_data.keys()),
+                    "general_name":              general.get("Name"),
+                    "general_sector":            (general.get("Sector")   or "").strip() or None,
+                    "general_industry":          (general.get("Industry") or "").strip() or None,
+                    "general_currency_code":     general.get("CurrencyCode"),
+                    "shares_outstanding_raw":    shares.get("SharesOutstanding"),
+                    "financials_sections":       sorted(financials.keys()),
+                    "earnings_history_quarters": len(earnings.get("History") or {}),
+                }
+
+                for key in REQUIRED_TOP_LEVEL:
+                    if not raw_data.get(key):
+                        missing.append(f"EODHD missing top-level key: {key}")
+
+                if not fetched["general_sector"]:
+                    missing.append("EODHD General.Sector is empty or null")
+                if not fetched["general_industry"]:
+                    missing.append("EODHD General.Industry is empty or null")
+                if not fetched["shares_outstanding_raw"]:
+                    missing.append("EODHD SharesStats.SharesOutstanding is empty or null")
+
+    # ── 2. MongoDB state ─────────────────────────────────────────────────────
+    tracked   = await db.tracked_tickers.find_one({"ticker": ticker_full}, {"_id": 0})
+    cache_doc = await db.company_fundamentals_cache.find_one(
+        {"ticker": ticker_full},
+        {"_id": 0, "ticker": 1, "name": 1, "sector": 1, "industry": 1},
+    )
+    fin_count  = await db.company_financials.count_documents({"ticker": ticker_full})
+    earn_count = await db.company_earnings_history.count_documents({"ticker": ticker_full})
+
+    persisted = {
+        "company_fundamentals_cache": cache_doc is not None,
+        "tracked_ticker_exists":      tracked is not None,
+        "financial_rows":             fin_count,
+        "earnings_rows":              earn_count,
+    }
+
+    # ── 3. Values check — read directly from tracked_tickers ─────────────────
+    values_check: Dict[str, Any] = {
+        "sector":                (tracked or {}).get("sector"),
+        "industry":              (tracked or {}).get("industry"),
+        "shares_outstanding":    (tracked or {}).get("shares_outstanding"),
+        "financial_currency":    (tracked or {}).get("financial_currency"),
+        "has_classification":    (tracked or {}).get("has_classification"),
+        "fundamentals_complete": (tracked or {}).get("fundamentals_complete"),
+        "fundamentals_status":   (tracked or {}).get("fundamentals_status"),
+    }
+
+    # ── 4. Missing — from MongoDB ─────────────────────────────────────────────
+    if not values_check["sector"]:
+        missing.append("DB tracked_tickers.sector is null/empty")
+    if not values_check["industry"]:
+        missing.append("DB tracked_tickers.industry is null/empty")
+    if not values_check["shares_outstanding"]:
+        missing.append("DB tracked_tickers.shares_outstanding is null/empty")
+    if not values_check["financial_currency"]:
+        missing.append("DB tracked_tickers.financial_currency is null/empty")
+    if not values_check["has_classification"]:
+        missing.append("DB tracked_tickers.has_classification is false or null")
+    if fin_count == 0:
+        missing.append("DB company_financials: 0 rows for this ticker")
+    if earn_count == 0:
+        missing.append("DB company_earnings_history: 0 rows for this ticker")
+
+    # ── 5. Mismatch (live=1 only) ─────────────────────────────────────────────
+    if raw_data and tracked:
+        eodhd_sector   = fetched.get("general_sector")
+        eodhd_industry = fetched.get("general_industry")
+        if eodhd_sector and eodhd_sector != values_check["sector"]:
+            mismatch.append(
+                f"sector: EODHD='{eodhd_sector}' vs DB='{values_check['sector']}'"
+            )
+        if eodhd_industry and eodhd_industry != values_check["industry"]:
+            mismatch.append(
+                f"industry: EODHD='{eodhd_industry}' vs DB='{values_check['industry']}'"
+            )
+        eodhd_so = fetched.get("shares_outstanding_raw")
+        if eodhd_so is not None and eodhd_so != values_check["shares_outstanding"]:
+            mismatch.append(
+                f"shares_outstanding: EODHD={eodhd_so} vs DB={values_check['shares_outstanding']}"
+            )
+
+    return {
+        "ticker":       ticker_full,
+        "audit_at":     datetime.now(timezone.utc).isoformat(),
+        "live_mode":    live == 1,
+        "credits_used": credits_used,
+        "fetched":      fetched,
+        "persisted":    persisted,
+        "values_check": values_check,
+        "missing":      missing,
+        "mismatch":     mismatch,
+        "verdict":      "PASS" if not missing and not mismatch else "FAIL",
+    }
+
+
 @api_router.get("/admin/fundamentals/pilot-tickers")
 async def admin_pilot_tickers():
     """Get list of pilot tickers."""

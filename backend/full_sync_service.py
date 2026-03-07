@@ -495,6 +495,13 @@ async def _process_fundamentals_ticker(
         f"HasClass: {has_classification}"
     )
 
+    # Pull shares_outstanding directly from the raw EODHD payload (source of truth)
+    shares_stats = data.get("SharesStats") or {}
+    shares_outstanding = shares_stats.get("SharesOutstanding")
+
+    from utils.currency_utils import extract_statement_currency
+    financial_currency = extract_statement_currency(data)
+
     await db.tracked_tickers.update_one(
         {"ticker": ticker_us},
         {"$set": {
@@ -502,9 +509,11 @@ async def _process_fundamentals_ticker(
             "needs_fundamentals_refresh": False,
             "fundamentals_status": "complete",
             "fundamentals_updated_at": now,
-            "sector": sector or None,
-            "industry": industry or None,
+            "sector":             sector   or None,
+            "industry":           industry or None,
             "has_classification": has_classification,
+            "shares_outstanding": shares_outstanding,
+            "financial_currency": financial_currency,
         }},
     )
 
