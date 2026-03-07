@@ -6923,19 +6923,23 @@ async def admin_get_fundamentals_progress():
 @api_router.get("/admin/pipeline/fundamentals-health")
 async def admin_fundamentals_health():
     """
-    Read-only health check for all tickers with fundamentals_status == "complete".
-    Identifies how many are missing data due to the previous broken parser.
+    Read-only health check for all tickers with fundamentals_status == 'complete'.
 
-    Cross-collection checks (missing_financials, missing_earnings) use
-    distinct() set-difference — efficient for ~3-4k tickers.
+    Phase 1 (free):    DB-only counts of missing fields / rows.
+    Phase 2 (credits): Sample up to 50 suspect tickers, fetch live from EODHD,
+                       count real corruption (provider-has-data but DB-missing).
+    Max cost: 50 x 10 = 500 EODHD credits per call.
     """
-    # ── 1. Baseline count ────────────────────────────────────────────────────
+    import random
+    from fundamentals_service import fetch_fundamentals_from_eodhd
+
+    # ── Phase 1: DB-only counts (free) ───────────────────────────────────────
+
     total_complete = await db.tracked_tickers.count_documents(
         {"fundamentals_status": "complete"}
     )
 
-    # ── 2. Missing shares_outstanding ────────────────────────────────────────
-    missing_shares = await db.tracked_tickers.count_documents({
+    db_missing_shares_count = await db.tracked_tickers.count_documents({
         "fundamentals_status": "complete",
         "$or": [
             {"shares_outstanding": None},
@@ -6943,21 +6947,14 @@ async def admin_fundamentals_health():
         ],
     })
 
-    # ── 3. Missing classification (sector OR industry null/empty) ─────────────
-    missing_classification = await db.tracked_tickers.count_documents({
+    db_missing_classification_count = await db.tracked_tickers.count_documents({
         "fundamentals_status": "complete",
         "$or": [
-            {"sector":   None},
-            {"sector":   ""},
-            {"sector":   {"$exists": False}},
-            {"industry": None},
-            {"industry": ""},
-            {"industry": {"$exists": False}},
+            {"sector":   None}, {"sector":   ""},  {"sector":   {"$exists": False}},
+            {"industry": None}, {"industry": ""},  {"industry": {"$exists": False}},
         ],
     })
 
-    # ── 4 & 5. Cross-collection checks ───────────────────────────────────────
-    # Fetch all complete tickers once, then diff against each collection.
     complete_tickers: list = await db.tracked_tickers.distinct(
         "ticker", {"fundamentals_status": "complete"}
     )
@@ -6974,21 +6971,113 @@ async def admin_fundamentals_health():
         )
     )
 
-    missing_financials = len(complete_set - tickers_with_financials)
-    missing_earnings   = len(complete_set - tickers_with_earnings)
+    missing_fin_set  = complete_set - tickers_with_financials
+    missing_earn_set = complete_set - tickers_with_earnings
 
-    # ── 6. Summary verdict ───────────────────────────────────────────────────
-    needs_reprocess = max(missing_shares, missing_financials, missing_earnings)
+    db_missing_financials_count = len(missing_fin_set)
+    db_missing_earnings_count   = len(missing_earn_set)
+
+    # ── Phase 2: Corruption sample (live EODHD calls) ────────────────────────
+
+    SAMPLE_SIZE = 50
+    corruption_estimate: Dict[str, Any] = {
+        "skipped": "EODHD_API_KEY not configured — MOCK mode"
+    }
+
+    if os.getenv("EODHD_API_KEY", ""):
+        missing_shares_tickers: list = await db.tracked_tickers.distinct(
+            "ticker",
+            {
+                "fundamentals_status": "complete",
+                "$or": [
+                    {"shares_outstanding": None},
+                    {"shares_outstanding": {"$exists": False}},
+                ],
+            },
+        )
+        missing_class_tickers: list = await db.tracked_tickers.distinct(
+            "ticker",
+            {
+                "fundamentals_status": "complete",
+                "$or": [
+                    {"sector":   None}, {"sector":   ""},
+                    {"industry": None}, {"industry": ""},
+                ],
+            },
+        )
+
+        suspect_set = (
+            missing_fin_set
+            | missing_earn_set
+            | set(missing_shares_tickers)
+            | set(missing_class_tickers)
+        )
+
+        sample = random.sample(sorted(suspect_set), min(SAMPLE_SIZE, len(suspect_set)))
+
+        async def _probe(ticker_full: str) -> Dict[str, Any]:
+            ticker_plain = ticker_full.replace(".US", "")
+            data = await fetch_fundamentals_from_eodhd(ticker_plain)
+            if not data:
+                return {"ticker": ticker_full, "provider_responded": False}
+            general    = data.get("General")    or {}
+            shares     = data.get("SharesStats") or {}
+            financials = data.get("Financials")  or {}
+            earnings   = data.get("Earnings")    or {}
+            sector_raw   = (general.get("Sector")   or "").strip()
+            industry_raw = (general.get("Industry") or "").strip()
+            # At least one financial statement section must contain at least one period
+            has_financials = any(
+                isinstance(financials.get(stmt), dict) and bool(financials[stmt])
+                for stmt in ("Income_Statement", "Balance_Sheet", "Cash_Flow")
+            )
+            return {
+                "ticker":                      ticker_full,
+                "provider_responded":          True,
+                "provider_has_shares":         bool(shares.get("SharesOutstanding")),
+                "provider_has_classification": bool(sector_raw and industry_raw),
+                "provider_has_financials":     has_financials,
+                "provider_has_earnings":       bool(earnings.get("History")),
+                "db_missing_financials":       ticker_full in missing_fin_set,
+                "db_missing_earnings":         ticker_full in missing_earn_set,
+                "db_missing_shares":           ticker_full in set(missing_shares_tickers),
+                "db_missing_classification":   ticker_full in set(missing_class_tickers),
+            }
+
+        probe_results = await asyncio.gather(*[_probe(t) for t in sample])
+        credits_used  = len(sample)  # 10 credits per call regardless of response content
+
+        corruption_estimate = {
+            "suspect_tickers_found":  len(suspect_set),
+            "sampled":                len(sample),
+            "credits_used":           credits_used * 10,
+            "provider_has_financials_but_db_missing": sum(
+                1 for r in probe_results
+                if r.get("provider_responded") and r.get("provider_has_financials") and r.get("db_missing_financials")
+            ),
+            "provider_has_earnings_but_db_missing": sum(
+                1 for r in probe_results
+                if r.get("provider_responded") and r.get("provider_has_earnings") and r.get("db_missing_earnings")
+            ),
+            "provider_has_shares_but_db_missing": sum(
+                1 for r in probe_results
+                if r.get("provider_responded") and r.get("provider_has_shares") and r.get("db_missing_shares")
+            ),
+            "provider_has_classification_but_db_missing": sum(
+                1 for r in probe_results
+                if r.get("provider_responded") and r.get("provider_has_classification") and r.get("db_missing_classification")
+            ),
+        }
 
     return {
-        "checked_at":             datetime.now(timezone.utc).isoformat(),
-        "total_complete":         total_complete,
-        "missing_shares":         missing_shares,
-        "missing_classification": missing_classification,
-        "missing_financials":     missing_financials,
-        "missing_earnings":       missing_earnings,
-        "needs_reprocess":        needs_reprocess,
-        "verdict":                "HEALTHY" if needs_reprocess == 0 else "BROKEN_DATA_DETECTED",
+        "checked_at":                      datetime.now(timezone.utc).isoformat(),
+        "total_complete":                  total_complete,
+        "db_missing_shares_count":         db_missing_shares_count,
+        "db_missing_classification_count": db_missing_classification_count,
+        "db_missing_financials_count":     db_missing_financials_count,
+        "db_missing_earnings_count":       db_missing_earnings_count,
+        "sample_size":                     SAMPLE_SIZE,
+        "corruption_estimate":             corruption_estimate,
     }
 
 
