@@ -5282,6 +5282,103 @@ async def admin_clear_cancel_flag(job_name: str):
     return {"job_name": job_name, "cancel_cleared": True}
 
 
+@api_router.post("/admin/jobs/enqueue-manual-refresh/run")
+async def admin_enqueue_manual_refresh():
+    """
+    Enqueue manual fundamentals refresh for 28 tickers confirmed stuck in Step 3.
+
+    For each ticker:
+      - Ensures exactly ONE fundamentals_events doc per (ticker, event_type='manual_refresh').
+        pending/processing → touch updated_at only.
+        terminal status   → reset to pending, clear finished timestamps.
+        missing           → insert fresh.
+      - Sets tracked_tickers.needs_fundamentals_refresh=True so the skip-gate
+        in run_fundamentals_changes_sync lets the ticker through.
+
+    Protected by AdminAuthMiddleware (same as all /api/admin/* endpoints).
+    Run Step 3 after calling this endpoint.
+    """
+    _REFRESH_TICKERS = [
+        "AME.US", "AMP.US", "AMRC.US", "AMX.US", "AON.US", "APAM.US",
+        "APLE.US", "APTV.US", "AR.US", "AREN.US", "ARL.US", "AROC.US",
+        "AS.US", "ASC.US", "ASIX.US", "ASX.US", "ATNM.US", "AVA.US",
+        "AVD.US", "AWX.US", "AXIA-P.US", "AXS.US", "AZTR.US", "BABA.US",
+        "BALL.US", "BB.US", "BBU.US", "BCC.US",
+    ]
+
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _PRAGUE_TZ = _ZoneInfo("Europe/Prague")
+
+    now = datetime.now(timezone.utc)
+    event_type = "manual_refresh"
+    source_job = "admin_enqueue_manual_refresh"
+
+    inserted = 0
+    reset = 0
+    skipped = 0
+    flags_set = 0
+    detail_rows = []
+
+    for ticker in _REFRESH_TICKERS:
+        existing = await db.fundamentals_events.find_one(
+            {"ticker": ticker, "event_type": event_type},
+            {"_id": 1, "status": 1},
+        )
+
+        if existing is None:
+            await db.fundamentals_events.insert_one({
+                "ticker":        ticker,
+                "event_type":    event_type,
+                "status":        "pending",
+                "source_job":    source_job,
+                "detector_step": "manual",
+                "created_at":    now,
+                "updated_at":    now,
+            })
+            inserted += 1
+            action = "inserted"
+        elif existing["status"] in ("pending", "processing"):
+            await db.fundamentals_events.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"updated_at": now}},
+            )
+            skipped += 1
+            action = "skipped"
+        else:
+            await db.fundamentals_events.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {
+                    "status":         "pending",
+                    "source_job":     source_job,
+                    "updated_at":     now,
+                    "completed_at":   None,
+                    "skipped_at":     None,
+                    "deduped_at":     None,
+                    "skipped_reason": None,
+                }},
+            )
+            reset += 1
+            action = "reset"
+
+        flag_result = await db.tracked_tickers.update_one(
+            {"ticker": ticker},
+            {"$set": {"needs_fundamentals_refresh": True, "updated_at": now}},
+        )
+        if flag_result.modified_count:
+            flags_set += 1
+
+        detail_rows.append({"ticker": ticker, "action": action})
+
+    return {
+        "inserted":          inserted,
+        "reset":             reset,
+        "skipped":           skipped,
+        "flags_set":         flags_set,
+        "tickers_processed": len(_REFRESH_TICKERS),
+        "detail":            detail_rows,
+    }
+
+
 @api_router.get("/admin/jobs/{job_name}/status")
 async def admin_job_status(job_name: str):
     """Get the latest run status for a specific job."""
