@@ -273,26 +273,27 @@ async def save_universe_seed_exclusion_report(
 ) -> Dict[str, Any]:
     """
     Save Step 1 exclusion rows to shared pipeline exclusion report collection.
-    One report date can include multiple steps; this function rewrites only Step 1 rows.
+    Rewrites ONLY Step 1 rows for this report_date (never touches other steps).
 
-    Guarantees strict identity: raw_symbols_fetched == seeded_count + rows_written.
+    Strict identity guaranteed: raw_symbols_fetched == seeded_count + filtered_out_total_step1
+    where raw_symbols_fetched == len(today_fetched_set).
 
-    today_fetched_set: normalised (upper, non-empty) codes from the current run's
-    distinct_sym_by_code. When provided, only exclusion rows whose ticker is in
-    that set are written — rows for tickers outside today's payload are dropped.
-    Exactly one row per ticker (first-seen reason wins).
-    filtered_out_total_step1 is set to raw_symbols_fetched - seeded_count so
-    the card invariant (input = output + filtered) always holds.
+    today_fetched_set: the exact distinct universe from this run (non-empty codes
+    + "(empty)" representative). Only rows whose ticker ∈ today_fetched_set are
+    written. Exactly one row per ticker (first-seen reason wins).
+    filtered_out_total_step1 = max(raw_symbols_fetched - seeded_count, 0).
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"universe_seed_{now.strftime('%Y%m%d_%H%M%S')}"
 
+    # Safety: delete ONLY Step 1 rows — never touch other steps for this date.
     await db.pipeline_exclusion_report.delete_many({
         "report_date": report_date,
         "step": STEP1_REPORT_STEP,
     })
 
-    # Canonical filtered_out: arithmetic from fetched/seeded — card identity source.
+    today_fetched_set_count = len(today_fetched_set) if today_fetched_set is not None else raw_symbols_fetched
+    # Canonical filtered_out: arithmetic — single source of truth for card invariant.
     filtered_out_total = max(raw_symbols_fetched - seeded_count, 0)
 
     if not rows:
@@ -303,6 +304,7 @@ async def save_universe_seed_exclusion_report(
             "filtered_out_total_step1": filtered_out_total,
             "_debug": {
                 "raw_symbols_fetched": raw_symbols_fetched,
+                "today_fetched_set_count": today_fetched_set_count,
                 "seeded_count": seeded_count,
                 "filtered_out_total": filtered_out_total,
                 "rows_before_filter": 0,
@@ -311,10 +313,9 @@ async def save_universe_seed_exclusion_report(
             },
         }
 
-    # Step 1: gate — only keep rows whose ticker is in today's fetched payload.
+    # Gate: only rows whose ticker ∈ today_fetched_set (one-row-per-ticker universe).
     rows_before_filter = len(rows)
     if today_fetched_set is not None:
-        # "(empty)" sentinel rows are always included (they represent empty-code syms).
         gated = [
             r for r in rows
             if (r.get("ticker") or "").upper() in today_fetched_set
@@ -324,7 +325,7 @@ async def save_universe_seed_exclusion_report(
         gated = rows
     rows_dropped = rows_before_filter - len(gated)
 
-    # Step 2: deduplicate — one row per ticker, first-seen reason wins.
+    # Dedup: one row per ticker, first-seen reason wins.
     seen: set = set()
     deduped: List[Dict[str, Any]] = []
     for row in gated:
@@ -336,15 +337,15 @@ async def save_universe_seed_exclusion_report(
     docs = []
     for row in deduped:
         docs.append({
-            "ticker": row.get("ticker", "(empty)"),
-            "name": row.get("name", "(unknown)"),
-            "step": row.get("step", STEP1_REPORT_STEP),
-            "reason": row.get("reason", "Unknown"),
-            "exchange": row.get("exchange"),
+            "ticker":      row.get("ticker", "(empty)"),
+            "name":        row.get("name", "(unknown)"),
+            "step":        row.get("step", STEP1_REPORT_STEP),
+            "reason":      row.get("reason", "Unknown"),
+            "exchange":    row.get("exchange"),
             "report_date": report_date,
-            "source_job": "universe_seed",
-            "run_id": run_id,
-            "created_at": now,
+            "source_job":  "universe_seed",
+            "run_id":      run_id,
+            "created_at":  now,
         })
 
     if docs:
@@ -354,10 +355,11 @@ async def save_universe_seed_exclusion_report(
         "exclusion_report_date": report_date,
         "exclusion_report_rows": rows_written,
         "exclusion_report_run_id": run_id,
-        # Canonical: arithmetic invariant, not row count.
+        # Arithmetic invariant — card uses this, not rows_written.
         "filtered_out_total_step1": filtered_out_total,
         "_debug": {
             "raw_symbols_fetched": raw_symbols_fetched,
+            "today_fetched_set_count": today_fetched_set_count,
             "seeded_count": seeded_count,
             "filtered_out_total": filtered_out_total,
             "rows_before_filter": rows_before_filter,
@@ -471,14 +473,19 @@ async def sync_ticker_whitelist(
                 sym_with_exchange["_exchange"] = exchange
                 distinct_sym_by_code[key] = sym_with_exchange
 
-    result["fetched"] = len(distinct_sym_by_code)
     result["fetched_raw_per_exchange"] = raw_per_exchange
 
-    # today_fetched_set: normalised codes actually in this run's payload.
-    # Used to gate exclusion rows so only in-payload tickers are written.
+    # today_fetched_set: the canonical distinct universe for this run.
+    # Non-empty codes + one "(empty)" representative if empty-code symbols exist.
+    # result["fetched"] = len(today_fetched_set) so that:
+    #   result["fetched"] == seeded_count + filtered_out_total_step1 strictly.
     today_fetched_set: set = {
         k for k in distinct_sym_by_code if not k.startswith("__EMPTY_")
     }
+    if _empty_counter > 0:
+        today_fetched_set.add("(empty)")
+
+    result["fetched"] = len(today_fetched_set)
 
     # Group distinct symbols by their assigned exchange for per-exchange filtering.
     from collections import defaultdict as _defaultdict
