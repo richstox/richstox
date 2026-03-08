@@ -40,6 +40,10 @@ logger = logging.getLogger("richstox.scheduler")
 # Constants
 SCHEDULER_CONFIG_KEY = "scheduler_enabled"
 SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
+# Canonical Step 3 universe — tickers that are seeded and have price data.
+# This is the exact filter used by universe_counts_service step3_query and
+# is the source of truth for "Tickers with prices" on the Step 3 pipeline card.
+STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP2_REPORT_STEP = "Step 2 - Price Sync"
 
@@ -1174,7 +1178,11 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             detector_step="3.0",
         )
 
-        # Get ALL pending events up to batch_size tickers
+        # Canonical Step 3 universe total — informational only (stored in details).
+        universe_total = await db.tracked_tickers.count_documents(STEP3_QUERY)
+
+        # Fetch pending events normally (no universe filter on the events collection —
+        # avoids a potentially large $in on fundamentals_events).
         pending_events = await db.fundamentals_events.find(
             {"status": "pending"},
             {"ticker": 1, "event_type": 1, "created_at": 1}
@@ -1190,6 +1198,20 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             events_by_ticker.setdefault(ticker_full, []).append(event)
 
         tickers_to_sync = [t.replace(".US", "") for t in events_by_ticker.keys()]
+
+        # Filter tickers_to_sync to the canonical Step 3 universe using a single
+        # targeted distinct query (avoids large in-memory set pre-build).
+        if tickers_to_sync:
+            tickers_us = [t if t.endswith(".US") else f"{t}.US" for t in tickers_to_sync]
+            eligible_us = set(
+                await db.tracked_tickers.distinct(
+                    "ticker", {**STEP3_QUERY, "ticker": {"$in": tickers_us}}
+                )
+            )
+            tickers_to_sync = [
+                t for t in tickers_to_sync
+                if (t if t.endswith(".US") else f"{t}.US") in eligible_us
+            ]
         requested_event_types: Dict[str, int] = {}
         for event_group in events_by_ticker.values():
             for event in event_group:
@@ -1215,7 +1237,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         else:
             total = len(tickers_to_sync)
             await _progress(f"Processing {total} tickers (parallel, 20 concurrent)…")
-            logger.info(f"{job_name}: processing {total} tickers in parallel")
+            logger.info(f"{job_name}: processing {total} tickers in parallel (universe={universe_total})")
 
             # Parallel processing — 20 concurrent requests
             CONCURRENCY = 20
@@ -1329,6 +1351,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         result["started_at_prague"] = _to_prague_iso(started_at)
         result["finished_at_prague"] = _to_prague_iso(finished_at)
         result["log_timezone"] = "Europe/Prague"
+        result["universe_total"] = universe_total  # informational only
+
+        total_to_sync = len(tickers_to_sync) if tickers_to_sync else 0
 
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
@@ -1339,7 +1364,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "finished_at_prague": _to_prague_iso(finished_at),
                 "log_timezone": "Europe/Prague",
                 "details": result,
-                "progress": None,
+                "progress": (
+                    f"Fundamentals sync: {result['success']}/{total_to_sync} done "
+                    f"(✓{result['success']} ✗{result['failed']})"
+                ),
+                "progress_processed": done_count if tickers_to_sync else 0,
+                "progress_total":     total_to_sync,
+                "progress_pct":       round(done_count / total_to_sync * 100) if total_to_sync else 0,
                 **({"cancelled_at": finished_at} if result["status"] == "cancelled" else {}),
             }}
         )

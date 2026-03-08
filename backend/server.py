@@ -4926,6 +4926,7 @@ from scheduler_service import (
     run_daily_price_sync,
     run_fundamentals_changes_sync,
     run_price_backfill_gaps,
+    STEP3_QUERY,
 )
 
 @api_router.get("/admin/scheduler/status")
@@ -5293,29 +5294,25 @@ async def admin_job_status(job_name: str):
     )
     cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
 
-    # Real-time DB counts for fundamentals jobs
+    # Real-time DB counts for fundamentals jobs — scoped to the canonical Step 3
+    # universe (NYSE+NASDAQ Common Stock with price data) so they match the
+    # "Tickers with prices" count shown in the Step 3 pipeline card.
     db_complete_count: Optional[int] = None
     db_pending_count:  Optional[int] = None
+    db_total_count:    Optional[int] = None
     if job_name in ("fundamentals_sync", "full_fundamentals_sync"):
+        # Use the canonical STEP3_QUERY imported from scheduler_service —
+        # same constant the job itself now uses for universe scoping.
+        db_total_count = await db.tracked_tickers.count_documents(STEP3_QUERY)
         db_complete_count = await db.tracked_tickers.count_documents(
-            {"fundamentals_status": "complete"}
+            {**STEP3_QUERY, "fundamentals_status": "complete"}
         )
+        # db_pending_count = tickers in the Step 3 universe that still need
+        # fundamentals fetched (null/missing status or explicit "pending").
+        # These are not integrity failures — they simply haven't been synced yet.
         db_pending_count = await db.tracked_tickers.count_documents(
-            {"fundamentals_status": {"$in": ["pending", None]}}
+            {**STEP3_QUERY, "fundamentals_status": {"$in": ["pending", None]}}
         )
-
-    # For fundamentals_sync: rewrite progress string so "done" number equals
-    # actual DB count. Parse total from existing progress string via regex.
-    if job_name == "fundamentals_sync" and run is not None and db_complete_count is not None:
-        import re
-        run = dict(run)  # mutable copy so we can overwrite progress
-        existing_progress = run.get("progress") or ""
-        m = re.search(r"(\d+)/(\d+)\s+done", existing_progress)
-        total = int(m.group(2)) if m else 0
-        if total > 0:
-            run["progress"] = f"{db_complete_count}/{total} done (✓{db_complete_count} X0)"
-        else:
-            run["progress"] = f"{db_complete_count} done (✓{db_complete_count} X0)"
 
     return {
         "job_name":          job_name,
@@ -5323,6 +5320,7 @@ async def admin_job_status(job_name: str):
         "cancel_requested":  bool(cancel_flag),
         "db_complete_count": db_complete_count,
         "db_pending_count":  db_pending_count,
+        "db_total_count":    db_total_count,
     }
 
 
