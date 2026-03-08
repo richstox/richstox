@@ -1125,10 +1125,12 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
         "industry": {"$nin": [None, ""]},
     }
 
-    # Filtered-out = classified AND is_visible=False.
-    # Consistent with visible_total = classified AND is_visible=True,
-    # so classified_total = visible_total + filtered_out_total (no nulls gap).
-    _filtered_query = {**_classified_query, "is_visible": False}
+    # Filtered-out = classified AND NOT visible.
+    # Use $ne:True (not False) to include tickers where is_visible is null/missing —
+    # tickers that are classified but were never processed by recompute_visibility_all
+    # (e.g. they fail shares/currency gates so the recompute cursor skips them)
+    # are legitimately not visible and must appear in the exclusion report.
+    _filtered_query = {**_classified_query, "is_visible": {"$ne": True}}
 
     # Snapshot counts matching the canonical Step 4 funnel.
     step4_card_classified_count = await db.tracked_tickers.count_documents(_classified_query)

@@ -199,10 +199,18 @@ async def recompute_visibility_all(db) -> Dict[str, Any]:
 
     logger.info(f"Starting visibility recompute job: {job_id}")
 
-    # Canonical filter for "Classified tickers" — reuses the existing
-    # get_canonical_sieve_query() defined in this file, which is the same
-    # query used by the admin counts endpoint for Step 4.
-    _CLASSIFIED_FILTER = get_canonical_sieve_query()
+    # Canonical filter for "Classified tickers" — exchange+Common Stock+price+sector+industry.
+    # Must NOT pre-filter on shares_outstanding or financial_currency here; those are
+    # visibility gates evaluated per-ticker by compute_visibility() below.  Pre-filtering
+    # would leave tickers with null is_visible (never set to False) which then disappear
+    # from the exclusion report and cause classified − visible count mismatches.
+    _CLASSIFIED_FILTER = {
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "has_price_data": True,
+        "sector":   {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+    }
 
     total = await db.tracked_tickers.count_documents(_CLASSIFIED_FILTER)
 
