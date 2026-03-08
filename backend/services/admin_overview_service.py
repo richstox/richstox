@@ -83,6 +83,8 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         doc["raw_symbols_fetched"] = result.get("fetched") or None
         # Canonical Step 1 filtered_out = deduped exclusion rows written (universe_seed only)
         doc["filtered_out_total_step1"] = result.get("filtered_out_total_step1") or None
+        # Per-exchange raw counts before distinct deduplication (universe_seed only)
+        doc["fetched_raw_per_exchange"] = result.get("fetched_raw_per_exchange") or None
         last_runs[job_name] = doc
 
     return last_runs

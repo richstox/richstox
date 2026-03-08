@@ -566,6 +566,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
   const filteredOutStep1 = (jobRuns['universe_seed'] as any)?.filtered_out_total_step1 as number | undefined;
+  const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
   const seeded = counts.seeded_us_total;
   const withPrice = counts.with_price_data;
   const withClass = counts.with_classification;
@@ -952,6 +953,22 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.runLabel}>Next run:</Text>
                     <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
+                </View>
+              )}
+
+              {step.job_name === 'universe_seed' && (rawSymbols !== undefined || rawPerExchange) && (
+                <View style={s.substepsCard}>
+                  <Text style={s.substepsTitle}>Step 1 raw breakdown</Text>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Raw distinct (fetched)</Text>
+                    <Text style={s.substepValue}>{rawSymbols !== undefined ? fmt(rawSymbols) : '—'}</Text>
+                  </View>
+                  {rawPerExchange && Object.entries(rawPerExchange).map(([exch, n]) => (
+                    <View key={exch} style={s.substepRow}>
+                      <Text style={s.substepName}>{exch} (raw before dedup)</Text>
+                      <Text style={s.substepValue}>{fmt(n as number)}</Text>
+                    </View>
+                  ))}
                 </View>
               )}
 
