@@ -378,12 +378,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           }
           stopPolling();
           setRunningJob(null);
+          // Persist final Step 4 progress on completion so the bar shows 100%
+          if (jobName === 'compute_visible_universe' && lastRun.progress_total) {
+            setStep4Progress({
+              processed: lastRun.progress_total,
+              total:     lastRun.progress_total,
+              pct:       100,
+            });
+          }
           if (st === 'cancelled') {
-            setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancelled' }));
+            setRunResult(prev => ({ ...prev, [jobName]: 'Cancelled' }));
           } else if (st === 'failed' || st === 'error') {
-            setRunResult(prev => ({ ...prev, [jobName]: `❌ ${st}` }));
+            setRunResult(prev => ({ ...prev, [jobName]: `Failed: ${st}` }));
           } else {
-            setRunResult(prev => ({ ...prev, [jobName]: `✅ ${st}` }));
+            setRunResult(prev => ({ ...prev, [jobName]: `Completed: ${st}` }));
           }
           fetchData();
         }
@@ -436,14 +444,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             },
           };
         });
-        setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || '⏳ Running…' }));
+        setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || 'Running…' }));
         startPolling(jobName, triggeredAt);
       } else {
-        setRunResult(prev => ({ ...prev, [jobName]: `❌ ${json.error || json.detail || res.statusText}` }));
+        setRunResult(prev => ({ ...prev, [jobName]: `Error: ${json.error || json.detail || res.statusText}` }));
         setRunningJob(null);
       }
     } catch (e: any) {
-      setRunResult(prev => ({ ...prev, [jobName]: `❌ ${e.message}` }));
+      setRunResult(prev => ({ ...prev, [jobName]: `Error: ${e.message}` }));
       setRunningJob(null);
     }
   };
@@ -466,7 +474,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     // Remove spinner immediately; fundProgressPollRef keeps running and
     // auto-stops once the backend clears ops_config (run_active → false).
     setRunningJob(null);
-    setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancelling…' }));
+    setRunResult(prev => ({ ...prev, [jobName]: 'Cancelling…' }));
 
     // One deferred confirmation check (~4 s) to flip "Cancelling" → "Cancelled"
     // once the backend cancel_event has propagated and the job has stopped.
@@ -481,7 +489,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const json = await res.json();
         const st = json.last_run?.status;
         if (st && st !== 'running') {
-          setRunResult(prev => ({ ...prev, [jobName]: '🛑 Cancelled' }));
+          setRunResult(prev => ({ ...prev, [jobName]: 'Cancelled' }));
           fetchData();
         }
       } catch {}
@@ -502,14 +510,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       );
       const json = await res.json();
       if (res.ok) {
-        setRunResult(prev => ({ ...prev, [jobName]: '⏳ Running… (may take 15–30 min)' }));
+        setRunResult(prev => ({ ...prev, [jobName]: 'Running… (may take 15–30 min)' }));
         startPolling(jobName, triggeredAt);
       } else {
-        setRunResult(prev => ({ ...prev, [jobName]: `❌ ${json.detail || res.statusText}` }));
+        setRunResult(prev => ({ ...prev, [jobName]: `Error: ${json.detail || res.statusText}` }));
         setRunningJob(null);
       }
     } catch (e: any) {
-      setRunResult(prev => ({ ...prev, [jobName]: `❌ ${e.message}` }));
+      setRunResult(prev => ({ ...prev, [jobName]: `Error: ${e.message}` }));
       setRunningJob(null);
     }
   };

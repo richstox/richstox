@@ -198,7 +198,12 @@ async def recompute_visibility_all(db) -> Dict[str, Any]:
 
     logger.info(f"Starting visibility recompute job: {job_id}")
 
-    total = await db.tracked_tickers.count_documents({})
+    # Canonical filter for "Classified tickers" — reuses the existing
+    # get_canonical_sieve_query() defined in this file, which is the same
+    # query used by the admin counts endpoint for Step 4.
+    _CLASSIFIED_FILTER = get_canonical_sieve_query()
+
+    total = await db.tracked_tickers.count_documents(_CLASSIFIED_FILTER)
 
     # Pre-snapshot: tickers that were already invisible BEFORE this run.
     # Cleanup is only allowed for members of this set.
@@ -236,7 +241,7 @@ async def recompute_visibility_all(db) -> Dict[str, Any]:
     batch_ops: list = []
     processed = 0
 
-    async for ticker_doc in db.tracked_tickers.find({}):
+    async for ticker_doc in db.tracked_tickers.find(_CLASSIFIED_FILTER):
         ticker = ticker_doc.get("ticker", "")
         is_visible, failed_reason = compute_visibility(ticker_doc)
 
@@ -335,7 +340,7 @@ async def recompute_visibility_all(db) -> Dict[str, Any]:
             "finished_at":        completed_at,
             "finished_at_prague": completed_at.astimezone(PRAGUE).isoformat(),
             "progress":           f"Done: {stats['now_visible']:,} visible / {total:,} total",
-            "progress_processed": processed,
+            "progress_processed": total,
             "progress_total":     total,
             "progress_pct":       100,
             "details":            result,
