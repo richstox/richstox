@@ -101,6 +101,7 @@ interface PipelineExclusionReport {
   empty_report_hint?: string | null;
   rows: PipelineExclusionRow[];
   by_reason: Record<string, number>;
+  latest_run_id_per_step?: Record<string, string> | null;
   step1_counts?: {
     raw_distinct?: number;
     seeded_count?: number;
@@ -206,7 +207,27 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       ]);
 
       if (overviewRes.ok) setData(await overviewRes.json());
-      if (exclusionRes.ok) setExclusionReport(await exclusionRes.json());
+      if (exclusionRes.ok) {
+        const excl = await exclusionRes.json();
+        // Fetch step1_counts by re-querying with the latest Step 1 run_id so
+        // seededFromRun is available without backend changes to the default path.
+        const step1RunId: string | undefined =
+          (excl as any)?.latest_run_id_per_step?.['Step 1 - Universe Seed'];
+        if (step1RunId) {
+          try {
+            const s1Res = await authenticatedFetch(
+              `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(step1RunId)}&limit=0`,
+              {},
+              sessionToken,
+            );
+            if (s1Res.ok) {
+              const s1Data = await s1Res.json();
+              excl.step1_counts = s1Data.step1_counts ?? null;
+            }
+          } catch (_) { /* non-fatal */ }
+        }
+        setExclusionReport(excl);
+      }
     } catch (e) {
       console.error(e);
     } finally {

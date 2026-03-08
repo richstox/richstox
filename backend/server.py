@@ -6893,23 +6893,11 @@ async def admin_get_pipeline_exclusion_report(
 
     # When run_id_filter is a Step 1 run_id, enrich response with reconciliation
     # debug from the matching ops_job_runs document.
-    # When no run_id_filter, populate step1_counts from the latest Step 1 run.
     step1_reconciliation = None
     step1_counts = None
-
-    # Resolve the Step 1 run_id to look up: prefer the explicit filter, else latest.
-    _step1_lookup_run_id = None
     if run_id and run_id.startswith("universe_seed_"):
-        _step1_lookup_run_id = run_id
-    elif not run_id:
-        # Use the latest run_id for Step 1 already computed above.
-        _step1_lookup_run_id = latest_run_id_per_step.get(
-            "Step 1 - Universe Seed"
-        )
-
-    if _step1_lookup_run_id:
         seed_run_doc = await db.ops_job_runs.find_one(
-            {"job_name": "universe_seed", "result.exclusion_report_run_id": _step1_lookup_run_id},
+            {"job_name": "universe_seed", "result.exclusion_report_run_id": run_id},
             {"_id": 0, "result": 1},
         )
         if seed_run_doc and seed_run_doc.get("result"):
@@ -6921,7 +6909,7 @@ async def admin_get_pipeline_exclusion_report(
                 "seeded_count": r.get("seeded_total"),
                 "filtered_out_total_step1": r.get("filtered_out_total_step1"),
                 "fetched_raw_per_exchange": r.get("fetched_raw_per_exchange"),
-                "run_id": _step1_lookup_run_id,
+                "run_id": run_id,
             }
 
     return {
