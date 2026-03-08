@@ -1,6 +1,6 @@
 # HANDOVER.md
 
-> Last updated: 2026-03-08 — Step 3/Step 4 universe alignment + orphan purge + docs
+> Last updated: 2026-03-08 — Step 3/Step 4 universe alignment + orphan purge + docs (55f3f6b)
 
 ---
 
@@ -14,6 +14,7 @@ Recent commits (newest → oldest):
 
 | Hash | Description |
 |------|-------------|
+| `55f3f6b` | docs(agents): remove unverified pipeline steps; add known issue + planned fix |
 | `4ca7b18` | docs: rewrite HANDOVER.md + fix AGENTS.md (remove unverified claims) |
 | `29e3353` | feat(step3): purge orphaned fundamentals_events at job start |
 | `cd56086` | fix(step3): scope fundamentals_sync universe to canonical STEP3_QUERY |
