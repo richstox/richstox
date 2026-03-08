@@ -36,6 +36,35 @@
 - Do not open or attempt to solve a second problem until the first one is fully resolved, tested, and explicitly closed by Richard.
 - Each task follows the cycle: Propose → Approve → Implement → Test → Richard confirms done.
 
+### UI copy policy
+
+- **Do NOT change UI copy (labels, descriptions, strings) unless Richard explicitly requests it.**
+- If a backend logic change affects what the UI displays (e.g. new fields, renamed statuses, changed counts), flag the impact to Richard and wait for explicit GO before updating frontend copy.
+- No emojis in UI run-result strings — use plain text (e.g. "Cancelled", "Error", "Running").
+
+### Step 3/Step 4 canonical definitions and governance
+
+**Canonical Step 3 universe — STEP3_QUERY (single source of truth)**
+```python
+SEED_QUERY  = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
+STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
+```
+- Defined in `backend/scheduler_service.py`. Also matches `step3_query` in `universe_counts_service.py`.
+- **Never invent a new filter for Step 3 universe.** Always reuse `STEP3_QUERY`.
+
+**Step 3 is event-driven — HARD RULE**
+- `run_fundamentals_changes_sync` processes from `fundamentals_events` queue. It must NOT iterate all tickers.
+- Progress denominator = event batch size, not full universe.
+- `universe_total` goes in `ops_job_runs.details` as informational only.
+
+**Canonical Step 4 universe — get_canonical_sieve_query()**
+- Defined in `backend/visibility_rules.py`. Used by `recompute_visibility_all`.
+- Gate 7 (shares_outstanding) reads the flat field `tracked_tickers.shares_outstanding`, NOT the nested `fundamentals` sub-doc.
+
+**ops_job_runs timestamps must use Prague timezone**
+- All `ops_job_runs` documents must include `started_at_prague` and `finished_at_prague` fields (ISO format, Europe/Prague).
+- Use `_to_prague_iso()` helper from `scheduler_service.py`.
+
 ### Pipeline steps (canonical definition)
 
 The Universe Pipeline has sequential steps. Each step runs ONLY after the previous completes successfully.
@@ -59,6 +88,24 @@ The Universe Pipeline has sequential steps. Each step runs ONLY after the previo
 - Tickers without price data are filtered out (logged to report)
 
 **Steps 3-5** — Fundamentals, Visible Universe, Peer Medians (each after previous completes)
+
+**Step 3 — Fundamentals Sync (canonical definition)**
+- Universe: `STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}` — NYSE/NASDAQ Common Stock with price data only.
+  This constant lives in `backend/scheduler_service.py` and matches `step3_query` in `universe_counts_service.py`.
+- Job is **event-driven** (`fundamentals_events` collection). It MUST NOT re-download fundamentals for the whole universe.
+- Orphan events (tickers outside `STEP3_QUERY`) are purged at job start via `purge_orphaned_fundamentals_events`.
+- Progress denominator = event batch size (`len(tickers_to_sync)`), not full universe count.
+- `universe_total` is stored in `ops_job_runs.details` for informational display only.
+
+**Step 4 — Visible Universe (canonical definition)**
+- Universe: `get_canonical_sieve_query()` from `backend/visibility_rules.py`.
+  Includes: NYSE/NASDAQ Common Stock, has_price_data, sector+industry present, not delisted, shares_outstanding > 0 (flat field), financial_currency present.
+- `recompute_visibility_all` uses batched `bulk_write` (500 ops/batch) with pre-snapshot safe cleanup.
+- Gate 7 reads `tracked_tickers.shares_outstanding` (flat field), NOT the nested `fundamentals` sub-document.
+
+**Step 5 — Peer Medians** (after Step 4)
+
+**Strict waterfall rule:** Each step ONLY runs after the previous completes successfully. Do not skip steps or run them out of order.
 
 **Report**: ONE file across ALL steps. Each row: Ticker | Name | Step | Reason for exclusion. Admin can download/view this report.
 
