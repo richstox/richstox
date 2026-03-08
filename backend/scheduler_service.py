@@ -1105,13 +1105,16 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
 
     Card definition:
       classified  = STEP3_QUERY + sector present + industry present
-      visible     = is_visible == True
-      filtered_out = classified MINUS visible  (= classified AND is_visible != True)
+      visible     = count(is_visible == True)   [global — no classified filter]
+      filtered_out = classified MINUS visible    [set difference, not query]
 
-    One row per ticker in filtered_out. Reason = visibility_failed_reason set by
-    recompute_visibility_all (all enum values mapped to human-readable labels).
+    We compute the set difference explicitly:
+      classified_set  = distinct tickers matching classified query
+      visible_set     = distinct tickers where is_visible == True
+      filtered_out_set = classified_set - visible_set
 
-    For MISSING_SHARES rows: _debug sub-document records the exact flat-field value.
+    One row per ticker in filtered_out_set. Reason = visibility_failed_reason
+    set by recompute_visibility_all (all enum values mapped).
 
     Returns _debug counts so the caller can store them in ops_job_runs.details.
     """
@@ -1119,8 +1122,6 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
 
     # Canonical "classified" base — mirrors step4_query in universe_counts_service.
-    # Must be kept in sync with that definition (SEED_QUERY + has_price_data +
-    # sector + industry).
     _classified_query = {
         **SEED_QUERY,
         "has_price_data": True,
@@ -1128,31 +1129,33 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
         "industry": {"$nin": [None, ""]},
     }
 
-    # Step 4 filtered-out = classified AND explicitly not visible.
-    # Use is_visible: False (not $ne: True) to match exactly the population
-    # the card counts as filtered_out = classified - count(is_visible:True).
-    _filtered_query = {**_classified_query, "is_visible": False}
-
-    # Snapshot counts that match exactly what the card shows.
-    step4_card_classified_count = await db.tracked_tickers.count_documents(_classified_query)
-    step4_card_visible_count    = await db.tracked_tickers.count_documents(
-        {**_classified_query, "is_visible": True}
+    # Build sets matching exactly what the funnel card counts.
+    classified_tickers: set = set(
+        await db.tracked_tickers.distinct("ticker", _classified_query)
     )
-    step4_report_query_count    = await db.tracked_tickers.count_documents(_filtered_query)
+    visible_tickers: set = set(
+        await db.tracked_tickers.distinct("ticker", {"is_visible": True})
+    )
+    filtered_out_set: set = classified_tickers - visible_tickers
+
+    step4_card_classified_count = len(classified_tickers)
+    step4_card_visible_count    = len(visible_tickers)
+    step4_report_query_count    = len(filtered_out_set)
 
     all_reason_labels = {
-        "INVALID_EXCHANGE":          "Invalid exchange",
-        "NOT_COMMON_STOCK":          "Not common stock",
-        "NO_PRICE_DATA":             "No price data",
-        "MISSING_SECTOR":            "Sector missing",
-        "MISSING_INDUSTRY":          "Industry missing",
-        "DELISTED":                  "Ticker is delisted",
-        "MISSING_SHARES":            "Shares outstanding missing or zero",
+        "INVALID_EXCHANGE":           "Invalid exchange",
+        "NOT_COMMON_STOCK":           "Not common stock",
+        "NO_PRICE_DATA":              "No price data",
+        "MISSING_SECTOR":             "Sector missing",
+        "MISSING_INDUSTRY":           "Industry missing",
+        "DELISTED":                   "Ticker is delisted",
+        "MISSING_SHARES":             "Shares outstanding missing or zero",
         "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
     }
 
+    # Fetch the relevant tracker docs in one query — only for filtered_out tickers.
     docs_cursor = db.tracked_tickers.find(
-        _filtered_query,
+        {"ticker": {"$in": list(filtered_out_set)}},
         {"_id": 0, "ticker": 1, "name": 1, "visibility_failed_reason": 1,
          "shares_outstanding": 1},
     )
