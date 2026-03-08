@@ -629,7 +629,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       color: '#10B981',
       apiUrl: 'https://eodhd.com/api/eod-bulk-last-day/US',
       inputLabel: 'Seeded tickers',
-      inputCount: seeded,
+      inputCount: seededFromRun ?? seeded,
       outputCount: withPrice,
       outputLabel: 'with price data',
       filters: [
