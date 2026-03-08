@@ -1113,6 +1113,43 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     return {"step4_exclusion_rows": len(docs), "report_date": report_date}
 
 
+async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
+    """
+    Delete fundamentals_events whose ticker is not in the canonical Step 3
+    universe (STEP3_QUERY: NYSE/NASDAQ Common Stock with price data).
+
+    Tickers in tracked_tickers are stored with the .US suffix (e.g. "AAPL.US"),
+    matching the format used in fundamentals_events.ticker.
+
+    Safety: distinct() returns at most ~6-7k items for our universe — well under
+    MongoDB's 16 MB document limit.  If the eligible list ever exceeds 10,000
+    we skip the purge and log a warning rather than building a dangerously large
+    $nin list.
+    """
+    MAX_SAFE_ELIGIBLE = 10_000
+
+    eligible: list = await db.tracked_tickers.distinct("ticker", STEP3_QUERY)
+
+    if not eligible:
+        logger.warning("purge_orphaned_fundamentals_events: eligible list is empty — skipping purge to avoid deleting everything")
+        return {"skipped": True, "reason": "empty_eligible_list"}
+
+    if len(eligible) > MAX_SAFE_ELIGIBLE:
+        logger.warning(
+            f"purge_orphaned_fundamentals_events: eligible list too large ({len(eligible)}) "
+            f"— skipping purge (threshold={MAX_SAFE_ELIGIBLE})"
+        )
+        return {"skipped": True, "reason": "eligible_list_too_large", "count": len(eligible)}
+
+    result = await db.fundamentals_events.delete_many(
+        {"ticker": {"$nin": eligible}}
+    )
+    deleted = result.deleted_count
+    if deleted:
+        logger.info(f"purge_orphaned_fundamentals_events: deleted {deleted} orphaned events")
+    return {"deleted": deleted, "eligible_count": len(eligible)}
+
+
 async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
@@ -1155,6 +1192,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "started_at": started_at.isoformat(),
             }
         
+        # Purge fundamentals_events for tickers outside the canonical Step 3
+        # universe before reading pending events — keeps the queue clean.
+        await purge_orphaned_fundamentals_events(db)
+
         # Ensure Step 3 includes priced tickers missing classification.
         class_candidates = await db.tracked_tickers.find(
             {
