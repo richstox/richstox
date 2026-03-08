@@ -78,34 +78,49 @@ async def run(dry_run: bool) -> None:
             logger.info(f"[DRY-RUN] Would enqueue {ticker} event_type={event_type} + set needs_fundamentals_refresh=True")
             continue
 
-        # 1. Idempotent event upsert — only insert if no pending/processing exists.
-        result = await db.fundamentals_events.update_one(
-            {
-                "ticker": ticker,
-                "event_type": event_type,
-                "status": {"$in": ["pending", "processing"]},
-            },
-            {
-                "$setOnInsert": {
-                    "ticker":        ticker,
-                    "event_type":    event_type,
-                    "status":        "pending",
-                    "source_job":    source_job,
-                    "detector_step": "manual",
-                    "created_at":    now,
-                },
-                "$set": {
-                    "updated_at": now,
-                },
-            },
-            upsert=True,
+        # 1. Ensure exactly one fundamentals_events doc per (ticker, event_type).
+        #    - pending/processing: touch updated_at only (keep as-is).
+        #    - done/error/skipped: reset to pending so Step 3 re-processes.
+        #    - missing: insert fresh.
+        existing = await db.fundamentals_events.find_one(
+            {"ticker": ticker, "event_type": event_type},
+            {"_id": 1, "status": 1},
         )
-        if result.upserted_id is not None:
+        if existing is None:
+            await db.fundamentals_events.insert_one({
+                "ticker":        ticker,
+                "event_type":    event_type,
+                "status":        "pending",
+                "source_job":    source_job,
+                "detector_step": "manual",
+                "created_at":    now,
+                "updated_at":    now,
+            })
             events_inserted += 1
             logger.info(f"  INSERTED event for {ticker}")
-        else:
+        elif existing["status"] in ("pending", "processing"):
+            await db.fundamentals_events.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {"updated_at": now}},
+            )
             events_already_pending += 1
-            logger.info(f"  SKIPPED  event for {ticker} (already pending/processing)")
+            logger.info(f"  SKIPPED  event for {ticker} (already {existing['status']})")
+        else:
+            # Terminal status (completed/error/skipped/deduped) — reset to pending.
+            await db.fundamentals_events.update_one(
+                {"_id": existing["_id"]},
+                {"$set": {
+                    "status":       "pending",
+                    "source_job":   source_job,
+                    "updated_at":   now,
+                    "completed_at": None,
+                    "skipped_at":   None,
+                    "deduped_at":   None,
+                    "skipped_reason": None,
+                }},
+            )
+            events_inserted += 1
+            logger.info(f"  RESET    event for {ticker} (was {existing['status']} → pending)")
 
         # 2. Set needs_fundamentals_refresh=True so skip-gate does not block this ticker.
         flag_result = await db.tracked_tickers.update_one(
