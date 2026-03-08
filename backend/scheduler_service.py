@@ -1101,25 +1101,56 @@ async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
 
 async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     """
-    Write Step 4 exclusion rows: tickers that failed the visibility sieve.
-    Reads visibility_failed_reason from tracked_tickers (set by recompute_visibility_all).
-    Excludes reasons already covered by Steps 1-3 (NO_PRICE_DATA, MISSING_SECTOR, etc.).
+    Write Step 4 exclusion rows using the SAME population as the Step 4 funnel card.
 
-    For MISSING_SHARES rows: adds a debug sub-document with the exact value read
-    from tracked_tickers.shares_outstanding and the field path used, so false
-    positives can be audited.
+    Card definition:
+      classified  = STEP3_QUERY + sector present + industry present
+      visible     = is_visible == True
+      filtered_out = classified MINUS visible  (= classified AND is_visible != True)
+
+    One row per ticker in filtered_out. Reason = visibility_failed_reason set by
+    recompute_visibility_all (all enum values mapped to human-readable labels).
+
+    For MISSING_SHARES rows: _debug sub-document records the exact flat-field value.
+
+    Returns _debug counts so the caller can store them in ops_job_runs.details.
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
 
-    # Only Step 4-specific reasons (delisted, missing shares, missing currency)
-    step4_reasons = ["DELISTED", "MISSING_SHARES", "MISSING_FINANCIAL_CURRENCY"]
+    # Canonical "classified" base — mirrors step4_query in universe_counts_service.
+    # Must be kept in sync with that definition (SEED_QUERY + has_price_data +
+    # sector + industry).
+    _classified_query = {
+        **SEED_QUERY,
+        "has_price_data": True,
+        "sector":   {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+    }
+
+    # Step 4 filtered-out = classified AND not yet visible.
+    _filtered_query = {**_classified_query, "is_visible": {"$ne": True}}
+
+    # Snapshot counts that match exactly what the card shows.
+    step4_card_classified_count = await db.tracked_tickers.count_documents(_classified_query)
+    step4_card_visible_count    = await db.tracked_tickers.count_documents(
+        {**_classified_query, "is_visible": True}
+    )
+    step4_report_query_count    = await db.tracked_tickers.count_documents(_filtered_query)
+
+    all_reason_labels = {
+        "INVALID_EXCHANGE":          "Invalid exchange",
+        "NOT_COMMON_STOCK":          "Not common stock",
+        "NO_PRICE_DATA":             "No price data",
+        "MISSING_SECTOR":            "Sector missing",
+        "MISSING_INDUSTRY":          "Industry missing",
+        "DELISTED":                  "Ticker is delisted",
+        "MISSING_SHARES":            "Shares outstanding missing or zero",
+        "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
+    }
 
     docs_cursor = db.tracked_tickers.find(
-        {
-            "is_visible": False,
-            "visibility_failed_reason": {"$in": step4_reasons},
-        },
+        _filtered_query,
         {"_id": 0, "ticker": 1, "name": 1, "visibility_failed_reason": 1,
          "shares_outstanding": 1},
     )
@@ -1128,27 +1159,19 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
         {"report_date": report_date, "step": STEP4_REPORT_STEP}
     )
 
-    reason_labels = {
-        "DELISTED": "Ticker is delisted",
-        "MISSING_SHARES": "Shares outstanding missing or zero",
-        "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
-    }
-
     docs = []
     async for doc in docs_cursor:
-        raw_reason = doc.get("visibility_failed_reason", "Unknown")
+        raw_reason = doc.get("visibility_failed_reason") or "UNKNOWN"
         row = {
-            "ticker": doc.get("ticker", "(unknown)"),
-            "name": doc.get("name", ""),
-            "step": STEP4_REPORT_STEP,
-            "reason": reason_labels.get(raw_reason, raw_reason),
+            "ticker":      doc.get("ticker", "(unknown)"),
+            "name":        doc.get("name", ""),
+            "step":        STEP4_REPORT_STEP,
+            "reason":      all_reason_labels.get(raw_reason, raw_reason),
             "report_date": report_date,
-            "source_job": "compute_visible_universe",
-            "run_id": run_id,
-            "created_at": now,
+            "source_job":  "compute_visible_universe",
+            "run_id":      run_id,
+            "created_at":  now,
         }
-        # Debug: record the exact value read from the flat field so false
-        # positives are auditable without querying tracked_tickers directly.
         if raw_reason == "MISSING_SHARES":
             row["_debug"] = {
                 "shares_outstanding_value": doc.get("shares_outstanding"),
@@ -1159,7 +1182,17 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     if docs:
         await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
 
-    return {"step4_exclusion_rows": len(docs), "report_date": report_date}
+    step4_report_rows_written = len(docs)
+    return {
+        "step4_exclusion_rows": step4_report_rows_written,
+        "report_date": report_date,
+        "_debug": {
+            "step4_card_classified_count": step4_card_classified_count,
+            "step4_card_visible_count":    step4_card_visible_count,
+            "step4_report_rows_written":   step4_report_rows_written,
+            "step4_report_query_count":    step4_report_query_count,
+        },
+    }
 
 
 async def _deduplicate_pending_events(db, now: datetime) -> Dict[str, int]:
@@ -1615,6 +1648,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 now_step4 = datetime.now(timezone.utc)
                 step4_report = await save_step4_exclusion_report(db, now_step4)
                 step4_chain["exclusion_rows"] = step4_report.get("step4_exclusion_rows", 0)
+                step4_chain["_debug"] = step4_report.get("_debug", {})
             except Exception as step4_error:
                 step4_chain = {
                     "triggered": True,
