@@ -101,6 +101,13 @@ interface PipelineExclusionReport {
   empty_report_hint?: string | null;
   rows: PipelineExclusionRow[];
   by_reason: Record<string, number>;
+  step1_counts?: {
+    raw_distinct?: number;
+    seeded_count?: number;
+    filtered_out_total_step1?: number;
+    fetched_raw_per_exchange?: Record<string, number>;
+    run_id?: string;
+  } | null;
 }
 
 function getNextRun(hour: number, minute: number, skipSunday: boolean = false): string {
@@ -568,8 +575,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const filteredOutStep1 = (jobRuns['universe_seed'] as any)?.filtered_out_total_step1 as number | undefined;
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
   // seededFromRun: the exact seeded_count from the last Step 1 run (matches arithmetic invariant).
+  // Read from exclusionReport.step1_counts (populated by /exclusion-report endpoint for latest run).
   // Falls back to counts.seeded_us_total (live DB) if no run data yet.
-  const seededFromRun = ((jobRuns['universe_seed'] as any)?.step1_counts?.seeded_count as number | undefined);
+  const seededFromRun = exclusionReport?.step1_counts?.seeded_count as number | undefined;
   const seeded = counts.seeded_us_total;
   const withPrice = counts.with_price_data;
   const withClass = counts.with_classification;
