@@ -5125,10 +5125,22 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
     """
     from parallel_batch_service import run_scheduled_backfill_all_prices
     from visibility_rules import recompute_visibility_all, clean_zombie_tickers, recompute_visibility_with_zombie_cleanup
-    
+    from scheduler_service import save_step4_exclusion_report as _save_step4_exclusion_report
+
+    async def _recompute_visibility_and_report(database):
+        """Run recompute_visibility_all then regenerate Step 4 exclusion report."""
+        result = await recompute_visibility_all(database)
+        now_step4 = datetime.now(timezone.utc)
+        step4_report = await _save_step4_exclusion_report(database, now_step4)
+        result["step4_exclusion_report"] = {
+            "rows_written": step4_report.get("step4_exclusion_rows", 0),
+            "_debug":       step4_report.get("_debug", {}),
+        }
+        return result
+
     JOB_RUNNERS = {
         "backfill_all": run_scheduled_backfill_all_prices,
-        "recompute_visibility_all": recompute_visibility_all,
+        "recompute_visibility_all": _recompute_visibility_and_report,
         "clean_zombie_tickers": clean_zombie_tickers,
         "recompute_visibility_with_zombies": recompute_visibility_with_zombie_cleanup,
     }
