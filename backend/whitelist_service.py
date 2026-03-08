@@ -419,11 +419,13 @@ async def sync_ticker_whitelist(
     }
     
     # Collect raw symbols from all exchanges, deduplicate by code (distinct universe).
-    # raw_symbols_fetched = len(distinct codes) so that:
-    #   raw_symbols_fetched == seeded_count + filtered_out_total_step1 strictly.
+    # raw_symbols_fetched = len(distinct entries) == seeded + filtered_out strictly.
     # First-seen exchange wins when the same code appears on NYSE and NASDAQ.
+    # Empty-code symbols are included (keyed by sentinel) so filter_whitelist_candidates
+    # can emit "Empty ticker code" exclusion rows — keeping the identity intact.
     raw_per_exchange: Dict[str, int] = {}
-    distinct_sym_by_code: Dict[str, Dict[str, Any]] = {}  # code -> sym dict
+    distinct_sym_by_code: Dict[str, Dict[str, Any]] = {}  # normalised_code -> sym
+    _empty_counter = 0  # sentinel for multiple empty-code symbols
 
     for exchange in exchanges:
         symbols = await fetch_exchange_symbols(exchange)
@@ -435,18 +437,21 @@ async def sync_ticker_whitelist(
 
         for sym in symbols:
             code = (sym.get("Code") or "").strip().upper()
+            # Use a unique sentinel key for empty-code symbols so they are not
+            # silently dropped from the distinct universe.
             if not code:
-                continue
-            if code not in distinct_sym_by_code:
-                # Attach exchange so filter_whitelist_candidates can use it
+                _empty_counter += 1
+                key = f"__EMPTY_{_empty_counter}__"
+            else:
+                key = code
+            if key not in distinct_sym_by_code:
                 sym_with_exchange = dict(sym)
                 sym_with_exchange["_exchange"] = exchange
-                distinct_sym_by_code[code] = sym_with_exchange
+                distinct_sym_by_code[key] = sym_with_exchange
 
     result["fetched"] = len(distinct_sym_by_code)
     result["fetched_raw_per_exchange"] = raw_per_exchange
 
-    # Determine exchange for each distinct symbol (first-seen wins).
     # Group distinct symbols by their assigned exchange for per-exchange filtering.
     from collections import defaultdict as _defaultdict
     syms_by_exchange: Dict[str, List[Dict[str, Any]]] = _defaultdict(list)
@@ -588,6 +593,35 @@ async def sync_ticker_whitelist(
         }
     )
     result["deactivated"] = deactivate_result.modified_count
+    # Reconciliation audit: verify raw_distinct == seeded + deduped_exclusions.
+    # Compute sets from the three populations to identify any gap.
+    raw_codes: set = {
+        (sym.get("Code") or "").strip().upper()
+        for sym in distinct_sym_by_code.values()
+        if (sym.get("Code") or "").strip()
+    }
+    seeded_codes: set = {
+        c["code"].upper() for c in all_candidates if c.get("code")
+    }
+    excluded_codes: set = {
+        (r.get("ticker") or "").upper()
+        for r in all_exclusions
+        if (r.get("ticker") or "").upper() not in ("", "(EMPTY)")
+    }
+    union_codes = seeded_codes | excluded_codes
+    missing_in_raw = sorted(union_codes - raw_codes)[:20]
+    missing_in_union = sorted(raw_codes - union_codes)[:20]
+    reconciliation_debug = {
+        "raw_distinct_count": result["fetched"],
+        "seeded_codes_count": len(seeded_codes),
+        "excluded_codes_count": len(excluded_codes),
+        "union_count": len(union_codes),
+        "gap": len(union_codes) - result["fetched"],
+        "missing_in_raw_sample": missing_in_raw,
+        "missing_in_seed_or_excl_sample": missing_in_union,
+    }
+    logger.info(f"Step 1 reconciliation: {reconciliation_debug}")
+
     # Capture now at save time (not job start) so run_id encodes actual write timestamp.
     now_save = datetime.now(timezone.utc)
     report = await save_universe_seed_exclusion_report(
@@ -596,7 +630,10 @@ async def sync_ticker_whitelist(
         seeded_count=result["seeded_total"],
     )
     result.update(report)
-    result["universe_seed_debug"] = report.get("_debug", {})
+    result["universe_seed_debug"] = {
+        **report.get("_debug", {}),
+        "reconciliation": reconciliation_debug,
+    }
     
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
     
