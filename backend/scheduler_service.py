@@ -1104,6 +1104,10 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     Write Step 4 exclusion rows: tickers that failed the visibility sieve.
     Reads visibility_failed_reason from tracked_tickers (set by recompute_visibility_all).
     Excludes reasons already covered by Steps 1-3 (NO_PRICE_DATA, MISSING_SECTOR, etc.).
+
+    For MISSING_SHARES rows: adds a debug sub-document with the exact value read
+    from tracked_tickers.shares_outstanding and the field path used, so false
+    positives can be audited.
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -1116,7 +1120,8 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
             "is_visible": False,
             "visibility_failed_reason": {"$in": step4_reasons},
         },
-        {"_id": 0, "ticker": 1, "name": 1, "visibility_failed_reason": 1},
+        {"_id": 0, "ticker": 1, "name": 1, "visibility_failed_reason": 1,
+         "shares_outstanding": 1},
     )
 
     await db.pipeline_exclusion_report.delete_many(
@@ -1132,7 +1137,7 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     docs = []
     async for doc in docs_cursor:
         raw_reason = doc.get("visibility_failed_reason", "Unknown")
-        docs.append({
+        row = {
             "ticker": doc.get("ticker", "(unknown)"),
             "name": doc.get("name", ""),
             "step": STEP4_REPORT_STEP,
@@ -1141,7 +1146,15 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
             "source_job": "compute_visible_universe",
             "run_id": run_id,
             "created_at": now,
-        })
+        }
+        # Debug: record the exact value read from the flat field so false
+        # positives are auditable without querying tracked_tickers directly.
+        if raw_reason == "MISSING_SHARES":
+            row["_debug"] = {
+                "shares_outstanding_value": doc.get("shares_outstanding"),
+                "field_path": "tracked_tickers.shares_outstanding",
+            }
+        docs.append(row)
 
     if docs:
         await db.pipeline_exclusion_report.insert_many(docs, ordered=False)

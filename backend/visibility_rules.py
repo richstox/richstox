@@ -154,7 +154,11 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
 def get_canonical_sieve_query() -> dict:
     """
     MongoDB query equivalent of compute_visibility.
-    Used for count verification.
+    Used for count verification and as the cursor filter in recompute_visibility_all.
+
+    Gate 7 (shares_outstanding) reads the FLAT field tracked_tickers.shares_outstanding
+    — NOT any nested fundamentals sub-document.  This matches compute_visibility()
+    and the AGENTS.md canonical rule.
     """
     return {
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
@@ -163,11 +167,8 @@ def get_canonical_sieve_query() -> dict:
         "sector": {"$nin": [None, ""]},
         "industry": {"$nin": [None, ""]},
         "is_delisted": {"$ne": True},
-        # P1 DATA QUALITY FILTERS:
-        "$or": [
-            {"fundamentals.SharesStats.SharesOutstanding": {"$gt": 0}},
-            {"fundamentals.Highlights.SharesOutstanding": {"$gt": 0}},
-        ],
+        # Gate 7: flat field — canonical per AGENTS.md
+        "shares_outstanding": {"$gt": 0},
         "financial_currency": {"$nin": [None, ""]},
     }
 
