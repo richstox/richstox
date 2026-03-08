@@ -198,10 +198,22 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "nasdaq": nasdaq_count,
             "common_stock": seeded_common_stock,
             "with_price_data": active_with_price_data,
+            "step3_input_total": active_with_price_data,
             "step3_output_total": step3_output_total,
+            "step3_filtered_out_total": max(active_with_price_data - step3_output_total, 0),
             "with_classification": with_classification,
             "passes_visibility_rule": passes_visibility_rule,
             "visible_tickers": visible_tickers,
+        },
+
+        # Step 3 ticker-level funnel (input/output/filtered_out).
+        # "Up-to-date" = fundamentals_status='complete'
+        #               AND needs_fundamentals_refresh != True
+        #               AND fundamentals_updated_at not null/missing
+        "step3_funnel": {
+            "input_total": active_with_price_data,
+            "output_total": step3_output_total,
+            "filtered_out_total": max(active_with_price_data - step3_output_total, 0),
         },
         
         # For Talk filters compatibility
