@@ -1101,27 +1101,23 @@ async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
 
 async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     """
-    Write Step 4 exclusion rows using the SAME population as the Step 4 funnel card.
+    Write Step 4 exclusion rows using the canonical Step 4 funnel definition.
 
-    Card definition:
-      classified  = STEP3_QUERY + sector present + industry present
-      visible     = count(is_visible == True)   [global — no classified filter]
-      filtered_out = classified MINUS visible    [set difference, not query]
+    Canonical Step 4 funnel:
+      classified_total = count(classified_query)
+      visible_total    = count(classified_query AND is_visible=True)
+      filtered_out     = classified_query AND is_visible=False
 
-    We compute the set difference explicitly:
-      classified_set  = distinct tickers matching classified query
-      visible_set     = distinct tickers where is_visible == True
-      filtered_out_set = classified_set - visible_set
-
-    One row per ticker in filtered_out_set. Reason = visibility_failed_reason
-    set by recompute_visibility_all (all enum values mapped).
+    One row per ticker in filtered_out. Reason = visibility_failed_reason set by
+    recompute_visibility_all (all enum values mapped to human-readable labels).
 
     Returns _debug counts so the caller can store them in ops_job_runs.details.
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
 
-    # Canonical "classified" base — mirrors step4_query in universe_counts_service.
+    # Canonical "classified" base — mirrors step4_query in universe_counts_service:
+    # SEED_QUERY + has_price_data + sector present + industry present.
     _classified_query = {
         **SEED_QUERY,
         "has_price_data": True,
@@ -1129,18 +1125,17 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
         "industry": {"$nin": [None, ""]},
     }
 
-    # Build sets matching exactly what the funnel card counts.
-    classified_tickers: set = set(
-        await db.tracked_tickers.distinct("ticker", _classified_query)
-    )
-    visible_tickers: set = set(
-        await db.tracked_tickers.distinct("ticker", {"is_visible": True})
-    )
-    filtered_out_set: set = classified_tickers - visible_tickers
+    # Filtered-out = classified AND is_visible=False.
+    # Consistent with visible_total = classified AND is_visible=True,
+    # so classified_total = visible_total + filtered_out_total (no nulls gap).
+    _filtered_query = {**_classified_query, "is_visible": False}
 
-    step4_card_classified_count = len(classified_tickers)
-    step4_card_visible_count    = len(visible_tickers)
-    step4_report_query_count    = len(filtered_out_set)
+    # Snapshot counts matching the canonical Step 4 funnel.
+    step4_card_classified_count = await db.tracked_tickers.count_documents(_classified_query)
+    step4_card_visible_count    = await db.tracked_tickers.count_documents(
+        {**_classified_query, "is_visible": True}
+    )
+    step4_report_query_count    = await db.tracked_tickers.count_documents(_filtered_query)
 
     all_reason_labels = {
         "INVALID_EXCHANGE":           "Invalid exchange",
@@ -1153,9 +1148,8 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
         "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
     }
 
-    # Fetch the relevant tracker docs in one query — only for filtered_out tickers.
     docs_cursor = db.tracked_tickers.find(
-        {"ticker": {"$in": list(filtered_out_set)}},
+        _filtered_query,
         {"_id": 0, "ticker": 1, "name": 1, "visibility_failed_reason": 1,
          "shares_outstanding": 1},
     )

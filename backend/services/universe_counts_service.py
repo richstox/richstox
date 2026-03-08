@@ -73,16 +73,18 @@ async def get_universe_counts(db) -> Dict[str, Any]:
         "needs_fundamentals_refresh": {"$ne": True},
         "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
     }
+    step4_visible_query = {**step4_query, "is_visible": True}
     facet_result = await db.tracked_tickers.aggregate([{"$facet": {
-        "seeded":       [{"$match": step1_query},              {"$count": "n"}],
-        "nyse":         [{"$match": {"exchange": "NYSE"}},     {"$count": "n"}],
-        "nasdaq":       [{"$match": {"exchange": "NASDAQ"}},   {"$count": "n"}],
-        "common":       [{"$match": step2_query},              {"$count": "n"}],
-        "price":        [{"$match": step3_query},              {"$count": "n"}],
-        "step3_output": [{"$match": step3_output_query},       {"$count": "n"}],
-        "classified":   [{"$match": step4_query},              {"$count": "n"}],
-        "visibility":   [{"$match": step5_query},              {"$count": "n"}],
-        "visible":      [{"$match": VISIBLE_TICKERS_QUERY},    {"$count": "n"}],
+        "seeded":         [{"$match": step1_query},              {"$count": "n"}],
+        "nyse":           [{"$match": {"exchange": "NYSE"}},     {"$count": "n"}],
+        "nasdaq":         [{"$match": {"exchange": "NASDAQ"}},   {"$count": "n"}],
+        "common":         [{"$match": step2_query},              {"$count": "n"}],
+        "price":          [{"$match": step3_query},              {"$count": "n"}],
+        "step3_output":   [{"$match": step3_output_query},       {"$count": "n"}],
+        "classified":     [{"$match": step4_query},              {"$count": "n"}],
+        "step4_visible":  [{"$match": step4_visible_query},      {"$count": "n"}],
+        "visibility":     [{"$match": step5_query},              {"$count": "n"}],
+        "visible":        [{"$match": VISIBLE_TICKERS_QUERY},    {"$count": "n"}],
     }}]).to_list(1)
 
     f = facet_result[0] if facet_result else {}
@@ -96,6 +98,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     active_with_price_data = _n("price")
     step3_output_total     = _n("step3_output")
     with_classification    = _n("classified")
+    step4_visible_total    = _n("step4_visible")
     passes_visibility_rule = _n("visibility")
     visible_tickers        = _n("visible")
     
@@ -202,6 +205,9 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "step3_output_total": step3_output_total,
             "step3_filtered_out_total": max(active_with_price_data - step3_output_total, 0),
             "with_classification": with_classification,
+            # Step 4 canonical funnel: visible scoped to classified universe.
+            "step4_visible_total": step4_visible_total,
+            "step4_filtered_out_total": max(with_classification - step4_visible_total, 0),
             "passes_visibility_rule": passes_visibility_rule,
             "visible_tickers": visible_tickers,
         },
@@ -214,6 +220,13 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "input_total": active_with_price_data,
             "output_total": step3_output_total,
             "filtered_out_total": max(active_with_price_data - step3_output_total, 0),
+        },
+
+        # Step 4 canonical funnel: visible scoped to classified universe.
+        "step4_funnel": {
+            "input_total": with_classification,
+            "output_total": step4_visible_total,
+            "filtered_out_total": max(with_classification - step4_visible_total, 0),
         },
         
         # For Talk filters compatibility
