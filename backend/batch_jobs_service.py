@@ -129,11 +129,13 @@ async def sync_single_ticker_fundamentals(
             await db.tracked_tickers.update_one(
                 {"ticker": ticker_full},
                 {"$set": {
-                    "fundamentals_status":     "error",
-                    "fundamentals_error":      msg,
-                    "fundamentals_error_code": code,
-                    "fundamentals_error_at":   err_at,
-                    "updated_at":              datetime.now(timezone.utc),
+                    "fundamentals_status":        "error",
+                    "fundamentals_complete":      False,
+                    "needs_fundamentals_refresh": True,
+                    "fundamentals_error":         msg,
+                    "fundamentals_error_code":    code,
+                    "fundamentals_error_at":      err_at,
+                    "updated_at":                 datetime.now(timezone.utc),
                 }},
             )
         except Exception:
