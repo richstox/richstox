@@ -6891,6 +6891,26 @@ async def admin_get_pipeline_exclusion_report(
             "Run Step 1 (Universe Seed) again to generate the exclusion report."
         )
 
+    # When run_id_filter is a Step 1 run_id, enrich response with reconciliation
+    # debug from the matching ops_job_runs document.
+    step1_reconciliation = None
+    step1_counts = None
+    if run_id and run_id.startswith("universe_seed_"):
+        seed_run_doc = await db.ops_job_runs.find_one(
+            {"job_name": "universe_seed", "result.exclusion_report_run_id": run_id},
+            {"_id": 0, "result": 1},
+        )
+        if seed_run_doc and seed_run_doc.get("result"):
+            r = seed_run_doc["result"]
+            dbg = r.get("universe_seed_debug") or {}
+            step1_reconciliation = dbg.get("reconciliation")
+            step1_counts = {
+                "raw_distinct": r.get("fetched"),
+                "seeded_count": r.get("seeded_total"),
+                "filtered_out_total_step1": r.get("filtered_out_total_step1"),
+                "fetched_raw_per_exchange": r.get("fetched_raw_per_exchange"),
+            }
+
     return {
         "report_date": report_date,
         "run_id_filter": run_id,
@@ -6904,6 +6924,8 @@ async def admin_get_pipeline_exclusion_report(
         "available_dates": available_dates,
         "latest_universe_seed_started_at": latest_universe_seed_started_at,
         "empty_report_hint": empty_report_hint,
+        "step1_reconciliation": step1_reconciliation,
+        "step1_counts": step1_counts,
         "rows": rows,
     }
 
