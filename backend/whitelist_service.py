@@ -292,6 +292,7 @@ async def save_universe_seed_exclusion_report(
             "exclusion_report_date": report_date,
             "exclusion_report_rows": 0,
             "exclusion_report_run_id": run_id,
+            "filtered_out_total_step1": 0,
             "_debug": {
                 "raw_symbols_fetched": raw_symbols_fetched,
                 "seeded_count": seeded_count,
@@ -331,6 +332,9 @@ async def save_universe_seed_exclusion_report(
         "exclusion_report_date": report_date,
         "exclusion_report_rows": rows_written,
         "exclusion_report_run_id": run_id,
+        # Canonical Step 1 filtered_out = deduped exclusion rows written.
+        # Use this as the card's filtered_out instead of raw - seeded.
+        "filtered_out_total_step1": rows_written,
         "_debug": {
             "raw_symbols_fetched": raw_symbols_fetched,
             "seeded_count": seeded_count,

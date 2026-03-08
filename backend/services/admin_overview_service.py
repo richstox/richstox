@@ -81,6 +81,8 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
         # Raw symbols fetched from EODHD before filtering (universe_seed only)
         doc["raw_symbols_fetched"] = result.get("fetched") or None
+        # Canonical Step 1 filtered_out = deduped exclusion rows written (universe_seed only)
+        doc["filtered_out_total_step1"] = result.get("filtered_out_total_step1") or None
         last_runs[job_name] = doc
 
     return last_runs

@@ -565,6 +565,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const todayStr = new Date().toISOString().split('T')[0];
 
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
+  const filteredOutStep1 = (jobRuns['universe_seed'] as any)?.filtered_out_total_step1 as number | undefined;
   const seeded = counts.seeded_us_total;
   const withPrice = counts.with_price_data;
   const withClass = counts.with_classification;
@@ -600,6 +601,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       inputLabel: 'Raw symbols (EODHD)',
       inputCount: rawSymbols,
       outputCount: seeded,
+      // droppedCount = filteredOutStep1 when available (deduped exclusion rows);
+      // falls back to rawSymbols - seeded for backward compat.
+      droppedCount: filteredOutStep1,
       outputLabel: 'seeded tickers',
       filters: [
         'Type ≠ "Common Stock"',
@@ -769,9 +773,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
         const inCount = step.inputCount;
         const outCount = step.outputCount;
-        const droppedCount = (inCount !== undefined && outCount !== undefined)
-          ? Math.max(inCount - outCount, 0)
-          : undefined;
+        const droppedCount = step.droppedCount !== undefined
+          ? step.droppedCount
+          : (inCount !== undefined && outCount !== undefined)
+            ? Math.max(inCount - outCount, 0)
+            : undefined;
         const passPct = (inCount !== undefined && inCount > 0 && outCount !== undefined)
           ? Math.round((outCount / inCount) * 100)
           : null;
