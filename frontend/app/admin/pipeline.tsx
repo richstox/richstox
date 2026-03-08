@@ -567,6 +567,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
   const filteredOutStep1 = (jobRuns['universe_seed'] as any)?.filtered_out_total_step1 as number | undefined;
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
+  // seededFromRun: the exact seeded_count from the last Step 1 run (matches arithmetic invariant).
+  // Falls back to counts.seeded_us_total (live DB) if no run data yet.
+  const seededFromRun = ((jobRuns['universe_seed'] as any)?.step1_counts?.seeded_count as number | undefined);
   const seeded = counts.seeded_us_total;
   const withPrice = counts.with_price_data;
   const withClass = counts.with_classification;
@@ -601,7 +604,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
       inputLabel: 'Raw symbols (EODHD)',
       inputCount: rawSymbols,
-      outputCount: seeded,
+      outputCount: seededFromRun ?? seeded,
       // droppedCount = filteredOutStep1 when available (deduped exclusion rows);
       // falls back to rawSymbols - seeded for backward compat.
       droppedCount: filteredOutStep1,
