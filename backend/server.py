@@ -6804,12 +6804,16 @@ async def admin_full_history_backfill_status():
 async def admin_get_pipeline_exclusion_report(
     report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
     step: str = Query(None, description="Optional step filter, e.g. 'Step 1 - Universe Seed'"),
+    run_id: str = Query(None, description="Filter strictly to a specific run_id (overrides report_date aggregation)"),
     limit: int = Query(100, ge=1, le=2000),
     offset: int = Query(0, ge=0),
 ):
     """
     Get pipeline exclusion report rows (Ticker | Name | Step | Reason).
     Shared report collection across all pipeline steps.
+
+    ?run_id=<run_id> filters all counts and rows strictly to that run_id,
+    enabling per-run verification independent of report_date collisions.
     """
     from zoneinfo import ZoneInfo
     PRAGUE = ZoneInfo("Europe/Prague")
@@ -6826,7 +6830,11 @@ async def admin_get_pipeline_exclusion_report(
             else datetime.now(PRAGUE).strftime("%Y-%m-%d")
         )
 
-    query = {"report_date": report_date}
+    # Base query — run_id filter takes precedence over report_date if provided.
+    if run_id:
+        query: dict = {"run_id": run_id}
+    else:
+        query = {"report_date": report_date}
     if step:
         query["step"] = step
 
@@ -6854,6 +6862,16 @@ async def admin_get_pipeline_exclusion_report(
     ]):
         by_reason[doc["_id"]] = doc["count"]
 
+    # Latest run_id per step for the resolved report_date — for per-run verification.
+    latest_run_id_per_step: Dict[str, str] = {}
+    async for doc in db.pipeline_exclusion_report.aggregate([
+        {"$match": {"report_date": report_date}},
+        {"$sort": {"created_at": -1}},
+        {"$group": {"_id": "$step", "run_id": {"$first": "$run_id"}}},
+    ]):
+        if doc["_id"] and doc.get("run_id"):
+            latest_run_id_per_step[doc["_id"]] = doc["run_id"]
+
     available_dates = await db.pipeline_exclusion_report.distinct("report_date")
     available_dates = sorted([d for d in available_dates if d], reverse=True)[:30]
     latest_universe_seed_run = await db.ops_job_runs.find_one(
@@ -6875,12 +6893,14 @@ async def admin_get_pipeline_exclusion_report(
 
     return {
         "report_date": report_date,
+        "run_id_filter": run_id,
         "total_rows": total_rows,
         "has_rows": total_rows > 0,
         "offset": offset,
         "limit": limit,
         "by_step": by_step,
         "by_reason": by_reason,
+        "latest_run_id_per_step": latest_run_id_per_step,
         "available_dates": available_dates,
         "latest_universe_seed_started_at": latest_universe_seed_started_at,
         "empty_report_hint": empty_report_hint,
