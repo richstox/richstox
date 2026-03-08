@@ -1128,8 +1128,10 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
         "industry": {"$nin": [None, ""]},
     }
 
-    # Step 4 filtered-out = classified AND not yet visible.
-    _filtered_query = {**_classified_query, "is_visible": {"$ne": True}}
+    # Step 4 filtered-out = classified AND explicitly not visible.
+    # Use is_visible: False (not $ne: True) to match exactly the population
+    # the card counts as filtered_out = classified - count(is_visible:True).
+    _filtered_query = {**_classified_query, "is_visible": False}
 
     # Snapshot counts that match exactly what the card shows.
     step4_card_classified_count = await db.tracked_tickers.count_documents(_classified_query)
