@@ -63,29 +63,41 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     # SINGLE ROUND-TRIP: $facet runs all 8 counts in parallel on the server
     # Replaces 8x sequential count_documents (~400ms) with 1 aggregation (~50ms)
     # =========================================================================
+    # Step 3 "up-to-date" output rule (ticker-level):
+    #   fundamentals_status='complete'
+    #   AND needs_fundamentals_refresh != True
+    #   AND fundamentals_updated_at not null/missing
+    step3_output_query = {
+        **step3_query,
+        "fundamentals_status": "complete",
+        "needs_fundamentals_refresh": {"$ne": True},
+        "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
+    }
     facet_result = await db.tracked_tickers.aggregate([{"$facet": {
-        "seeded":     [{"$match": step1_query},              {"$count": "n"}],
-        "nyse":       [{"$match": {"exchange": "NYSE"}},     {"$count": "n"}],
-        "nasdaq":     [{"$match": {"exchange": "NASDAQ"}},   {"$count": "n"}],
-        "common":     [{"$match": step2_query},              {"$count": "n"}],
-        "price":      [{"$match": step3_query},              {"$count": "n"}],
-        "classified": [{"$match": step4_query},              {"$count": "n"}],
-        "visibility": [{"$match": step5_query},              {"$count": "n"}],
-        "visible":    [{"$match": VISIBLE_TICKERS_QUERY},    {"$count": "n"}],
+        "seeded":       [{"$match": step1_query},              {"$count": "n"}],
+        "nyse":         [{"$match": {"exchange": "NYSE"}},     {"$count": "n"}],
+        "nasdaq":       [{"$match": {"exchange": "NASDAQ"}},   {"$count": "n"}],
+        "common":       [{"$match": step2_query},              {"$count": "n"}],
+        "price":        [{"$match": step3_query},              {"$count": "n"}],
+        "step3_output": [{"$match": step3_output_query},       {"$count": "n"}],
+        "classified":   [{"$match": step4_query},              {"$count": "n"}],
+        "visibility":   [{"$match": step5_query},              {"$count": "n"}],
+        "visible":      [{"$match": VISIBLE_TICKERS_QUERY},    {"$count": "n"}],
     }}]).to_list(1)
 
     f = facet_result[0] if facet_result else {}
     def _n(key: str) -> int:
         return (f.get(key) or [{}])[0].get("n", 0)
 
-    seeded_us_total       = _n("seeded")
-    nyse_count            = _n("nyse")
-    nasdaq_count          = _n("nasdaq")
-    seeded_common_stock   = _n("common")
+    seeded_us_total        = _n("seeded")
+    nyse_count             = _n("nyse")
+    nasdaq_count           = _n("nasdaq")
+    seeded_common_stock    = _n("common")
     active_with_price_data = _n("price")
-    with_classification   = _n("classified")
+    step3_output_total     = _n("step3_output")
+    with_classification    = _n("classified")
     passes_visibility_rule = _n("visibility")
-    visible_tickers       = _n("visible")
+    visible_tickers        = _n("visible")
     
     # =========================================================================
     # BUILD FUNNEL STEPS
@@ -186,6 +198,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "nasdaq": nasdaq_count,
             "common_stock": seeded_common_stock,
             "with_price_data": active_with_price_data,
+            "step3_output_total": step3_output_total,
             "with_classification": with_classification,
             "passes_visibility_rule": passes_visibility_rule,
             "visible_tickers": visible_tickers,
