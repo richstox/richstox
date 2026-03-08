@@ -557,8 +557,10 @@ async def sync_ticker_whitelist(
         }
     )
     result["deactivated"] = deactivate_result.modified_count
+    # Capture now at save time (not job start) so run_id encodes actual write timestamp.
+    now_save = datetime.now(timezone.utc)
     report = await save_universe_seed_exclusion_report(
-        db, all_exclusions, now,
+        db, all_exclusions, now_save,
         raw_symbols_fetched=result["fetched"],
         seeded_count=result["seeded_total"],
     )
