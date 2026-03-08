@@ -569,12 +569,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const withPrice = counts.with_price_data;
   const withClass = counts.with_classification;
   const visible = counts.visible_tickers;
+  const step4Visible = counts.step4_visible_total ?? visible;
 
   const JOB_OUTPUT: Record<string, number | undefined> = {
     universe_seed: seeded,
     price_sync: withPrice,
     fundamentals_sync: withClass,
-    compute_visible_universe: visible,
+    compute_visible_universe: step4Visible,
     peer_medians: visible,
   };
   const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'compute_visible_universe', 'peer_medians'].filter(j => {
@@ -660,7 +661,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       apiUrl: 'Local DB only — no external API',
       inputLabel: 'Classified tickers',
       inputCount: withClass,
-      outputCount: visible,
+      outputCount: step4Visible,
       outputLabel: 'visible',
       filters: [
         'is_delisted = true',
