@@ -14,7 +14,7 @@ Recent commits (newest → oldest):
 
 | Hash | Description |
 |------|-------------|
-| *(this commit)* | docs: update HANDOVER.md + AGENTS.md |
+| `4ca7b18` | docs: rewrite HANDOVER.md + fix AGENTS.md (remove unverified claims) |
 | `29e3353` | feat(step3): purge orphaned fundamentals_events at job start |
 | `cd56086` | fix(step3): scope fundamentals_sync universe to canonical STEP3_QUERY |
 | `72b1304` | fix(step4): use get_canonical_sieve_query() for classified filter + remove emojis |
