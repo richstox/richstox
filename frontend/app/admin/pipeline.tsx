@@ -595,9 +595,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
   const filteredOutStep1 = (jobRuns['universe_seed'] as any)?.filtered_out_total_step1 as number | undefined;
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  // seededFromRun: the exact seeded_count from the last Step 1 run (matches arithmetic invariant).
-  // Read from exclusionReport.step1_counts (populated by /exclusion-report endpoint for latest run).
-  // Falls back to counts.seeded_us_total (live DB) if no run data yet.
+  // seededFromRun: from exclusion-report step1_counts (second fetch in fetchData).
+  // Falls back to counts.seeded_us_total.
   const seededFromRun = exclusionReport?.step1_counts?.seeded_count as number | undefined;
   const seeded = counts.seeded_us_total;
   const withPrice = counts.with_price_data;
@@ -605,11 +604,23 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const visible = counts.visible_tickers;
   const step4Visible = counts.step4_visible_total ?? visible;
 
+  // Last-run output counts — chain handoffs between steps.
+  const step1SeededFromRun          = (jobRuns['universe_seed']          as any)?.seeded_total                 as number | undefined;
+  const step2WithPriceFromRun        = (jobRuns['price_sync']              as any)?.with_price_data_total         as number | undefined;
+  const step3WithFundamentalsFromRun = (jobRuns['fundamentals_sync']       as any)?.fundamentals_complete_total   as number | undefined;
+  const step4VisibleFromRun          = (jobRuns['recompute_visibility_all'] as any)?.visible_total                as number | undefined;
+
+  // Resolved per-step counts: run-output first, then live DB fallback.
+  const s1Out = step1SeededFromRun          ?? seededFromRun ?? seeded;
+  const s2Out = step2WithPriceFromRun        ?? withPrice;
+  const s3Out = step3WithFundamentalsFromRun ?? withClass;
+  const s4Out = step4VisibleFromRun          ?? step4Visible;
+
   const JOB_OUTPUT: Record<string, number | undefined> = {
-    universe_seed: seeded,
-    price_sync: withPrice,
-    fundamentals_sync: withClass,
-    compute_visible_universe: step4Visible,
+    universe_seed: s1Out,
+    price_sync: s2Out,
+    fundamentals_sync: s3Out,
+    compute_visible_universe: s4Out,
     peer_medians: visible,
   };
   const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'compute_visible_universe', 'peer_medians'].filter(j => {
@@ -633,9 +644,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
       inputLabel: 'Raw symbols (EODHD)',
       inputCount: rawSymbols,
-      outputCount: seededFromRun ?? seeded,
-      // droppedCount = filteredOutStep1 when available (deduped exclusion rows);
-      // falls back to rawSymbols - seeded for backward compat.
+      outputCount: s1Out,
       droppedCount: filteredOutStep1,
       outputLabel: 'seeded tickers',
       filters: [
@@ -658,8 +667,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       color: '#10B981',
       apiUrl: 'https://eodhd.com/api/eod-bulk-last-day/US',
       inputLabel: 'Seeded tickers',
-      inputCount: seededFromRun ?? seeded,
-      outputCount: withPrice,
+      inputCount: s1Out,
+      outputCount: s2Out,
       outputLabel: 'with price data',
       filters: [
         'Not present in EODHD bulk response',
@@ -677,8 +686,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       color: '#F59E0B',
       apiUrl: 'https://eodhd.com/api/fundamentals/{TICKER}.US  (~10 credits/ticker)',
       inputLabel: 'Tickers with prices',
-      inputCount: withPrice,
-      outputCount: withClass,
+      inputCount: s2Out,
+      outputCount: s3Out,
       outputLabel: 'classified',
       filters: [
         'EODHD returns no fundamentals (404)',
@@ -697,8 +706,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       color: '#8B5CF6',
       apiUrl: 'Local DB only — no external API',
       inputLabel: 'Classified tickers',
-      inputCount: withClass,
-      outputCount: step4Visible,
+      inputCount: s3Out,
+      outputCount: s4Out,
       outputLabel: 'visible',
       filters: [
         'is_delisted = true',
