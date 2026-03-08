@@ -1013,8 +1013,20 @@ STEP4_REPORT_STEP = "Step 4 - Visible Universe"
 
 async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     """
-    Write Step 3 exclusion rows: seeded tickers with price data but no sector/industry
-    after fundamentals sync. These were not classified by EODHD.
+    Write Step 3 exclusion rows: STEP3_QUERY tickers that are NOT up-to-date
+    after the sync run.  One row per ticker, primary reason wins.
+
+    Priority order (first matching reason wins per ticker):
+      1. fundamentals_status == 'error'           → "Fundamentals sync error"
+      2. fundamentals_status not in ('complete')
+         AND not null/missing                      → "Fundamentals not synced"
+      3. fundamentals_status is null/missing       → "Fundamentals not synced"
+      4. needs_fundamentals_refresh == True        → "Stale fundamentals (refresh pending)"
+      5. sector or industry missing/empty          → "Classification missing"
+
+    "Up-to-date" means: fundamentals_status='complete'
+                        AND needs_fundamentals_refresh != True
+                        AND fundamentals_updated_at is not null
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"fundamentals_sync_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -1024,11 +1036,23 @@ async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
             **SEED_QUERY,
             "has_price_data": True,
             "$or": [
+                # not complete
+                {"fundamentals_status": {"$ne": "complete"}},
+                # complete but refresh needed
+                {"needs_fundamentals_refresh": True},
+                # complete, no refresh, but updated_at missing
+                {"fundamentals_updated_at": {"$in": [None, ""]}},
+                {"fundamentals_updated_at": {"$exists": False}},
+                # complete, no refresh, but classification missing
                 {"sector": {"$in": [None, ""]}},
                 {"industry": {"$in": [None, ""]}},
             ],
         },
-        {"_id": 0, "ticker": 1, "name": 1, "sector": 1, "industry": 1},
+        {
+            "_id": 0, "ticker": 1, "name": 1,
+            "fundamentals_status": 1, "needs_fundamentals_refresh": 1,
+            "fundamentals_updated_at": 1, "sector": 1, "industry": 1,
+        },
     )
 
     await db.pipeline_exclusion_report.delete_many(
@@ -1038,14 +1062,26 @@ async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     docs = []
     async for doc in docs_cursor:
         ticker = doc.get("ticker", "(unknown)")
+        fstatus = doc.get("fundamentals_status")
+        needs_refresh = doc.get("needs_fundamentals_refresh") is True
+        updated_at = doc.get("fundamentals_updated_at")
         sector = (doc.get("sector") or "").strip()
         industry = (doc.get("industry") or "").strip()
-        if not sector and not industry:
-            reason = "No sector or industry from EODHD"
-        elif not sector:
-            reason = "Sector missing from EODHD"
+
+        if fstatus == "error":
+            reason = "Fundamentals sync error"
+        elif fstatus != "complete":
+            reason = "Fundamentals not synced"
+        elif needs_refresh:
+            reason = "Stale fundamentals (refresh pending)"
+        elif not updated_at:
+            reason = "Fundamentals not synced"
+        elif not sector or not industry:
+            reason = "Classification missing"
         else:
-            reason = "Industry missing from EODHD"
+            # Passes all checks — should not appear here, skip defensively.
+            continue
+
         docs.append({
             "ticker": ticker,
             "name": doc.get("name", ""),
@@ -1434,8 +1470,11 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "failed": 0,
             "classification_events_enqueued": class_enqueue.get("inserted", 0),
             "classification_events_already_pending": class_enqueue.get("already_pending", 0),
-            "requested_event_types": requested_event_types,
-            "queue_stats": queue_stats,
+            # requested_event_types moved to _debug — not used by the Step 3 card.
+            "_debug": {
+                "requested_event_types": requested_event_types,
+                "queue_stats": queue_stats,
+            },
             "started_at": started_at.isoformat(),
         }
 
@@ -1520,6 +1559,24 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         now_step3 = datetime.now(timezone.utc)
         step3_report = await save_step3_exclusion_report(db, now_step3)
         result["step3_exclusion_rows"] = step3_report.get("step3_exclusion_rows", 0)
+
+        # Step 3 ticker-level funnel counts (authoritative, computed after sync).
+        # "Up-to-date" = fundamentals_status='complete'
+        #               AND needs_fundamentals_refresh != True
+        #               AND fundamentals_updated_at is not null/missing
+        step3_input_total = await db.tracked_tickers.count_documents(STEP3_QUERY)
+        step3_output_total = await db.tracked_tickers.count_documents({
+            **STEP3_QUERY,
+            "fundamentals_status": "complete",
+            "needs_fundamentals_refresh": {"$ne": True},
+            "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
+        })
+        step3_filtered_out_total = max(step3_input_total - step3_output_total, 0)
+        result["step3_funnel"] = {
+            "input_total": step3_input_total,
+            "output_total": step3_output_total,
+            "filtered_out_total": step3_filtered_out_total,
+        }
 
         # Step 4 auto-chain: after successful Step 3 completion, recompute visibility.
         step4_chain = {

@@ -5294,33 +5294,31 @@ async def admin_job_status(job_name: str):
     )
     cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
 
-    # Real-time DB counts for fundamentals jobs — scoped to the canonical Step 3
-    # universe (NYSE+NASDAQ Common Stock with price data) so they match the
-    # "Tickers with prices" count shown in the Step 3 pipeline card.
-    db_complete_count: Optional[int] = None
-    db_pending_count:  Optional[int] = None
-    db_total_count:    Optional[int] = None
+    # Real-time DB ticker-level funnel counts for fundamentals jobs, scoped to the
+    # canonical Step 3 universe (NYSE+NASDAQ Common Stock with price data).
+    # "Up-to-date" = fundamentals_status='complete'
+    #               AND needs_fundamentals_refresh != True
+    #               AND fundamentals_updated_at is not null/missing
+    step3_input_total:       Optional[int] = None
+    step3_output_total:      Optional[int] = None
+    step3_filtered_out_total: Optional[int] = None
     if job_name in ("fundamentals_sync", "full_fundamentals_sync"):
-        # Use the canonical STEP3_QUERY imported from scheduler_service —
-        # same constant the job itself now uses for universe scoping.
-        db_total_count = await db.tracked_tickers.count_documents(STEP3_QUERY)
-        db_complete_count = await db.tracked_tickers.count_documents(
-            {**STEP3_QUERY, "fundamentals_status": "complete"}
-        )
-        # db_pending_count = tickers in the Step 3 universe that still need
-        # fundamentals fetched (null/missing status or explicit "pending").
-        # These are not integrity failures — they simply haven't been synced yet.
-        db_pending_count = await db.tracked_tickers.count_documents(
-            {**STEP3_QUERY, "fundamentals_status": {"$in": ["pending", None]}}
-        )
+        step3_input_total = await db.tracked_tickers.count_documents(STEP3_QUERY)
+        step3_output_total = await db.tracked_tickers.count_documents({
+            **STEP3_QUERY,
+            "fundamentals_status": "complete",
+            "needs_fundamentals_refresh": {"$ne": True},
+            "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
+        })
+        step3_filtered_out_total = max(step3_input_total - step3_output_total, 0)
 
     return {
-        "job_name":          job_name,
-        "last_run":          run,
-        "cancel_requested":  bool(cancel_flag),
-        "db_complete_count": db_complete_count,
-        "db_pending_count":  db_pending_count,
-        "db_total_count":    db_total_count,
+        "job_name":               job_name,
+        "last_run":               run,
+        "cancel_requested":       bool(cancel_flag),
+        "step3_input_total":      step3_input_total,
+        "step3_output_total":     step3_output_total,
+        "step3_filtered_out_total": step3_filtered_out_total,
     }
 
 
