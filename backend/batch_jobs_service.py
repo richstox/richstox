@@ -342,12 +342,12 @@ async def sync_single_ticker_fundamentals(
 
         # Attach debug evidence to result._debug
         result["_debug"] = {
-            "provider_financial_period_count":    provider_financial_period_count,
-            "db_company_financials_row_count_after": db_fin_rows_after,
-            "provider_earnings_count":            provider_earnings_count,
-            "db_earnings_row_count_after":        db_earn_rows_after,
-            "provider_shares_outstanding":        provider_shares_outstanding,
-            "tracked_tickers_shares_outstanding_after": shares_outstanding_after,
+            "provider_financial_period_count": provider_financial_period_count,
+            "db_financial_rows_after":         db_fin_rows_after,
+            "provider_earnings_count":         provider_earnings_count,
+            "db_earnings_rows_after":          db_earn_rows_after,
+            "provider_shares_outstanding":     provider_shares_outstanding,
+            "shares_outstanding_after":        shares_outstanding_after,
         }
 
         result["success"] = True
