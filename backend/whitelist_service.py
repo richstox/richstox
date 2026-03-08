@@ -418,44 +418,48 @@ async def sync_ticker_whitelist(
         "errors": [],
     }
     
-    # Collect all candidates and exclusions across exchanges.
-    # Deduplicate symbols by code across exchanges before filtering so that
-    # raw_symbols_fetched == seeded_count + filtered_out_total strictly.
-    # A symbol appearing on both NYSE and NASDAQ is kept once (first-seen exchange)
-    # and its duplicate occurrence is recorded as reason "DUPLICATE_SYMBOL".
-    all_candidates = []
-    all_exclusions = []
-    seen_codes: set = set()   # tracks plain ticker codes already processed
+    # Collect raw symbols from all exchanges, deduplicate by code (distinct universe).
+    # raw_symbols_fetched = len(distinct codes) so that:
+    #   raw_symbols_fetched == seeded_count + filtered_out_total_step1 strictly.
+    # First-seen exchange wins when the same code appears on NYSE and NASDAQ.
+    raw_per_exchange: Dict[str, int] = {}
+    distinct_sym_by_code: Dict[str, Dict[str, Any]] = {}  # code -> sym dict
 
     for exchange in exchanges:
         symbols = await fetch_exchange_symbols(exchange)
-        result["fetched"] += len(symbols)
+        raw_per_exchange[exchange] = len(symbols)
 
         if not symbols:
             result["errors"].append(f"No symbols returned from {exchange}")
             continue
 
-        candidates, exclusions = filter_whitelist_candidates(symbols, exchange, include_exclusions=True)
+        for sym in symbols:
+            code = (sym.get("Code") or "").strip().upper()
+            if not code:
+                continue
+            if code not in distinct_sym_by_code:
+                # Attach exchange so filter_whitelist_candidates can use it
+                sym_with_exchange = dict(sym)
+                sym_with_exchange["_exchange"] = exchange
+                distinct_sym_by_code[code] = sym_with_exchange
 
-        # Separate candidates into unique (first-seen) vs cross-exchange duplicates.
-        unique_candidates = []
-        for c in candidates:
-            code = c.get("code", "").upper()
-            if code in seen_codes:
-                all_exclusions.append({
-                    "ticker": code if code else "(empty)",
-                    "name": c.get("name", "(unknown)"),
-                    "step": STEP1_REPORT_STEP,
-                    "reason": "DUPLICATE_SYMBOL",
-                    "exchange": exchange,
-                })
-            else:
-                seen_codes.add(code)
-                unique_candidates.append(c)
+    result["fetched"] = len(distinct_sym_by_code)
+    result["fetched_raw_per_exchange"] = raw_per_exchange
 
-        result["filtered"] += len(unique_candidates)
+    # Determine exchange for each distinct symbol (first-seen wins).
+    # Group distinct symbols by their assigned exchange for per-exchange filtering.
+    from collections import defaultdict as _defaultdict
+    syms_by_exchange: Dict[str, List[Dict[str, Any]]] = _defaultdict(list)
+    for sym in distinct_sym_by_code.values():
+        syms_by_exchange[sym["_exchange"]].append(sym)
+
+    all_candidates = []
+    all_exclusions = []
+    for exchange, syms in syms_by_exchange.items():
+        candidates, exclusions = filter_whitelist_candidates(syms, exchange, include_exclusions=True)
+        result["filtered"] += len(candidates)
         result["filtered_out"] += len(exclusions)
-        all_candidates.extend(unique_candidates)
+        all_candidates.extend(candidates)
         all_exclusions.extend(exclusions)
     
     if not all_candidates:
