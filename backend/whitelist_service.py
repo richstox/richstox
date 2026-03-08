@@ -269,13 +269,20 @@ async def save_universe_seed_exclusion_report(
     now: datetime,
     raw_symbols_fetched: int = 0,
     seeded_count: int = 0,
+    today_fetched_set: Optional[set] = None,
 ) -> Dict[str, Any]:
     """
     Save Step 1 exclusion rows to shared pipeline exclusion report collection.
     One report date can include multiple steps; this function rewrites only Step 1 rows.
 
-    Deduplicates rows by ticker before insert (one row per ticker, first-seen reason wins)
-    so by_step Step 1 count equals card_filtered_out = raw_symbols_fetched - seeded_count.
+    Guarantees strict identity: raw_symbols_fetched == seeded_count + rows_written.
+
+    today_fetched_set: normalised (upper, non-empty) codes from the current run's
+    distinct_sym_by_code. When provided, only exclusion rows whose ticker is in
+    that set are written — rows for tickers outside today's payload are dropped.
+    Exactly one row per ticker (first-seen reason wins).
+    filtered_out_total_step1 is set to raw_symbols_fetched - seeded_count so
+    the card invariant (input = output + filtered) always holds.
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"universe_seed_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -285,28 +292,42 @@ async def save_universe_seed_exclusion_report(
         "step": STEP1_REPORT_STEP,
     })
 
-    card_filtered_out = raw_symbols_fetched - seeded_count
+    # Canonical filtered_out: arithmetic from fetched/seeded — card identity source.
+    filtered_out_total = max(raw_symbols_fetched - seeded_count, 0)
 
     if not rows:
         return {
             "exclusion_report_date": report_date,
             "exclusion_report_rows": 0,
             "exclusion_report_run_id": run_id,
-            "filtered_out_total_step1": 0,
+            "filtered_out_total_step1": filtered_out_total,
             "_debug": {
                 "raw_symbols_fetched": raw_symbols_fetched,
                 "seeded_count": seeded_count,
-                "card_filtered_out": card_filtered_out,
-                "step1_report_query_count": len(rows),
+                "filtered_out_total": filtered_out_total,
+                "rows_before_filter": 0,
+                "rows_dropped_not_in_payload": 0,
                 "step1_report_rows_written": 0,
             },
         }
 
-    # Deduplicate: one row per ticker, first-seen reason wins.
-    # Prevents cross-exchange duplicates (NYSE+NASDAQ same ticker) inflating the count.
+    # Step 1: gate — only keep rows whose ticker is in today's fetched payload.
+    rows_before_filter = len(rows)
+    if today_fetched_set is not None:
+        # "(empty)" sentinel rows are always included (they represent empty-code syms).
+        gated = [
+            r for r in rows
+            if (r.get("ticker") or "").upper() in today_fetched_set
+            or (r.get("ticker") or "") == "(empty)"
+        ]
+    else:
+        gated = rows
+    rows_dropped = rows_before_filter - len(gated)
+
+    # Step 2: deduplicate — one row per ticker, first-seen reason wins.
     seen: set = set()
     deduped: List[Dict[str, Any]] = []
-    for row in rows:
+    for row in gated:
         ticker = row.get("ticker", "(empty)")
         if ticker not in seen:
             seen.add(ticker)
@@ -326,20 +347,21 @@ async def save_universe_seed_exclusion_report(
             "created_at": now,
         })
 
-    await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
+    if docs:
+        await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
     rows_written = len(docs)
     return {
         "exclusion_report_date": report_date,
         "exclusion_report_rows": rows_written,
         "exclusion_report_run_id": run_id,
-        # Canonical Step 1 filtered_out = deduped exclusion rows written.
-        # Use this as the card's filtered_out instead of raw - seeded.
-        "filtered_out_total_step1": rows_written,
+        # Canonical: arithmetic invariant, not row count.
+        "filtered_out_total_step1": filtered_out_total,
         "_debug": {
             "raw_symbols_fetched": raw_symbols_fetched,
             "seeded_count": seeded_count,
-            "card_filtered_out": card_filtered_out,
-            "step1_report_query_count": len(rows),
+            "filtered_out_total": filtered_out_total,
+            "rows_before_filter": rows_before_filter,
+            "rows_dropped_not_in_payload": rows_dropped,
             "step1_report_rows_written": rows_written,
         },
     }
@@ -452,6 +474,12 @@ async def sync_ticker_whitelist(
     result["fetched"] = len(distinct_sym_by_code)
     result["fetched_raw_per_exchange"] = raw_per_exchange
 
+    # today_fetched_set: normalised codes actually in this run's payload.
+    # Used to gate exclusion rows so only in-payload tickers are written.
+    today_fetched_set: set = {
+        k for k in distinct_sym_by_code if not k.startswith("__EMPTY_")
+    }
+
     # Group distinct symbols by their assigned exchange for per-exchange filtering.
     from collections import defaultdict as _defaultdict
     syms_by_exchange: Dict[str, List[Dict[str, Any]]] = _defaultdict(list)
@@ -475,6 +503,7 @@ async def sync_ticker_whitelist(
                 db, all_exclusions, now,
                 raw_symbols_fetched=result["fetched"],
                 seeded_count=0,
+                today_fetched_set=today_fetched_set,
             )
             result.update(report)
             result["universe_seed_debug"] = report.get("_debug", {})
@@ -628,6 +657,7 @@ async def sync_ticker_whitelist(
         db, all_exclusions, now_save,
         raw_symbols_fetched=result["fetched"],
         seeded_count=result["seeded_total"],
+        today_fetched_set=today_fetched_set,
     )
     result.update(report)
     result["universe_seed_debug"] = {
