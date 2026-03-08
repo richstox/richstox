@@ -65,36 +65,13 @@ STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
 - All `ops_job_runs` documents must include `started_at_prague` and `finished_at_prague` fields (ISO format, Europe/Prague).
 - Use `_to_prague_iso()` helper from `scheduler_service.py`.
 
-### Pipeline steps (canonical definition)
+**Known current issue — fundamentals_events queue pollution**
+- `fundamentals_events` contains duplicates and stale events; `db_pending_count` is much larger than actual work needed.
+- Events are not skipped for tickers that already have `fundamentals_status = "complete"`.
 
-The Universe Pipeline has sequential steps. Each step runs ONLY after the previous completes successfully.
-
-**Step 1 — Universe Seed**
-- Call EODHD API: get all symbols from NYSE
-- Call EODHD API: get all symbols from NASDAQ
-- Count TOTAL RAW (both exchanges combined)
-- Filter locally (NO additional API calls):
-  - Remove empty codes
-  - Remove codes containing dots (ADRs, preferred with dot notation)
-  - Remove exclude patterns (warrants -WT/-WS, units -U/-UN, preferred -PA/-PB/etc, rights -R/-RI)
-  - Remove Type != "Common Stock"
-- Result = SEEDED tickers
-- Log every filtered-out ticker to a report: Ticker, Name, Step, Reason
-- Frontend pipeline view must show: RAW count → SEEDED count → filtered out count (same visual style as Step 2)
-
-**Step 2 — Price Sync** (after Step 1 completes)
-- Fetch daily prices from EODHD for all seeded tickers
-- Mark `has_price_data = true` for tickers with price data
-- Tickers without price data are filtered out (logged to report)
-
-**Steps 3-5** — Fundamentals, Visible Universe, Peer Medians (each after previous completes).
-See the **Step 3/Step 4 canonical definitions** section above for verified details.
-
-**Report**: ONE file across ALL steps. Each row: Ticker | Name | Step | Reason for exclusion. Admin can download/view this report.
-
-**CRITICAL RULES**:
-- Frontend NEVER calls EODHD — all data comes from scheduled jobs → MongoDB
-- EODHD provides raw data only — all derived metrics (P/E, market cap, margins) computed by backend
+**Next planned fix (NOT implemented — must propose to Richard before coding)**
+- Skip events for tickers where `fundamentals_status = "complete"` and no refresh is needed.
+- Deduplicate: keep only the most recent event per `(ticker, event_type)`.
 
 ### Architecture
 
