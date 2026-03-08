@@ -174,155 +174,177 @@ def get_canonical_sieve_query() -> dict:
 
 async def recompute_visibility_all(db) -> Dict[str, Any]:
     """
-    Manual admin job: recompute is_visible for ALL tickers.
-    
-    BINDING:
-    - Every failed ticker gets visibility_failed_reason (enum) + is_visible=false
-    - SAFE CLEANUP: Only delete data for tickers that were ALREADY is_visible=false
-      before this job ran. NEVER delete data for tickers transitioning from visible.
-    - Keep minimal metadata in tracked_tickers for audit
-    
-    BUG FIX (2026-02-25): Previous version deleted data for visible tickers
-    when exchange field was temporarily corrupted. Now only deletes data
-    for tickers that were is_visible=false BEFORE job started.
+    Recompute is_visible for ALL tickers.
+
+    Uses batched bulk_write (BATCH_SIZE ops per call) instead of per-ticker
+    update_one — orders-of-magnitude faster for large universes.
+    Progress is written to ops_job_runs after each batch so the Admin UI
+    can display processed / total / pct in real-time.
+
+    SAFE CLEANUP RULE:
+    Pre-snapshot tickers that are already is_visible=false before this run.
+    After recompute, only delete data for tickers in that pre-snapshot that
+    are ALSO still is_visible=false after the run. Never delete data for a
+    ticker that was visible at job start.
     """
-    job_id = f"recompute_visibility_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    from pymongo import UpdateOne as _UpdateOne
+    from zoneinfo import ZoneInfo
+
+    BATCH_SIZE = 500
+    PRAGUE = ZoneInfo("Europe/Prague")
+    job_name = "compute_visible_universe"
     started_at = datetime.now(timezone.utc)
-    
+    job_id = f"recompute_visibility_{started_at.strftime('%Y%m%d_%H%M%S')}"
+
     logger.info(f"Starting visibility recompute job: {job_id}")
-    
+
+    total = await db.tracked_tickers.count_documents({})
+
+    # Pre-snapshot: tickers that were already invisible BEFORE this run.
+    # Cleanup is only allowed for members of this set.
+    pre_invisible: Set[str] = set(
+        await db.tracked_tickers.distinct("ticker", {"is_visible": False})
+    )
+
+    # Insert running sentinel — polled by frontend via /admin/jobs/{job_name}/status
+    run_doc = await db.ops_job_runs.insert_one({
+        "job_name":           job_name,
+        "status":             "running",
+        "started_at":         started_at,
+        "started_at_prague":  started_at.astimezone(PRAGUE).isoformat(),
+        "progress":           f"Starting… 0 / {total:,}",
+        "progress_processed": 0,
+        "progress_total":     total,
+        "progress_pct":       0,
+    })
+    run_doc_id = run_doc.inserted_id
+
     # Snapshot BEFORE
     before = {
-        "visible_count": await db.tracked_tickers.count_documents({"is_visible": True}),
-        "invisible_count": await db.tracked_tickers.count_documents({"is_visible": False}),
-        "stock_prices_count": await db.stock_prices.count_documents({}),
+        "visible_count":          await db.tracked_tickers.count_documents({"is_visible": True}),
+        "invisible_count":        len(pre_invisible),
+        "stock_prices_count":     await db.stock_prices.count_documents({}),
         "financials_cache_count": await db.financials_cache.count_documents({}),
     }
-    
     logger.info(f"Before: {before}")
-    
-    # Stats
-    stats = {
-        "processed": 0,
-        "now_visible": 0,
-        "now_invisible": 0,
-        "changed": 0,
-        "reasons": {}
+
+    stats: Dict[str, Any] = {
+        "processed": 0, "now_visible": 0, "now_invisible": 0,
+        "changed": 0, "reasons": {}
     }
-    
-    # Collect tickers to cleanup
-    tickers_to_cleanup: List[str] = []
-    
-    # Process ALL tickers
+    now_invisible_set: Set[str] = set()  # tickers that are invisible after this run
+    batch_ops: list = []
+    processed = 0
+
     async for ticker_doc in db.tracked_tickers.find({}):
         ticker = ticker_doc.get("ticker", "")
-        
         is_visible, failed_reason = compute_visibility(ticker_doc)
-        
-        # Track reason counts
+
         reason_key = failed_reason or "VISIBLE"
         stats["reasons"][reason_key] = stats["reasons"].get(reason_key, 0) + 1
-        
-        # Check if changed
+
         old_visible = ticker_doc.get("is_visible")
         if old_visible != is_visible:
             stats["changed"] += 1
-        
-        # Update ticker
-        update_doc = {
-            "is_visible": is_visible,
+
+        update_fields: Dict[str, Any] = {
+            "is_visible":            is_visible,
             "visibility_updated_at": datetime.now(timezone.utc),
         }
-        
         if is_visible:
             stats["now_visible"] += 1
-            update_doc["visibility_failed_reason"] = None
+            update_fields["visibility_failed_reason"] = None
         else:
             stats["now_invisible"] += 1
-            update_doc["visibility_failed_reason"] = failed_reason
-            # BUG FIX: Only cleanup data for tickers that were NEVER visible
-            # or are transitioning FROM visible TO invisible.
-            # DO NOT delete data for tickers that are currently being recomputed
-            # if they were already marked invisible but have data (data might be needed for recovery)
-            # SAFE RULE: Only add to cleanup if this ticker was PREVIOUSLY invisible too
-            if old_visible == False:
-                tickers_to_cleanup.append(ticker)
-        
-        await db.tracked_tickers.update_one(
-            {"ticker": ticker},
-            {"$set": update_doc}
-        )
+            update_fields["visibility_failed_reason"] = failed_reason
+            now_invisible_set.add(ticker)
+
+        batch_ops.append(_UpdateOne({"ticker": ticker}, {"$set": update_fields}))
+        processed += 1
         stats["processed"] += 1
-        
-        # Progress logging
-        if stats["processed"] % 1000 == 0:
-            logger.info(f"Processed {stats['processed']} tickers...")
-    
-    logger.info(f"Ticker updates complete. Starting cleanup of {len(tickers_to_cleanup)} invisible tickers...")
-    
-    # CLEANUP: Delete data for non-visible tickers
-    cleanup_stats = {
-        "stock_prices_deleted": 0,
-        "financials_cache_deleted": 0,
-    }
-    
+
+        if len(batch_ops) >= BATCH_SIZE:
+            await db.tracked_tickers.bulk_write(batch_ops, ordered=False)
+            batch_ops = []
+            pct = round(processed / total * 100) if total > 0 else 0
+            now_ts = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": run_doc_id},
+                {"$set": {
+                    "progress":           f"Processed {processed:,} / {total:,} ({pct}%)",
+                    "progress_processed": processed,
+                    "progress_pct":       pct,
+                    "updated_at":         now_ts,
+                    "updated_at_prague":  now_ts.astimezone(PRAGUE).isoformat(),
+                }},
+            )
+            if processed % 2000 == 0:
+                logger.info(f"Processed {processed}/{total} tickers…")
+
+    # Flush remaining batch
+    if batch_ops:
+        await db.tracked_tickers.bulk_write(batch_ops, ordered=False)
+
+    # SAFE CLEANUP: only tickers that were already invisible at job start
+    # AND are still invisible after the recompute.
+    tickers_to_cleanup = list(pre_invisible & now_invisible_set)
+    logger.info(f"Cleanup candidates: {len(tickers_to_cleanup)} "
+                f"(pre_invisible={len(pre_invisible)}, still_invisible={len(now_invisible_set)})")
+
+    cleanup_stats: Dict[str, int] = {"stock_prices_deleted": 0, "financials_cache_deleted": 0}
     if tickers_to_cleanup:
-        # Delete stock_prices for invisible tickers
-        result = await db.stock_prices.delete_many({"ticker": {"$in": tickers_to_cleanup}})
-        cleanup_stats["stock_prices_deleted"] = result.deleted_count
-        logger.info(f"Deleted {result.deleted_count} stock_prices documents")
-        
-        # Delete financials_cache for invisible tickers
-        result = await db.financials_cache.delete_many({"ticker": {"$in": tickers_to_cleanup}})
-        cleanup_stats["financials_cache_deleted"] = result.deleted_count
-        logger.info(f"Deleted {result.deleted_count} financials_cache documents")
-    
+        r = await db.stock_prices.delete_many({"ticker": {"$in": tickers_to_cleanup}})
+        cleanup_stats["stock_prices_deleted"] = r.deleted_count
+        r = await db.financials_cache.delete_many({"ticker": {"$in": tickers_to_cleanup}})
+        cleanup_stats["financials_cache_deleted"] = r.deleted_count
+        logger.info(f"Deleted {cleanup_stats['stock_prices_deleted']} prices, "
+                    f"{cleanup_stats['financials_cache_deleted']} financials")
+
     # Snapshot AFTER
     after = {
-        "visible_count": await db.tracked_tickers.count_documents({"is_visible": True}),
-        "invisible_count": await db.tracked_tickers.count_documents({"is_visible": False}),
-        "stock_prices_count": await db.stock_prices.count_documents({}),
+        "visible_count":          await db.tracked_tickers.count_documents({"is_visible": True}),
+        "invisible_count":        await db.tracked_tickers.count_documents({"is_visible": False}),
+        "stock_prices_count":     await db.stock_prices.count_documents({}),
         "financials_cache_count": await db.financials_cache.count_documents({}),
     }
-    
     logger.info(f"After: {after}")
-    
-    # Estimate space freed (rough calculation)
-    # stock_prices: ~150 bytes/doc, financials_cache: ~1500 bytes/doc
-    space_freed_mb = round(
-        (cleanup_stats["stock_prices_deleted"] * 150 + 
-         cleanup_stats["financials_cache_deleted"] * 1500) / 1024 / 1024, 2
-    )
-    
+
     completed_at = datetime.now(timezone.utc)
     duration_seconds = (completed_at - started_at).total_seconds()
-    
-    # Log to ops_job_runs
-    await db.ops_job_runs.insert_one({
-        "job_type": "recompute_visibility_all",
-        "job_id": job_id,
-        "started_at": started_at,
-        "completed_at": completed_at,
+
+    space_freed_mb = round(
+        (cleanup_stats["stock_prices_deleted"] * 150 +
+         cleanup_stats["financials_cache_deleted"] * 1500) / 1024 / 1024, 2
+    )
+
+    result: Dict[str, Any] = {
+        "job_id":           job_id,
         "duration_seconds": duration_seconds,
-        "status": "completed",
-        "before": before,
-        "after": after,
-        "stats": stats,
-        "cleanup": cleanup_stats,
-        "space_freed_mb": space_freed_mb,
-    })
-    
-    logger.info(f"Job {job_id} completed in {duration_seconds:.1f}s. Space freed: {space_freed_mb} MB")
-    
-    return {
-        "job_id": job_id,
-        "duration_seconds": duration_seconds,
-        "before": before,
-        "after": after,
-        "stats": stats,
-        "cleanup": cleanup_stats,
-        "space_freed_mb": space_freed_mb,
+        "before":           before,
+        "after":            after,
+        "stats":            stats,
+        "cleanup":          cleanup_stats,
+        "space_freed_mb":   space_freed_mb,
     }
+
+    # Finalize sentinel
+    await db.ops_job_runs.update_one(
+        {"_id": run_doc_id},
+        {"$set": {
+            "status":             "completed",
+            "finished_at":        completed_at,
+            "finished_at_prague": completed_at.astimezone(PRAGUE).isoformat(),
+            "progress":           f"Done: {stats['now_visible']:,} visible / {total:,} total",
+            "progress_processed": processed,
+            "progress_total":     total,
+            "progress_pct":       100,
+            "details":            result,
+        }},
+    )
+
+    logger.info(f"Job {job_id} completed in {duration_seconds:.1f}s. "
+                f"Space freed: {space_freed_mb} MB")
+    return result
 
 
 # ==============================================================================

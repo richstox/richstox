@@ -182,6 +182,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
 
+  // ── Step 4 visibility recompute progress ─────────────────────────────────
+  const [step4Progress, setStep4Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
+
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
   const [auditLive, setAuditLive] = useState(false);
@@ -360,6 +363,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           if (st === 'running') {
             const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
             setLiveProgress(progressMsg);
+            // Structured progress for Step 4 visibility recompute
+            if (jobName === 'compute_visible_universe' && lastRun.progress_total) {
+              setStep4Progress({
+                processed: lastRun.progress_processed || 0,
+                total:     lastRun.progress_total,
+                pct:       lastRun.progress_pct || 0,
+              });
+            }
             if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
               fetchData();
             }
@@ -1309,6 +1320,23 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
+              {/* Step 4 visibility recompute progress */}
+              {step.job_name === 'compute_visible_universe' && step4Progress !== null && (
+                <View style={s.step4ProgressWrap}>
+                  <View style={s.step4ProgressBarBg}>
+                    <View style={[s.step4ProgressBarFill, {
+                      width: `${Math.min(step4Progress.pct, 100)}%` as any,
+                    }]} />
+                  </View>
+                  <View style={s.step4ProgressRow}>
+                    <Text style={s.step4ProgressLabel}>Visibility recompute</Text>
+                    <Text style={s.step4ProgressValue}>
+                      {fmt(step4Progress.processed)} / {fmt(step4Progress.total)} · {step4Progress.pct}%
+                    </Text>
+                  </View>
+                </View>
+              )}
+
               {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
                 <Text style={s.expandText}>Filter details</Text>
@@ -1653,6 +1681,14 @@ const s = StyleSheet.create({
   auditItemError: { fontSize: 10, color: '#EF4444', marginBottom: 1 },
   auditItemWarn:  { fontSize: 10, color: '#F59E0B', marginBottom: 1 },
   auditItemMuted: { fontSize: 10, color: COLORS.textMuted, marginBottom: 1 },
+
+  // ── Step 4 progress bar ──────────────────────────────────────────────────
+  step4ProgressWrap:    { marginTop: 8, marginBottom: 4 },
+  step4ProgressBarBg:   { height: 5, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 4 },
+  step4ProgressBarFill: { height: 5, borderRadius: 3, backgroundColor: '#8B5CF6' },
+  step4ProgressRow:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  step4ProgressLabel:   { fontSize: 10, color: COLORS.textMuted },
+  step4ProgressValue:   { fontSize: 10, color: '#8B5CF6', fontWeight: '600' },
 
   syncCard: { marginHorizontal: 12, marginTop: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: COLORS.border },
   syncTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, marginBottom: 10 },

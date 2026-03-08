@@ -5287,7 +5287,8 @@ async def admin_job_status(job_name: str):
     run = await db.ops_job_runs.find_one(
         {"job_name": job_name},
         {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
-         "details": 1, "records_upserted": 1, "progress": 1},
+         "details": 1, "records_upserted": 1, "progress": 1,
+         "progress_processed": 1, "progress_total": 1, "progress_pct": 1},
         sort=[("started_at", -1)],
     )
     cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
