@@ -266,11 +266,16 @@ def filter_whitelist_candidates(
 async def save_universe_seed_exclusion_report(
     db,
     rows: List[Dict[str, Any]],
-    now: datetime
+    now: datetime,
+    raw_symbols_fetched: int = 0,
+    seeded_count: int = 0,
 ) -> Dict[str, Any]:
     """
     Save Step 1 exclusion rows to shared pipeline exclusion report collection.
     One report date can include multiple steps; this function rewrites only Step 1 rows.
+
+    Deduplicates rows by ticker before insert (one row per ticker, first-seen reason wins)
+    so by_step Step 1 count equals card_filtered_out = raw_symbols_fetched - seeded_count.
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"universe_seed_{now.strftime('%Y%m%d_%H%M%S')}"
@@ -280,11 +285,34 @@ async def save_universe_seed_exclusion_report(
         "step": STEP1_REPORT_STEP,
     })
 
+    card_filtered_out = raw_symbols_fetched - seeded_count
+
     if not rows:
-        return {"exclusion_report_date": report_date, "exclusion_report_rows": 0, "exclusion_report_run_id": run_id}
+        return {
+            "exclusion_report_date": report_date,
+            "exclusion_report_rows": 0,
+            "exclusion_report_run_id": run_id,
+            "_debug": {
+                "raw_symbols_fetched": raw_symbols_fetched,
+                "seeded_count": seeded_count,
+                "card_filtered_out": card_filtered_out,
+                "step1_report_query_count": len(rows),
+                "step1_report_rows_written": 0,
+            },
+        }
+
+    # Deduplicate: one row per ticker, first-seen reason wins.
+    # Prevents cross-exchange duplicates (NYSE+NASDAQ same ticker) inflating the count.
+    seen: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for row in rows:
+        ticker = row.get("ticker", "(empty)")
+        if ticker not in seen:
+            seen.add(ticker)
+            deduped.append(row)
 
     docs = []
-    for row in rows:
+    for row in deduped:
         docs.append({
             "ticker": row.get("ticker", "(empty)"),
             "name": row.get("name", "(unknown)"),
@@ -298,7 +326,19 @@ async def save_universe_seed_exclusion_report(
         })
 
     await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
-    return {"exclusion_report_date": report_date, "exclusion_report_rows": len(docs), "exclusion_report_run_id": run_id}
+    rows_written = len(docs)
+    return {
+        "exclusion_report_date": report_date,
+        "exclusion_report_rows": rows_written,
+        "exclusion_report_run_id": run_id,
+        "_debug": {
+            "raw_symbols_fetched": raw_symbols_fetched,
+            "seeded_count": seeded_count,
+            "card_filtered_out": card_filtered_out,
+            "step1_report_query_count": len(rows),
+            "step1_report_rows_written": rows_written,
+        },
+    }
 
 
 def extract_fundamentals_cache(fundamentals: Dict[str, Any], ticker: str) -> Dict[str, Any]:
@@ -395,7 +435,13 @@ async def sync_ticker_whitelist(
         result["errors"].append("No candidates after filtering")
         result["seeded_total"] = 0
         if not dry_run:
-            result.update(await save_universe_seed_exclusion_report(db, all_exclusions, now))
+            report = await save_universe_seed_exclusion_report(
+                db, all_exclusions, now,
+                raw_symbols_fetched=result["fetched"],
+                seeded_count=0,
+            )
+            result.update(report)
+            result["universe_seed_debug"] = report.get("_debug", {})
         result["finished_at"] = datetime.now(timezone.utc).isoformat()
         return result
     
@@ -511,7 +557,13 @@ async def sync_ticker_whitelist(
         }
     )
     result["deactivated"] = deactivate_result.modified_count
-    result.update(await save_universe_seed_exclusion_report(db, all_exclusions, now))
+    report = await save_universe_seed_exclusion_report(
+        db, all_exclusions, now,
+        raw_symbols_fetched=result["fetched"],
+        seeded_count=result["seeded_total"],
+    )
+    result.update(report)
+    result["universe_seed_debug"] = report.get("_debug", {})
     
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
     
