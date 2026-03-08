@@ -1119,15 +1119,19 @@ async def _deduplicate_pending_events(db, now: datetime) -> Dict[str, int]:
     most-recent event per (ticker, event_type) pair.
 
     Strategy:
-      1. Aggregate all pending events grouped by (ticker, event_type).
-         Within each group sort descending by created_at so $first gives the
-         newest _id.
-      2. Collect every _id that is NOT the keeper.
-      3. Bulk-update those duplicates to status='deduped'.
+      1. Snapshot pending_before_dedup via count_documents BEFORE touching anything.
+      2. Stream aggregate results (grouped by (ticker, event_type)); for each group
+         collect the dupe _ids (all except the newest).
+      3. Flush to update_many in chunks of CHUNK_SIZE to avoid building one
+         unbounded Python list — memory-safe regardless of queue size.
 
     No documents are deleted — 'deduped' is a permanent audit status.
-    Returns counts: {"examined": N, "deduped": M}
+    Returns: {"pending_before_dedup": N, "deduped_event_count": M}
     """
+    CHUNK_SIZE = 5_000
+
+    pending_before_dedup = await db.fundamentals_events.count_documents({"status": "pending"})
+
     pipeline = [
         {"$match": {"status": "pending"}},
         {"$sort": {"created_at": -1}},
@@ -1152,21 +1156,29 @@ async def _deduplicate_pending_events(db, now: datetime) -> Dict[str, int]:
         {"$match": {"dupe_ids.0": {"$exists": True}}},
     ]
 
-    dupe_ids = []
+    chunk: list = []
+    deduped_event_count = 0
+
     async for doc in db.fundamentals_events.aggregate(pipeline):
-        dupe_ids.extend(doc["dupe_ids"])
+        chunk.extend(doc["dupe_ids"])
+        if len(chunk) >= CHUNK_SIZE:
+            res = await db.fundamentals_events.update_many(
+                {"_id": {"$in": chunk}},
+                {"$set": {"status": "deduped", "deduped_at": now}},
+            )
+            deduped_event_count += res.modified_count
+            chunk = []
 
-    if not dupe_ids:
-        return {"examined": 0, "deduped": 0}
+    if chunk:
+        res = await db.fundamentals_events.update_many(
+            {"_id": {"$in": chunk}},
+            {"$set": {"status": "deduped", "deduped_at": now}},
+        )
+        deduped_event_count += res.modified_count
 
-    result = await db.fundamentals_events.update_many(
-        {"_id": {"$in": dupe_ids}},
-        {"$set": {"status": "deduped", "deduped_at": now}},
-    )
-    deduped = result.modified_count
-    if deduped:
-        logger.info(f"_deduplicate_pending_events: marked {deduped} duplicate events as deduped")
-    return {"examined": len(dupe_ids), "deduped": deduped}
+    if deduped_event_count:
+        logger.info(f"_deduplicate_pending_events: marked {deduped_event_count} duplicate events as deduped")
+    return {"pending_before_dedup": pending_before_dedup, "deduped_event_count": deduped_event_count}
 
 
 async def _skip_already_complete_tickers(
@@ -1299,11 +1311,6 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
         now_queue = datetime.now(timezone.utc)
 
-        # Step 3 queue hygiene pass 1: collapse duplicates per (ticker, event_type).
-        # Marks excess pending events as 'deduped' (no deletes — full audit trail).
-        await _progress("Deduplicating pending fundamentals_events queue…")
-        dedup_stats = await _deduplicate_pending_events(db, now_queue)
-
         # Ensure Step 3 includes priced tickers missing classification.
         class_candidates = await db.tracked_tickers.find(
             {
@@ -1330,9 +1337,14 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         # Canonical Step 3 universe total — informational only (stored in details).
         universe_total = await db.tracked_tickers.count_documents(STEP3_QUERY)
 
-        # Fetch pending events after dedup (no universe filter on fundamentals_events —
-        # avoids a potentially large $in; orphan purge already cleaned out-of-universe rows).
-        events_before_skip_raw = await db.fundamentals_events.count_documents({"status": "pending"})
+        # Step 3 queue hygiene pass 1: collapse duplicates per (ticker, event_type).
+        # Snapshots pending count internally before mutating — count in dedup_stats is coherent.
+        # Marks excess pending events as 'deduped' (no deletes — full audit trail).
+        await _progress("Deduplicating pending fundamentals_events queue…")
+        dedup_stats = await _deduplicate_pending_events(db, now_queue)
+
+        # Snapshot pending count AFTER dedup pass completes.
+        pending_after_dedup = await db.fundamentals_events.count_documents({"status": "pending"})
 
         pending_events = await db.fundamentals_events.find(
             {"status": "pending"},
@@ -1380,23 +1392,21 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 if (t if t.endswith(".US") else f"{t}.US") in eligible_us
             ]
 
-        # requested_event_types counts ONLY actionable events (post-dedup, post-skip-gate).
-        # This is what feeds "STEP 3 INPUT EVENT TYPES" in the admin UI.
-        actionable_ticker_set = set(
-            t if t.endswith(".US") else f"{t}.US" for t in tickers_to_sync
-        )
+        # requested_event_types: DB aggregation over ALL pending events that survived
+        # the skip-gate (Option B — global actionable queue, not capped by batch_size).
+        # Queried directly from fundamentals_events so the count is authoritative.
         requested_event_types: Dict[str, int] = {}
-        for ticker_full, event_group in events_by_ticker.items():
-            if (ticker_full if ticker_full.endswith(".US") else f"{ticker_full}.US") not in actionable_ticker_set:
-                continue
-            for event in event_group:
-                event_type = event.get("event_type") or "unknown"
-                requested_event_types[event_type] = requested_event_types.get(event_type, 0) + 1
+        async for doc in db.fundamentals_events.aggregate([
+            {"$match": {"status": "pending"}},
+            {"$group": {"_id": "$event_type", "count": {"$sum": 1}}},
+        ]):
+            event_type = doc["_id"] or "unknown"
+            requested_event_types[event_type] = doc["count"]
 
         queue_stats = {
-            "events_before_dedup": dedup_stats["examined"] + dedup_stats["deduped"],
-            "deduped_count": dedup_stats["deduped"],
-            "events_after_dedup": events_before_skip_raw,
+            "pending_before_dedup": dedup_stats["pending_before_dedup"],
+            "deduped_event_count": dedup_stats["deduped_event_count"],
+            "pending_after_dedup": pending_after_dedup,
             "skipped_complete_count": skip_stats["skipped_ticker_count"],
             "skipped_event_count": skip_stats["skipped_event_count"],
             "actionable_count": len(tickers_to_sync),
