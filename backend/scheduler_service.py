@@ -1113,6 +1113,119 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     return {"step4_exclusion_rows": len(docs), "report_date": report_date}
 
 
+async def _deduplicate_pending_events(db, now: datetime) -> Dict[str, int]:
+    """
+    Mark duplicate pending fundamentals_events as 'deduped', keeping only the
+    most-recent event per (ticker, event_type) pair.
+
+    Strategy:
+      1. Snapshot pending_before_dedup via count_documents BEFORE touching anything.
+      2. Stream aggregate results (grouped by (ticker, event_type)); for each group
+         collect the dupe _ids (all except the newest).
+      3. Flush to update_many in chunks of CHUNK_SIZE to avoid building one
+         unbounded Python list — memory-safe regardless of queue size.
+
+    No documents are deleted — 'deduped' is a permanent audit status.
+    Returns: {"pending_before_dedup": N, "deduped_event_count": M}
+    """
+    CHUNK_SIZE = 5_000
+
+    pending_before_dedup = await db.fundamentals_events.count_documents({"status": "pending"})
+
+    pipeline = [
+        {"$match": {"status": "pending"}},
+        {"$sort": {"created_at": -1}},
+        {
+            "$group": {
+                "_id": {"ticker": "$ticker", "event_type": "$event_type"},
+                "keep_id": {"$first": "$_id"},
+                "all_ids": {"$push": "$_id"},
+            }
+        },
+        {
+            "$project": {
+                "dupe_ids": {
+                    "$filter": {
+                        "input": "$all_ids",
+                        "as": "eid",
+                        "cond": {"$ne": ["$$eid", "$keep_id"]},
+                    }
+                }
+            }
+        },
+        {"$match": {"dupe_ids.0": {"$exists": True}}},
+    ]
+
+    chunk: list = []
+    deduped_event_count = 0
+
+    async for doc in db.fundamentals_events.aggregate(pipeline):
+        chunk.extend(doc["dupe_ids"])
+        if len(chunk) >= CHUNK_SIZE:
+            res = await db.fundamentals_events.update_many(
+                {"_id": {"$in": chunk}},
+                {"$set": {"status": "deduped", "deduped_at": now}},
+            )
+            deduped_event_count += res.modified_count
+            chunk = []
+
+    if chunk:
+        res = await db.fundamentals_events.update_many(
+            {"_id": {"$in": chunk}},
+            {"$set": {"status": "deduped", "deduped_at": now}},
+        )
+        deduped_event_count += res.modified_count
+
+    if deduped_event_count:
+        logger.info(f"_deduplicate_pending_events: marked {deduped_event_count} duplicate events as deduped")
+    return {"pending_before_dedup": pending_before_dedup, "deduped_event_count": deduped_event_count}
+
+
+async def _skip_already_complete_tickers(
+    db, ticker_full_list: List[str], now: datetime
+) -> Dict[str, Any]:
+    """
+    For tickers that are already fundamentals_status='complete' and do NOT have
+    needs_fundamentals_refresh=True, mark their pending events as 'skipped'.
+
+    Returns:
+        {
+            "skipped_ticker_count": int,   # distinct tickers skipped
+            "skipped_event_count": int,    # individual events updated
+            "skipped_tickers": [...]       # list (for queue_stats audit)
+        }
+    """
+    if not ticker_full_list:
+        return {"skipped_ticker_count": 0, "skipped_event_count": 0, "skipped_tickers": []}
+
+    skippable: List[str] = await db.tracked_tickers.distinct(
+        "ticker",
+        {
+            "ticker": {"$in": ticker_full_list},
+            "fundamentals_status": "complete",
+            "needs_fundamentals_refresh": {"$ne": True},
+        },
+    )
+
+    if not skippable:
+        return {"skipped_ticker_count": 0, "skipped_event_count": 0, "skipped_tickers": []}
+
+    result = await db.fundamentals_events.update_many(
+        {"ticker": {"$in": skippable}, "status": "pending"},
+        {"$set": {"status": "skipped", "skipped_reason": "already_complete", "skipped_at": now}},
+    )
+    skipped_events = result.modified_count
+    logger.info(
+        f"_skip_already_complete_tickers: skipped {len(skippable)} tickers "
+        f"({skipped_events} events) — fundamentals_status=complete, no refresh flag"
+    )
+    return {
+        "skipped_ticker_count": len(skippable),
+        "skipped_event_count": skipped_events,
+        "skipped_tickers": skippable,
+    }
+
+
 async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
     """
     Delete fundamentals_events whose ticker is not in the canonical Step 3
@@ -1196,6 +1309,16 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         # universe before reading pending events — keeps the queue clean.
         await purge_orphaned_fundamentals_events(db)
 
+        now_queue = datetime.now(timezone.utc)
+
+        # Step 3 queue hygiene pass 1: collapse duplicates per (ticker, event_type).
+        # Runs immediately after orphan purge, before classification enqueue and
+        # before any pending-event reads, so subsequent counts are clean.
+        # Snapshots pending count internally before mutating — coherent with update.
+        # Marks excess pending events as 'deduped' (no deletes — full audit trail).
+        await _progress("Deduplicating pending fundamentals_events queue…")
+        dedup_stats = await _deduplicate_pending_events(db, now_queue)
+
         # Ensure Step 3 includes priced tickers missing classification.
         class_candidates = await db.tracked_tickers.find(
             {
@@ -1220,19 +1343,37 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         )
 
         # Canonical Step 3 universe total — informational only (stored in details).
+        # Also used as the eligible set for requested_event_types aggregation below.
         universe_total = await db.tracked_tickers.count_documents(STEP3_QUERY)
 
-        # Fetch pending events normally (no universe filter on the events collection —
-        # avoids a potentially large $in on fundamentals_events).
+        # Snapshot pending count AFTER dedup pass (and after classification enqueue).
+        pending_after_dedup = await db.fundamentals_events.count_documents({"status": "pending"})
+
         pending_events = await db.fundamentals_events.find(
             {"status": "pending"},
             {"ticker": 1, "event_type": 1, "created_at": 1}
-        ).sort("created_at", 1).to_list(None)  # fetch all, deduplicate by ticker below
+        ).sort("created_at", 1).to_list(None)
 
+        # Collect unique ticker list for skip-gate lookup.
+        all_ticker_fulls: List[str] = list({
+            e["ticker"] for e in pending_events if e.get("ticker")
+        })
+
+        # Step 3 queue hygiene pass 2: skip tickers already complete with no refresh flag.
+        # Marks their events as 'skipped' (no deletes — full audit trail).
+        await _progress("Gating already-complete tickers (no refresh needed)…")
+        skip_stats = await _skip_already_complete_tickers(db, all_ticker_fulls, now_queue)
+        skipped_ticker_set: set = set(skip_stats["skipped_tickers"])
+
+        # Build events_by_ticker from remaining pending events (re-filter in memory —
+        # avoids a second DB round-trip; skip-gate updated status in DB already).
         events_by_ticker: Dict[str, List[dict]] = {}
         for event in pending_events:
             ticker_full = event.get("ticker")
             if not ticker_full:
+                continue
+            # Exclude tickers that were just marked skipped.
+            if ticker_full in skipped_ticker_set:
                 continue
             if ticker_full not in events_by_ticker and len(events_by_ticker) >= batch_size:
                 continue
@@ -1240,25 +1381,50 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
         tickers_to_sync = [t.replace(".US", "") for t in events_by_ticker.keys()]
 
-        # Filter tickers_to_sync to the canonical Step 3 universe using a single
-        # targeted distinct query (avoids large in-memory set pre-build).
-        if tickers_to_sync:
-            tickers_us = [t if t.endswith(".US") else f"{t}.US" for t in tickers_to_sync]
-            eligible_us = set(
-                await db.tracked_tickers.distinct(
-                    "ticker", {**STEP3_QUERY, "ticker": {"$in": tickers_us}}
-                )
-            )
+        # Full STEP3_QUERY eligible list — used for both tickers_to_sync filter and
+        # the requested_event_types aggregation so both are scoped to the same universe.
+        _MAX_ELIGIBLE = 10_000
+        eligible_full: List[str] = await db.tracked_tickers.distinct("ticker", STEP3_QUERY)
+
+        # Filter tickers_to_sync to the canonical Step 3 universe.
+        if tickers_to_sync and eligible_full:
+            eligible_full_set = set(eligible_full)
             tickers_to_sync = [
                 t for t in tickers_to_sync
-                if (t if t.endswith(".US") else f"{t}.US") in eligible_us
+                if (t if t.endswith(".US") else f"{t}.US") in eligible_full_set
             ]
+
+        # requested_event_types: DB aggregation scoped to the Step 3 universe and
+        # post-skip-gate pending events. Reuses eligible_full to avoid a second
+        # distinct call. Falls back to {} with a warning if the list is unsafe.
         requested_event_types: Dict[str, int] = {}
-        for event_group in events_by_ticker.values():
-            for event in event_group:
-                event_type = event.get("event_type") or "unknown"
-                requested_event_types[event_type] = requested_event_types.get(event_type, 0) + 1
-        
+        if not eligible_full:
+            logger.warning(f"{job_name}: eligible_full is empty — skipping requested_event_types aggregation")
+        elif len(eligible_full) > _MAX_ELIGIBLE:
+            logger.warning(
+                f"{job_name}: eligible_full too large ({len(eligible_full)}) "
+                f"— skipping requested_event_types aggregation (threshold={_MAX_ELIGIBLE})"
+            )
+        else:
+            async for doc in db.fundamentals_events.aggregate([
+                {"$match": {"status": "pending", "ticker": {"$in": eligible_full}}},
+                {"$group": {"_id": "$event_type", "count": {"$sum": 1}}},
+            ]):
+                event_type = doc["_id"] or "unknown"
+                requested_event_types[event_type] = doc["count"]
+
+        queue_stats = {
+            "pending_before_dedup": dedup_stats["pending_before_dedup"],
+            "deduped_event_count": dedup_stats["deduped_event_count"],
+            "pending_after_dedup": pending_after_dedup,
+            "skipped_complete_count": skip_stats["skipped_ticker_count"],
+            "skipped_event_count": skip_stats["skipped_event_count"],
+            "actionable_count": len(tickers_to_sync),
+        }
+        logger.info(
+            f"{job_name} queue_stats: {queue_stats}"
+        )
+
         # Process tickers
         result = {
             "job_name": job_name,
@@ -1269,6 +1435,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "classification_events_enqueued": class_enqueue.get("inserted", 0),
             "classification_events_already_pending": class_enqueue.get("already_pending", 0),
             "requested_event_types": requested_event_types,
+            "queue_stats": queue_stats,
             "started_at": started_at.isoformat(),
         }
 
