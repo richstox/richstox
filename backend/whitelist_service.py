@@ -418,21 +418,44 @@ async def sync_ticker_whitelist(
         "errors": [],
     }
     
-    # Collect all candidates
+    # Collect all candidates and exclusions across exchanges.
+    # Deduplicate symbols by code across exchanges before filtering so that
+    # raw_symbols_fetched == seeded_count + filtered_out_total strictly.
+    # A symbol appearing on both NYSE and NASDAQ is kept once (first-seen exchange)
+    # and its duplicate occurrence is recorded as reason "DUPLICATE_SYMBOL".
     all_candidates = []
     all_exclusions = []
+    seen_codes: set = set()   # tracks plain ticker codes already processed
+
     for exchange in exchanges:
         symbols = await fetch_exchange_symbols(exchange)
         result["fetched"] += len(symbols)
-        
+
         if not symbols:
             result["errors"].append(f"No symbols returned from {exchange}")
             continue
-        
+
         candidates, exclusions = filter_whitelist_candidates(symbols, exchange, include_exclusions=True)
-        result["filtered"] += len(candidates)
+
+        # Separate candidates into unique (first-seen) vs cross-exchange duplicates.
+        unique_candidates = []
+        for c in candidates:
+            code = c.get("code", "").upper()
+            if code in seen_codes:
+                all_exclusions.append({
+                    "ticker": code if code else "(empty)",
+                    "name": c.get("name", "(unknown)"),
+                    "step": STEP1_REPORT_STEP,
+                    "reason": "DUPLICATE_SYMBOL",
+                    "exchange": exchange,
+                })
+            else:
+                seen_codes.add(code)
+                unique_candidates.append(c)
+
+        result["filtered"] += len(unique_candidates)
         result["filtered_out"] += len(exclusions)
-        all_candidates.extend(candidates)
+        all_candidates.extend(unique_candidates)
         all_exclusions.extend(exclusions)
     
     if not all_candidates:
