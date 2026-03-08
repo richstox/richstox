@@ -206,77 +206,84 @@ def parse_financials(ticker: str, data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Parse EODHD financials into normalized rows.
     One row per (ticker, period_type, period_date).
+
+    EODHD payload keys: "yearly" and "quarterly" (NOT "annual").
+    period_type stored in DB: "annual" (from "yearly") and "quarterly".
     """
     financials = data.get("Financials", {})
     rows = []
     now = datetime.now(timezone.utc)
     ticker_full = ticker if ticker.endswith(".US") else f"{ticker}.US"
-    
-    for period_type in ["annual", "quarterly"]:
+
+    # EODHD uses "yearly" in the payload; we normalise to "annual" in the DB.
+    eodhd_to_db_period = {"yearly": "annual", "quarterly": "quarterly"}
+
+    for eodhd_period_key, db_period_type in eodhd_to_db_period.items():
         # Income Statement
-        income = financials.get("Income_Statement", {}).get(period_type, {})
-        balance = financials.get("Balance_Sheet", {}).get(period_type, {})
-        cashflow = financials.get("Cash_Flow", {}).get(period_type, {})
-        
+        income  = financials.get("Income_Statement", {}).get(eodhd_period_key, {})
+        balance = financials.get("Balance_Sheet",    {}).get(eodhd_period_key, {})
+        cashflow = financials.get("Cash_Flow",        {}).get(eodhd_period_key, {})
+
         # Get all dates from all statements
         all_dates = set()
         all_dates.update(income.keys())
         all_dates.update(balance.keys())
         all_dates.update(cashflow.keys())
-        
+
         for period_date in sorted(all_dates, reverse=True)[:20]:  # Keep last 20 periods
             if not period_date or period_date == "0":
                 continue
-                
-            inc = income.get(period_date, {})
-            bal = balance.get(period_date, {})
-            cf = cashflow.get(period_date, {})
-            
+
+            inc = income.get(period_date) or {}
+            bal = balance.get(period_date) or {}
+            cf  = cashflow.get(period_date) or {}
+
             row = {
                 "ticker": ticker_full,
-                "period_type": period_type,
+                "period_type": db_period_type,
                 "period_date": period_date,
-                
+
                 # Income Statement
-                "revenue": inc.get("totalRevenue"),
-                "cost_of_revenue": inc.get("costOfRevenue"),
-                "gross_profit": inc.get("grossProfit"),
-                "operating_income": inc.get("operatingIncome"),
-                "operating_expenses": inc.get("totalOperatingExpenses"),
-                "net_income": inc.get("netIncome"),
-                "ebitda": inc.get("ebitda"),
-                "ebit": inc.get("ebit"),
-                "interest_expense": inc.get("interestExpense"),
-                "income_tax_expense": inc.get("incomeTaxExpense"),
-                "diluted_eps": inc.get("dilutedEPS"),
-                
+                "revenue":             inc.get("totalRevenue"),
+                "cost_of_revenue":     inc.get("costOfRevenue"),
+                "gross_profit":        inc.get("grossProfit"),
+                "operating_income":    inc.get("operatingIncome"),
+                "operating_expenses":  inc.get("totalOperatingExpenses"),
+                "net_income":          inc.get("netIncome"),
+                "ebitda":              inc.get("ebitda"),
+                "ebit":                inc.get("ebit"),
+                "interest_expense":    inc.get("interestExpense"),
+                "income_tax_expense":  inc.get("incomeTaxExpense"),
+                "diluted_eps":         inc.get("dilutedEPS"),
+
                 # Balance Sheet
-                "total_assets": bal.get("totalAssets"),
-                "total_liabilities": bal.get("totalLiab"),
-                "total_equity": bal.get("totalStockholderEquity"),
-                "total_debt": bal.get("shortLongTermDebt"),
-                "cash_and_equivalents": bal.get("cash"),
-                "short_term_investments": bal.get("shortTermInvestments"),
-                "total_current_assets": bal.get("totalCurrentAssets"),
+                "total_assets":              bal.get("totalAssets"),
+                "total_liabilities":         bal.get("totalLiab"),
+                "total_equity":              bal.get("totalStockholderEquity"),
+                "total_debt":                bal.get("shortLongTermDebt"),
+                "cash_and_equivalents":      bal.get("cash"),
+                "short_term_investments":    bal.get("shortTermInvestments"),
+                "total_current_assets":      bal.get("totalCurrentAssets"),
                 "total_current_liabilities": bal.get("totalCurrentLiabilities"),
-                "retained_earnings": bal.get("retainedEarnings"),
-                
+                "retained_earnings":         bal.get("retainedEarnings"),
+
                 # Cash Flow
-                "operating_cash_flow": cf.get("totalCashFromOperatingActivities"),
-                "investing_cash_flow": cf.get("totalCashflowsFromInvestingActivities"),
-                "financing_cash_flow": cf.get("totalCashFromFinancingActivities"),
-                "capital_expenditures": cf.get("capitalExpenditures"),
-                "free_cash_flow": cf.get("freeCashFlow"),
-                "dividends_paid": cf.get("dividendsPaid"),
-                
+                "operating_cash_flow":   cf.get("totalCashFromOperatingActivities"),
+                "investing_cash_flow":   cf.get("totalCashflowsFromInvestingActivities"),
+                "financing_cash_flow":   cf.get("totalCashFromFinancingActivities"),
+                "capital_expenditures":  cf.get("capitalExpenditures"),
+                "free_cash_flow":        cf.get("freeCashFlow"),
+                "dividends_paid":        cf.get("dividendsPaid"),
+
                 "created_at": now,
                 "updated_at": now,
             }
-            
-            # Only add if we have some data
-            if any(v is not None for k, v in row.items() if k not in ["ticker", "period_type", "period_date", "created_at", "updated_at"]):
+
+            # Only add if we have some financial data (not just metadata fields)
+            _meta = {"ticker", "period_type", "period_date", "created_at", "updated_at"}
+            if any(v is not None for k, v in row.items() if k not in _meta):
                 rows.append(row)
-    
+
     return rows
 
 

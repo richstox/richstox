@@ -87,7 +87,7 @@ async def sync_single_ticker_fundamentals(
     Sync fundamentals for a single ticker with robust error handling.
     Writes to canonical collections (company_financials, company_earnings_history)
     matching the full_sync_service worker. Sets fundamentals_status='complete' only
-    after ALL DB writes succeed.
+    after ALL DB writes succeed and post-write row counts confirm data was persisted.
     """
     from pymongo import UpdateOne as _UpdateOne
 
@@ -112,6 +112,33 @@ async def sync_single_ticker_fundamentals(
         "provider_debug_snapshot_stored": False,
     }
 
+    def _as_float(val) -> Optional[float]:
+        """Coerce provider value to float, returning None on failure."""
+        if val is None:
+            return None
+        try:
+            f = float(val)
+            return f if f > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _set_error(code: str, msg: str) -> None:
+        """Mark ticker as error state — never leaves limbo."""
+        err_at = _to_prague_iso(datetime.now(timezone.utc))
+        try:
+            await db.tracked_tickers.update_one(
+                {"ticker": ticker_full},
+                {"$set": {
+                    "fundamentals_status":     "error",
+                    "fundamentals_error":      msg,
+                    "fundamentals_error_code": code,
+                    "fundamentals_error_at":   err_at,
+                    "updated_at":              datetime.now(timezone.utc),
+                }},
+            )
+        except Exception:
+            pass
+
     try:
         # Fetch from EODHD (use ticker_plain for the API call)
         data = await fetch_fundamentals_from_eodhd(ticker_plain)
@@ -119,17 +146,7 @@ async def sync_single_ticker_fundamentals(
         if not data:
             result["error"] = "No fundamentals data from EODHD"
             result["error_type"] = "no_data"
-            await db.tracked_tickers.update_one(
-                {"ticker": ticker_full},
-                {"$set": {
-                    "status": "no_fundamentals",
-                    "is_active": False,
-                    "fundamentals_status": "error",
-                    "fundamentals_error": "No data from EODHD",
-                    "updated_at": now,
-                }},
-                upsert=True,
-            )
+            await _set_error("no_data", "No data from EODHD")
             return result
 
         debug_result = await upsert_provider_debug_snapshot(
@@ -140,7 +157,20 @@ async def sync_single_ticker_fundamentals(
         )
         result["provider_debug_snapshot_stored"] = bool(debug_result.get("stored"))
 
-        # 1. Company fundamentals cache (use ticker_full so parser emits .US ticker)
+        # --- Provider-side counts (for corruption detection) ---
+        raw_fin = data.get("Financials") or {}
+        provider_financial_period_count = sum(
+            len(periods) if isinstance(periods, dict) else 0
+            for stmt in ("Income_Statement", "Balance_Sheet", "Cash_Flow")
+            for period_key in ("yearly", "quarterly")
+            for periods in [(raw_fin.get(stmt) or {}).get(period_key) or {}]
+        )
+        raw_earn = (data.get("Earnings") or {}).get("History") or {}
+        provider_earnings_count = len(raw_earn) if isinstance(raw_earn, dict) else 0
+        shares_stats = data.get("SharesStats") or {}
+        provider_shares_outstanding = _as_float(shares_stats.get("SharesOutstanding"))
+
+        # 1. Company fundamentals cache
         company_doc = parse_company_fundamentals(ticker_full, data)
         company_doc["updated_at"] = now
         await db.company_fundamentals_cache.update_one(
@@ -150,10 +180,20 @@ async def sync_single_ticker_fundamentals(
         )
         result["has_fundamentals"] = True
 
-        # 2. Financial statements → canonical collection, upsert not delete+insert
+        # 2. Financial statements → company_financials (canonical), upsert
         financials_rows = parse_financials(ticker_full, data)
+
+        # Detect parse-level corruption: provider has periods but parser returned 0 rows
+        provider_has_fin = provider_financial_period_count > 0
+        if not financials_rows and provider_has_fin:
+            # This is a hard corruption — raise so we land in error state
+            raise RuntimeError(
+                f"parse_financials returned 0 rows for {ticker_full} "
+                f"but provider has {provider_financial_period_count} period entries"
+            )
+
+        fin_bulk: Dict[str, Any] = {"rows_parsed": len(financials_rows)}
         if financials_rows:
-            fin_bulk: Dict[str, Any] = {"rows_parsed": len(financials_rows)}
             try:
                 fin_ops = [
                     _UpdateOne(
@@ -168,31 +208,35 @@ async def sync_single_ticker_fundamentals(
                 fin_bulk["matched_count"]  = fin_res.matched_count
                 fin_bulk["modified_count"] = fin_res.modified_count
                 if fin_res.matched_count == 0 and fin_res.upserted_count == 0:
-                    fin_bulk["error"] = "matched_count=0 and upserted_count=0 despite rows_parsed>0"
-                else:
-                    result["has_financials"]   = True
-                    result["financials_count"] = len(financials_rows)
+                    raise RuntimeError(
+                        f"company_financials bulk_write matched_count=0 and upserted_count=0 "
+                        f"for {ticker_full} despite {len(financials_rows)} rows_parsed"
+                    )
+                result["has_financials"]   = True
+                result["financials_count"] = len(financials_rows)
+            except RuntimeError:
+                raise
             except Exception as fin_exc:
                 fin_bulk["error"] = str(fin_exc)
-                logger.error(f"company_financials bulk_write failed for {ticker_full}: {fin_exc}")
-            result["fin_bulk_write"] = fin_bulk
+                raise RuntimeError(
+                    f"company_financials bulk_write failed for {ticker_full}: {fin_exc}"
+                ) from fin_exc
         else:
-            # parse_financials returned 0 rows — check whether provider actually
-            # has any periods or whether this is a legitimate no-data ticker.
-            raw_fin = data.get("Financials") or {}
-            provider_has_fin_periods = any(
-                isinstance((raw_fin.get(stmt) or {}).get(period), dict)
-                and bool((raw_fin[stmt])[period])
-                for stmt in ("Income_Statement", "Balance_Sheet", "Cash_Flow")
-                for period in ("yearly", "quarterly")
-                if isinstance(raw_fin.get(stmt), dict)
-            )
-            result["no_financials_available"] = not provider_has_fin_periods
+            result["no_financials_available"] = not provider_has_fin
+        result["fin_bulk_write"] = fin_bulk
 
-        # 3. Earnings history → canonical collection, upsert not delete+insert
+        # 3. Earnings history → company_earnings_history (canonical), upsert
         earnings_rows = parse_earnings_history(ticker_full, data)
+
+        provider_has_earn = provider_earnings_count > 0
+        if not earnings_rows and provider_has_earn:
+            raise RuntimeError(
+                f"parse_earnings_history returned 0 rows for {ticker_full} "
+                f"but provider has {provider_earnings_count} earnings entries"
+            )
+
+        earn_bulk: Dict[str, Any] = {"rows_parsed": len(earnings_rows)}
         if earnings_rows:
-            earn_bulk: Dict[str, Any] = {"rows_parsed": len(earnings_rows)}
             try:
                 earn_ops = [
                     _UpdateOne(
@@ -207,20 +251,42 @@ async def sync_single_ticker_fundamentals(
                 earn_bulk["matched_count"]  = earn_res.matched_count
                 earn_bulk["modified_count"] = earn_res.modified_count
                 if earn_res.matched_count == 0 and earn_res.upserted_count == 0:
-                    earn_bulk["error"] = "matched_count=0 and upserted_count=0 despite rows_parsed>0"
-                else:
-                    result["has_earnings"]   = True
-                    result["earnings_count"] = len(earnings_rows)
+                    raise RuntimeError(
+                        f"company_earnings_history bulk_write matched_count=0 and upserted_count=0 "
+                        f"for {ticker_full} despite {len(earnings_rows)} rows_parsed"
+                    )
+                result["has_earnings"]   = True
+                result["earnings_count"] = len(earnings_rows)
+            except RuntimeError:
+                raise
             except Exception as earn_exc:
                 earn_bulk["error"] = str(earn_exc)
-                logger.error(f"company_earnings_history bulk_write failed for {ticker_full}: {earn_exc}")
-            result["earn_bulk_write"] = earn_bulk
+                raise RuntimeError(
+                    f"company_earnings_history bulk_write failed for {ticker_full}: {earn_exc}"
+                ) from earn_exc
         else:
-            # Same logic: check whether EODHD has any earnings history at all.
-            raw_earn = (data.get("Earnings") or {}).get("History") or {}
-            result["no_earnings_available"] = not bool(raw_earn)
+            result["no_earnings_available"] = not provider_has_earn
+        result["earn_bulk_write"] = earn_bulk
 
-        # 4. Insider activity (often empty — absence is normal)
+        # 4. Post-write DB verification — detect silent 0-row persistence
+        db_fin_rows_after  = await db.company_financials.count_documents({"ticker": ticker_full})
+        db_earn_rows_after = await db.company_earnings_history.count_documents({"ticker": ticker_full})
+
+        corruption_flags = []
+        if provider_has_fin and db_fin_rows_after == 0:
+            corruption_flags.append(
+                f"CORRUPTION: provider has {provider_financial_period_count} financial periods "
+                f"but company_financials has 0 rows after write"
+            )
+        if provider_has_earn and db_earn_rows_after == 0:
+            corruption_flags.append(
+                f"CORRUPTION: provider has {provider_earnings_count} earnings entries "
+                f"but company_earnings_history has 0 rows after write"
+            )
+        if corruption_flags:
+            raise RuntimeError("; ".join(corruption_flags))
+
+        # 5. Insider activity (absence is normal)
         insider_doc = parse_insider_activity(ticker_full, data)
         if insider_doc and (insider_doc.get("buyers_count", 0) > 0 or insider_doc.get("sellers_count", 0) > 0):
             await db.insider_activity_cache.update_one(
@@ -228,15 +294,14 @@ async def sync_single_ticker_fundamentals(
             )
             result["has_insider"] = True
 
-        # 5. tracked_tickers — full field set, status="complete" ONLY after all writes done
+        # 6. tracked_tickers — full field set.
+        # shares_outstanding: coerce to float; None if missing/zero/non-numeric.
         from utils.currency_utils import extract_statement_currency
         financial_currency = extract_statement_currency(data)
         sector   = (company_doc.get("sector")   or "").strip()
         industry = (company_doc.get("industry") or "").strip()
         has_classification = bool(sector and industry)
-
-        shares_stats       = data.get("SharesStats") or {}
-        shares_outstanding = shares_stats.get("SharesOutstanding")
+        shares_outstanding = provider_shares_outstanding  # already float or None
 
         logger.critical(
             f"PARSER DEBUG: Ticker {ticker_full} -> "
@@ -255,15 +320,35 @@ async def sync_single_ticker_fundamentals(
                 "has_classification":         has_classification,
                 "financial_currency":         financial_currency,
                 "shares_outstanding":         shares_outstanding,
-                # Mark complete only after all writes succeed
+                # Mark complete only after all writes + verification succeed
                 "fundamentals_status":        "complete",
                 "fundamentals_complete":      True,
                 "needs_fundamentals_refresh": False,
-                "fundamentals_updated_at":    now,
+                "fundamentals_updated_at":    _to_prague_iso(now),
+                "fundamentals_error":         None,
+                "fundamentals_error_code":    None,
+                "fundamentals_error_at":      None,
                 "updated_at":                 now,
             }},
             upsert=True,
         )
+
+        # 7. Verify shares_outstanding was actually written
+        tt_after = await db.tracked_tickers.find_one(
+            {"ticker": ticker_full},
+            {"shares_outstanding": 1, "_id": 0},
+        )
+        shares_outstanding_after = (tt_after or {}).get("shares_outstanding")
+
+        # Attach debug evidence to result._debug
+        result["_debug"] = {
+            "provider_financial_period_count":    provider_financial_period_count,
+            "db_company_financials_row_count_after": db_fin_rows_after,
+            "provider_earnings_count":            provider_earnings_count,
+            "db_earnings_row_count_after":        db_earn_rows_after,
+            "provider_shares_outstanding":        provider_shares_outstanding,
+            "tracked_tickers_shares_outstanding_after": shares_outstanding_after,
+        }
 
         result["success"] = True
 
@@ -271,13 +356,7 @@ async def sync_single_ticker_fundamentals(
         result["error"]      = str(e)
         result["error_type"] = "exception"
         logger.error(f"Error syncing {ticker_full}: {e}")
-        try:
-            await db.tracked_tickers.update_one(
-                {"ticker": ticker_full},
-                {"$set": {"fundamentals_status": "error", "updated_at": now}},
-            )
-        except Exception:
-            pass
+        await _set_error("exception", str(e)[:500])
 
     return result
 
