@@ -69,7 +69,7 @@ STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
 
 The Universe Pipeline has sequential steps. Each step runs ONLY after the previous completes successfully.
 
-**Step 1 — Universe Seed** (23:00 Prague, Mon-Sat)
+**Step 1 — Universe Seed**
 - Call EODHD API: get all symbols from NYSE
 - Call EODHD API: get all symbols from NASDAQ
 - Count TOTAL RAW (both exchanges combined)
@@ -87,32 +87,14 @@ The Universe Pipeline has sequential steps. Each step runs ONLY after the previo
 - Mark `has_price_data = true` for tickers with price data
 - Tickers without price data are filtered out (logged to report)
 
-**Steps 3-5** — Fundamentals, Visible Universe, Peer Medians (each after previous completes)
-
-**Step 3 — Fundamentals Sync (canonical definition)**
-- Universe: `STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}` — NYSE/NASDAQ Common Stock with price data only.
-  This constant lives in `backend/scheduler_service.py` and matches `step3_query` in `universe_counts_service.py`.
-- Job is **event-driven** (`fundamentals_events` collection). It MUST NOT re-download fundamentals for the whole universe.
-- Orphan events (tickers outside `STEP3_QUERY`) are purged at job start via `purge_orphaned_fundamentals_events`.
-- Progress denominator = event batch size (`len(tickers_to_sync)`), not full universe count.
-- `universe_total` is stored in `ops_job_runs.details` for informational display only.
-
-**Step 4 — Visible Universe (canonical definition)**
-- Universe: `get_canonical_sieve_query()` from `backend/visibility_rules.py`.
-  Includes: NYSE/NASDAQ Common Stock, has_price_data, sector+industry present, not delisted, shares_outstanding > 0 (flat field), financial_currency present.
-- `recompute_visibility_all` uses batched `bulk_write` (500 ops/batch) with pre-snapshot safe cleanup.
-- Gate 7 reads `tracked_tickers.shares_outstanding` (flat field), NOT the nested `fundamentals` sub-document.
-
-**Step 5 — Peer Medians** (after Step 4)
-
-**Strict waterfall rule:** Each step ONLY runs after the previous completes successfully. Do not skip steps or run them out of order.
+**Steps 3-5** — Fundamentals, Visible Universe, Peer Medians (each after previous completes).
+See the **Step 3/Step 4 canonical definitions** section above for verified details.
 
 **Report**: ONE file across ALL steps. Each row: Ticker | Name | Step | Reason for exclusion. Admin can download/view this report.
 
 **CRITICAL RULES**:
 - Frontend NEVER calls EODHD — all data comes from scheduled jobs → MongoDB
 - EODHD provides raw data only — all derived metrics (P/E, market cap, margins) computed by backend
-- Step timing: NYSE closes 22:00 Prague, EODHD processes data, 23:00 Prague is the correct start time
 
 ### Architecture
 
