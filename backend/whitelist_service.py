@@ -519,6 +519,9 @@ async def sync_ticker_whitelist(
     
     candidate_tickers = {c["ticker"] for c in all_candidates}
     result["seeded_total"] = len(candidate_tickers)
+    # filtered_out_total_step1: computed directly from fetched and seeded so
+    # the identity fetched == seeded + filtered_out holds strictly.
+    result["filtered_out_total_step1"] = max(result["fetched"] - result["seeded_total"], 0)
     logger.info(f"Total whitelist candidates: {len(candidate_tickers)}")
     
     if dry_run:
