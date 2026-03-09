@@ -1,5 +1,51 @@
 # AGENTS.md
 
+## HARD RULES — RICHSTOX PIPELINE GOVERNANCE (2026-03-09)
+
+These rules are non-negotiable and override any earlier or implicit guidance.
+
+1. **No autonomous commits/push/deploy/merge.**
+   Default mode is proposal-only (raw unified diff).
+   Only after Richard writes exactly `GO (commit+push)` may the agent commit and push.
+   `GO` alone (without "commit+push") means approve the diff only — not deploy.
+
+2. **One task at a time.**
+   Do not start a new task until the current one is explicitly closed by Richard.
+   Cycle: Propose → Richard approves → Implement → Test → Richard confirms done.
+
+3. **One source of truth per run.**
+   Never mix live DB counts with run-scoped counts in the same arithmetic chain.
+   If data is run-scoped (keyed by run_id), all parts of that chain must use
+   the same run_id. Live DB counts are valid only for "current state" displays.
+
+4. **Run-scoped auditability.**
+   Exports and counts must use the same run_id end-to-end.
+   Step 1 raw rows, seeded tickers, and exclusion rows must all be keyed by
+   the same run_id so any export is fully reproducible for that run.
+
+5. **No heuristics for chaining.**
+   Do not use "latest run" fallbacks in audit/export logic.
+   If a chain link (parent_run_id) is missing, the export must return an
+   explicit "chain broken" error row — never silently fall back to latest.
+
+6. **Do not invent endpoints, job names, collections, or fields.**
+   If something is not visible in the existing codebase or explicitly described
+   by Richard, ask before creating it.
+
+7. **Admin-facing timestamps use Europe/Prague** unless explicitly approved otherwise.
+   ops_job_runs must include `started_at_prague` and `finished_at_prague` (ISO).
+
+### Preferred debugging workflow
+
+- The preferred debug artifact is **one unified CSV** (`ticker, name, step, reason`)
+  generated from a single full-chain run via
+  `POST /api/admin/pipeline/run-full-now` + `GET /api/admin/pipeline/export/full`.
+- Avoid adding new per-step debug exports unless explicitly requested by Richard.
+- Per-step exports (`/export/step/{1-4}`) exist for historical reasons but the
+  unified CSV supersedes them for debugging purposes.
+
+---
+
 ## Cursor Cloud specific instructions
 
 ### Communication & Language
