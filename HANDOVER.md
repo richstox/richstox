@@ -1,6 +1,6 @@
 # HANDOVER.md
 
-> Last updated: 2026-03-09 — Full chain run + unified CSV export (d2fbcfe)
+> Last updated: 2026-03-09 — Pipeline UI: Run Full Pipeline Now + unified CSV (fd58685)
 
 ---
 
@@ -14,7 +14,7 @@ same mistakes.
 **Current deploy status:** Railway auto-deploys from `main`.
 Verify the Railway Deployments tab to confirm the active commit hash.
 During incidents or outages, new commits may not be live even after push.
-Latest commit on `main` as of this handover: `d2fbcfe`.
+Latest commit on `main` as of this handover: `fd58685`.
 
 ---
 
@@ -29,6 +29,7 @@ Recent commits (newest → oldest):
 
 | Hash | Description |
 |------|-------------|
+| `fd58685` | feat(pipeline-ui): Run Full Pipeline Now button + unified CSV download |
 | `d2fbcfe` | feat(pipeline): POST /run-full-now + GET /export/full unified CSV |
 | `532b707` | feat(pipeline-export): deterministic parent_run_id chain for Steps 2-4 exports |
 | `5c3f2fd` | feat(step1-export): run-scoped raw rows + seeded set; duplicate handling before seeding |
@@ -237,5 +238,6 @@ STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
 
 1. Step 2–4 per-step exports (`/export/step/{2,3,4}`) return "chain broken" for manual
    runs. The unified `/export/full` via `/run-full-now` is the preferred alternative.
-2. The old per-step Export CSV buttons in the Admin Panel still exist — can be hidden
-   or replaced with a "Run Full Pipeline" button if Richard requests it.
+   The per-step Export CSV buttons have been removed from the Admin Panel UI.
+2. The old "Filtered-out tickers report" section has been removed from the Admin Panel;
+   replaced by the "Full Pipeline Audit" block with Run Full Pipeline Now + unified CSV.
