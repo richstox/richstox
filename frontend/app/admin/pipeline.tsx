@@ -851,8 +851,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         {/* Full Pipeline Audit — above scheduler control */}
         <View style={s.fullChainInlineSection}>
           <View style={s.fullChainInlineTitleRow}>
-            <Text style={s.fullChainInlineTitle}>Full Pipeline Audit</Text>
-            {/* MANUAL / AUTO toggle */}
+            <View style={{ flex: 1 }}>
+              <Text style={s.fullChainInlineTitle}>Full Pipeline Audit</Text>
+              <Text style={s.fullChainInlineDesc} numberOfLines={1}>
+                {runMode === 'AUTO' ? 'Scheduler controls automatic runs.' : 'Runs Step 1→4 now, generates unified CSV.'}
+              </Text>
+            </View>
+            {/* MANUAL / AUTO toggle — aligned top-right */}
             <View style={s.manualAutoToggle}>
               <TouchableOpacity
                 style={[s.toggleBtn, runMode === 'MANUAL' && s.toggleBtnActive]}
@@ -868,31 +873,24 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               </TouchableOpacity>
             </View>
           </View>
-          {runMode === 'AUTO' ? (
-            <Text style={s.fullChainAutoText}>Scheduler controls automatic runs.</Text>
-          ) : (
-            <Text style={s.fullChainInlineDesc}>
-              Runs Step 1→4 now with a linked chain and generates one unified CSV
-              (ticker, name, step, reason).
-            </Text>
-          )}
-          <View style={s.fullChainRow}>
+          <TouchableOpacity
+            style={[s.fullChainBtn, isRunDisabled && s.runBtnDisabled, { marginTop: 8, alignSelf: 'flex-start' }]}
+            onPress={handleRunFullPipeline}
+            disabled={isRunDisabled}
+          >
+            {chainRunning
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
+          </TouchableOpacity>
+          {chainRunId && chainStatus === 'completed' && (
             <TouchableOpacity
-              style={[s.fullChainBtn, isRunDisabled && s.runBtnDisabled]}
-              onPress={handleRunFullPipeline}
-              disabled={isRunDisabled}
+              style={[s.fullChainDownloadBtn, { marginTop: 8, alignSelf: 'flex-start' }]}
+              onPress={handleDownloadFullCsv}
             >
-              {chainRunning
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
+              <Ionicons name="download-outline" size={13} color="#fff" />
+              <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
             </TouchableOpacity>
-            {chainRunId && chainStatus === 'completed' && (
-              <TouchableOpacity style={s.fullChainDownloadBtn} onPress={handleDownloadFullCsv}>
-                <Ionicons name="download-outline" size={13} color="#fff" />
-                <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          )}
           {chainStatus && chainStatus !== 'starting' && (
             <Text style={[
               s.fullChainStatus,
@@ -1880,11 +1878,6 @@ const s = StyleSheet.create({
   exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#6366F111', borderWidth: 1, borderColor: '#6366F144', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   exportBtnText: { fontSize: 11, color: '#6366F1', fontWeight: '600' },
 
-  fullChainCard: { marginHorizontal: 12, marginBottom: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#6366F166' },
-  fullChainHeader: { marginBottom: 8 },
-  fullChainTitle: { fontSize: 13, fontWeight: '700', color: COLORS.text, marginBottom: 2 },
-  fullChainDesc: { fontSize: 11, color: COLORS.textMuted, lineHeight: 16 },
-  fullChainRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
   fullChainBtn: { backgroundColor: '#6366F1', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
   fullChainBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   fullChainDownloadBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#22C55E', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6 },
@@ -1893,10 +1886,9 @@ const s = StyleSheet.create({
 
   // Inline Full Pipeline Audit section (inside healthCard)
   fullChainInlineSection: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border + '55' },
-  fullChainInlineTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  fullChainInlineTitleRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 6 },
   fullChainInlineTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text },
-  fullChainInlineDesc: { fontSize: 11, color: COLORS.textMuted, lineHeight: 15, marginBottom: 8 },
-  fullChainAutoText: { fontSize: 11, color: COLORS.textMuted, fontStyle: 'italic', marginBottom: 8 },
+  fullChainInlineDesc: { fontSize: 11, color: COLORS.textMuted, lineHeight: 15 },
   manualAutoToggle: { flexDirection: 'row', borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border },
   toggleBtn: { paddingHorizontal: 8, paddingVertical: 3 },
   toggleBtnActive: { backgroundColor: '#6366F1' },
