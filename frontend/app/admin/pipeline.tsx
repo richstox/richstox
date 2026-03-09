@@ -215,8 +215,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           (excl as any)?.latest_run_id_per_step?.['Step 1 - Universe Seed'];
         if (step1RunId) {
           try {
-            const s1Res = await authenticatedFetch(
-              `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(step1RunId)}&limit=0`,
+              const s1Res = await authenticatedFetch(
+              `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(step1RunId)}&limit=1`,
               {},
               sessionToken,
             );

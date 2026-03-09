@@ -6805,7 +6805,7 @@ async def admin_get_pipeline_exclusion_report(
     report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
     step: str = Query(None, description="Optional step filter, e.g. 'Step 1 - Universe Seed'"),
     run_id: str = Query(None, description="Filter strictly to a specific run_id (overrides report_date aggregation)"),
-    limit: int = Query(100, ge=1, le=2000),
+    limit: int = Query(100, ge=0, le=2000),
     offset: int = Query(0, ge=0),
 ):
     """
