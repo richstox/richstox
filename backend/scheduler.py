@@ -476,7 +476,16 @@ async def scheduler_loop():
             # STEP 2: Price sync immediately after Step 1 completes
             if should_run_after_dependency("price_sync", "universe_seed", last_run, today_str):
                 logger.info("Triggering price_sync (dependency: universe_seed completed)")
-                await run_job_with_retry("price_sync", run_daily_price_sync, db)
+                # Exact Step 1 parent: the raw_run_id from the just-completed Step 1 run.
+                _s1_raw = await db.universe_seed_raw_rows.find_one(
+                    {}, {"run_id": 1}, sort=[("created_at", -1)]
+                )
+                _s1_run_id_for_s2 = _s1_raw["run_id"] if _s1_raw else None
+                await run_job_with_retry(
+                    "price_sync",
+                    lambda _db, _pid=_s1_run_id_for_s2: run_daily_price_sync(_db, parent_run_id=_pid),
+                    db,
+                )
                 last_run["price_sync"] = today_str
                 await set_last_run_state(last_run)
             
@@ -491,7 +500,21 @@ async def scheduler_loop():
             # STEP 3: Fundamentals sync immediately after Step 2 completes
             if should_run_after_dependency("fundamentals_sync", "price_sync", last_run, today_str):
                 logger.info("Triggering fundamentals_sync (dependency: price_sync completed)")
-                await run_job_with_retry("fundamentals_sync", run_fundamentals_changes_sync, db)
+                # Exact Step 2 parent: the exclusion_report_run_id from the just-completed Step 2.
+                _s2_doc = await db.ops_job_runs.find_one(
+                    {"job_name": "price_sync",
+                     "details.exclusion_report_run_id": {"$exists": True, "$ne": None}},
+                    {"details.exclusion_report_run_id": 1},
+                    sort=[("started_at", -1)],
+                )
+                _s2_run_id_for_s3 = (
+                    (_s2_doc or {}).get("details", {}).get("exclusion_report_run_id")
+                )
+                await run_job_with_retry(
+                    "fundamentals_sync",
+                    lambda _db, _pid=_s2_run_id_for_s3: run_fundamentals_changes_sync(_db, parent_run_id=_pid),
+                    db,
+                )
                 last_run["fundamentals_sync"] = today_str
                 await set_last_run_state(last_run)
             

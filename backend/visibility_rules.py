@@ -173,7 +173,7 @@ def get_canonical_sieve_query() -> dict:
     }
 
 
-async def recompute_visibility_all(db) -> Dict[str, Any]:
+async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Recompute is_visible for ALL tickers.
 
@@ -230,6 +230,7 @@ async def recompute_visibility_all(db) -> Dict[str, Any]:
         "progress_processed": 0,
         "progress_total":     total,
         "progress_pct":       0,
+        "details":            {"parent_run_id": parent_run_id},
     })
     run_doc_id = run_doc.inserted_id
 
@@ -339,6 +340,7 @@ async def recompute_visibility_all(db) -> Dict[str, Any]:
         "stats":            stats,
         "cleanup":          cleanup_stats,
         "space_freed_mb":   space_freed_mb,
+        "parent_run_id":    parent_run_id,
     }
 
     # Finalize sentinel

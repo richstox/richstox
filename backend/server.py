@@ -5129,13 +5129,14 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
 
     async def _recompute_visibility_and_report(database):
         """Run recompute_visibility_all then regenerate Step 4 exclusion report."""
-        result = await recompute_visibility_all(database)
+        result = await recompute_visibility_all(database, parent_run_id=None)
         now_step4 = datetime.now(timezone.utc)
         step4_report = await _save_step4_exclusion_report(database, now_step4)
         result["step4_exclusion_report"] = {
             "rows_written": step4_report.get("step4_exclusion_rows", 0),
             "_debug":       step4_report.get("_debug", {}),
         }
+        result["exclusion_report_run_id"] = step4_report.get("exclusion_report_run_id")
         return result
 
     JOB_RUNNERS = {
@@ -5202,11 +5203,11 @@ async def admin_manual_price_sync(background_tasks: BackgroundTasks, wait: bool 
     Cost: 1 API credit (bulk endpoint)
     """
     if wait:
-        result = await run_daily_price_sync(db, ignore_kill_switch=True)
+        result = await run_daily_price_sync(db, ignore_kill_switch=True, parent_run_id=None)
         return result
     
     # Run in background to avoid timeout
-    background_tasks.add_task(run_daily_price_sync, db, True)
+    background_tasks.add_task(run_daily_price_sync, db, True, None)
     return {
         "status": "started",
         "job_type": "price_sync",
@@ -5224,10 +5225,10 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
     Cost: ~10 API credits per ticker
     """
     if wait:
-        result = await run_fundamentals_changes_sync(db, batch_size=batch_size, ignore_kill_switch=True)
+        result = await run_fundamentals_changes_sync(db, batch_size=batch_size, ignore_kill_switch=True, parent_run_id=None)
         return result
     
-    background_tasks.add_task(run_fundamentals_changes_sync, db, batch_size, True)
+    background_tasks.add_task(run_fundamentals_changes_sync, db, batch_size, True, None)
     return {
         "status": "started",
         "job_type": "fundamentals_sync",
@@ -7375,74 +7376,122 @@ async def admin_pipeline_export_step(
                         or _excl.get(code_norm)
                         or "Filtered"])
 
-    elif step_number == 2:
-        # Output (ok): has_price_data=True in SEED_QUERY
-        # Filtered:    from Step 2 exclusion report
-        _latest2 = await db.pipeline_exclusion_report.find_one(
-            {"step": "Step 2 - Price Sync"},
-            {"_id": 0, "report_date": 1},
-            sort=[("report_date", -1), ("created_at", -1)],
-        )
-        _rd2 = _latest2.get("report_date") if _latest2 else None
+    else:  # step_number in (2, 3, 4)
+        _STEP_META: Dict[int, tuple] = {
+            2: ("Step 2 - Price Sync",        "price_sync"),
+            3: ("Step 3 - Fundamentals Sync",  "fundamentals_sync"),
+            4: ("Step 4 - Visible Universe",   "compute_visible_universe"),
+        }
+        _step_label, _step_job = _STEP_META[step_number]
 
-        async for doc in db.tracked_tickers.find(
-            {**_SEED_QUERY, "has_price_data": True},
-            {"_id": 0, "ticker": 1, "name": 1},
-        ).sort("ticker", 1):
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+        # Resolve this step's run_id (explicit param or latest by created_at).
+        if not run_id:
+            _le = await db.pipeline_exclusion_report.find_one(
+                {"step": _step_label},
+                {"_id": 0, "run_id": 1},
+                sort=[("created_at", -1)],
+            )
+            run_id = _le["run_id"] if _le else None
+        if not run_id:
+            writer.writerow(["(no data)", "", f"Run Step {step_number} first"])
+        else:
+            # Resolve ops_job_runs doc for this step by details.exclusion_report_run_id.
+            _jdoc = await db.ops_job_runs.find_one(
+                {"job_name": _step_job,
+                 "details.exclusion_report_run_id": run_id},
+                {"_id": 0, "details.parent_run_id": 1},
+            )
+            if not _jdoc:
+                writer.writerow(["(chain broken)", "",
+                    f"ops_job_runs not found for job={_step_job} "
+                    f"with details.exclusion_report_run_id={run_id}. "
+                    "Run the full pipeline once with current version deployed."])
+            else:
+                # Walk the parent chain to resolve s1/s2/s3 run_ids.
+                _s1_run_id: Optional[str] = None
+                _s2_run_id: Optional[str] = None
+                _s3_run_id: Optional[str] = None
 
-        if _rd2:
-            async for doc in db.pipeline_exclusion_report.find(
-                {"report_date": _rd2, "step": "Step 2 - Price Sync"},
-                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
-            ).sort("ticker", 1):
-                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "No price data")])
+                if step_number == 2:
+                    _s1_run_id = _jdoc.get("details", {}).get("parent_run_id")
+                elif step_number == 3:
+                    _s2_run_id = _jdoc.get("details", {}).get("parent_run_id")
+                    if _s2_run_id:
+                        _s2jdoc = await db.ops_job_runs.find_one(
+                            {"job_name": "price_sync",
+                             "details.exclusion_report_run_id": _s2_run_id},
+                            {"_id": 0, "details.parent_run_id": 1},
+                        )
+                        _s1_run_id = (_s2jdoc or {}).get("details", {}).get("parent_run_id")
+                elif step_number == 4:
+                    _s3_run_id = _jdoc.get("details", {}).get("parent_run_id")
+                    if _s3_run_id:
+                        _s3jdoc = await db.ops_job_runs.find_one(
+                            {"job_name": "fundamentals_sync",
+                             "details.exclusion_report_run_id": _s3_run_id},
+                            {"_id": 0, "details.parent_run_id": 1},
+                        )
+                        _s2_run_id = (_s3jdoc or {}).get("details", {}).get("parent_run_id")
+                    if _s2_run_id:
+                        _s2jdoc2 = await db.ops_job_runs.find_one(
+                            {"job_name": "price_sync",
+                             "details.exclusion_report_run_id": _s2_run_id},
+                            {"_id": 0, "details.parent_run_id": 1},
+                        )
+                        _s1_run_id = (_s2jdoc2 or {}).get("details", {}).get("parent_run_id")
 
-    elif step_number == 3:
-        # Output (ok): has_price_data + sector + industry
-        # Filtered:    from Step 3 exclusion report
-        _latest3 = await db.pipeline_exclusion_report.find_one(
-            {"step": "Step 3 - Fundamentals Sync"},
-            {"_id": 0, "report_date": 1},
-            sort=[("report_date", -1), ("created_at", -1)],
-        )
-        _rd3 = _latest3.get("report_date") if _latest3 else None
+                if not _s1_run_id:
+                    writer.writerow(["(chain broken)", "",
+                        "parent_run_id is NULL for this run — was triggered manually "
+                        "without a pipeline chain. Re-run Step 1 through the scheduler "
+                        "to establish a linked chain."])
+                else:
+                    # Build Step 1 seeded set (run-scoped, .US format).
+                    _s1_seeded: set = set(
+                        await db.universe_seed_seeded_tickers.distinct(
+                            "ticker", {"run_id": _s1_run_id}
+                        )
+                    )
 
-        async for doc in db.tracked_tickers.find(
-            _STEP4_QUERY,  # has_price_data + sector + industry
-            {"_id": 0, "ticker": 1, "name": 1},
-        ).sort("ticker", 1):
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+                    # Derive this step's input by subtracting upstream filtered sets.
+                    _input: set = set(_s1_seeded)
 
-        if _rd3:
-            async for doc in db.pipeline_exclusion_report.find(
-                {"report_date": _rd3, "step": "Step 3 - Fundamentals Sync"},
-                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
-            ).sort("ticker", 1):
-                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "Classification missing")])
+                    if step_number >= 3 and _s2_run_id:
+                        async for edoc in db.pipeline_exclusion_report.find(
+                            {"run_id": _s2_run_id, "step": "Step 2 - Price Sync"},
+                            {"_id": 0, "ticker": 1},
+                        ):
+                            _input.discard(edoc["ticker"])
 
-    elif step_number == 4:
-        # Output (ok): is_visible=True in classified universe
-        # Filtered:    from Step 4 exclusion report
-        _latest4 = await db.pipeline_exclusion_report.find_one(
-            {"step": "Step 4 - Visible Universe"},
-            {"_id": 0, "report_date": 1},
-            sort=[("report_date", -1), ("created_at", -1)],
-        )
-        _rd4 = _latest4.get("report_date") if _latest4 else None
+                    if step_number >= 4 and _s3_run_id:
+                        async for edoc in db.pipeline_exclusion_report.find(
+                            {"run_id": _s3_run_id, "step": "Step 3 - Fundamentals Sync"},
+                            {"_id": 0, "ticker": 1},
+                        ):
+                            _input.discard(edoc["ticker"])
 
-        async for doc in db.tracked_tickers.find(
-            {**_STEP4_QUERY, "is_visible": True},
-            {"_id": 0, "ticker": 1, "name": 1},
-        ).sort("ticker", 1):
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+                    # Preload this step's exclusion reasons — single O(n) query.
+                    _excl: Dict[str, str] = {}
+                    async for edoc in db.pipeline_exclusion_report.find(
+                        {"run_id": run_id, "step": _step_label},
+                        {"_id": 0, "ticker": 1, "reason": 1},
+                    ):
+                        _excl[edoc["ticker"]] = edoc["reason"]
 
-        if _rd4:
-            async for doc in db.pipeline_exclusion_report.find(
-                {"report_date": _rd4, "step": "Step 4 - Visible Universe"},
-                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
-            ).sort("ticker", 1):
-                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "Not visible")])
+                    # Name lookup — chunked in batches of 500.
+                    _names: Dict[str, str] = {}
+                    _input_list = sorted(_input)
+                    for _ci in range(0, len(_input_list), 500):
+                        async for tdoc in db.tracked_tickers.find(
+                            {"ticker": {"$in": _input_list[_ci:_ci + 500]}},
+                            {"_id": 0, "ticker": 1, "name": 1},
+                        ):
+                            _names[tdoc["ticker"]] = tdoc.get("name", "")
+
+                    # Emit exactly one row per input ticker.
+                    for ticker in _input_list:
+                        writer.writerow([ticker, _names.get(ticker, ""),
+                                         _excl.get(ticker, "ok")])
 
     output.seek(0)
     return _SR(

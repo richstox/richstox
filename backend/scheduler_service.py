@@ -699,7 +699,7 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
     }
 
 
-async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str, Any]:
+async def run_daily_price_sync(db, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Run daily price sync job with GAP DETECTION AND BULK CATCHUP.
     
@@ -725,6 +725,7 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
         "status": "running",
         "started_at": started_at,
         "source": "scheduler",
+        "details": {"parent_run_id": parent_run_id},
     })).inserted_id
 
     try:
@@ -821,6 +822,8 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False) -> Dict[str
                     "bulk_writes": result.get("bulk_writes", 0),
                     "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
                     "event_detectors": result.get("event_detectors", {}),
+                    "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                    "parent_run_id": parent_run_id,
                 },
             }}
         )
@@ -1096,7 +1099,7 @@ async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     if docs:
         await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
 
-    return {"step3_exclusion_rows": len(docs), "report_date": report_date}
+    return {"step3_exclusion_rows": len(docs), "report_date": report_date, "exclusion_report_run_id": run_id}
 
 
 async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
@@ -1186,6 +1189,7 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     step4_report_rows_written = len(docs)
     return {
         "step4_exclusion_rows": step4_report_rows_written,
+        "exclusion_report_run_id": run_id,
         "report_date": report_date,
         "_debug": {
             "step4_card_classified_count": step4_card_classified_count,
@@ -1346,7 +1350,7 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
     return {"deleted": deleted, "eligible_count": len(eligible)}
 
 
-async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False) -> Dict[str, Any]:
+async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
     Processes tickers in parallel (up to 20 concurrent) for speed.
@@ -1367,6 +1371,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         "started_at": started_at,
         "source": "scheduler",
         "progress": "Queuing tickers for fundamentals sync…",
+        "details": {"parent_run_id": parent_run_id},
     })).inserted_id
 
     async def _progress(msg: str) -> None:
@@ -1605,7 +1610,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         # Step 3 exclusion report: tickers still missing sector/industry after sync
         now_step3 = datetime.now(timezone.utc)
         step3_report = await save_step3_exclusion_report(db, now_step3)
-        result["step3_exclusion_rows"] = step3_report.get("step3_exclusion_rows", 0)
+        result["step3_exclusion_rows"]    = step3_report.get("step3_exclusion_rows", 0)
+        result["exclusion_report_run_id"] = step3_report.get("exclusion_report_run_id")
+        result["parent_run_id"]           = parent_run_id
 
         # Step 3 ticker-level funnel counts (authoritative, computed after sync).
         # "Up-to-date" = fundamentals_status='complete'
@@ -1632,7 +1639,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         }
         if result["status"] == "completed":
             try:
-                visibility_result = await recompute_visibility_all(db)
+                # Pass Step 3 exclusion_report_run_id as parent for Step 4.
+                _s3_excl_run_id = result.get("exclusion_report_run_id")
+                visibility_result = await recompute_visibility_all(db, parent_run_id=_s3_excl_run_id)
                 step4_chain = {
                     "triggered": True,
                     "status": "completed",
@@ -1650,6 +1659,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 step4_report = await save_step4_exclusion_report(db, now_step4)
                 step4_chain["exclusion_rows"] = step4_report.get("step4_exclusion_rows", 0)
                 step4_chain["_debug"] = step4_report.get("_debug", {})
+                step4_chain["exclusion_report_run_id"] = step4_report.get("exclusion_report_run_id")
+                result["step4_exclusion_report_run_id"] = step4_report.get("exclusion_report_run_id")
             except Exception as step4_error:
                 step4_chain = {
                     "triggered": True,
