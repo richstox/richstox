@@ -1419,6 +1419,27 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
+              {/* Export CSV — available for Steps 1-4 */}
+              {step.step >= 1 && step.step <= 4 && (
+                <TouchableOpacity
+                  style={s.exportBtn}
+                  onPress={() => {
+                    const url = `${API_URL}/api/admin/pipeline/export/step/${step.step}`;
+                    if (typeof window !== 'undefined') {
+                      const link = window.document.createElement('a');
+                      link.href = url;
+                      link.download = `pipeline_step${step.step}_export.csv`;
+                      window.document.body.appendChild(link);
+                      link.click();
+                      link.remove();
+                    }
+                  }}
+                >
+                  <Ionicons name="download-outline" size={12} color="#6366F1" />
+                  <Text style={s.exportBtnText}>Export CSV</Text>
+                </TouchableOpacity>
+              )}
+
               {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
                 <Text style={s.expandText}>Filter details</Text>
@@ -1784,6 +1805,8 @@ const s = StyleSheet.create({
 
   expandBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start' },
   expandText: { fontSize: 11, color: COLORS.textMuted },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#6366F111', borderWidth: 1, borderColor: '#6366F144', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
+  exportBtnText: { fontSize: 11, color: '#6366F1', fontWeight: '600' },
   details: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: COLORS.border },
   detailLabel: { fontSize: 10, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.5, marginBottom: 3 },
   detailValue: { fontSize: 11, color: COLORS.text, marginBottom: 2 },
