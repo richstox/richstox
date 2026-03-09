@@ -205,6 +205,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [chainRunning, setChainRunning] = useState(false);
   const chainPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // ── Manual / Auto run mode toggle ─────────────────────────────────────────
+  const [runMode, setRunMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
+  const runModeInitialised = useRef(false);
+
   const fetchData = useCallback(async () => {
     try {
       const [overviewRes, exclusionRes] = await Promise.all([
@@ -278,6 +282,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const hasExclusionRows = (exclusionReport?.total_rows ?? 0) > 0;
   const schedulerActive = data?.health?.scheduler_active;
+
+  // Set initial runMode once data is loaded for the first time.
+  useEffect(() => {
+    if (!runModeInitialised.current && typeof schedulerActive === 'boolean') {
+      setRunMode(schedulerActive ? 'AUTO' : 'MANUAL');
+      runModeInitialised.current = true;
+    }
+  }, [schedulerActive]);
 
   const handleSchedulerToggle = async () => {
     if (schedulerUpdating) return;
@@ -832,6 +844,68 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           <View style={[s.progressFill, { width: `${healthPct}%` as any, backgroundColor: healthColor }]} />
         </View>
         <Text style={s.healthSub}>{completedCount}/5 steps completed today</Text>
+
+        {/* Full Pipeline Audit — above scheduler control */}
+        <View style={s.fullChainInlineSection}>
+          <View style={s.fullChainInlineTitleRow}>
+            <Text style={s.fullChainInlineTitle}>Full Pipeline Audit</Text>
+            {/* MANUAL / AUTO toggle */}
+            <View style={s.manualAutoToggle}>
+              <TouchableOpacity
+                style={[s.toggleBtn, runMode === 'MANUAL' && s.toggleBtnActive]}
+                onPress={() => setRunMode('MANUAL')}
+              >
+                <Text style={[s.toggleBtnText, runMode === 'MANUAL' && s.toggleBtnTextActive]}>MANUAL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[s.toggleBtn, runMode === 'AUTO' && s.toggleBtnActive]}
+                onPress={() => setRunMode('AUTO')}
+              >
+                <Text style={[s.toggleBtnText, runMode === 'AUTO' && s.toggleBtnTextActive]}>AUTO</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+          {runMode === 'AUTO' ? (
+            <Text style={s.fullChainAutoText}>Scheduler controls automatic runs.</Text>
+          ) : (
+            <Text style={s.fullChainInlineDesc}>
+              Runs Step 1→4 now with a linked chain and generates one unified CSV
+              (ticker, name, step, reason).
+            </Text>
+          )}
+          <View style={s.fullChainRow}>
+            <TouchableOpacity
+              style={[s.fullChainBtn, (runMode === 'AUTO' || chainRunning || !!runningJob) && s.runBtnDisabled]}
+              onPress={handleRunFullPipeline}
+              disabled={runMode === 'AUTO' || chainRunning || !!runningJob}
+            >
+              {chainRunning
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
+            </TouchableOpacity>
+            {chainRunId && chainStatus === 'completed' && (
+              <TouchableOpacity style={s.fullChainDownloadBtn} onPress={handleDownloadFullCsv}>
+                <Ionicons name="download-outline" size={13} color="#fff" />
+                <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+          {chainStatus && chainStatus !== 'starting' && (
+            <Text style={[
+              s.fullChainStatus,
+              chainStatus === 'completed' ? { color: '#22C55E' }
+              : chainStatus === 'failed' || chainStatus === 'error' ? { color: '#EF4444' }
+              : { color: '#F59E0B' },
+            ]}>
+              {chainStatus === 'completed'
+                ? `Done — chain_run_id: ${chainRunId}`
+                : chainStatus === 'failed' || chainStatus === 'error'
+                ? 'Failed — check logs'
+                : `Running… (${chainStatus})`}
+            </Text>
+          )}
+        </View>
+
         <View style={s.schedulerControlRow}>
           <Text style={s.schedulerControlText}>
             Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
@@ -877,48 +951,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             <Text style={[s.miniLabel, { color: '#22C55E' }]}>visible</Text>
           </View>
         </View>
-      </View>
-
-      {/* Run Full Pipeline Now */}
-      <View style={s.fullChainCard}>
-        <View style={s.fullChainHeader}>
-          <Text style={s.fullChainTitle}>Full Pipeline Audit</Text>
-          <Text style={s.fullChainDesc}>
-            Runs Step 1→4 now with a linked chain and generates one unified CSV
-            (ticker, name, step, reason).
-          </Text>
-        </View>
-        <View style={s.fullChainRow}>
-          <TouchableOpacity
-            style={[s.fullChainBtn, (chainRunning || !!runningJob) && s.runBtnDisabled]}
-            onPress={handleRunFullPipeline}
-            disabled={chainRunning || !!runningJob}
-          >
-            {chainRunning
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
-          </TouchableOpacity>
-          {chainRunId && chainStatus === 'completed' && (
-            <TouchableOpacity style={s.fullChainDownloadBtn} onPress={handleDownloadFullCsv}>
-              <Ionicons name="download-outline" size={13} color="#fff" />
-              <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
-            </TouchableOpacity>
-          )}
-        </View>
-        {chainStatus && chainStatus !== 'starting' && (
-          <Text style={[
-            s.fullChainStatus,
-            chainStatus === 'completed' ? { color: '#22C55E' }
-            : chainStatus === 'failed' || chainStatus === 'error' ? { color: '#EF4444' }
-            : { color: '#F59E0B' },
-          ]}>
-            {chainStatus === 'completed'
-              ? `Done — chain_run_id: ${chainRunId}`
-              : chainStatus === 'failed' || chainStatus === 'error'
-              ? 'Failed — check logs'
-              : `Running… (${chainStatus})`}
-          </Text>
-        )}
       </View>
 
       {/* Pipeline Steps */}
@@ -1855,6 +1887,18 @@ const s = StyleSheet.create({
   fullChainDownloadBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#22C55E', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6 },
   fullChainDownloadBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   fullChainStatus: { marginTop: 6, fontSize: 11, fontWeight: '600' },
+
+  // Inline Full Pipeline Audit section (inside healthCard)
+  fullChainInlineSection: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border + '55' },
+  fullChainInlineTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 },
+  fullChainInlineTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  fullChainInlineDesc: { fontSize: 11, color: COLORS.textMuted, lineHeight: 15, marginBottom: 8 },
+  fullChainAutoText: { fontSize: 11, color: COLORS.textMuted, fontStyle: 'italic', marginBottom: 8 },
+  manualAutoToggle: { flexDirection: 'row', borderRadius: 6, overflow: 'hidden', borderWidth: 1, borderColor: COLORS.border },
+  toggleBtn: { paddingHorizontal: 8, paddingVertical: 3 },
+  toggleBtnActive: { backgroundColor: '#6366F1' },
+  toggleBtnText: { fontSize: 10, fontWeight: '700', color: COLORS.textMuted },
+  toggleBtnTextActive: { color: '#fff' },
   details: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: COLORS.border },
   detailLabel: { fontSize: 10, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.5, marginBottom: 3 },
   detailValue: { fontSize: 11, color: COLORS.text, marginBottom: 2 },
