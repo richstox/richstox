@@ -825,6 +825,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     <View style={s.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>
   );
 
+  const isRunDisabled = runMode === 'AUTO' || chainRunning || !!runningJob;
+  const isChainFailed = chainStatus === 'failed' || chainStatus === 'error';
+
   return (
     <ScrollView
       style={s.container}
@@ -875,9 +878,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           )}
           <View style={s.fullChainRow}>
             <TouchableOpacity
-              style={[s.fullChainBtn, (runMode === 'AUTO' || chainRunning || !!runningJob) && s.runBtnDisabled]}
+              style={[s.fullChainBtn, isRunDisabled && s.runBtnDisabled]}
               onPress={handleRunFullPipeline}
-              disabled={runMode === 'AUTO' || chainRunning || !!runningJob}
+              disabled={isRunDisabled}
             >
               {chainRunning
                 ? <ActivityIndicator size="small" color="#fff" />
@@ -894,12 +897,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             <Text style={[
               s.fullChainStatus,
               chainStatus === 'completed' ? { color: '#22C55E' }
-              : chainStatus === 'failed' || chainStatus === 'error' ? { color: '#EF4444' }
+              : isChainFailed ? { color: '#EF4444' }
               : { color: '#F59E0B' },
             ]}>
               {chainStatus === 'completed'
                 ? `Done — chain_run_id: ${chainRunId}`
-                : chainStatus === 'failed' || chainStatus === 'error'
+                : isChainFailed
                 ? 'Failed — check logs'
                 : `Running… (${chainStatus})`}
             </Text>
