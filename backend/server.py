@@ -7295,7 +7295,7 @@ async def admin_pipeline_export_step(step_number: int):
         raise _HTTPException(status_code=400, detail="step_number must be 1, 2, 3 or 4")
 
     output = _io.StringIO()
-    writer = _csv.writer(output)
+    writer = _csv.writer(output, quoting=_csv.QUOTE_ALL)
     writer.writerow(["ticker", "name", "status"])
 
     if step_number == 1:
