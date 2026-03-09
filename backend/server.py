@@ -7501,6 +7501,226 @@ async def admin_pipeline_export_step(
     )
 
 
+@api_router.post("/admin/pipeline/run-full-now")
+async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
+    """
+    Run the full Step 1→4 pipeline chain immediately, exactly like the scheduler.
+    Each step receives the exact parent_run_id from the preceding step.
+    Returns a chain_run_id — use it to poll /chain-status/<id> and download
+    /export/full?chain_run_id=<id>.
+    Auth: AdminAuthMiddleware.
+    """
+    import uuid as _uuid2
+
+    chain_run_id = f"chain_{_uuid2.uuid4().hex[:12]}"
+
+    async def _run_chain(chain_id: str) -> None:
+        logger.info(f"[run-full-now] Starting chain {chain_id}")
+
+        await db.pipeline_chain_runs.insert_one({
+            "chain_run_id": chain_id,
+            "status":       "running",
+            "started_at":   datetime.now(timezone.utc),
+            "step_run_ids": {},
+        })
+
+        step_run_ids: Dict[str, Optional[str]] = {
+            "step1": None, "step2": None, "step3": None, "step4": None
+        }
+        chain_status = "completed"
+        chain_error: Optional[str] = None
+
+        try:
+            import uuid as _uuidc
+            # ── Step 1 ────────────────────────────────────────────────────────
+            job_id_s1 = f"universe_seed_{_uuidc.uuid4().hex[:8]}"
+            s1_result = await sync_ticker_whitelist(db, dry_run=False, job_run_id=job_id_s1)
+            s1_run_id: Optional[str] = s1_result.get("raw_run_id") or job_id_s1
+            step_run_ids["step1"] = s1_run_id
+            await db.pipeline_chain_runs.update_one(
+                {"chain_run_id": chain_id},
+                {"$set": {"step_run_ids.step1": s1_run_id, "status": "step1_done"}},
+            )
+            logger.info(f"[run-full-now] Step 1 done: {s1_run_id}")
+
+            # ── Step 2 ────────────────────────────────────────────────────────
+            s2_result = await run_daily_price_sync(
+                db, ignore_kill_switch=True, parent_run_id=s1_run_id
+            )
+            s2_run_id: Optional[str] = s2_result.get("exclusion_report_run_id")
+            step_run_ids["step2"] = s2_run_id
+            await db.pipeline_chain_runs.update_one(
+                {"chain_run_id": chain_id},
+                {"$set": {"step_run_ids.step2": s2_run_id, "status": "step2_done"}},
+            )
+            logger.info(f"[run-full-now] Step 2 done: {s2_run_id}")
+
+            # ── Step 3 (auto-chains Step 4 internally) ────────────────────────
+            s3_result = await run_fundamentals_changes_sync(
+                db, ignore_kill_switch=True, parent_run_id=s2_run_id
+            )
+            s3_run_id: Optional[str] = s3_result.get("exclusion_report_run_id")
+            # Step 4 exclusion_report_run_id is set by the Step 3 auto-chain.
+            s4_run_id: Optional[str] = s3_result.get("step4_exclusion_report_run_id")
+            step_run_ids["step3"] = s3_run_id
+            step_run_ids["step4"] = s4_run_id
+            await db.pipeline_chain_runs.update_one(
+                {"chain_run_id": chain_id},
+                {"$set": {
+                    "step_run_ids.step3": s3_run_id,
+                    "step_run_ids.step4": s4_run_id,
+                    "status": "step3_done",
+                }},
+            )
+            logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, Step 4: {s4_run_id}")
+
+        except Exception as exc:
+            chain_status = "failed"
+            chain_error = str(exc)
+            logger.error(f"[run-full-now] Chain {chain_id} failed: {exc}")
+
+        await db.pipeline_chain_runs.update_one(
+            {"chain_run_id": chain_id},
+            {"$set": {
+                "status":       chain_status,
+                "finished_at":  datetime.now(timezone.utc),
+                "step_run_ids": step_run_ids,
+                "error":        chain_error,
+            }},
+        )
+        logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
+
+    background_tasks.add_task(_run_chain, chain_run_id)
+    return {
+        "status":       "started",
+        "chain_run_id": chain_run_id,
+        "message": (
+            f"Full pipeline chain started (chain_run_id={chain_run_id}). "
+            "Poll /api/admin/pipeline/chain-status/<chain_run_id> until status=completed, "
+            "then download /api/admin/pipeline/export/full?chain_run_id=<chain_run_id>."
+        ),
+    }
+
+
+@api_router.get("/admin/pipeline/chain-status/{chain_run_id}")
+async def admin_pipeline_chain_status(chain_run_id: str):
+    """Poll status of a run-full-now chain. Auth: AdminAuthMiddleware."""
+    doc = await db.pipeline_chain_runs.find_one(
+        {"chain_run_id": chain_run_id}, {"_id": 0}
+    )
+    if not doc:
+        from fastapi import HTTPException as _HE
+        raise _HE(status_code=404, detail=f"chain_run_id not found: {chain_run_id}")
+    for k in ("started_at", "finished_at"):
+        if isinstance(doc.get(k), datetime):
+            doc[k] = doc[k].isoformat()
+    return doc
+
+
+@api_router.get("/admin/pipeline/export/full")
+async def admin_pipeline_export_full(
+    chain_run_id: str = Query(..., description="chain_run_id from POST /run-full-now"),
+):
+    """
+    Download a unified pipeline CSV for a full chain run.
+    Columns: ticker, name, step, reason
+    One row per Step 1 raw row.
+    step = first pipeline step where the ticker was filtered, or 'OK'.
+    Auth: AdminAuthMiddleware.
+    """
+    from fastapi.responses import StreamingResponse as _SR2
+    from fastapi import HTTPException as _HE2
+    import io as _io2
+    import csv as _csv2
+
+    chain_doc = await db.pipeline_chain_runs.find_one(
+        {"chain_run_id": chain_run_id}, {"_id": 0}
+    )
+    if not chain_doc:
+        raise _HE2(status_code=404, detail=f"chain_run_id not found: {chain_run_id}")
+    if chain_doc.get("status") not in ("completed", "step3_done"):
+        raise _HE2(status_code=409,
+            detail=f"Chain not finished (status={chain_doc.get('status')}). "
+                   "Wait for status=completed then retry.")
+
+    sids = chain_doc.get("step_run_ids") or {}
+    s1_run_id = sids.get("step1")
+    if not s1_run_id:
+        raise _HE2(status_code=409, detail="Step 1 run_id missing in chain.")
+
+    _STEP_LABELS = {
+        "step1": "Step 1 - Universe Seed",
+        "step2": "Step 2 - Price Sync",
+        "step3": "Step 3 - Fundamentals Sync",
+        "step4": "Step 4 - Visible Universe",
+    }
+
+    # Preload exclusion reasons per step — one query each (O(n) total).
+    _excl: Dict[str, Dict[str, str]] = {"step1": {}, "step2": {}, "step3": {}, "step4": {}}
+    for _sk, _label in _STEP_LABELS.items():
+        _rid = sids.get(_sk)
+        if not _rid:
+            continue
+        async for edoc in db.pipeline_exclusion_report.find(
+            {"run_id": _rid, "step": _label},
+            {"_id": 0, "ticker": 1, "reason": 1},
+        ):
+            _excl[_sk][edoc["ticker"]] = edoc["reason"]
+
+    output = _io2.StringIO()
+    writer = _csv2.writer(output, quoting=_csv2.QUOTE_ALL)
+    writer.writerow(["ticker", "name", "step", "reason"])
+
+    # Stream Step 1 raw rows in global order — one output row per raw row.
+    _seen_codes: Dict[str, int] = {}  # normalised_code -> global_raw_row_id
+
+    async for raw_row in db.universe_seed_raw_rows.find(
+        {"run_id": s1_run_id},
+        {"_id": 0},
+        sort=[("global_raw_row_id", 1)],
+    ):
+        raw_sym   = raw_row.get("raw_symbol") or {}
+        code_raw  = raw_sym.get("Code") or ""
+        code_norm = code_raw.strip().upper()
+        name      = (raw_sym.get("Name") or "").strip()
+        ticker_us = f"{code_norm}.US" if code_norm else "(empty)"
+
+        if not code_norm:
+            reason = _excl["step1"].get("(empty)", "Empty ticker code")
+            writer.writerow([ticker_us, name, _STEP_LABELS["step1"], reason])
+            continue
+
+        if code_norm in _seen_codes:
+            first_gid = _seen_codes[code_norm]
+            writer.writerow([ticker_us, name, _STEP_LABELS["step1"],
+                f"Duplicate (first at global_raw_row_id={first_gid})"])
+            continue
+        _seen_codes[code_norm] = raw_row["global_raw_row_id"]
+
+        # Find first step where this ticker was filtered.
+        _out_step:   Optional[str] = None
+        _out_reason: Optional[str] = None
+        for _sk in ("step1", "step2", "step3", "step4"):
+            _r = _excl[_sk].get(ticker_us)
+            if _r is not None:
+                _out_step   = _STEP_LABELS[_sk]
+                _out_reason = _r
+                break
+
+        if _out_step:
+            writer.writerow([ticker_us, name, _out_step, _out_reason])
+        else:
+            writer.writerow([ticker_us, name, "OK", "ok"])
+
+    output.seek(0)
+    return _SR2(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition":
+            f"attachment; filename=pipeline_full_{chain_run_id}.csv"},
+    )
+
+
 @api_router.get("/admin/pipeline/exclusion-report/download")
 async def admin_download_pipeline_exclusion_report(
     report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
