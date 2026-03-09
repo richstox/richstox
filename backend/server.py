@@ -7178,7 +7178,90 @@ async def admin_fundamentals_health():
     }
 
 
-@api_router.get("/admin/pipeline/exclusion-report/download")
+@api_router.get("/admin/pipeline/funnel-gap")
+async def admin_pipeline_funnel_gap(
+    report_date: str = Query(None, description="Report date YYYY-MM-DD (defaults to latest)"),
+):
+    """
+    Identify tickers that appear in the Step 4 classified universe but are
+    unaccounted for in the pipeline exclusion report — i.e. the 'ghost' gap
+    between recompute_visibility_all denominator (5858) and the exclusion-report
+    arithmetic chain (5852).
+
+    Returns:
+      - classified_count   : count(STEP3_QUERY + sector + industry)  [Step 4 denominator]
+      - report_step3_count : distinct tickers in pipeline_exclusion_report Step 3 rows
+      - report_step4_count : distinct tickers in pipeline_exclusion_report Step 4 rows
+      - visible_count      : count(is_visible=True) in classified universe
+      - gap_tickers        : classified tickers NOT in (visible ∪ step3_report ∪ step4_report)
+      - gap_count          : len(gap_tickers)
+    """
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    _PRAGUE = _ZoneInfo("Europe/Prague")
+
+    if not report_date:
+        latest = await db.pipeline_exclusion_report.find_one(
+            {}, {"_id": 0, "report_date": 1},
+            sort=[("report_date", -1), ("created_at", -1)],
+        )
+        report_date = (
+            latest.get("report_date") if latest and latest.get("report_date")
+            else datetime.now(_PRAGUE).strftime("%Y-%m-%d")
+        )
+
+    _CLASSIFIED_QUERY = {
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "has_price_data": True,
+        "sector":   {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+    }
+
+    # Sets from tracked_tickers
+    classified_tickers: set = set(
+        await db.tracked_tickers.distinct("ticker", _CLASSIFIED_QUERY)
+    )
+    visible_tickers: set = set(
+        await db.tracked_tickers.distinct("ticker", {**_CLASSIFIED_QUERY, "is_visible": True})
+    )
+
+    # Sets from exclusion report for this date
+    step3_reported: set = set(
+        await db.pipeline_exclusion_report.distinct(
+            "ticker", {"report_date": report_date, "step": "Step 3 - Fundamentals Sync"}
+        )
+    )
+    step4_reported: set = set(
+        await db.pipeline_exclusion_report.distinct(
+            "ticker", {"report_date": report_date, "step": "Step 4 - Visible Universe"}
+        )
+    )
+
+    accounted = visible_tickers | step3_reported | step4_reported
+    gap_tickers = sorted(classified_tickers - accounted)
+
+    # Fetch name for each gap ticker for readability
+    gap_docs = []
+    if gap_tickers:
+        async for doc in db.tracked_tickers.find(
+            {"ticker": {"$in": gap_tickers}},
+            {"_id": 0, "ticker": 1, "name": 1, "sector": 1, "industry": 1,
+             "is_visible": 1, "visibility_failed_reason": 1,
+             "fundamentals_status": 1, "shares_outstanding": 1,
+             "financial_currency": 1, "is_delisted": 1},
+        ):
+            gap_docs.append(doc)
+
+    return {
+        "report_date": report_date,
+        "classified_count": len(classified_tickers),
+        "visible_count": len(visible_tickers),
+        "report_step3_count": len(step3_reported),
+        "report_step4_count": len(step4_reported),
+        "accounted_count": len(accounted & classified_tickers),
+        "gap_count": len(gap_tickers),
+        "gap_tickers": gap_docs,
+    }
 async def admin_download_pipeline_exclusion_report(
     report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
     step: str = Query(None, description="Optional step filter"),
