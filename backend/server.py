@@ -7268,7 +7268,7 @@ async def admin_pipeline_funnel_gap(
 @api_router.get("/admin/pipeline/export/step/{step_number}")
 async def admin_pipeline_export_step(
     step_number: int,
-    run_id: str = Query(None, description="Step 1 run_id (default: latest). Only affects step 1."),
+    run_id: str = Query(None, description="Required: explicit run_id for this step. No default — omitting returns a chain-broken error row."),
 ):
     """
     Export full ticker list for a pipeline step as CSV.
@@ -7277,9 +7277,11 @@ async def admin_pipeline_export_step(
       status = "ok"  — ticker is in the OUTPUT of this step
       status = reason — ticker was filtered out at this step
 
+    run_id must be provided explicitly. No "latest run" fallback — omitting
+    run_id returns a (chain broken) error row to prevent silent data mixing.
+
     Step 1: Source = universe_seed_raw_rows (verbatim EODHD rows) for that run_id.
             Seeded set and exclusion reasons are also run-scoped.
-            Supports ?run_id= param; defaults to latest run.
     Step 2: input has_price_data tickers + Step 2 exclusion report.
     Step 3: input classified tickers + Step 3 exclusion report.
     Step 4: input classified tickers + Step 4 exclusion report / is_visible.
@@ -7310,18 +7312,12 @@ async def admin_pipeline_export_step(
         # Exclusion reasons: pipeline_exclusion_report for that run_id.
         # Invariant: raw_rows_total == ok_rows + filtered_rows.
 
-        # Resolve run_id: explicit param or latest by created_at UTC.
         _raw_run_id = run_id
-        if not _raw_run_id:
-            _latest_raw = await db.universe_seed_raw_rows.find_one(
-                {}, {"run_id": 1},
-                sort=[("created_at", -1)],
-            )
-            _raw_run_id = _latest_raw["run_id"] if _latest_raw else None
 
         if not _raw_run_id:
-            writer.writerow(["(no raw data)", "",
-                              "Run Step 1 first to generate raw rows"])
+            writer.writerow(["(chain broken)", "",
+                              "run_id is required — pass ?run_id=<step1_run_id>. "
+                              "No latest-run fallback to prevent silent data mixing."])
         else:
             # A: Load seeded set run-scoped — NOT live tracked_tickers.
             _seeded_us: set = set(
@@ -7384,16 +7380,11 @@ async def admin_pipeline_export_step(
         }
         _step_label, _step_job = _STEP_META[step_number]
 
-        # Resolve this step's run_id (explicit param or latest by created_at).
+        # run_id must be provided explicitly — no latest-run fallback.
         if not run_id:
-            _le = await db.pipeline_exclusion_report.find_one(
-                {"step": _step_label},
-                {"_id": 0, "run_id": 1},
-                sort=[("created_at", -1)],
-            )
-            run_id = _le["run_id"] if _le else None
-        if not run_id:
-            writer.writerow(["(no data)", "", f"Run Step {step_number} first"])
+            writer.writerow(["(chain broken)", "",
+                f"run_id is required — pass ?run_id=<step{step_number}_run_id>. "
+                "No latest-run fallback to prevent silent data mixing."])
         else:
             # Resolve ops_job_runs doc for this step by details.exclusion_report_run_id.
             _jdoc = await db.ops_job_runs.find_one(
