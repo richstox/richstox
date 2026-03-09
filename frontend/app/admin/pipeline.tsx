@@ -199,6 +199,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditResult, setAuditResult] = useState<Record<string, any> | null>(null);
 
+  // ── Full pipeline chain run state ─────────────────────────────────────────
+  const [chainRunId, setChainRunId] = useState<string | null>(null);
+  const [chainStatus, setChainStatus] = useState<string | null>(null);
+  const [chainRunning, setChainRunning] = useState(false);
+  const chainPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const fetchData = useCallback(async () => {
     try {
       const [overviewRes, exclusionRes] = await Promise.all([
@@ -575,6 +581,60 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
+  const handleRunFullPipeline = async () => {
+    if (chainRunning) return;
+    setChainRunning(true);
+    setChainStatus('starting');
+    setChainRunId(null);
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/pipeline/run-full-now`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+        sessionToken,
+      );
+      const data = await res.json();
+      if (!res.ok) { setChainStatus('error'); setChainRunning(false); return; }
+      const cid: string = data.chain_run_id;
+      setChainRunId(cid);
+      setChainStatus('running');
+      // Poll chain status every 5 s until completed/failed.
+      if (chainPollRef.current) clearInterval(chainPollRef.current);
+      chainPollRef.current = setInterval(async () => {
+        try {
+          const sr = await authenticatedFetch(
+            `${API_URL}/api/admin/pipeline/chain-status/${cid}`,
+            {},
+            sessionToken,
+          );
+          const sd = await sr.json();
+          setChainStatus(sd.status);
+          if (sd.status === 'completed' || sd.status === 'failed') {
+            clearInterval(chainPollRef.current!);
+            chainPollRef.current = null;
+            setChainRunning(false);
+            if (sd.status === 'completed') fetchData();
+          }
+        } catch { /* keep polling */ }
+      }, 5000);
+    } catch (e: any) {
+      setChainStatus('error');
+      setChainRunning(false);
+    }
+  };
+
+  const handleDownloadFullCsv = () => {
+    if (!chainRunId || chainStatus !== 'completed') return;
+    const url = `${API_URL}/api/admin/pipeline/export/full?chain_run_id=${encodeURIComponent(chainRunId)}`;
+    if (typeof window !== 'undefined') {
+      const link = window.document.createElement('a');
+      link.href = url;
+      link.download = `pipeline_full_${chainRunId}.csv`;
+      window.document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+  };
+
   const toggleExpand = (step: number) => {
     setExpandedSteps(prev => {
       const next = new Set(prev);
@@ -817,6 +877,48 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             <Text style={[s.miniLabel, { color: '#22C55E' }]}>visible</Text>
           </View>
         </View>
+      </View>
+
+      {/* Run Full Pipeline Now */}
+      <View style={s.fullChainCard}>
+        <View style={s.fullChainHeader}>
+          <Text style={s.fullChainTitle}>Full Pipeline Audit</Text>
+          <Text style={s.fullChainDesc}>
+            Runs Step 1→4 now with a linked chain and generates one unified CSV
+            (ticker, name, step, reason).
+          </Text>
+        </View>
+        <View style={s.fullChainRow}>
+          <TouchableOpacity
+            style={[s.fullChainBtn, (chainRunning || !!runningJob) && s.runBtnDisabled]}
+            onPress={handleRunFullPipeline}
+            disabled={chainRunning || !!runningJob}
+          >
+            {chainRunning
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
+          </TouchableOpacity>
+          {chainRunId && chainStatus === 'completed' && (
+            <TouchableOpacity style={s.fullChainDownloadBtn} onPress={handleDownloadFullCsv}>
+              <Ionicons name="download-outline" size={13} color="#fff" />
+              <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+        {chainStatus && chainStatus !== 'starting' && (
+          <Text style={[
+            s.fullChainStatus,
+            chainStatus === 'completed' ? { color: '#22C55E' }
+            : chainStatus === 'failed' || chainStatus === 'error' ? { color: '#EF4444' }
+            : { color: '#F59E0B' },
+          ]}>
+            {chainStatus === 'completed'
+              ? `Done — chain_run_id: ${chainRunId}`
+              : chainStatus === 'failed' || chainStatus === 'error'
+              ? 'Failed — check logs'
+              : `Running… (${chainStatus})`}
+          </Text>
+        )}
       </View>
 
       {/* Pipeline Steps */}
@@ -1423,27 +1525,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {/* Export CSV — available for Steps 1-4 */}
-              {step.step >= 1 && step.step <= 4 && (
-                <TouchableOpacity
-                  style={s.exportBtn}
-                  onPress={() => {
-                    const url = `${API_URL}/api/admin/pipeline/export/step/${step.step}`;
-                    if (typeof window !== 'undefined') {
-                      const link = window.document.createElement('a');
-                      link.href = url;
-                      link.download = `pipeline_step${step.step}_export.csv`;
-                      window.document.body.appendChild(link);
-                      link.click();
-                      link.remove();
-                    }
-                  }}
-                >
-                  <Ionicons name="download-outline" size={12} color="#6366F1" />
-                  <Text style={s.exportBtnText}>Export CSV</Text>
-                </TouchableOpacity>
-              )}
-
               {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
                 <Text style={s.expandText}>Filter details</Text>
@@ -1472,54 +1553,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           </View>
         );
       })}
-
-      {/* Exclusion Report */}
-      <View style={s.reportCard}>
-        <View style={s.reportHeader}>
-          <View>
-            <Text style={s.reportTitle}>Filtered-out tickers report</Text>
-            <Text style={s.reportMeta}>
-              {exclusionReport
-                ? `${exclusionReport.report_date} · ${fmt(exclusionReport.total_rows)} rows`
-                : 'No report generated yet'}
-            </Text>
-          </View>
-          <TouchableOpacity
-            style={[
-              s.downloadBtn,
-              (!hasExclusionRows || downloadingReport) && s.downloadBtnDisabled,
-            ]}
-            onPress={handleDownloadExclusionReport}
-            disabled={!exclusionReport || downloadingReport || !hasExclusionRows}
-          >
-            {downloadingReport
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={[s.downloadBtnText, !hasExclusionRows && s.downloadBtnTextDisabled]}>Download CSV</Text>}
-          </TouchableOpacity>
-        </View>
-
-        {exclusionReport?.rows?.length ? (
-          <View style={s.reportList}>
-            <View style={s.reportListHeader}>
-              <Text style={[s.reportHeadCell, { flex: 1.1 }]}>Ticker</Text>
-              <Text style={[s.reportHeadCell, { flex: 2.2 }]}>Name</Text>
-              <Text style={[s.reportHeadCell, { flex: 1.7 }]}>Reason</Text>
-            </View>
-            {exclusionReport.rows.slice(0, 8).map((row, idx) => (
-              <View key={`${row.ticker}-${row.reason}-${idx}`} style={s.reportListRow}>
-                <Text style={[s.reportCellTicker, { flex: 1.1 }]}>{row.ticker}</Text>
-                <Text style={[s.reportCell, { flex: 2.2 }]} numberOfLines={1}>{row.name}</Text>
-                <Text style={[s.reportCell, { flex: 1.7 }]} numberOfLines={1}>{row.reason}</Text>
-              </View>
-            ))}
-            <Text style={s.reportFootnote}>Showing first 8 rows from latest report</Text>
-          </View>
-        ) : (
-          <Text style={s.reportEmpty}>
-            {exclusionReport?.empty_report_hint || 'No report rows yet. Run Step 1 (Universe Seed) to generate filtered-out rows.'}
-          </Text>
-        )}
-      </View>
 
       {/* Data Completeness Dashboard */}
       <View style={s.syncCard}>
@@ -1811,6 +1844,17 @@ const s = StyleSheet.create({
   expandText: { fontSize: 11, color: COLORS.textMuted },
   exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#6366F111', borderWidth: 1, borderColor: '#6366F144', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   exportBtnText: { fontSize: 11, color: '#6366F1', fontWeight: '600' },
+
+  fullChainCard: { marginHorizontal: 12, marginBottom: 12, backgroundColor: COLORS.card, borderRadius: 10, padding: 12, borderWidth: 1, borderColor: '#6366F166' },
+  fullChainHeader: { marginBottom: 8 },
+  fullChainTitle: { fontSize: 13, fontWeight: '700', color: COLORS.text, marginBottom: 2 },
+  fullChainDesc: { fontSize: 11, color: COLORS.textMuted, lineHeight: 16 },
+  fullChainRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', alignItems: 'center' },
+  fullChainBtn: { backgroundColor: '#6366F1', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
+  fullChainBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  fullChainDownloadBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#22C55E', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6 },
+  fullChainDownloadBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+  fullChainStatus: { marginTop: 6, fontSize: 11, fontWeight: '600' },
   details: { marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: COLORS.border },
   detailLabel: { fontSize: 10, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.5, marginBottom: 3 },
   detailValue: { fontSize: 11, color: COLORS.text, marginBottom: 2 },
