@@ -7262,6 +7262,117 @@ async def admin_pipeline_funnel_gap(
         "gap_count": len(gap_tickers),
         "gap_tickers": gap_docs,
     }
+
+
+@api_router.get("/admin/pipeline/export/step/{step_number}")
+async def admin_pipeline_export_step(step_number: int):
+    """
+    Export full ticker list for a pipeline step as CSV.
+
+    Each row: ticker, name, status
+      status = "ok"  — ticker is in the OUTPUT of this step
+      status = reason — ticker was filtered out at this step
+
+    Step 1  input : exchange NYSE/NASDAQ + asset_type Common Stock
+    Step 2  input : Step 1 output (is_whitelisted/seeded)
+    Step 3  input : Step 2 output (has_price_data=True)
+    Step 4  input : Step 3 output (sector AND industry present)
+    """
+    from fastapi.responses import StreamingResponse as _SR
+    from fastapi import HTTPException as _HTTPException
+    import io as _io
+    import csv as _csv
+
+    _SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
+    _STEP3_QUERY = {**_SEED_QUERY, "has_price_data": True}
+    _STEP4_QUERY = {
+        **_STEP3_QUERY,
+        "sector":   {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+    }
+
+    if step_number not in (1, 2, 3, 4):
+        raise _HTTPException(status_code=400, detail="step_number must be 1, 2, 3 or 4")
+
+    output = _io.StringIO()
+    writer = _csv.writer(output)
+    writer.writerow(["ticker", "name", "status"])
+
+    if step_number == 1:
+        async for doc in db.tracked_tickers.find(
+            _SEED_QUERY,
+            {"_id": 0, "ticker": 1, "name": 1, "is_whitelisted": 1, "status": 1},
+        ).sort("ticker", 1):
+            seeded = bool(doc.get("is_whitelisted")) or doc.get("status") not in (None, "delisted")
+            status = "ok" if seeded else (doc.get("status") or "Not seeded")
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+
+    elif step_number == 2:
+        async for doc in db.tracked_tickers.find(
+            _SEED_QUERY,
+            {"_id": 0, "ticker": 1, "name": 1, "has_price_data": 1},
+        ).sort("ticker", 1):
+            status = "ok" if doc.get("has_price_data") is True else "No price data"
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+
+    elif step_number == 3:
+        async for doc in db.tracked_tickers.find(
+            _STEP3_QUERY,
+            {"_id": 0, "ticker": 1, "name": 1,
+             "sector": 1, "industry": 1,
+             "fundamentals_status": 1, "needs_fundamentals_refresh": 1},
+        ).sort("ticker", 1):
+            sector = (doc.get("sector") or "").strip()
+            industry = (doc.get("industry") or "").strip()
+            fstatus = doc.get("fundamentals_status")
+            if sector and industry:
+                status = "ok"
+            elif fstatus == "error":
+                status = "Fundamentals sync error"
+            elif fstatus != "complete":
+                status = "Fundamentals not synced"
+            elif doc.get("needs_fundamentals_refresh"):
+                status = "Stale fundamentals"
+            elif not sector and not industry:
+                status = "Sector and industry missing"
+            elif not sector:
+                status = "Sector missing"
+            else:
+                status = "Industry missing"
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+
+    elif step_number == 4:
+        _labels = {
+            "DELISTED":                   "Ticker is delisted",
+            "MISSING_SHARES":             "Shares outstanding missing or zero",
+            "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
+            "NO_PRICE_DATA":              "No price data",
+            "MISSING_SECTOR":             "Sector missing",
+            "MISSING_INDUSTRY":           "Industry missing",
+            "INVALID_EXCHANGE":           "Invalid exchange",
+            "NOT_COMMON_STOCK":           "Not common stock",
+        }
+        async for doc in db.tracked_tickers.find(
+            _STEP4_QUERY,
+            {"_id": 0, "ticker": 1, "name": 1,
+             "is_visible": 1, "visibility_failed_reason": 1},
+        ).sort("ticker", 1):
+            if doc.get("is_visible"):
+                status = "ok"
+            else:
+                raw = doc.get("visibility_failed_reason") or "Not visible"
+                status = _labels.get(raw, raw)
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+
+    output.seek(0)
+    return _SR(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=pipeline_step{step_number}_export.csv"},
+    )
+
+
+@api_router.get("/admin/pipeline/exclusion-report/download")
 async def admin_download_pipeline_exclusion_report(
     report_date: str = Query(None, description="Report date in YYYY-MM-DD (defaults to latest available date)"),
     step: str = Query(None, description="Optional step filter"),
