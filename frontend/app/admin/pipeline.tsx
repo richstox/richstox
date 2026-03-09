@@ -607,9 +607,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const step3Filtered = byStep?.['Step 3 - Fundamentals Sync'];
   const step4Filtered = byStep?.['Step 4 - Visible Universe'];
 
-  // s1In: raw distinct from exclusion-report step1_counts; fallback to rawSymbols / live DB.
+  // s1In: total rows in Step 1 export = seeded + filtered = authoritative raw count.
+  // Computed as seeded_count + step1Filtered so it matches the CSV row count exactly.
+  const _s1Seeded = (exclusionReport?.step1_counts?.seeded_count as number | undefined);
   const s1In: number | undefined =
-    (exclusionReport?.step1_counts?.raw_distinct as number | undefined) ?? rawSymbols;
+    _s1Seeded !== undefined && step1Filtered !== undefined
+      ? _s1Seeded + step1Filtered
+      : rawSymbols;
 
   // Arithmetic chain: Output = Input − FilteredOut. Each step chains from previous.
   const s1Out: number | undefined =
