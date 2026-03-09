@@ -7299,70 +7299,101 @@ async def admin_pipeline_export_step(step_number: int):
     writer.writerow(["ticker", "name", "status"])
 
     if step_number == 1:
+        # Output (ok): seeded tickers from tracked_tickers (SEED_QUERY)
+        # Filtered:    tickers in pipeline_exclusion_report Step 1 with their reason
+        # Together = full 11860 raw universe
+
+        # Get latest Step 1 report_date
+        _latest = await db.pipeline_exclusion_report.find_one(
+            {"step": "Step 1 - Universe Seed"},
+            {"_id": 0, "report_date": 1},
+            sort=[("report_date", -1), ("created_at", -1)],
+        )
+        _report_date = _latest.get("report_date") if _latest else None
+
+        # Write ok rows — seeded tickers
         async for doc in db.tracked_tickers.find(
             _SEED_QUERY,
-            {"_id": 0, "ticker": 1, "name": 1, "is_whitelisted": 1, "status": 1},
+            {"_id": 0, "ticker": 1, "name": 1},
         ).sort("ticker", 1):
-            seeded = bool(doc.get("is_whitelisted")) or doc.get("status") not in (None, "delisted")
-            status = "ok" if seeded else (doc.get("status") or "Not seeded")
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+
+        # Write filtered rows — from exclusion report
+        if _report_date:
+            async for doc in db.pipeline_exclusion_report.find(
+                {"report_date": _report_date, "step": "Step 1 - Universe Seed"},
+                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
+            ).sort("ticker", 1):
+                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "Filtered")])
 
     elif step_number == 2:
+        # Output (ok): has_price_data=True in SEED_QUERY
+        # Filtered:    from Step 2 exclusion report
+        _latest2 = await db.pipeline_exclusion_report.find_one(
+            {"step": "Step 2 - Price Sync"},
+            {"_id": 0, "report_date": 1},
+            sort=[("report_date", -1), ("created_at", -1)],
+        )
+        _rd2 = _latest2.get("report_date") if _latest2 else None
+
         async for doc in db.tracked_tickers.find(
-            _SEED_QUERY,
-            {"_id": 0, "ticker": 1, "name": 1, "has_price_data": 1},
+            {**_SEED_QUERY, "has_price_data": True},
+            {"_id": 0, "ticker": 1, "name": 1},
         ).sort("ticker", 1):
-            status = "ok" if doc.get("has_price_data") is True else "No price data"
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+
+        if _rd2:
+            async for doc in db.pipeline_exclusion_report.find(
+                {"report_date": _rd2, "step": "Step 2 - Price Sync"},
+                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
+            ).sort("ticker", 1):
+                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "No price data")])
 
     elif step_number == 3:
+        # Output (ok): has_price_data + sector + industry
+        # Filtered:    from Step 3 exclusion report
+        _latest3 = await db.pipeline_exclusion_report.find_one(
+            {"step": "Step 3 - Fundamentals Sync"},
+            {"_id": 0, "report_date": 1},
+            sort=[("report_date", -1), ("created_at", -1)],
+        )
+        _rd3 = _latest3.get("report_date") if _latest3 else None
+
         async for doc in db.tracked_tickers.find(
-            _STEP3_QUERY,
-            {"_id": 0, "ticker": 1, "name": 1,
-             "sector": 1, "industry": 1,
-             "fundamentals_status": 1, "needs_fundamentals_refresh": 1},
+            _STEP4_QUERY,  # has_price_data + sector + industry
+            {"_id": 0, "ticker": 1, "name": 1},
         ).sort("ticker", 1):
-            sector = (doc.get("sector") or "").strip()
-            industry = (doc.get("industry") or "").strip()
-            fstatus = doc.get("fundamentals_status")
-            if sector and industry:
-                status = "ok"
-            elif fstatus == "error":
-                status = "Fundamentals sync error"
-            elif fstatus != "complete":
-                status = "Fundamentals not synced"
-            elif doc.get("needs_fundamentals_refresh"):
-                status = "Stale fundamentals"
-            elif not sector and not industry:
-                status = "Sector and industry missing"
-            elif not sector:
-                status = "Sector missing"
-            else:
-                status = "Industry missing"
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+
+        if _rd3:
+            async for doc in db.pipeline_exclusion_report.find(
+                {"report_date": _rd3, "step": "Step 3 - Fundamentals Sync"},
+                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
+            ).sort("ticker", 1):
+                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "Classification missing")])
 
     elif step_number == 4:
-        _labels = {
-            "DELISTED":                   "Ticker is delisted",
-            "MISSING_SHARES":             "Shares outstanding missing or zero",
-            "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
-            "NO_PRICE_DATA":              "No price data",
-            "MISSING_SECTOR":             "Sector missing",
-            "MISSING_INDUSTRY":           "Industry missing",
-            "INVALID_EXCHANGE":           "Invalid exchange",
-            "NOT_COMMON_STOCK":           "Not common stock",
-        }
+        # Output (ok): is_visible=True in classified universe
+        # Filtered:    from Step 4 exclusion report
+        _latest4 = await db.pipeline_exclusion_report.find_one(
+            {"step": "Step 4 - Visible Universe"},
+            {"_id": 0, "report_date": 1},
+            sort=[("report_date", -1), ("created_at", -1)],
+        )
+        _rd4 = _latest4.get("report_date") if _latest4 else None
+
         async for doc in db.tracked_tickers.find(
-            _STEP4_QUERY,
-            {"_id": 0, "ticker": 1, "name": 1,
-             "is_visible": 1, "visibility_failed_reason": 1},
+            {**_STEP4_QUERY, "is_visible": True},
+            {"_id": 0, "ticker": 1, "name": 1},
         ).sort("ticker", 1):
-            if doc.get("is_visible"):
-                status = "ok"
-            else:
-                raw = doc.get("visibility_failed_reason") or "Not visible"
-                status = _labels.get(raw, raw)
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), status])
+            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+
+        if _rd4:
+            async for doc in db.pipeline_exclusion_report.find(
+                {"report_date": _rd4, "step": "Step 4 - Visible Universe"},
+                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
+            ).sort("ticker", 1):
+                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "Not visible")])
 
     output.seek(0)
     return _SR(
