@@ -593,28 +593,34 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const todayStr = new Date().toISOString().split('T')[0];
 
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
-  const filteredOutStep1 = (jobRuns['universe_seed'] as any)?.filtered_out_total_step1 as number | undefined;
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  // seededFromRun: from exclusion-report step1_counts (second fetch in fetchData).
-  // Falls back to counts.seeded_us_total.
-  const seededFromRun = exclusionReport?.step1_counts?.seeded_count as number | undefined;
   const seeded = counts.seeded_us_total;
   const withPrice = counts.with_price_data;
   const withClass = counts.with_classification;
   const visible = counts.visible_tickers;
   const step4Visible = counts.step4_visible_total ?? visible;
 
-  // Last-run output counts — chain handoffs between steps.
-  const step1SeededFromRun          = (jobRuns['universe_seed']          as any)?.seeded_total                 as number | undefined;
-  const step2WithPriceFromRun        = (jobRuns['price_sync']              as any)?.with_price_data_total         as number | undefined;
-  const step3WithFundamentalsFromRun = (jobRuns['fundamentals_sync']       as any)?.fundamentals_complete_total   as number | undefined;
-  const step4VisibleFromRun          = (jobRuns['recompute_visibility_all'] as any)?.visible_total                as number | undefined;
+  // Exclusion-report filtered_out counts — authoritative source for funnel arithmetic.
+  const byStep = (exclusionReport as any)?.by_step as Record<string, number> | undefined;
+  const step1Filtered = byStep?.['Step 1 - Universe Seed'];
+  const step2Filtered = byStep?.['Step 2 - Price Sync'];
+  const step3Filtered = byStep?.['Step 3 - Fundamentals Sync'];
+  const step4Filtered = byStep?.['Step 4 - Visible Universe'];
 
-  // Resolved per-step counts: run-output first, then live DB fallback.
-  const s1Out = step1SeededFromRun          ?? seededFromRun ?? seeded;
-  const s2Out = step2WithPriceFromRun        ?? withPrice;
-  const s3Out = step3WithFundamentalsFromRun ?? withClass;
-  const s4Out = step4VisibleFromRun          ?? step4Visible;
+  // s1In: raw distinct from exclusion-report step1_counts; fallback to rawSymbols / live DB.
+  const s1In: number | undefined =
+    (exclusionReport?.step1_counts?.raw_distinct as number | undefined) ?? rawSymbols;
+
+  // Arithmetic chain: Output = Input − FilteredOut. Each step chains from previous.
+  const s1Out: number | undefined =
+    s1In !== undefined && step1Filtered !== undefined ? s1In - step1Filtered
+    : (exclusionReport?.step1_counts?.seeded_count as number | undefined) ?? seeded;
+  const s2Out: number | undefined =
+    s1Out !== undefined && step2Filtered !== undefined ? s1Out - step2Filtered : withPrice;
+  const s3Out: number | undefined =
+    s2Out !== undefined && step3Filtered !== undefined ? s2Out - step3Filtered : withClass;
+  const s4Out: number | undefined =
+    s3Out !== undefined && step4Filtered !== undefined ? s3Out - step4Filtered : step4Visible;
 
   const JOB_OUTPUT: Record<string, number | undefined> = {
     universe_seed: s1Out,
@@ -643,9 +649,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       color: '#6366F1',
       apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
       inputLabel: 'Raw symbols (EODHD)',
-      inputCount: rawSymbols,
+      inputCount: s1In,
       outputCount: s1Out,
-      droppedCount: filteredOutStep1,
+      droppedCount: step1Filtered,
       outputLabel: 'seeded tickers',
       filters: [
         'Type ≠ "Common Stock"',
@@ -669,6 +675,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       inputLabel: 'Seeded tickers',
       inputCount: s1Out,
       outputCount: s2Out,
+      droppedCount: step2Filtered,
       outputLabel: 'with price data',
       filters: [
         'Not present in EODHD bulk response',
@@ -688,6 +695,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       inputLabel: 'Tickers with prices',
       inputCount: s2Out,
       outputCount: s3Out,
+      droppedCount: step3Filtered,
       outputLabel: 'classified',
       filters: [
         'EODHD returns no fundamentals (404)',
@@ -708,6 +716,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       inputLabel: 'Classified tickers',
       inputCount: s3Out,
       outputCount: s4Out,
+      droppedCount: step4Filtered,
       outputLabel: 'visible',
       filters: [
         'is_delisted = true',
@@ -780,7 +789,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         {/* Mini funnel summary */}
         <View style={s.miniSummary}>
           <View style={s.miniItem}>
-            <Text style={s.miniNum}>{fmt(rawSymbols)}</Text>
+            <Text style={s.miniNum}>{fmt(s1In)}</Text>
             <Text style={s.miniLabel}>raw</Text>
           </View>
           <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
@@ -997,12 +1006,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {step.job_name === 'universe_seed' && (rawSymbols !== undefined || rawPerExchange) && (
+              {step.job_name === 'universe_seed' && (s1In !== undefined || rawPerExchange) && (
                 <View style={s.substepsCard}>
                   <Text style={s.substepsTitle}>Step 1 raw breakdown</Text>
                   <View style={s.substepRow}>
                     <Text style={s.substepName}>Raw distinct (fetched)</Text>
-                    <Text style={s.substepValue}>{rawSymbols !== undefined ? fmt(rawSymbols) : '—'}</Text>
+                    <Text style={s.substepValue}>{s1In !== undefined ? fmt(s1In) : '—'}</Text>
                   </View>
                   {rawPerExchange && Object.entries(rawPerExchange).map(([exch, n]) => (
                     <View key={exch} style={s.substepRow}>
