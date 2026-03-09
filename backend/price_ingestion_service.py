@@ -786,13 +786,14 @@ def get_trading_days_in_range(start_date: str, end_date: str) -> List[str]:
     return trading_days
 
 
-async def compute_date_coverage(db, dates: List[str], expected_tickers: set) -> Dict[str, Dict]:
+async def compute_date_coverage(db, dates: List[str], step2_query: Dict[str, Any], expected_tickers_count: int) -> Dict[str, Dict]:
     """
-    Compute price data coverage for each date.
+    Compute price data coverage for each date, scoped to the Step 2 universe.
 
-    expected_tickers: set of ticker strings (e.g. {"AAPL.US", ...}) that form
-    the Step 2 universe denominator.  The numerator counts only rows whose
-    ticker is in that set, so coverage = in-universe rows / expected count.
+    Denominator: expected_tickers_count (count of tracked_tickers matching step2_query).
+    Numerator:   number of distinct tickers in stock_prices for that date that also
+                 exist in tracked_tickers matching step2_query — computed DB-side via
+                 $lookup so no large $in list is sent over the wire.
 
     Returns:
         {
@@ -803,23 +804,30 @@ async def compute_date_coverage(db, dates: List[str], expected_tickers: set) -> 
     config = await get_gap_detection_config(db)
     coverage_threshold = config["coverage_threshold"]
 
-    expected_list = list(expected_tickers)
-    visible_ticker_count = len(expected_tickers)
-
-    # Aggregate price counts by date — scoped to the Step 2 universe.
+    # Count in-universe price rows per date via $lookup join — no $in list needed.
+    # stock_prices (date in range) → $lookup tracked_tickers → filter STEP2_QUERY
+    # → group by date, sum matches.
     pipeline = [
-        {"$match": {"date": {"$in": dates}, "ticker": {"$in": expected_list}}},
-        {"$group": {"_id": "$date", "count": {"$sum": 1}}}
+        {"$match": {"date": {"$in": dates}}},
+        {"$lookup": {
+            "from": "tracked_tickers",
+            "localField": "ticker",
+            "foreignField": "ticker",
+            "as": "_tt",
+            "pipeline": [{"$match": step2_query}, {"$project": {"_id": 1}}],
+        }},
+        {"$match": {"_tt": {"$ne": []}}},
+        {"$group": {"_id": "$date", "count": {"$sum": 1}}},
     ]
 
     counts_by_date = {}
-    async for doc in db.stock_prices.aggregate(pipeline):
+    async for doc in db.stock_prices.aggregate(pipeline, allowDiskUse=False):
         counts_by_date[doc["_id"]] = doc["count"]
 
     result = {}
     for date in dates:
         count = counts_by_date.get(date, 0)
-        coverage = count / visible_ticker_count if visible_ticker_count > 0 else 0
+        coverage = count / expected_tickers_count if expected_tickers_count > 0 else 0
         needs_backfill = coverage < coverage_threshold
 
         result[date] = {
@@ -837,13 +845,16 @@ async def detect_price_gaps(db) -> Dict[str, Any]:
 
     A gap is defined as a date where coverage < threshold (configurable).
     Coverage denominator = Step 2 universe: NYSE/NASDAQ Common Stock tickers
-    (same SEED_QUERY used by scheduler_service).  Numerator counts only rows
-    for those tickers, so false gaps from out-of-universe noise are eliminated.
+    (canonical SEED_QUERY).  Numerator counts only in-universe rows per date
+    via a DB-side $lookup — no large $in list is sent to MongoDB.
 
     GUARDRAIL: Thresholds read from ops_config collection.
     """
-    # Step 2 canonical universe — NYSE/NASDAQ Common Stock (same as SEED_QUERY).
-    _STEP2_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
+    # Step 2 canonical universe — NYSE/NASDAQ Common Stock (SEED_QUERY).
+    _STEP2_QUERY: Dict[str, Any] = {
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+    }
 
     config = await get_gap_detection_config(db)
     lookback_days = config["lookback_days"]
@@ -851,11 +862,8 @@ async def detect_price_gaps(db) -> Dict[str, Any]:
 
     logger.info(f"[GAP DETECT] Config: lookback_days={lookback_days}, coverage_threshold={coverage_threshold}")
 
-    # Build the expected ticker set from the Step 2 universe.
-    expected_tickers: set = set(
-        await db.tracked_tickers.distinct("ticker", _STEP2_QUERY)
-    )
-    visible_ticker_count = len(expected_tickers)
+    # Denominator: count of Step 2 universe tickers (no large list needed).
+    expected_tickers_count = await db.tracked_tickers.count_documents(_STEP2_QUERY)
 
     # Calculate date range
     yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -864,8 +872,8 @@ async def detect_price_gaps(db) -> Dict[str, Any]:
     # Get trading days in range
     trading_days = get_trading_days_in_range(start_date, yesterday)
 
-    # Compute coverage for each date — scoped to the Step 2 universe.
-    coverage = await compute_date_coverage(db, trading_days, expected_tickers)
+    # Compute coverage for each date — DB-side join, no $in list.
+    coverage = await compute_date_coverage(db, trading_days, _STEP2_QUERY, expected_tickers_count)
 
     # Identify gaps
     fully_missing = []
@@ -890,8 +898,8 @@ async def detect_price_gaps(db) -> Dict[str, Any]:
             "lookback_days": lookback_days,
             "coverage_threshold": coverage_threshold
         },
-        "expected_tickers_count": visible_ticker_count,
-        "visible_ticker_count": visible_ticker_count,  # backward-compat alias
+        "expected_tickers_count": expected_tickers_count,
+        "visible_ticker_count": expected_tickers_count,  # backward-compat alias
         "dates_checked": len(trading_days),
         "dates_with_gaps": dates_with_gaps,
         "fully_missing_dates": fully_missing,
@@ -983,13 +991,18 @@ async def run_daily_bulk_catchup(db, job_name: str = "price_sync") -> Dict[str, 
             "bulk_writes": 0,
         }
 
-    # Load Step 2 universe tickers for filtering and gap analysis.
-    # SEED_QUERY: NYSE/NASDAQ Common Stock — same denominator as detect_price_gaps.
-    _STEP2_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
+    # Load Step 2 universe tickers for filtering bulk_data rows.
+    # SEED_QUERY: NYSE/NASDAQ Common Stock.  distinct() is unavoidable here
+    # because we need a Python set for O(1) lookup during the bulk_data loop.
+    _STEP2_QUERY: Dict[str, Any] = {
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+    }
     step2_tickers: set = set(
         await db.tracked_tickers.distinct("ticker", _STEP2_QUERY)
     )
-    logger.info(f"[BULK CATCHUP] {len(bulk_data)} raw records, {len(step2_tickers)} Step 2 universe tickers")
+    expected_tickers_count = len(step2_tickers)
+    logger.info(f"[BULK CATCHUP] {len(bulk_data)} raw records, {expected_tickers_count} Step 2 universe tickers")
 
     # Build bulk operations — filter to tracked tickers only
     bulk_operations = []
@@ -1064,19 +1077,19 @@ async def run_daily_bulk_catchup(db, job_name: str = "price_sync") -> Dict[str, 
     )
 
     # Gap analysis debug — run inline so ops_job_runs.details.gap_analysis
-    # reflects the Step 2 universe (same expected_tickers set used above).
+    # reflects the Step 2 universe. Uses $lookup aggregation (no large $in list).
     gap_config = await get_gap_detection_config(db)
     gap_debug: Dict[str, Any] = {
         "lookback_days": gap_config["lookback_days"],
         "coverage_threshold": gap_config["coverage_threshold"],
-        "expected_tickers_count": len(step2_tickers),
+        "expected_tickers_count": expected_tickers_count,
         "per_gap_date": [],
     }
     try:
         _yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
         _start = (datetime.now(timezone.utc) - timedelta(days=gap_config["lookback_days"])).strftime("%Y-%m-%d")
         _trading_days = get_trading_days_in_range(_start, _yesterday)
-        _coverage = await compute_date_coverage(db, _trading_days, step2_tickers)
+        _coverage = await compute_date_coverage(db, _trading_days, _STEP2_QUERY, expected_tickers_count)
         gap_debug["per_gap_date"] = [
             {
                 "date": d,
