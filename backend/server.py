@@ -2096,7 +2096,7 @@ async def _run_universe_seed_bg(db):
     logger.info(f"Universe Seed started (job_id={job_id})")
 
     try:
-        result = await sync_ticker_whitelist(db, dry_run=False)
+        result = await sync_ticker_whitelist(db, dry_run=False, job_run_id=job_id)
         status = "completed"
     except Exception as e:
         result = {"error": str(e)}
@@ -7265,7 +7265,10 @@ async def admin_pipeline_funnel_gap(
 
 
 @api_router.get("/admin/pipeline/export/step/{step_number}")
-async def admin_pipeline_export_step(step_number: int):
+async def admin_pipeline_export_step(
+    step_number: int,
+    run_id: str = Query(None, description="Step 1 run_id (default: latest). Only affects step 1."),
+):
     """
     Export full ticker list for a pipeline step as CSV.
 
@@ -7273,10 +7276,12 @@ async def admin_pipeline_export_step(step_number: int):
       status = "ok"  — ticker is in the OUTPUT of this step
       status = reason — ticker was filtered out at this step
 
-    Step 1  input : exchange NYSE/NASDAQ + asset_type Common Stock
-    Step 2  input : Step 1 output (is_whitelisted/seeded)
-    Step 3  input : Step 2 output (has_price_data=True)
-    Step 4  input : Step 3 output (sector AND industry present)
+    Step 1: Source = universe_seed_raw_rows (verbatim EODHD rows) for that run_id.
+            Seeded set and exclusion reasons are also run-scoped.
+            Supports ?run_id= param; defaults to latest run.
+    Step 2: input has_price_data tickers + Step 2 exclusion report.
+    Step 3: input classified tickers + Step 3 exclusion report.
+    Step 4: input classified tickers + Step 4 exclusion report / is_visible.
     """
     from fastapi.responses import StreamingResponse as _SR
     from fastapi import HTTPException as _HTTPException
@@ -7299,32 +7304,76 @@ async def admin_pipeline_export_step(step_number: int):
     writer.writerow(["ticker", "name", "status"])
 
     if step_number == 1:
-        # Output (ok): seeded tickers from tracked_tickers (SEED_QUERY)
-        # Filtered:    tickers in pipeline_exclusion_report Step 1 with their reason
-        # Together = full 11860 raw universe
+        # Source: universe_seed_raw_rows (verbatim EODHD rows) for that run_id.
+        # Seeded set: universe_seed_seeded_tickers (run-scoped, not live DB).
+        # Exclusion reasons: pipeline_exclusion_report for that run_id.
+        # Invariant: raw_rows_total == ok_rows + filtered_rows.
 
-        # Get latest Step 1 report_date
-        _latest = await db.pipeline_exclusion_report.find_one(
-            {"step": "Step 1 - Universe Seed"},
-            {"_id": 0, "report_date": 1},
-            sort=[("report_date", -1), ("created_at", -1)],
-        )
-        _report_date = _latest.get("report_date") if _latest else None
+        # Resolve run_id: explicit param or latest by created_at UTC.
+        _raw_run_id = run_id
+        if not _raw_run_id:
+            _latest_raw = await db.universe_seed_raw_rows.find_one(
+                {}, {"run_id": 1},
+                sort=[("created_at", -1)],
+            )
+            _raw_run_id = _latest_raw["run_id"] if _latest_raw else None
 
-        # Write ok rows — seeded tickers
-        async for doc in db.tracked_tickers.find(
-            _SEED_QUERY,
-            {"_id": 0, "ticker": 1, "name": 1},
-        ).sort("ticker", 1):
-            writer.writerow([doc.get("ticker", ""), doc.get("name", ""), "ok"])
+        if not _raw_run_id:
+            writer.writerow(["(no raw data)", "",
+                              "Run Step 1 first to generate raw rows"])
+        else:
+            # A: Load seeded set run-scoped — NOT live tracked_tickers.
+            _seeded_us: set = set(
+                await db.universe_seed_seeded_tickers.distinct(
+                    "ticker", {"run_id": _raw_run_id}
+                )
+            )
+            _seeded_plain: set = {t.replace(".US", "") for t in _seeded_us}
 
-        # Write filtered rows — from exclusion report
-        if _report_date:
-            async for doc in db.pipeline_exclusion_report.find(
-                {"report_date": _report_date, "step": "Step 1 - Universe Seed"},
-                {"_id": 0, "ticker": 1, "name": 1, "reason": 1},
-            ).sort("ticker", 1):
-                writer.writerow([doc.get("ticker", ""), doc.get("name", ""), doc.get("reason", "Filtered")])
+            # Preload exclusion reasons for this run_id — single O(n) query.
+            _excl: Dict[str, str] = {}
+            async for edoc in db.pipeline_exclusion_report.find(
+                {"run_id": _raw_run_id, "step": "Step 1 - Universe Seed"},
+                {"_id": 0, "ticker": 1, "reason": 1},
+            ):
+                _excl[edoc["ticker"]] = edoc["reason"]
+
+            # Stream raw rows in global insertion order — one CSV row per raw row.
+            _seen_codes: Dict[str, int] = {}  # normalised_code -> global_raw_row_id
+
+            async for row in db.universe_seed_raw_rows.find(
+                {"run_id": _raw_run_id},
+                {"_id": 0},
+                sort=[("global_raw_row_id", 1)],
+            ):
+                raw_sym   = row.get("raw_symbol") or {}
+                code_raw  = raw_sym.get("Code") or ""
+                code_norm = code_raw.strip().upper()
+                name      = (raw_sym.get("Name") or "").strip()
+                ticker_us = f"{code_norm}.US" if code_norm else "(empty)"
+
+                if not code_norm:
+                    writer.writerow([ticker_us, name,
+                        _excl.get("(empty)", "Empty ticker code")])
+                    continue
+
+                if code_norm in _seen_codes:
+                    # Duplicate: already emitted once; reason is in exclusion report.
+                    first_gid = _seen_codes[code_norm]
+                    writer.writerow([ticker_us, name,
+                        _excl.get(ticker_us)
+                        or f"Duplicate (first at global_raw_row_id={first_gid})"])
+                    continue
+
+                _seen_codes[code_norm] = row["global_raw_row_id"]
+
+                if ticker_us in _seeded_us or code_norm in _seeded_plain:
+                    writer.writerow([ticker_us, name, "ok"])
+                else:
+                    writer.writerow([ticker_us, name,
+                        _excl.get(ticker_us)
+                        or _excl.get(code_norm)
+                        or "Filtered"])
 
     elif step_number == 2:
         # Output (ok): has_price_data=True in SEED_QUERY

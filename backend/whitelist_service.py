@@ -267,6 +267,7 @@ async def save_universe_seed_exclusion_report(
     db,
     rows: List[Dict[str, Any]],
     now: datetime,
+    run_id: str,
     raw_symbols_fetched: int = 0,
     seeded_count: int = 0,
     today_fetched_set: Optional[set] = None,
@@ -275,16 +276,9 @@ async def save_universe_seed_exclusion_report(
     Save Step 1 exclusion rows to shared pipeline exclusion report collection.
     Rewrites ONLY Step 1 rows for this report_date (never touches other steps).
 
-    Strict identity guaranteed: raw_symbols_fetched == seeded_count + filtered_out_total_step1
-    where raw_symbols_fetched == len(today_fetched_set).
-
-    today_fetched_set: the exact distinct universe from this run (non-empty codes
-    + "(empty)" representative). Only rows whose ticker ∈ today_fetched_set are
-    written. Exactly one row per ticker (first-seen reason wins).
-    filtered_out_total_step1 = max(raw_symbols_fetched - seeded_count, 0).
+    run_id: passed in from sync_ticker_whitelist (same as ops_job_runs and raw_rows).
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
-    run_id = f"universe_seed_{now.strftime('%Y%m%d_%H%M%S')}"
 
     # Safety: delete ONLY Step 1 rows — never touch other steps for this date.
     await db.pipeline_exclusion_report.delete_many({
@@ -416,7 +410,8 @@ def extract_fundamentals_cache(fundamentals: Dict[str, Any], ticker: str) -> Dic
 async def sync_ticker_whitelist(
     db,
     dry_run: bool = False,
-    exchanges: Optional[List[str]] = None
+    exchanges: Optional[List[str]] = None,
+    job_run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Synchronize the tracked_tickers collection with EODHD exchange-symbol-list.
@@ -426,7 +421,13 @@ async def sync_ticker_whitelist(
     """
     exchanges = exchanges or SUPPORTED_EXCHANGES
     now = datetime.now(timezone.utc)
-    
+
+    # run_id: use caller-supplied job_run_id (from ops_job_runs) or generate
+    # a UTC-based fallback.  All three collections share this exact string:
+    #   ops_job_runs, pipeline_exclusion_report, universe_seed_raw_rows,
+    #   universe_seed_seeded_tickers.
+    run_id: str = job_run_id or f"universe_seed_{now.strftime('%Y%m%d_%H%M%S')}"
+
     result = {
         "started_at": now.isoformat(),
         "dry_run": dry_run,
@@ -442,6 +443,18 @@ async def sync_ticker_whitelist(
         "errors": [],
     }
     
+    # raw_rows_list: every symbol exactly as returned by EODHD, verbatim,
+    # with a monotonic global_raw_row_id across NYSE + NASDAQ combined.
+    # No normalisation at collection time.
+    raw_rows_list: List[Dict[str, Any]] = []
+    _global_raw_idx: int = 0
+
+    # seen_raw_codes: tracks first global_raw_row_id for each normalised code.
+    # Used to detect duplicates BEFORE seeding so duplicates are excluded from
+    # candidate_tickers and the identity raw_rows_total == seeded + excluded holds.
+    seen_raw_codes: Dict[str, int] = {}   # normalised_code -> global_raw_row_id
+    duplicate_codes: set = set()           # normalised codes that appeared 2+ times
+
     # Collect raw symbols from all exchanges, deduplicate by code (distinct universe).
     # raw_symbols_fetched = len(distinct entries) == seeded + filtered_out strictly.
     # First-seen exchange wins when the same code appears on NYSE and NASDAQ.
@@ -458,6 +471,24 @@ async def sync_ticker_whitelist(
         if not symbols:
             result["errors"].append(f"No symbols returned from {exchange}")
             continue
+
+        for _raw_row_idx, _sym in enumerate(symbols):
+            # Collect every row verbatim for persistence.
+            raw_rows_list.append({
+                "exchange":          exchange,
+                "global_raw_row_id": _global_raw_idx,
+                "raw_row_index":     _raw_row_idx,
+                "raw_symbol":        dict(_sym),
+            })
+            _global_raw_idx += 1
+
+            # Duplicate detection — normalised code seen before?
+            _rcode = (_sym.get("Code") or "").strip().upper()
+            if _rcode:
+                if _rcode in seen_raw_codes:
+                    duplicate_codes.add(_rcode)
+                else:
+                    seen_raw_codes[_rcode] = _global_raw_idx - 1  # current row id
 
         for sym in symbols:
             code = (sym.get("Code") or "").strip().upper()
@@ -486,6 +517,7 @@ async def sync_ticker_whitelist(
         today_fetched_set.add("(empty)")
 
     result["fetched"] = len(today_fetched_set)
+    result["raw_rows_total"] = len(raw_rows_list)
 
     # Group distinct symbols by their assigned exchange for per-exchange filtering.
     from collections import defaultdict as _defaultdict
@@ -501,6 +533,33 @@ async def sync_ticker_whitelist(
         result["filtered_out"] += len(exclusions)
         all_candidates.extend(candidates)
         all_exclusions.extend(exclusions)
+
+    # Add duplicate rows to exclusions so they appear in pipeline_exclusion_report
+    # and are NOT seeded.  This must happen before candidate_tickers is built so
+    # the identity raw_rows_total == seeded_count + excluded_count holds per run.
+    for _rrow in raw_rows_list:
+        _rsym  = _rrow.get("raw_symbol") or {}
+        _rcode = (_rsym.get("Code") or "").strip().upper()
+        if _rcode and _rcode in duplicate_codes:
+            _gid = _rrow["global_raw_row_id"]
+            _first_gid = seen_raw_codes.get(_rcode, _gid)
+            if _gid != _first_gid:
+                # This is a subsequent (duplicate) occurrence — exclude it.
+                all_exclusions.append({
+                    "ticker":   f"{_rcode}.US",
+                    "name":     (_rsym.get("Name") or "").strip() or "(unknown)",
+                    "step":     STEP1_REPORT_STEP,
+                    "reason":   f"Duplicate (first at global_raw_row_id={_first_gid})",
+                    "exchange": _rrow["exchange"],
+                })
+                # Remove from all_candidates if it somehow got seeded via
+                # distinct_sym_by_code (should not happen since first-seen wins,
+                # but guard for safety).
+                all_candidates = [
+                    c for c in all_candidates
+                    if c.get("code", "").upper() != _rcode
+                    or _rrow["exchange"] == distinct_sym_by_code.get(_rcode, {}).get("_exchange")
+                ]
     
     if not all_candidates:
         result["errors"].append("No candidates after filtering")
@@ -508,6 +567,7 @@ async def sync_ticker_whitelist(
         if not dry_run:
             report = await save_universe_seed_exclusion_report(
                 db, all_exclusions, now,
+                run_id=run_id,
                 raw_symbols_fetched=result["fetched"],
                 seeded_count=0,
                 today_fetched_set=today_fetched_set,
@@ -652,6 +712,7 @@ async def sync_ticker_whitelist(
     missing_in_union = sorted(raw_codes - union_codes)[:20]
     reconciliation_debug = {
         "raw_distinct_count": result["fetched"],
+        "raw_rows_total": result["raw_rows_total"],
         "seeded_codes_count": len(seeded_codes),
         "excluded_codes_count": len(excluded_codes),
         "union_count": len(union_codes),
@@ -661,10 +722,49 @@ async def sync_ticker_whitelist(
     }
     logger.info(f"Step 1 reconciliation: {reconciliation_debug}")
 
-    # Capture now at save time (not job start) so run_id encodes actual write timestamp.
     now_save = datetime.now(timezone.utc)
+
+    # Persist run-scoped seeded tickers so Step 1 export can load them without
+    # touching live tracked_tickers (A: run-scoped seeded set).
+    if not dry_run:
+        await db.universe_seed_seeded_tickers.delete_many({"run_id": run_id})
+        if candidate_tickers:
+            await db.universe_seed_seeded_tickers.insert_many(
+                [{"run_id": run_id, "ticker": t, "created_at": now_save}
+                 for t in candidate_tickers],
+                ordered=False,
+            )
+
+    # Persist raw rows keyed by run_id.
+    if not dry_run and raw_rows_list:
+        await db.universe_seed_raw_rows.insert_many(
+            [{**row, "run_id": run_id, "created_at": now_save}
+             for row in raw_rows_list],
+            ordered=False,
+        )
+
+    # Keep-last-3 across ALL run-scoped collections (raw_rows, seeded_tickers,
+    # pipeline_exclusion_report Step 1 rows) so old exports stay consistent.
+    if not dry_run:
+        all_runs = await db.universe_seed_raw_rows.aggregate([
+            {"$group": {"_id": "$run_id", "created_at": {"$min": "$created_at"}}},
+            {"$sort": {"created_at": 1}},  # oldest first; created_at is UTC datetime
+        ]).to_list(None)
+        if len(all_runs) > 3:
+            old_ids = [r["_id"] for r in all_runs[:-3]]
+            await db.universe_seed_raw_rows.delete_many({"run_id": {"$in": old_ids}})
+            await db.universe_seed_seeded_tickers.delete_many({"run_id": {"$in": old_ids}})
+            await db.pipeline_exclusion_report.delete_many({
+                "run_id": {"$in": old_ids},
+                "step": STEP1_REPORT_STEP,
+            })
+            logger.info(f"Step 1 keep-last-3: purged {len(old_ids)} old run(s): {old_ids}")
+
+        result["raw_run_id"] = run_id
+
     report = await save_universe_seed_exclusion_report(
         db, all_exclusions, now_save,
+        run_id=run_id,
         raw_symbols_fetched=result["fetched"],
         seeded_count=result["seeded_total"],
         today_fetched_set=today_fetched_set,
