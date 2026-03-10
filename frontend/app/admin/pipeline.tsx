@@ -7,7 +7,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   RefreshControl, ActivityIndicator, Alert, Linking, Platform, TextInput,
-  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
@@ -175,8 +174,6 @@ function safeCount(v: any): number {
 }
 
 export default function PipelineTab({ sessionToken }: PipelineProps) {
-  const { width: screenWidth } = useWindowDimensions();
-  const isMobile = screenWidth < 500;
   const [data, setData] = useState<OverviewData | null>(null);
   const [exclusionReport, setExclusionReport] = useState<PipelineExclusionReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -885,7 +882,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {chainRunning
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.fullChainBtnText} numberOfLines={1} adjustsFontSizeToFit>{isMobile ? '▶ Run Pipeline' : '▶ Run Full Pipeline Now'}</Text>}
+                : <Text style={s.fullChainBtnText} numberOfLines={1} adjustsFontSizeToFit>▶ Run Pipeline</Text>}
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -899,7 +896,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {schedulerUpdating
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.schedulerBtnText} numberOfLines={1} adjustsFontSizeToFit>{schedulerActive ? (isMobile ? 'Pause' : 'Pause Scheduler') : (isMobile ? 'Resume' : 'Resume Scheduler')}</Text>}
+                : <Text style={s.schedulerBtnText} numberOfLines={1} adjustsFontSizeToFit>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
             </TouchableOpacity>
           </View>
           <Text style={s.schedulerStatusText}>
