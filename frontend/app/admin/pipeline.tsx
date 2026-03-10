@@ -882,7 +882,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {chainRunning
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.fullChainBtnText} numberOfLines={1} ellipsizeMode="tail">▶ Run Full Pipeline Now</Text>}
+                : <View style={s.schedulerBtnInner}>
+                    <Ionicons name="play" size={18} color="#fff" />
+                    <Text style={s.fullChainBtnText}>Run Full Pipeline Now</Text>
+                  </View>}
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -1724,7 +1727,7 @@ const s = StyleSheet.create({
   schedulerBtnDisabled: { opacity: 0.6 },
   schedulerBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
   pipelineButtonRow: { flexDirection: 'column', width: '100%', gap: 12, marginTop: 8 },
-  pipelineButtonFlex: { width: '100%', height: 48 },
+  pipelineButtonFlex: { width: '100%', minHeight: 56 },
 
   miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
   miniItem: { alignItems: 'center', flex: 1 },
