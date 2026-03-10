@@ -1,0 +1,53 @@
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  deploy-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'yarn'
+          cache-dependency-path: frontend/yarn.lock
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: yarn install --frozen-lockfile
+
+      - name: Build Expo web (static)
+        working-directory: frontend
+        env:
+          EXPO_PUBLIC_BACKEND_URL: ''
+        run: npx expo export -p web --output-dir dist
+
+      - name: Deploy preview to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: frontend/dist
+          destination_dir: pr-${{ github.event.pull_request.number }}
+          keep_files: true
+
+      - name: Comment preview URL on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: pr-preview
+          message: |
+            ## 🔍 UI Preview
+
+            Visual preview of this PR is available here:
+
+            **👉 https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/pr-${{ github.event.pull_request.number }}/**
+
+            _(automatically updates on every push to this branch)_
