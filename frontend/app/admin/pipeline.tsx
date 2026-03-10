@@ -1720,8 +1720,8 @@ const s = StyleSheet.create({
   schedulerResumeBtn: { backgroundColor: '#22C55E' },
   schedulerBtnDisabled: { opacity: 0.6 },
   schedulerBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  pipelineButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
-  pipelineButtonFlex: { flex: 1, minWidth: 0 },
+  pipelineButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8, width: '100%', flexWrap: 'nowrap' },
+  pipelineButtonFlex: { flexBasis: 0, flexGrow: 1, flexShrink: 1, minWidth: 0, height: 34 },
 
   miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
   miniItem: { alignItems: 'center', flex: 1 },
