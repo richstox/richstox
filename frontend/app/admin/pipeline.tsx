@@ -882,7 +882,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {chainRunning
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.fullChainBtnText} numberOfLines={1} adjustsFontSizeToFit>▶ Run Pipeline</Text>}
+                : <Text style={s.fullChainBtnText} numberOfLines={1} ellipsizeMode="tail">▶ Run Full Pipeline Now</Text>}
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -896,7 +896,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {schedulerUpdating
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.schedulerBtnText} numberOfLines={1} adjustsFontSizeToFit>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
+                : <Text style={s.schedulerBtnText} numberOfLines={1} ellipsizeMode="tail">{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
             </TouchableOpacity>
           </View>
           <Text style={s.schedulerStatusText}>
