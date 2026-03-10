@@ -873,15 +873,35 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               </TouchableOpacity>
             </View>
           </View>
-          <TouchableOpacity
-            style={[s.fullChainBtn, isRunDisabled && s.runBtnDisabled, { marginTop: 8, alignSelf: 'flex-start' }]}
-            onPress={handleRunFullPipeline}
-            disabled={isRunDisabled}
-          >
-            {chainRunning
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
-          </TouchableOpacity>
+          {/* ── Button row: Run + Scheduler side-by-side ── */}
+          <View style={s.pipelineButtonRow}>
+            <TouchableOpacity
+              style={[s.fullChainBtn, s.pipelineButtonFlex, isRunDisabled && s.runBtnDisabled]}
+              onPress={handleRunFullPipeline}
+              disabled={isRunDisabled}
+            >
+              {chainRunning
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                s.schedulerBtn,
+                s.pipelineButtonFlex,
+                schedulerActive ? s.schedulerPauseBtn : s.schedulerResumeBtn,
+                (schedulerUpdating || typeof schedulerActive !== 'boolean') && s.schedulerBtnDisabled,
+              ]}
+              onPress={handleSchedulerToggle}
+              disabled={schedulerUpdating || typeof schedulerActive !== 'boolean'}
+            >
+              {schedulerUpdating
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={s.schedulerBtnText}>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
+            </TouchableOpacity>
+          </View>
+          <Text style={s.schedulerStatusText}>
+            Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
+          </Text>
           {chainRunId && chainStatus === 'completed' && (
             <TouchableOpacity
               style={[s.fullChainDownloadBtn, { marginTop: 8, alignSelf: 'flex-start' }]}
@@ -907,24 +927,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           )}
         </View>
 
-        <View style={s.schedulerControlRow}>
-          <Text style={s.schedulerControlText}>
-            Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
-          </Text>
-          <TouchableOpacity
-            style={[
-              s.schedulerBtn,
-              schedulerActive ? s.schedulerPauseBtn : s.schedulerResumeBtn,
-              (schedulerUpdating || typeof schedulerActive !== 'boolean') && s.schedulerBtnDisabled,
-            ]}
-            onPress={handleSchedulerToggle}
-            disabled={schedulerUpdating || typeof schedulerActive !== 'boolean'}
-          >
-            {schedulerUpdating
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={s.schedulerBtnText}>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
-          </TouchableOpacity>
-        </View>
         {/* Mini funnel summary */}
         <View style={s.miniSummary}>
           <View style={s.miniItem}>
@@ -1711,13 +1713,15 @@ const s = StyleSheet.create({
   progressBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 6 },
   progressFill: { height: 6, borderRadius: 3 },
   healthSub: { fontSize: 11, color: COLORS.textMuted, marginBottom: 10 },
-  schedulerControlRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 12, marginTop: 14, marginBottom: 10 },
   schedulerControlText: { fontSize: 11, color: COLORS.textMuted },
-  schedulerBtn: { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 7, minWidth: 140, alignItems: 'center' },
+  schedulerStatusText: { fontSize: 11, color: COLORS.textMuted, marginTop: 4 },
+  schedulerBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   schedulerPauseBtn: { backgroundColor: '#EF4444' },
   schedulerResumeBtn: { backgroundColor: '#22C55E' },
   schedulerBtnDisabled: { opacity: 0.6 },
   schedulerBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
+  pipelineButtonRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  pipelineButtonFlex: { flex: 1 },
 
   miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
   miniItem: { alignItems: 'center', flex: 1 },
