@@ -1711,7 +1711,7 @@ const s = StyleSheet.create({
   progressBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 6 },
   progressFill: { height: 6, borderRadius: 3 },
   healthSub: { fontSize: 11, color: COLORS.textMuted, marginBottom: 10 },
-  schedulerControlRow: { marginBottom: 10, gap: 8 },
+  schedulerControlRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: COLORS.border, paddingTop: 12, marginTop: 14, marginBottom: 10 },
   schedulerControlText: { fontSize: 11, color: COLORS.textMuted },
   schedulerBtn: { alignSelf: 'flex-start', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 7, minWidth: 140, alignItems: 'center' },
   schedulerPauseBtn: { backgroundColor: '#EF4444' },
