@@ -1,5 +1,32 @@
 # AGENTS.md
 
+## GitHub Copilot Coding Agent — How This System Works
+
+GitHub Copilot Coding Agent is **stateless and session-scoped**.
+Each session is tied to exactly **one GitHub issue** → **one PR** → session ends on merge.
+
+**This is by design, not a bug.**
+
+### Workflow (every task)
+1. Richard creates a GitHub issue describing the task
+2. GitHub Copilot Coding Agent is assigned to that issue
+3. Agent creates a branch, reads this file + TASKS.md + PROJECT_STATE.md for context
+4. Agent proposes changes → Richard approves with `GO (commit+push)` → Agent implements
+5. Richard reviews and merges the PR → session ends automatically
+6. For the next task → repeat from step 1
+
+### Why a new agent is needed for each task
+Every Copilot Coding Agent session starts fresh (no memory of previous sessions).
+Context is preserved between sessions via:
+- This file (`AGENTS.md`) — hard rules and architecture
+- `TASKS.md` — task registry (must be updated after each completed task)
+- `PROJECT_STATE.md` — canonical product decisions
+- `memory/` — technical documentation
+
+**Always read these files at the start of every session.**
+
+---
+
 ## HARD RULES — RICHSTOX PIPELINE GOVERNANCE (2026-03-09)
 
 These rules are non-negotiable and override any earlier or implicit guidance.
