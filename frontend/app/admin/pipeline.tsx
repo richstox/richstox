@@ -7,6 +7,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   RefreshControl, ActivityIndicator, Alert, Linking, Platform, TextInput,
+  useWindowDimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
@@ -174,6 +175,8 @@ function safeCount(v: any): number {
 }
 
 export default function PipelineTab({ sessionToken }: PipelineProps) {
+  const { width: screenWidth } = useWindowDimensions();
+  const isMobile = screenWidth < 500;
   const [data, setData] = useState<OverviewData | null>(null);
   const [exclusionReport, setExclusionReport] = useState<PipelineExclusionReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -882,7 +885,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {chainRunning
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.fullChainBtnText} numberOfLines={1} adjustsFontSizeToFit>▶ Run Pipeline</Text>}
+                : <Text style={s.fullChainBtnText} numberOfLines={1} adjustsFontSizeToFit>{isMobile ? '▶ Run Pipeline' : '▶ Run Full Pipeline Now'}</Text>}
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -896,7 +899,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {schedulerUpdating
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.schedulerBtnText} numberOfLines={1} adjustsFontSizeToFit>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
+                : <Text style={s.schedulerBtnText} numberOfLines={1} adjustsFontSizeToFit>{schedulerActive ? (isMobile ? 'Pause' : 'Pause Scheduler') : (isMobile ? 'Resume' : 'Resume Scheduler')}</Text>}
             </TouchableOpacity>
           </View>
           <Text style={s.schedulerStatusText}>
@@ -1720,7 +1723,7 @@ const s = StyleSheet.create({
   schedulerResumeBtn: { backgroundColor: '#22C55E' },
   schedulerBtnDisabled: { opacity: 0.6 },
   schedulerBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  pipelineButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  pipelineButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8 },
   pipelineButtonFlex: { flex: 1, minWidth: 0 },
 
   miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
