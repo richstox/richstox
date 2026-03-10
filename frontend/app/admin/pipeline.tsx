@@ -905,6 +905,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>}
             </TouchableOpacity>
           </View>
+          <Text style={s.schedulerStatusText}>
+            Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
+          </Text>
           {chainRunId && chainStatus === 'completed' && (
             <TouchableOpacity
               style={[s.fullChainDownloadBtn, { marginTop: 8, alignSelf: 'flex-start' }]}
