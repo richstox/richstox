@@ -882,7 +882,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {chainRunning
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
+                : <Text style={s.fullChainBtnText} numberOfLines={1} adjustsFontSizeToFit>▶ Run Pipeline</Text>}
             </TouchableOpacity>
             <TouchableOpacity
               style={[
@@ -896,7 +896,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             >
               {schedulerUpdating
                 ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={s.schedulerBtnText}>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
+                : <Text style={s.schedulerBtnText} numberOfLines={1} adjustsFontSizeToFit>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
             </TouchableOpacity>
           </View>
           <Text style={s.schedulerStatusText}>
@@ -1715,13 +1715,13 @@ const s = StyleSheet.create({
   healthSub: { fontSize: 11, color: COLORS.textMuted, marginBottom: 10 },
   schedulerControlText: { fontSize: 11, color: COLORS.textMuted },
   schedulerStatusText: { fontSize: 11, color: COLORS.textMuted, marginTop: 4 },
-  schedulerBtn: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
+  schedulerBtn: { paddingHorizontal: 12, paddingVertical: 0, height: 34, borderRadius: 7, alignItems: 'center', justifyContent: 'center' },
   schedulerPauseBtn: { backgroundColor: '#EF4444' },
   schedulerResumeBtn: { backgroundColor: '#22C55E' },
   schedulerBtnDisabled: { opacity: 0.6 },
   schedulerBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  pipelineButtonRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
-  pipelineButtonFlex: { flex: 1 },
+  pipelineButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  pipelineButtonFlex: { flex: 1, minWidth: 0 },
 
   miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
   miniItem: { alignItems: 'center', flex: 1 },
@@ -1882,7 +1882,7 @@ const s = StyleSheet.create({
   exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#6366F111', borderWidth: 1, borderColor: '#6366F144', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   exportBtnText: { fontSize: 11, color: '#6366F1', fontWeight: '600' },
 
-  fullChainBtn: { backgroundColor: '#6366F1', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
+  fullChainBtn: { backgroundColor: '#6366F1', paddingHorizontal: 12, paddingVertical: 0, height: 34, borderRadius: 6, alignItems: 'center', justifyContent: 'center' },
   fullChainBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
   fullChainDownloadBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#22C55E', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 6 },
   fullChainDownloadBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
