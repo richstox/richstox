@@ -873,7 +873,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               </TouchableOpacity>
             </View>
           </View>
-          {/* ── Button row: Run + Scheduler side-by-side ── */}
+          {/* ── Button stack: Run + Scheduler vertical ── */}
           <View style={s.pipelineButtonRow}>
             <TouchableOpacity
               style={[s.fullChainBtn, s.pipelineButtonFlex, isRunDisabled && s.runBtnDisabled]}
@@ -1720,8 +1720,8 @@ const s = StyleSheet.create({
   schedulerResumeBtn: { backgroundColor: '#22C55E' },
   schedulerBtnDisabled: { opacity: 0.6 },
   schedulerBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
-  pipelineButtonRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 8, width: '100%', flexWrap: 'nowrap' },
-  pipelineButtonFlex: { flexBasis: 0, flexGrow: 1, flexShrink: 1, minWidth: 0, height: 34 },
+  pipelineButtonRow: { flexDirection: 'column', width: '100%', gap: 10, marginTop: 8 },
+  pipelineButtonFlex: { width: '100%', height: 44 },
 
   miniSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
   miniItem: { alignItems: 'center', flex: 1 },
