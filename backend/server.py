@@ -7669,15 +7669,6 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     }},
                 )
                 chain_failed_step = 2
-                await db.pipeline_chain_runs.update_one(
-                    {"chain_run_id": chain_id},
-                    {"$set": {
-                        "status": "failed",
-                        "error": str(_s2_exc),
-                        "failed_step": chain_failed_step,
-                        "step_run_ids": step_run_ids,
-                    }},
-                )
                 raise  # re-raise so the outer except marks chain as failed
             s2_run_id: Optional[str] = s2_result.get("exclusion_report_run_id")
             step_run_ids["step2"] = s2_run_id
