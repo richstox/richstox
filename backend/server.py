@@ -7531,6 +7531,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         }
         chain_status = "completed"
         chain_error: Optional[str] = None
+        chain_failed_step: Optional[int] = None
 
         async def _cancelled() -> bool:
             _d = await db.pipeline_chain_runs.find_one(
@@ -7665,6 +7666,16 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                         "error": str(_s2_exc),
                     }},
                 )
+                chain_failed_step = 2
+                await db.pipeline_chain_runs.update_one(
+                    {"chain_run_id": chain_id},
+                    {"$set": {
+                        "status": "failed",
+                        "error": str(_s2_exc),
+                        "failed_step": 2,
+                        "step_run_ids": step_run_ids,
+                    }},
+                )
                 raise  # re-raise so the outer except marks chain as failed
             s2_run_id: Optional[str] = s2_result.get("exclusion_report_run_id")
             step_run_ids["step2"] = s2_run_id
@@ -7676,7 +7687,18 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
 
             # Chain robustness: verify Step 2 produced a usable run_id.
             if not s2_run_id:
-                raise RuntimeError("Step 2 run record not found (exclusion_report_run_id missing)")
+                _s2_missing_err = "Step 2 run record not found (exclusion_report_run_id missing)"
+                chain_failed_step = 2
+                await db.pipeline_chain_runs.update_one(
+                    {"chain_run_id": chain_id},
+                    {"$set": {
+                        "status": "failed",
+                        "error": _s2_missing_err,
+                        "failed_step": 2,
+                        "step_run_ids": step_run_ids,
+                    }},
+                )
+                raise RuntimeError(_s2_missing_err)
 
             if await _cancelled():
                 chain_status = "cancelled"
@@ -7714,6 +7736,11 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             if chain_status != "cancelled":
                 chain_status = "failed"
             chain_error = str(exc) if chain_status != "cancelled" else None
+            if chain_failed_step is None and chain_status == "failed":
+                chain_failed_step = next(
+                    (i for i, k in enumerate(("step1", "step2", "step3", "step4"), 1) if not step_run_ids.get(k)),
+                    4,
+                )
             if chain_status == "cancelled":
                 logger.info(f"[run-full-now] Chain {chain_id} cancelled by request")
             else:
@@ -7726,6 +7753,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 "finished_at":  datetime.now(timezone.utc),
                 "step_run_ids": step_run_ids,
                 "error":        chain_error,
+                "failed_step":  chain_failed_step,
             }},
         )
         logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")

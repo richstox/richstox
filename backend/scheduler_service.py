@@ -946,6 +946,8 @@ async def run_daily_price_sync(
                 },
             }}
         )
+        if not result.get("exclusion_report_run_id"):
+            raise RuntimeError("exclusion_report_run_id missing after price sync")
         
         logger.info(f"{job_name} completed: {result.get('records_upserted', 0)} records, "
                    f"{result.get('dates_processed', 0)} gap dates processed, "
@@ -973,17 +975,15 @@ async def run_daily_price_sync(
         error_msg = str(e)
         logger.error(f"{job_name} failed: {error_msg}")
 
+        _fail_finished_at = datetime.now(timezone.utc)
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
-            {"$set": {"status": "failed", "finished_at": datetime.now(timezone.utc), "error": error_msg}},
-        )
-        await log_scheduled_job(
-            db,
-            job_name=job_name,
-            status="failed",
-            details={"error": error_msg},
-            started_at=started_at,
-            error=error_msg
+            {"$set": {
+                "status": "failed",
+                "finished_at": _fail_finished_at,
+                "finished_at_prague": _to_prague_iso(_fail_finished_at),
+                "error": error_msg,
+            }},
         )
 
         return {
