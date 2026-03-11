@@ -7671,6 +7671,8 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 chain_failed_step = 2
                 raise  # re-raise so the outer except marks chain as failed
             s2_run_id: Optional[str] = s2_result.get("exclusion_report_run_id")
+            if not s2_run_id:
+                raise RuntimeError("Step 2 run record not found (exclusion_report_run_id missing)")
             step_run_ids["step2"] = s2_run_id
             await db.pipeline_chain_runs.update_one(
                 {"chain_run_id": chain_id},
