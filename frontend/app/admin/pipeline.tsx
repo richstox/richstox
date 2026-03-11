@@ -873,57 +873,62 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               </TouchableOpacity>
             </View>
           </View>
-          <TouchableOpacity
-            style={[s.fullChainBtn, isRunDisabled && s.runBtnDisabled, { marginTop: 8, alignSelf: 'flex-start' }]}
-            onPress={handleRunFullPipeline}
-            disabled={isRunDisabled}
-          >
-            {chainRunning
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={s.fullChainBtnText}>▶ Run Full Pipeline Now</Text>}
-          </TouchableOpacity>
-          {chainRunId && chainStatus === 'completed' && (
-            <TouchableOpacity
-              style={[s.fullChainDownloadBtn, { marginTop: 8, alignSelf: 'flex-start' }]}
-              onPress={handleDownloadFullCsv}
-            >
-              <Ionicons name="download-outline" size={13} color="#fff" />
-              <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
-            </TouchableOpacity>
-          )}
-          {chainStatus && chainStatus !== 'starting' && (
-            <Text style={[
-              s.fullChainStatus,
-              chainStatus === 'completed' ? { color: '#22C55E' }
-              : isChainFailed ? { color: '#EF4444' }
-              : { color: '#F59E0B' },
-            ]}>
-              {chainStatus === 'completed'
-                ? `Done — chain_run_id: ${chainRunId}`
-                : isChainFailed
-                ? 'Failed — check logs'
-                : `Running… (${chainStatus})`}
-            </Text>
-          )}
-        </View>
+          <View style={{ flexDirection: 'column', width: '100%', marginTop: 8 }}>
+  <TouchableOpacity
+    style={[s.fullChainBtn, { width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center' }, isRunDisabled && s.runBtnDisabled]}
+    onPress={handleRunFullPipeline}
+    disabled={isRunDisabled}
+  >
+    {chainRunning
+      ? <ActivityIndicator size="small" color="#fff" />
+      : <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>▶ Run Full Pipeline Now</Text>}
+  </TouchableOpacity>
 
-        <View style={s.schedulerControlRow}>
-          <Text style={s.schedulerControlText}>
-            Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
-          </Text>
-          <TouchableOpacity
-            style={[
-              s.schedulerBtn,
-              schedulerActive ? s.schedulerPauseBtn : s.schedulerResumeBtn,
-              (schedulerUpdating || typeof schedulerActive !== 'boolean') && s.schedulerBtnDisabled,
-            ]}
-            onPress={handleSchedulerToggle}
-            disabled={schedulerUpdating || typeof schedulerActive !== 'boolean'}
-          >
-            {schedulerUpdating
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={s.schedulerBtnText}>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
-          </TouchableOpacity>
+  <TouchableOpacity
+    style={[
+      s.schedulerBtn,
+      { width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center', marginTop: 12, alignSelf: 'stretch' },
+      schedulerActive ? s.schedulerPauseBtn : s.schedulerResumeBtn,
+      (schedulerUpdating || typeof schedulerActive !== 'boolean') && s.schedulerBtnDisabled,
+    ]}
+    onPress={handleSchedulerToggle}
+    disabled={schedulerUpdating || typeof schedulerActive !== 'boolean'}
+  >
+    {schedulerUpdating
+      ? <ActivityIndicator size="small" color="#fff" />
+      : <Text style={[s.schedulerBtnText, { fontSize: 14 }]} numberOfLines={1}>{schedulerActive ? 'Pause Scheduler' : 'Resume Scheduler'}</Text>}
+  </TouchableOpacity>
+
+  <Text style={[s.schedulerControlText, { marginTop: 8 }]}>
+    Scheduler is currently {schedulerActive ? 'active' : 'paused'}.
+  </Text>
+
+  {chainRunId && chainStatus === 'completed' && (
+    <TouchableOpacity
+      style={[s.fullChainDownloadBtn, { marginTop: 12, width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center' }]}
+      onPress={handleDownloadFullCsv}
+    >
+      <Ionicons name="download-outline" size={13} color="#fff" />
+      <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
+    </TouchableOpacity>
+  )}
+
+  {chainStatus && chainStatus !== 'starting' && (
+    <Text style={[
+      s.fullChainStatus,
+      chainStatus === 'completed' ? { color: '#22C55E' }
+      : isChainFailed ? { color: '#EF4444' }
+      : { color: '#F59E0B' },
+      { marginTop: 6 },
+    ]}>
+      {chainStatus === 'completed'
+        ? `Done — chain_run_id: ${chainRunId}`
+        : isChainFailed
+        ? 'Failed — check logs'
+        : `Running… (${chainStatus})`}
+    </Text>
+  )}
+</View>
         </View>
         {/* Mini funnel summary */}
         <View style={s.miniSummary}>
