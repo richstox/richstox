@@ -908,6 +908,16 @@ async def run_daily_price_sync(
             )
         )
         if not result.get("exclusion_report_run_id"):
+            _missing_run_id_fail_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {
+                    "status": "failed",
+                    "finished_at": _missing_run_id_fail_at,
+                    "finished_at_prague": _to_prague_iso(_missing_run_id_fail_at),
+                    "error": "Step 2 price sync result missing required exclusion_report_run_id field",
+                }},
+            )
             raise RuntimeError(
                 "Step 2 price sync result missing required exclusion_report_run_id field"
             )
