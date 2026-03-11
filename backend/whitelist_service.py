@@ -93,6 +93,10 @@ EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 SUPPORTED_EXCHANGES = ["NYSE", "NASDAQ"]
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP1_REPORT_STEP = "Step 1 - Universe Seed"
+# Prefix for step-1 exclusion reasons that mark cross-exchange duplicate raw
+# rows.  Used in whitelist_service (writer) and server.py (reader) to identify
+# duplicate exclusions belonging to subsequent occurrences, not the first.
+DUPLICATE_REASON_PREFIX = "Duplicate (first at"
 
 # Filter criteria for whitelist candidates
 WHITELIST_FILTERS = {
@@ -549,7 +553,7 @@ async def sync_ticker_whitelist(
                     "ticker":   f"{_rcode}.US",
                     "name":     (_rsym.get("Name") or "").strip() or "(unknown)",
                     "step":     STEP1_REPORT_STEP,
-                    "reason":   f"Duplicate (first at global_raw_row_id={_first_gid})",
+                    "reason":   f"{DUPLICATE_REASON_PREFIX} global_raw_row_id={_first_gid})",
                     "exchange": _rrow["exchange"],
                 })
                 # Remove from all_candidates if it somehow got seeded via

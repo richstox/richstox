@@ -558,6 +558,78 @@ async def _get_missed_trading_dates(db, today_str: str, max_lookback_days: int =
     return missed
 
 
+async def _remediate_price_redownload(
+    db,
+    tickers_us: List[str],
+    now: datetime,
+) -> Dict[str, Any]:
+    """
+    Execute scoped full price history re-download for split/dividend flagged tickers.
+
+    Uses the same fetch-and-upsert logic as backfill_prices_full_history but
+    scoped to the supplied tickers only.  After a successful re-download the
+    `needs_price_redownload` flag is cleared on the ticker document.
+
+    Idempotent: re-running for the same tickers is safe (upsert on ticker+date).
+
+    Returns:
+        {"succeeded": int, "failed": int, "tickers_processed": int}
+    """
+    from price_ingestion_service import backfill_ticker_prices
+
+    succeeded = 0
+    failed = 0
+    unique_tickers = list(dict.fromkeys(t for t in tickers_us if t))
+
+    for ticker_us in unique_tickers:
+        try:
+            result = await backfill_ticker_prices(db, ticker_us)
+            if result.get("success"):
+                records_upserted = result.get("records_upserted", 0)
+                if records_upserted > 0:
+                    # Full history re-downloaded and persisted — clear the retry
+                    # flag and mark history complete.
+                    succeeded += 1
+                    await db.tracked_tickers.update_one(
+                        {"ticker": ticker_us},
+                        {"$set": {
+                            "needs_price_redownload": False,
+                            "price_history_complete": True,
+                            "price_history_status": "complete",
+                            "updated_at": now,
+                        }},
+                    )
+                else:
+                    # success=True but records_upserted==0: fetch_eod_history
+                    # returned an empty list.  This can happen for a legitimately
+                    # suspended/delisted ticker BUT ALSO for transient errors
+                    # (network, rate-limit) because fetch_eod_history swallows
+                    # exceptions and returns [].  We cannot distinguish the two
+                    # cases here, so we leave needs_price_redownload=True so the
+                    # next scheduled run retries.
+                    failed += 1
+                    logger.warning(
+                        f"_remediate_price_redownload: {ticker_us} returned "
+                        f"success=True but records_upserted=0 — leaving "
+                        f"needs_price_redownload=True for retry"
+                    )
+            else:
+                failed += 1
+                logger.warning(
+                    f"_remediate_price_redownload: {ticker_us} backfill returned "
+                    f"success=False — {result.get('error') or result.get('message')}"
+                )
+        except Exception as exc:
+            failed += 1
+            logger.error(f"_remediate_price_redownload: {ticker_us} failed — {exc}")
+
+    return {
+        "succeeded": succeeded,
+        "failed": failed,
+        "tickers_processed": len(unique_tickers),
+    }
+
+
 async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
     """
     Execute Step 2 sub-steps with REAL EODHD API calls.
@@ -565,11 +637,13 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
     2.4: bulk dividends → needs_fundamentals_refresh
     2.6: earnings calendar (full missed range) → needs_fundamentals_refresh
 
+    After all detectors run, tickers flagged by 2.2/2.4 (needs_price_redownload)
+    are immediately remediated via a scoped full price history re-download
+    (_remediate_price_redownload).  Earnings-only tickers (2.6) are handled by
+    Step 3 fundamentals refresh via the fundamentals_events queue.
+
     GAP DETECTION: If Step 2 missed multiple days, iterates through all missed
     trading dates for splits and dividends. Earnings uses a date range call.
-
-    STRICT RULE: This step ONLY sets flags. No data deletion. No price flushing.
-    The Backfill job handles DELETE → FETCH → INSERT atomically.
     """
     today_str = datetime.now(PRAGUE_TZ).strftime("%Y-%m-%d")
     now = datetime.now(timezone.utc)
@@ -648,6 +722,7 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
 
     # Still enqueue to fundamentals_events collection for Step 3 (backwards compat)
     all_flagged: List[str] = []
+    price_redownload_tickers: List[str] = []  # split + dividend tickers needing full price refresh
     for result, event_type, step in [
         (split, "split_detected", "2.2"),
         (dividend, "dividend_detected", "2.4"),
@@ -664,6 +739,38 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
                 detector_step=step,
             )
             all_flagged.extend(tickers)
+            # Split and dividend detectors set needs_price_redownload=True.
+            # Collect unique tickers for immediate scoped price re-download.
+            if step in ("2.2", "2.4"):
+                price_redownload_tickers.extend(tickers)
+
+    # Deduplicate price_redownload_tickers (split + dividend may overlap).
+    price_redownload_tickers = list(dict.fromkeys(price_redownload_tickers))
+
+    # B) Auto-remediation: execute scoped full price history re-download for
+    # tickers flagged by split/dividend detectors.  Uses the same logic as
+    # backfill_prices_full_history but scoped to flagged tickers only.
+    # Earnings-only tickers are handled by Step 3 fundamentals refresh.
+    remediation_stats = {
+        "price_redownload_triggered": len(price_redownload_tickers),
+        "price_redownload_succeeded": 0,
+        "price_redownload_failed": 0,
+    }
+    if price_redownload_tickers:
+        await _p(
+            f"2.7 Remediating {len(price_redownload_tickers)} split/dividend ticker(s): "
+            "full price history re-download…"
+        )
+        redownload_result = await _remediate_price_redownload(
+            db, price_redownload_tickers, now
+        )
+        remediation_stats["price_redownload_succeeded"] = redownload_result.get("succeeded", 0)
+        remediation_stats["price_redownload_failed"] = redownload_result.get("failed", 0)
+        logger.info(
+            f"Step 2 price remediation: {remediation_stats['price_redownload_succeeded']} "
+            f"succeeded, {remediation_stats['price_redownload_failed']} failed "
+            f"out of {len(price_redownload_tickers)} tickers"
+        )
 
     return {
         "step_2_2_split": {
@@ -695,6 +802,7 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
             + dividend.get("flagged_count", 0)
             + earnings.get("flagged_count", 0)
         ),
+        "remediation": remediation_stats,
         "today": today_str,
     }
 
