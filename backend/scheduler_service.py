@@ -992,7 +992,11 @@ async def run_daily_price_sync(
             "job_name": job_name,
             "status": "failed",
             "error": error_msg,
+            "exclusion_report_run_id": None,
+            "records_upserted": 0,
+            "dates_processed": 0,
             "started_at": started_at.isoformat(),
+            "finished_at": _fail_finished_at.isoformat(),
         }
 
 
