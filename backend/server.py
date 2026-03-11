@@ -7688,31 +7688,6 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             logger.info(f"[run-full-now] Step 2 done: {s2_run_id}")
             last_completed_step = 2
 
-            # Chain robustness: verify Step 2 produced a usable run_id.
-            if not s2_run_id:
-                _s2_missing_err = "Step 2 run record not found (exclusion_report_run_id missing)"
-                chain_failed_step = 2
-                _s2_fail_at = datetime.now(timezone.utc)
-                await db.ops_job_runs.update_one(
-                    {"_id": _s2_run_doc_id},
-                    {"$set": {
-                        "status": "failed",
-                        "finished_at": _s2_fail_at,
-                        "finished_at_prague": _sched_to_prague_iso(_s2_fail_at),
-                        "error": _s2_missing_err,
-                    }},
-                )
-                await db.pipeline_chain_runs.update_one(
-                    {"chain_run_id": chain_id},
-                    {"$set": {
-                        "status": "failed",
-                        "error": _s2_missing_err,
-                        "failed_step": chain_failed_step,
-                        "step_run_ids": step_run_ids,
-                    }},
-                )
-                raise RuntimeError(_s2_missing_err)
-
             if await _cancelled():
                 chain_status = "cancelled"
                 raise Exception("cancelled")
@@ -7751,7 +7726,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 chain_status = "failed"
             chain_error = str(exc) if chain_status != "cancelled" else None
             if chain_failed_step is None and chain_status == "failed":
-                # Fallback inference for unexpected failures not caught above.
+                # Fallback inference for unexpected failures not caught above (best-effort attribution).
                 if last_completed_step == 0:
                     chain_failed_step = 1
                 elif last_completed_step < 4:
