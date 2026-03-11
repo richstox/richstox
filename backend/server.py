@@ -7757,8 +7757,9 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 elif last_completed_step < 4:
                     chain_failed_step = last_completed_step + 1
                 else:
-                    chain_failed_step = 4
-                    logger.warning(f"[run-full-now] Chain {chain_id} failed without identifiable step")
+                    chain_failed_step = None
+                    logger.warning(
+                        f"[run-full-now] Chain {chain_id} failed after completing all steps (post-run failure)")
             if chain_status == "cancelled":
                 logger.info(f"[run-full-now] Chain {chain_id} cancelled by request")
             else:
