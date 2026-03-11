@@ -7555,7 +7555,23 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 "details": {"chain_run_id": chain_id},
             })).inserted_id
             try:
-                s1_result = await sync_ticker_whitelist(db, dry_run=False, job_run_id=job_id_s1)
+                # Progress callback: update the sentinel live so UI polls show
+                # "processed / total" tickers without waiting for Step 1 to finish.
+                async def _s1_progress(processed: int, total: int) -> None:
+                    await db.ops_job_runs.update_one(
+                        {"_id": _s1_run_doc_id},
+                        {"$set": {
+                            "progress": f"Step 1: {processed} / {total} tickers seeded",
+                            "progress_processed": processed,
+                            "progress_total": total,
+                            "progress_pct": round(100 * processed / total) if total else 0,
+                        }},
+                    )
+
+                s1_result = await sync_ticker_whitelist(
+                    db, dry_run=False, job_run_id=job_id_s1,
+                    progress_callback=_s1_progress,
+                )
                 s1_finished_at = datetime.now(timezone.utc)
                 s1_run_id: Optional[str] = s1_result.get("raw_run_id") or job_id_s1
                 # Update the sentinel with completed status and full result details.
@@ -7597,14 +7613,59 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             )
             logger.info(f"[run-full-now] Step 1 done: {s1_run_id}")
 
+            # Chain robustness: verify Step 1 run record was persisted in DB.
+            _s1_verify = await db.ops_job_runs.find_one(
+                {"_id": _s1_run_doc_id}, {"_id": 1}
+            )
+            if not _s1_verify:
+                raise RuntimeError(f"Step 1 run record not found (doc_id={_s1_run_doc_id})")
+
             if await _cancelled():
                 chain_status = "cancelled"
                 raise Exception("cancelled")
 
             # ── Step 2 ────────────────────────────────────────────────────────
-            s2_result = await run_daily_price_sync(
-                db, ignore_kill_switch=True, parent_run_id=s1_run_id
-            )
+            s2_started_at = datetime.now(timezone.utc)
+            # Insert admin_manual sentinel before delegating to run_daily_price_sync
+            # so the chain orchestrator owns lifecycle; the function reuses this doc.
+            _s2_run_doc_id = (await db.ops_job_runs.insert_one({
+                "job_name": "price_sync",
+                "status": "running",
+                "source": "admin_manual",
+                "started_at": s2_started_at,
+                "started_at_prague": _sched_to_prague_iso(s2_started_at),
+                "log_timezone": "Europe/Prague",
+                "details": {"chain_run_id": chain_id, "parent_run_id": s1_run_id},
+            })).inserted_id
+            try:
+                s2_result = await run_daily_price_sync(
+                    db, ignore_kill_switch=True, parent_run_id=s1_run_id,
+                    run_doc_id=_s2_run_doc_id,
+                )
+                if s2_result.get("status") == "failed":
+                    raise RuntimeError(
+                        f"Step 2 price_sync failed: {s2_result.get('error', 'unknown error')}"
+                    )
+                s2_finished_at = datetime.now(timezone.utc)
+                await db.ops_job_runs.update_one(
+                    {"_id": _s2_run_doc_id},
+                    {"$set": {
+                        "finished_at_prague": _sched_to_prague_iso(s2_finished_at),
+                        "duration_seconds": (s2_finished_at - s2_started_at).total_seconds(),
+                    }},
+                )
+            except Exception as _s2_exc:
+                _s2_fail_at = datetime.now(timezone.utc)
+                await db.ops_job_runs.update_one(
+                    {"_id": _s2_run_doc_id},
+                    {"$set": {
+                        "status": "failed",
+                        "finished_at": _s2_fail_at,
+                        "finished_at_prague": _sched_to_prague_iso(_s2_fail_at),
+                        "error": str(_s2_exc),
+                    }},
+                )
+                raise  # re-raise so the outer except marks chain as failed
             s2_run_id: Optional[str] = s2_result.get("exclusion_report_run_id")
             step_run_ids["step2"] = s2_run_id
             await db.pipeline_chain_runs.update_one(
@@ -7612,6 +7673,10 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 {"$set": {"step_run_ids.step2": s2_run_id, "status": "step2_done"}},
             )
             logger.info(f"[run-full-now] Step 2 done: {s2_run_id}")
+
+            # Chain robustness: verify Step 2 produced a usable run_id.
+            if not s2_run_id:
+                raise RuntimeError("Step 2 run record not found (exclusion_report_run_id missing)")
 
             if await _cancelled():
                 chain_status = "cancelled"
@@ -7628,6 +7693,11 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             s3_run_id: Optional[str] = s3_result.get("exclusion_report_run_id")
             # Step 4 exclusion_report_run_id is set by the Step 3 auto-chain.
             s4_run_id: Optional[str] = s3_result.get("step4_exclusion_report_run_id")
+
+            # Chain robustness: verify Step 3 produced a usable run_id.
+            if not s3_run_id:
+                raise RuntimeError("Step 3 run record not found (exclusion_report_run_id missing)")
+
             step_run_ids["step3"] = s3_run_id
             step_run_ids["step4"] = s4_run_id
             await db.pipeline_chain_runs.update_one(
