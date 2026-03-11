@@ -907,6 +907,10 @@ async def run_daily_price_sync(
                 now=datetime.now(timezone.utc),
             )
         )
+        if not result.get("exclusion_report_run_id"):
+            raise RuntimeError(
+                "Step 2 price sync result missing required exclusion_report_run_id field"
+            )
         await _progress(
             f"2.1 Done: {price_flag_summary.get('with_price_data', 0)} tickers with price data. "
             "Running 2.2 Split detector (EODHD API)…"
@@ -946,8 +950,6 @@ async def run_daily_price_sync(
                 },
             }}
         )
-        if not result.get("exclusion_report_run_id"):
-            raise RuntimeError("exclusion_report_run_id missing after Step 2 exclusion report generation")
         
         logger.info(f"{job_name} completed: {result.get('records_upserted', 0)} records, "
                    f"{result.get('dates_processed', 0)} gap dates processed, "

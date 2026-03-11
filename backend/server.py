@@ -7532,6 +7532,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         chain_status = "completed"
         chain_error: Optional[str] = None
         chain_failed_step: Optional[int] = None
+        last_completed_step: int = 0
 
         async def _cancelled() -> bool:
             _d = await db.pipeline_chain_runs.find_one(
@@ -7613,6 +7614,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 {"$set": {"step_run_ids.step1": s1_run_id, "status": "step1_done"}},
             )
             logger.info(f"[run-full-now] Step 1 done: {s1_run_id}")
+            last_completed_step = 1
 
             # Chain robustness: verify Step 1 run record was persisted in DB.
             _s1_verify = await db.ops_job_runs.find_one(
@@ -7672,7 +7674,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     {"$set": {
                         "status": "failed",
                         "error": str(_s2_exc),
-                        "failed_step": 2,
+                        "failed_step": chain_failed_step,
                         "step_run_ids": step_run_ids,
                     }},
                 )
@@ -7684,6 +7686,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 {"$set": {"step_run_ids.step2": s2_run_id, "status": "step2_done"}},
             )
             logger.info(f"[run-full-now] Step 2 done: {s2_run_id}")
+            last_completed_step = 2
 
             # Chain robustness: verify Step 2 produced a usable run_id.
             if not s2_run_id:
@@ -7694,7 +7697,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     {"$set": {
                         "status": "failed",
                         "error": _s2_missing_err,
-                        "failed_step": 2,
+                        "failed_step": chain_failed_step,
                         "step_run_ids": step_run_ids,
                     }},
                 )
@@ -7731,16 +7734,21 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 }},
             )
             logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, Step 4: {s4_run_id}")
+            last_completed_step = 4 if s4_run_id else 3
 
         except Exception as exc:
             if chain_status != "cancelled":
                 chain_status = "failed"
             chain_error = str(exc) if chain_status != "cancelled" else None
             if chain_failed_step is None and chain_status == "failed":
-                chain_failed_step = next(
-                    (i for i, k in enumerate(("step1", "step2", "step3", "step4"), 1) if not step_run_ids.get(k)),
-                    None,
-                )
+                # Fallback inference for unexpected failures not caught above.
+                if last_completed_step == 0:
+                    chain_failed_step = 1
+                elif last_completed_step < 4:
+                    chain_failed_step = last_completed_step + 1
+                else:
+                    chain_failed_step = 4
+                    logger.warning(f"[run-full-now] Chain {chain_id} failed without identifiable step")
             if chain_status == "cancelled":
                 logger.info(f"[run-full-now] Chain {chain_id} cancelled by request")
             else:
