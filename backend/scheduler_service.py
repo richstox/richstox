@@ -586,15 +586,21 @@ async def _remediate_price_redownload(
             result = await backfill_ticker_prices(db, ticker_us)
             if result.get("success"):
                 succeeded += 1
-                # Clear the flag after a successful re-download.
+                # Only declare history complete when data was actually fetched.
+                # backfill_ticker_prices returns success=True even for an empty API
+                # response (suspended/delisted ticker or mock-mode) — in that case
+                # records_upserted==0 and we must NOT set price_history_complete=True.
+                has_data = result.get("records_upserted", 0) > 0
+                update_fields: Dict[str, Any] = {
+                    "needs_price_redownload": False,
+                    "updated_at": now,
+                }
+                if has_data:
+                    update_fields["price_history_complete"] = True
+                    update_fields["price_history_status"] = "complete"
                 await db.tracked_tickers.update_one(
                     {"ticker": ticker_us},
-                    {"$set": {
-                        "needs_price_redownload": False,
-                        "price_history_status": "complete",
-                        "price_history_complete": True,
-                        "updated_at": now,
-                    }},
+                    {"$set": update_fields},
                 )
             else:
                 failed += 1
@@ -620,11 +626,13 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
     2.4: bulk dividends → needs_fundamentals_refresh
     2.6: earnings calendar (full missed range) → needs_fundamentals_refresh
 
+    After all detectors run, tickers flagged by 2.2/2.4 (needs_price_redownload)
+    are immediately remediated via a scoped full price history re-download
+    (_remediate_price_redownload).  Earnings-only tickers (2.6) are handled by
+    Step 3 fundamentals refresh via the fundamentals_events queue.
+
     GAP DETECTION: If Step 2 missed multiple days, iterates through all missed
     trading dates for splits and dividends. Earnings uses a date range call.
-
-    STRICT RULE: This step ONLY sets flags. No data deletion. No price flushing.
-    The Backfill job handles DELETE → FETCH → INSERT atomically.
     """
     today_str = datetime.now(PRAGUE_TZ).strftime("%Y-%m-%d")
     now = datetime.now(timezone.utc)
