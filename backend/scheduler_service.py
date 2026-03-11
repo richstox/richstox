@@ -585,23 +585,34 @@ async def _remediate_price_redownload(
         try:
             result = await backfill_ticker_prices(db, ticker_us)
             if result.get("success"):
-                succeeded += 1
-                # Only declare history complete when data was actually fetched.
-                # backfill_ticker_prices returns success=True even for an empty API
-                # response (suspended/delisted ticker or mock-mode) — in that case
-                # records_upserted==0 and we must NOT set price_history_complete=True.
-                has_data = result.get("records_upserted", 0) > 0
-                update_fields: Dict[str, Any] = {
-                    "needs_price_redownload": False,
-                    "updated_at": now,
-                }
-                if has_data:
-                    update_fields["price_history_complete"] = True
-                    update_fields["price_history_status"] = "complete"
-                await db.tracked_tickers.update_one(
-                    {"ticker": ticker_us},
-                    {"$set": update_fields},
-                )
+                records_upserted = result.get("records_upserted", 0)
+                if records_upserted > 0:
+                    # Full history re-downloaded and persisted — clear the retry
+                    # flag and mark history complete.
+                    succeeded += 1
+                    await db.tracked_tickers.update_one(
+                        {"ticker": ticker_us},
+                        {"$set": {
+                            "needs_price_redownload": False,
+                            "price_history_complete": True,
+                            "price_history_status": "complete",
+                            "updated_at": now,
+                        }},
+                    )
+                else:
+                    # success=True but records_upserted==0: fetch_eod_history
+                    # returned an empty list.  This can happen for a legitimately
+                    # suspended/delisted ticker BUT ALSO for transient errors
+                    # (network, rate-limit) because fetch_eod_history swallows
+                    # exceptions and returns [].  We cannot distinguish the two
+                    # cases here, so we leave needs_price_redownload=True so the
+                    # next scheduled run retries.
+                    failed += 1
+                    logger.warning(
+                        f"_remediate_price_redownload: {ticker_us} returned "
+                        f"success=True but records_upserted=0 — leaving "
+                        f"needs_price_redownload=True for retry"
+                    )
             else:
                 failed += 1
                 logger.warning(
