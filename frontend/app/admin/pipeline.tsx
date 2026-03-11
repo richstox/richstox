@@ -203,6 +203,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [chainRunId, setChainRunId] = useState<string | null>(null);
   const [chainStatus, setChainStatus] = useState<string | null>(null);
   const [chainRunning, setChainRunning] = useState(false);
+  const [chainCurrentStep, setChainCurrentStep] = useState<number | null>(null);
+  const [chainStepsDone, setChainStepsDone] = useState<number[]>([]);
   const chainPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Manual / Auto run mode toggle ─────────────────────────────────────────
@@ -593,11 +595,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
+  const CHAIN_STEP_NAMES: Record<number, string> = {
+    1: 'Universe Seed',
+    2: 'Price Sync',
+    3: 'Fundamentals Sync',
+    4: 'Visible Universe',
+  };
+
   const handleRunFullPipeline = async () => {
     if (chainRunning) return;
     setChainRunning(true);
     setChainStatus('starting');
     setChainRunId(null);
+    setChainCurrentStep(null);
+    setChainStepsDone([]);
     try {
       const res = await authenticatedFetch(
         `${API_URL}/api/admin/pipeline/run-full-now`,
@@ -609,7 +620,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       const cid: string = data.chain_run_id;
       setChainRunId(cid);
       setChainStatus('running');
-      // Poll chain status every 5 s until completed/failed.
+      setChainCurrentStep(1);
+      // Poll chain status every 5 s until completed/failed/cancelled.
       if (chainPollRef.current) clearInterval(chainPollRef.current);
       chainPollRef.current = setInterval(async () => {
         try {
@@ -620,7 +632,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           );
           const sd = await sr.json();
           setChainStatus(sd.status);
-          if (sd.status === 'completed' || sd.status === 'failed') {
+          setChainCurrentStep(sd.current_step ?? null);
+          setChainStepsDone(sd.steps_done ?? []);
+          if (sd.status === 'completed' || sd.status === 'failed' || sd.status === 'cancelled') {
             clearInterval(chainPollRef.current!);
             chainPollRef.current = null;
             setChainRunning(false);
@@ -632,6 +646,24 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainStatus('error');
       setChainRunning(false);
     }
+  };
+
+  const handleStopChain = async () => {
+    if (!chainRunId) return;
+    try {
+      await authenticatedFetch(
+        `${API_URL}/api/admin/pipeline/chain-cancel/${chainRunId}`,
+        { method: 'POST' },
+        sessionToken,
+      );
+    } catch { /* ignore network error — polling will detect cancellation */ }
+    if (chainPollRef.current) {
+      clearInterval(chainPollRef.current);
+      chainPollRef.current = null;
+    }
+    setChainRunning(false);
+    setChainStatus('cancelled');
+    setChainCurrentStep(null);
   };
 
   const handleDownloadFullCsv = () => {
@@ -827,6 +859,17 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const isRunDisabled = runMode === 'AUTO' || chainRunning || !!runningJob;
   const isChainFailed = chainStatus === 'failed' || chainStatus === 'error';
+  const isChainCancelled = chainStatus === 'cancelled';
+
+  // Map job_name → chain step number for icon override.
+  const CHAIN_STEP_FOR_JOB: Record<string, number> = {
+    universe_seed: 1,
+    price_sync: 2,
+    fundamentals_sync: 3,
+    compute_visible_universe: 4,
+  };
+  // Chain icon override is active when a chain is running or just finished.
+  const chainIconActive = chainRunning || chainStatus === 'completed' || isChainFailed || isChainCancelled;
 
   return (
     <ScrollView
@@ -874,15 +917,22 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             </View>
           </View>
           <View style={{ flexDirection: 'column', width: '100%', marginTop: 8 }}>
-  <TouchableOpacity
-    style={[s.fullChainBtn, { width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center' }, isRunDisabled && s.runBtnDisabled]}
-    onPress={handleRunFullPipeline}
-    disabled={isRunDisabled}
-  >
-    {chainRunning
-      ? <ActivityIndicator size="small" color="#fff" />
-      : <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>▶ Run Full Pipeline Now</Text>}
-  </TouchableOpacity>
+  {chainRunning ? (
+    <TouchableOpacity
+      style={[s.fullChainBtn, { width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center', backgroundColor: '#EF4444' }]}
+      onPress={handleStopChain}
+    >
+      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>■ Stop Chain Run</Text>
+    </TouchableOpacity>
+  ) : (
+    <TouchableOpacity
+      style={[s.fullChainBtn, { width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center' }, isRunDisabled && s.runBtnDisabled]}
+      onPress={handleRunFullPipeline}
+      disabled={isRunDisabled}
+    >
+      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>▶ Run Full Pipeline Now</Text>
+    </TouchableOpacity>
+  )}
 
   <TouchableOpacity
     style={[
@@ -918,6 +968,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       s.fullChainStatus,
       chainStatus === 'completed' ? { color: '#22C55E' }
       : isChainFailed ? { color: '#EF4444' }
+      : isChainCancelled ? { color: '#6B7280' }
       : { color: '#F59E0B' },
       { marginTop: 6 },
     ]}>
@@ -925,7 +976,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         ? `Done — chain_run_id: ${chainRunId}`
         : isChainFailed
         ? 'Failed — check logs'
-        : `Running… (${chainStatus})`}
+        : isChainCancelled
+        ? 'Cancelled'
+        : chainCurrentStep !== null
+        ? `Running — Step ${chainCurrentStep}/4 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''})`
+        : 'Running…'}
     </Text>
   )}
 </View>
@@ -965,6 +1020,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const status = run?.status;
         const isExpanded = expandedSteps.has(step.step);
         const isRunning = runningJob === step.job_name;
+
+        // Chain icon override: when a chain run is active, derive icon state from chain progress.
+        const chainStepNum = CHAIN_STEP_FOR_JOB[step.job_name];
+        const chainStepDone = chainIconActive && chainStepNum !== undefined && chainStepsDone.includes(chainStepNum);
+        const chainStepRunning = chainRunning && chainStepNum !== undefined && chainCurrentStep === chainStepNum;
+        const chainStepPending = chainRunning && chainStepNum !== undefined && !chainStepDone && !chainStepRunning;
 
         const inCount = step.inputCount;
         const outCount = step.outputCount;
@@ -1011,7 +1072,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <View style={s.stepTitleRow}>
                     <Text style={s.stepNum}>STEP {step.step}</Text>
                     <Text style={s.stepTitle}>{step.title}</Text>
-                    {isRunning ? (
+                    {chainStepRunning ? (
+                      <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
+                    ) : chainStepDone ? (
+                      <Ionicons name="checkmark-circle" size={14} color="#22C55E" style={{ marginLeft: 4 }} />
+                    ) : chainStepPending ? (
+                      <Ionicons name="time-outline" size={14} color={COLORS.textMuted} style={{ marginLeft: 4 }} />
+                    ) : isRunning ? (
                       <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
                     ) : status ? (
                       <Ionicons

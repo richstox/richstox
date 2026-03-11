@@ -7532,6 +7532,12 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         chain_status = "completed"
         chain_error: Optional[str] = None
 
+        async def _cancelled() -> bool:
+            _d = await db.pipeline_chain_runs.find_one(
+                {"chain_run_id": chain_id}, {"cancel_requested": 1}
+            )
+            return bool(_d and _d.get("cancel_requested"))
+
         try:
             import uuid as _uuidc
             # ── Step 1 ────────────────────────────────────────────────────────
@@ -7591,6 +7597,10 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             )
             logger.info(f"[run-full-now] Step 1 done: {s1_run_id}")
 
+            if await _cancelled():
+                chain_status = "cancelled"
+                raise Exception("cancelled")
+
             # ── Step 2 ────────────────────────────────────────────────────────
             s2_result = await run_daily_price_sync(
                 db, ignore_kill_switch=True, parent_run_id=s1_run_id
@@ -7602,6 +7612,10 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 {"$set": {"step_run_ids.step2": s2_run_id, "status": "step2_done"}},
             )
             logger.info(f"[run-full-now] Step 2 done: {s2_run_id}")
+
+            if await _cancelled():
+                chain_status = "cancelled"
+                raise Exception("cancelled")
 
             # ── Step 3 (auto-chains Step 4 internally) ────────────────────────
             s3_result = await run_fundamentals_changes_sync(
@@ -7623,9 +7637,13 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, Step 4: {s4_run_id}")
 
         except Exception as exc:
-            chain_status = "failed"
-            chain_error = str(exc)
-            logger.error(f"[run-full-now] Chain {chain_id} failed: {exc}")
+            if chain_status != "cancelled":
+                chain_status = "failed"
+            chain_error = str(exc) if chain_status != "cancelled" else None
+            if chain_status == "cancelled":
+                logger.info(f"[run-full-now] Chain {chain_id} cancelled by request")
+            else:
+                logger.error(f"[run-full-now] Chain {chain_id} failed: {exc}")
 
         await db.pipeline_chain_runs.update_one(
             {"chain_run_id": chain_id},
@@ -7662,7 +7680,47 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     for k in ("started_at", "finished_at"):
         if isinstance(doc.get(k), datetime):
             doc[k] = doc[k].isoformat()
+    # Derive current_step, steps_done, failed_step for UI live progress.
+    _status = doc.get("status")
+    _srids = doc.get("step_run_ids", {})
+    _steps_done = [i for i, k in enumerate(("step1", "step2", "step3", "step4"), 1) if _srids.get(k)]
+    _current_step: Optional[int] = None
+    _failed_step: Optional[int] = None
+    if _status == "running":
+        _current_step = 1
+    elif _status == "step1_done":
+        _current_step = 2
+    elif _status == "step2_done":
+        _current_step = 3
+    elif _status == "step3_done":
+        _current_step = 4
+    elif _status == "failed":
+        _failed_step = next(
+            (i for i, k in enumerate(("step1", "step2", "step3", "step4"), 1) if not _srids.get(k)),
+            4,
+        )
+    doc["current_step"] = _current_step
+    doc["steps_done"] = _steps_done
+    doc["failed_step"] = _failed_step
     return doc
+
+
+@api_router.post("/admin/pipeline/chain-cancel/{chain_run_id}")
+async def admin_pipeline_chain_cancel(chain_run_id: str):
+    """Request cancellation of a running chain. Auth: AdminAuthMiddleware."""
+    from fastapi import HTTPException as _HEc
+    doc = await db.pipeline_chain_runs.find_one({"chain_run_id": chain_run_id}, {"status": 1})
+    if not doc:
+        raise _HEc(status_code=404, detail=f"chain_run_id not found: {chain_run_id}")
+    _active = {"running", "step1_done", "step2_done", "step3_done"}
+    if doc.get("status") not in _active:
+        raise _HEc(status_code=400, detail=f"Chain is not running (status={doc.get('status')})")
+    await db.pipeline_chain_runs.update_one(
+        {"chain_run_id": chain_run_id},
+        {"$set": {"cancel_requested": True}},
+    )
+    logger.info(f"[chain-cancel] Cancel requested for {chain_run_id}")
+    return {"status": "cancel_requested", "chain_run_id": chain_run_id}
 
 
 @api_router.get("/admin/pipeline/export/full")
