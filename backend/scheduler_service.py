@@ -907,6 +907,13 @@ async def run_daily_price_sync(
                 now=datetime.now(timezone.utc),
             )
         )
+        if not result.get("exclusion_report_run_id"):
+            missing_run_id_msg = (
+                "Step 2 price sync result missing required exclusion_report_run_id field"
+            )
+            raise RuntimeError(
+                missing_run_id_msg
+            )
         await _progress(
             f"2.1 Done: {price_flag_summary.get('with_price_data', 0)} tickers with price data. "
             "Running 2.2 Split detector (EODHD API)…"
@@ -973,24 +980,26 @@ async def run_daily_price_sync(
         error_msg = str(e)
         logger.error(f"{job_name} failed: {error_msg}")
 
+        _fail_finished_at = datetime.now(timezone.utc)
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
-            {"$set": {"status": "failed", "finished_at": datetime.now(timezone.utc), "error": error_msg}},
-        )
-        await log_scheduled_job(
-            db,
-            job_name=job_name,
-            status="failed",
-            details={"error": error_msg},
-            started_at=started_at,
-            error=error_msg
+            {"$set": {
+                "status": "failed",
+                "finished_at": _fail_finished_at,
+                "finished_at_prague": _to_prague_iso(_fail_finished_at),
+                "error": error_msg,
+            }},
         )
 
         return {
             "job_name": job_name,
             "status": "failed",
             "error": error_msg,
+            "exclusion_report_run_id": None,
+            "records_upserted": 0,
+            "dates_processed": 0,
             "started_at": started_at.isoformat(),
+            "finished_at": _fail_finished_at.isoformat(),
         }
 
 
