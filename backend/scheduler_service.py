@@ -900,6 +900,7 @@ async def run_daily_price_sync(
         result["tickers_with_price_data"] = price_flag_summary["with_price_data"]
         result["tickers_without_price_data"] = price_flag_summary["without_price_data"]
         result["matched_price_tickers_raw"] = price_flag_summary.get("matched_price_tickers_raw", 0)
+        missing_run_id_error = "Step 2 price sync result missing required exclusion_report_run_id field"
         result.update(
             await save_price_sync_exclusion_report(
                 db,
@@ -915,11 +916,11 @@ async def run_daily_price_sync(
                     "status": "failed",
                     "finished_at": _missing_run_id_fail_at,
                     "finished_at_prague": _to_prague_iso(_missing_run_id_fail_at),
-                    "error": "Step 2 price sync result missing required exclusion_report_run_id field",
+                    "error": missing_run_id_error,
                 }},
             )
             raise RuntimeError(
-                "Step 2 price sync result missing required exclusion_report_run_id field"
+                missing_run_id_error
             )
         await _progress(
             f"2.1 Done: {price_flag_summary.get('with_price_data', 0)} tickers with price data. "
