@@ -7692,6 +7692,16 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             if not s2_run_id:
                 _s2_missing_err = "Step 2 run record not found (exclusion_report_run_id missing)"
                 chain_failed_step = 2
+                _s2_fail_at = datetime.now(timezone.utc)
+                await db.ops_job_runs.update_one(
+                    {"_id": _s2_run_doc_id},
+                    {"$set": {
+                        "status": "failed",
+                        "finished_at": _s2_fail_at,
+                        "finished_at_prague": _sched_to_prague_iso(_s2_fail_at),
+                        "error": _s2_missing_err,
+                    }},
+                )
                 await db.pipeline_chain_runs.update_one(
                     {"chain_run_id": chain_id},
                     {"$set": {
