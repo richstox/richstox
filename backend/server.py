@@ -4927,6 +4927,7 @@ from scheduler_service import (
     run_fundamentals_changes_sync,
     run_price_backfill_gaps,
     STEP3_QUERY,
+    _to_prague_iso as _sched_to_prague_iso,
 )
 
 @api_router.get("/admin/scheduler/status")
@@ -7534,8 +7535,54 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             import uuid as _uuidc
             # ── Step 1 ────────────────────────────────────────────────────────
             job_id_s1 = f"universe_seed_{_uuidc.uuid4().hex[:8]}"
-            s1_result = await sync_ticker_whitelist(db, dry_run=False, job_run_id=job_id_s1)
-            s1_run_id: Optional[str] = s1_result.get("raw_run_id") or job_id_s1
+            s1_started_at = datetime.now(timezone.utc)
+            # Insert running sentinel so Admin overview shows Step 1 as "running"
+            # with job_name="universe_seed" (matches JOB_REGISTRY and get_job_last_runs).
+            _s1_run_doc_id = (await db.ops_job_runs.insert_one({
+                "job_name": "universe_seed",
+                "status": "running",
+                "source": "admin_manual",
+                "started_at": s1_started_at,
+                "started_at_prague": _sched_to_prague_iso(s1_started_at),
+                "log_timezone": "Europe/Prague",
+                "details": {"chain_run_id": chain_id},
+            })).inserted_id
+            try:
+                s1_result = await sync_ticker_whitelist(db, dry_run=False, job_run_id=job_id_s1)
+                s1_finished_at = datetime.now(timezone.utc)
+                s1_run_id: Optional[str] = s1_result.get("raw_run_id") or job_id_s1
+                # Update the sentinel with completed status and full result details.
+                await db.ops_job_runs.update_one(
+                    {"_id": _s1_run_doc_id},
+                    {"$set": {
+                        "status": "completed",
+                        "finished_at": s1_finished_at,
+                        "finished_at_prague": _sched_to_prague_iso(s1_finished_at),
+                        "duration_seconds": (s1_finished_at - s1_started_at).total_seconds(),
+                        "result": s1_result,
+                        "details": {
+                            "chain_run_id": chain_id,
+                            "exclusion_report_run_id": s1_result.get("raw_run_id"),
+                            "fetched": s1_result.get("fetched"),
+                            "raw_rows_total": s1_result.get("raw_rows_total"),
+                            "seeded_total": s1_result.get("seeded_total"),
+                            "filtered_out_total_step1": s1_result.get("filtered_out_total_step1"),
+                            "fetched_raw_per_exchange": s1_result.get("fetched_raw_per_exchange"),
+                        },
+                    }},
+                )
+            except Exception as _s1_exc:
+                _s1_fail_at = datetime.now(timezone.utc)
+                await db.ops_job_runs.update_one(
+                    {"_id": _s1_run_doc_id},
+                    {"$set": {
+                        "status": "failed",
+                        "finished_at": _s1_fail_at,
+                        "finished_at_prague": _sched_to_prague_iso(_s1_fail_at),
+                        "error": str(_s1_exc),
+                    }},
+                )
+                raise  # re-raise so the outer except marks chain as failed
             step_run_ids["step1"] = s1_run_id
             await db.pipeline_chain_runs.update_one(
                 {"chain_run_id": chain_id},
@@ -7671,7 +7718,13 @@ async def admin_pipeline_export_full(
     writer = _csv2.writer(output, quoting=_csv2.QUOTE_ALL)
     writer.writerow(["ticker", "name", "step", "reason"])
 
-    # Stream Step 1 raw rows in global order — one output row per raw row.
+    # Stream Step 1 raw rows in global order.
+    # One output row per distinct ticker code — cross-exchange duplicates (same
+    # code on both NYSE and NASDAQ) are silently skipped after the first
+    # occurrence so that CSV row count == Admin "raw" count (distinct codes).
+    # The first occurrence's exclusion reason (from pipeline_exclusion_report)
+    # already contains the "Duplicate" annotation for that code, so no
+    # information is lost.
     _seen_codes: Dict[str, int] = {}  # normalised_code -> global_raw_row_id
 
     async for raw_row in db.universe_seed_raw_rows.find(
@@ -7691,18 +7744,25 @@ async def admin_pipeline_export_full(
             continue
 
         if code_norm in _seen_codes:
-            first_gid = _seen_codes[code_norm]
-            writer.writerow([ticker_us, name, _STEP_LABELS["step1"],
-                f"Duplicate (first at global_raw_row_id={first_gid})"])
+            # Cross-exchange duplicate raw row — the first occurrence has already
+            # been written (with the correct "Duplicate" reason from the exclusion
+            # report).  Skip this row to keep CSV row count == distinct code count.
             continue
         _seen_codes[code_norm] = raw_row["global_raw_row_id"]
 
         # Find first step where this ticker was filtered.
+        # For step1, skip "Duplicate (first at…)" entries because those entries
+        # in pipeline_exclusion_report represent subsequent (cross-exchange)
+        # occurrences of the code, not the first occurrence we are outputting now.
         _out_step:   Optional[str] = None
         _out_reason: Optional[str] = None
         for _sk in ("step1", "step2", "step3", "step4"):
             _r = _excl[_sk].get(ticker_us)
             if _r is not None:
+                if _sk == "step1" and isinstance(_r, str) and _r.startswith("Duplicate (first at"):
+                    # This exclusion entry belongs to a subsequent occurrence;
+                    # the first occurrence is not excluded at step1 for this reason.
+                    continue
                 _out_step   = _STEP_LABELS[_sk]
                 _out_reason = _r
                 break
