@@ -7619,8 +7619,12 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
 
             # ── Step 3 (auto-chains Step 4 internally) ────────────────────────
             s3_result = await run_fundamentals_changes_sync(
-                db, ignore_kill_switch=True, parent_run_id=s2_run_id
+                db, ignore_kill_switch=True, parent_run_id=s2_run_id,
+                cancel_check=_cancelled,
             )
+            if s3_result.get("status") == "cancelled":
+                chain_status = "cancelled"
+                raise Exception("cancelled")
             s3_run_id: Optional[str] = s3_result.get("exclusion_report_run_id")
             # Step 4 exclusion_report_run_id is set by the Step 3 auto-chain.
             s4_run_id: Optional[str] = s3_result.get("step4_exclusion_report_run_id")

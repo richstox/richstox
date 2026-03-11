@@ -30,7 +30,7 @@ import os
 import time
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable, Awaitable
 import asyncio
 from zoneinfo import ZoneInfo
 import httpx
@@ -1458,7 +1458,7 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
     return {"deleted": deleted, "eligible_count": len(eligible)}
 
 
-async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None) -> Dict[str, Any]:
+async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None, cancel_check: Optional[Callable[[], Awaitable[bool]]] = None) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
     Processes tickers in parallel (up to 20 concurrent) for speed.
@@ -1661,6 +1661,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     if doc:
                         await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
                         logger.info(f"{job_name}: cancel flag consumed by monitor")
+                        cancel_event.set()
+                        return
+                    if cancel_check and await cancel_check():
+                        logger.info(f"{job_name}: chain cancel detected by monitor")
                         cancel_event.set()
                         return
 
