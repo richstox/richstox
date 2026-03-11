@@ -1973,7 +1973,8 @@ from whitelist_service import (
     get_whitelist_stats,
     search_whitelist,
     is_ticker_in_whitelist,
-    process_fundamentals_events
+    process_fundamentals_events,
+    DUPLICATE_REASON_PREFIX,
 )
 
 from industry_benchmarks_service import (
@@ -7364,7 +7365,7 @@ async def admin_pipeline_export_step(
                     first_gid = _seen_codes[code_norm]
                     writer.writerow([ticker_us, name,
                         _excl.get(ticker_us)
-                        or f"Duplicate (first at global_raw_row_id={first_gid})"])
+                        or f"{DUPLICATE_REASON_PREFIX} global_raw_row_id={first_gid})"])
                     continue
 
                 _seen_codes[code_norm] = row["global_raw_row_id"]
@@ -7759,7 +7760,7 @@ async def admin_pipeline_export_full(
         for _sk in ("step1", "step2", "step3", "step4"):
             _r = _excl[_sk].get(ticker_us)
             if _r is not None:
-                if _sk == "step1" and isinstance(_r, str) and _r.startswith("Duplicate (first at"):
+                if _sk == "step1" and isinstance(_r, str) and _r.startswith(DUPLICATE_REASON_PREFIX):
                     # This exclusion entry belongs to a subsequent occurrence;
                     # the first occurrence is not excluded at step1 for this reason.
                     continue
