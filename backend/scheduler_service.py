@@ -947,7 +947,7 @@ async def run_daily_price_sync(
             }}
         )
         if not result.get("exclusion_report_run_id"):
-            raise RuntimeError("exclusion_report_run_id missing after price sync")
+            raise RuntimeError("exclusion_report_run_id missing after Step 2 exclusion report generation")
         
         logger.info(f"{job_name} completed: {result.get('records_upserted', 0)} records, "
                    f"{result.get('dates_processed', 0)} gap dates processed, "

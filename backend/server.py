@@ -7739,7 +7739,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             if chain_failed_step is None and chain_status == "failed":
                 chain_failed_step = next(
                     (i for i, k in enumerate(("step1", "step2", "step3", "step4"), 1) if not step_run_ids.get(k)),
-                    4,
+                    None,
                 )
             if chain_status == "cancelled":
                 logger.info(f"[run-full-now] Chain {chain_id} cancelled by request")
