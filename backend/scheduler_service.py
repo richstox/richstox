@@ -900,7 +900,6 @@ async def run_daily_price_sync(
         result["tickers_with_price_data"] = price_flag_summary["with_price_data"]
         result["tickers_without_price_data"] = price_flag_summary["without_price_data"]
         result["matched_price_tickers_raw"] = price_flag_summary.get("matched_price_tickers_raw", 0)
-        missing_run_id_msg = "Step 2 price sync result missing required exclusion_report_run_id field"
         result.update(
             await save_price_sync_exclusion_report(
                 db,
@@ -909,6 +908,9 @@ async def run_daily_price_sync(
             )
         )
         if not result.get("exclusion_report_run_id"):
+            missing_run_id_msg = (
+                "Step 2 price sync result missing required exclusion_report_run_id field"
+            )
             raise RuntimeError(
                 missing_run_id_msg
             )

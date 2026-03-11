@@ -7717,7 +7717,8 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 chain_status = "failed"
             chain_error = str(exc) if chain_status != "cancelled" else None
             if chain_failed_step is None and chain_status == "failed":
-                # Fallback inference for unexpected failures not caught above (best effort attribution; Step 2 handler sets failed_step explicitly, others rely on this branch).
+                # Fallback inference for unexpected failures not caught above.
+                # Step 2 handler sets failed_step explicitly; Steps 1/3/4/post-run rely on this branch.
                 if last_completed_step == 0:
                     chain_failed_step = 1
                 elif last_completed_step < 4:
