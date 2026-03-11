@@ -807,7 +807,12 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
     }
 
 
-async def run_daily_price_sync(db, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None) -> Dict[str, Any]:
+async def run_daily_price_sync(
+    db,
+    ignore_kill_switch: bool = False,
+    parent_run_id: Optional[str] = None,
+    run_doc_id: Optional[Any] = None,
+) -> Dict[str, Any]:
     """
     Run daily price sync job with GAP DETECTION AND BULK CATCHUP.
     
@@ -819,6 +824,9 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False, parent_run_
     Config read from ops_config:
     - lookback_days (default: 30)
     - coverage_threshold (default: 0.80)
+
+    run_doc_id: if provided, reuse an externally-inserted ops_job_runs sentinel
+    instead of creating a new one (used by the admin full-pipeline chain).
     """
     from price_ingestion_service import run_daily_bulk_catchup
 
@@ -827,14 +835,18 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False, parent_run_
 
     logger.info(f"Starting {job_name} with gap detection and bulk catchup")
 
-    # Insert "running" sentinel so the frontend poll detects the job started
-    _running_doc_id = (await db.ops_job_runs.insert_one({
-        "job_name": job_name,
-        "status": "running",
-        "started_at": started_at,
-        "source": "scheduler",
-        "details": {"parent_run_id": parent_run_id},
-    })).inserted_id
+    # Use an externally-inserted sentinel (chain orchestrator) or create our own.
+    if run_doc_id is not None:
+        _running_doc_id = run_doc_id
+    else:
+        # Insert "running" sentinel so the frontend poll detects the job started
+        _running_doc_id = (await db.ops_job_runs.insert_one({
+            "job_name": job_name,
+            "status": "running",
+            "started_at": started_at,
+            "source": "scheduler",
+            "details": {"parent_run_id": parent_run_id},
+        })).inserted_id
 
     try:
         # Check kill switch (manual endpoints can explicitly bypass)
@@ -910,7 +922,6 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False, parent_run_
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
             {"$set": {
-                "source": "scheduler",
                 "finished_at": finished_at,
                 "started_at_prague": _to_prague_iso(started_at),
                 "finished_at_prague": _to_prague_iso(finished_at),
@@ -949,6 +960,7 @@ async def run_daily_price_sync(db, ignore_kill_switch: bool = False, parent_run_
             "tickers_without_price_data": result.get("tickers_without_price_data", 0),
             "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
             "exclusion_report_rows": result.get("exclusion_report_rows", 0),
+            "exclusion_report_run_id": result.get("exclusion_report_run_id"),
             "dates_processed": result.get("dates_processed", 0),
             "api_calls": result.get("api_calls", 0),
             "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),

@@ -77,7 +77,7 @@ Pipeline:
 import os
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Awaitable, Callable, List, Dict, Any, Optional, Tuple
 import httpx
 from zoneinfo import ZoneInfo
 
@@ -416,12 +416,17 @@ async def sync_ticker_whitelist(
     dry_run: bool = False,
     exchanges: Optional[List[str]] = None,
     job_run_id: Optional[str] = None,
+    progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """
     Synchronize the tracked_tickers collection with EODHD exchange-symbol-list.
     
     This creates CANDIDATES only. Tickers get status='pending_fundamentals'.
     They become 'active' only after fundamentals are fetched successfully.
+
+    progress_callback: optional async callable(processed: int, total: int).
+        Called every 1000 tickers during the bulk upsert phase so callers can
+        emit live progress to ops_job_runs without blocking the seeding loop.
     """
     exchanges = exchanges or SUPPORTED_EXCHANGES
     now = datetime.now(timezone.utc)
@@ -650,6 +655,9 @@ async def sync_ticker_whitelist(
 
     # Zpracovat v batchích, sbírat indexy nových tickerů přes upserted_ids
     new_ticker_indices = []
+    _progress_total = len(ticker_ops)
+    _progress_processed = 0
+    _last_progress_milestone = 0
     for i in range(0, len(ticker_ops), BATCH_SIZE):
         batch = ticker_ops[i:i + BATCH_SIZE]
         try:
@@ -661,6 +669,15 @@ async def sync_ticker_whitelist(
                 new_ticker_indices.append(i + batch_idx)
         except Exception as e:
             logger.error(f"Bulk write batch {i // BATCH_SIZE} failed: {e}")
+        _progress_processed += len(batch)
+        # Emit progress every 1000 tickers so UI progress bar updates live
+        _milestone = _progress_processed // 1000
+        if progress_callback and _milestone > _last_progress_milestone:
+            _last_progress_milestone = _milestone
+            try:
+                await progress_callback(_progress_processed, _progress_total)
+            except Exception:
+                pass  # never let a callback error abort the seeding
 
     # Bulk insert fundamentals_events jen pro nové tickery
     if new_ticker_indices:
