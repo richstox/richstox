@@ -626,6 +626,13 @@ async def _remediate_price_redownload(
         ).to_list(None)
         names_map = {d.get("ticker"): d.get("name") for d in docs if d.get("ticker")}
 
+    def _failure_record(ticker_full: str, reason: str) -> Dict[str, Any]:
+        return {
+            "ticker": ticker_full.replace(".US", ""),
+            "name": names_map.get(ticker_full),
+            "reason": reason,
+        }
+
     for idx, ticker_us in enumerate(unique_tickers):
         # Watchdog stop at 300s
         # Watchdog evaluated before starting each ticker; if it trips mid-iteration
@@ -634,11 +641,12 @@ async def _remediate_price_redownload(
             remaining = unique_tickers[idx:]
             failed += len(remaining)
             for rem in remaining:
-                failures.append({
-                    "ticker": rem.replace(".US", ""),
-                    "name": names_map.get(rem),
-                    "reason": f"Price remediation watchdog timeout (>{REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s)",
-                })
+                failures.append(
+                    _failure_record(
+                        rem,
+                        f"Price remediation watchdog timeout (>{REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s)",
+                    )
+                )
             logger.warning(
                 f"_remediate_price_redownload: watchdog triggered after {REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s, "
                 f"stopping with {len(remaining)} ticker(s) unprocessed"
@@ -666,30 +674,18 @@ async def _remediate_price_redownload(
                         "success=True but records_upserted=0 — leaving "
                         "needs_price_redownload=True for retry"
                     )
-                    failures.append({
-                        "ticker": ticker_us.replace(".US", ""),
-                        "name": names_map.get(ticker_us),
-                        "reason": msg,
-                    })
+                    failures.append(_failure_record(ticker_us, msg))
                     logger.warning(f"_remediate_price_redownload: {ticker_us} {msg}")
             else:
                 failed += 1
                 err_msg = result.get("error") or result.get("message") or "Unknown error"
-                failures.append({
-                    "ticker": ticker_us.replace(".US", ""),
-                    "name": names_map.get(ticker_us),
-                    "reason": err_msg,
-                })
+                failures.append(_failure_record(ticker_us, err_msg))
                 logger.warning(
                     f"_remediate_price_redownload: {ticker_us} backfill returned success=False — {err_msg}"
                 )
         except Exception as exc:
             failed += 1
-            failures.append({
-                "ticker": ticker_us.replace(".US", ""),
-                "name": names_map.get(ticker_us),
-                "reason": str(exc),
-            })
+            failures.append(_failure_record(ticker_us, str(exc)))
             logger.error(f"_remediate_price_redownload: {ticker_us} failed — {exc}")
 
         processed += 1
@@ -821,14 +817,15 @@ async def run_step2_event_detectors(
         "flagged_count": div_flagged_total,
         "tickers": div_all_in_universe[:50],
     }
+    dates_for_endpoint = processed_dates or missed_dates or [today_str]
     earnings = {
         "mock_mode": earnings_all.get("mock_mode", False),
         "api_endpoint": (earnings_all.get("api_endpoints_all") or [
             f"{EODHD_BASE_URL}/calendar/earnings?"
-            f"from={(fallback_dates := (processed_dates or missed_dates or [today_str]))[0]}"
-            f"&to={fallback_dates[-1]}"
+            f"from={dates_for_endpoint[0]}"
+            f"&to={dates_for_endpoint[-1]}"
         ])[0],
-        "api_endpoints_all": earnings_all.get("api_endpoints_all", []),
+        "api_endpoints_all": earnings_all.get("api_endpoints_all") or [],
         "dates_checked": processed_dates,
         "raw_count": earnings_all.get("raw_count", 0),
         "universe_count": earnings_all.get("universe_count", 0),
