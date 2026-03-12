@@ -216,7 +216,7 @@ async def _enqueue_fundamentals_events(
 
     normalized = sorted({t for t in tickers if t})
     if not normalized:
-        return {"inserted": 0, "already_pending": 0, "new_inserts": 0, "skipped_existing": 0}
+        return {"new_inserts": 0, "skipped_existing": 0}
 
     ops: List[UpdateOne] = []
     for ticker in normalized:
@@ -233,7 +233,8 @@ async def _enqueue_fundamentals_events(
                         "event_type": event_type,
                         "status": "pending",
                         "source": source_job,
-                        # Legacy field kept for compatibility; remove after downstream readers migrate.
+                        # Legacy field kept for compatibility with existing fundamentals processors/reports;
+                        # remove after downstream readers drop source_job dependency.
                         "source_job": source_job,
                         "detector_step": detector_step,
                         "detected_date": detected_date,
@@ -242,7 +243,6 @@ async def _enqueue_fundamentals_events(
                     "$set": {
                         "detected_date": detected_date,
                         "source": source_job,
-                        # Preserve legacy source_job field for readers expecting it (pending deprecation).
                         "source_job": source_job,
                         "detector_step": detector_step,
                         "updated_at": now,
@@ -256,12 +256,7 @@ async def _enqueue_fundamentals_events(
     new_inserts = len(getattr(result, "upserted_ids", {}))
     skipped_existing = len(normalized) - new_inserts
 
-    return {
-        "inserted": new_inserts,
-        "already_pending": skipped_existing,
-        "new_inserts": new_inserts,
-        "skipped_existing": skipped_existing,
-    }
+    return {"new_inserts": new_inserts, "skipped_existing": skipped_existing}
 
 
 async def _fetch_eodhd_bulk(
@@ -2053,8 +2048,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "processed": 0,
             "success": 0,
             "failed": 0,
-            "classification_events_enqueued": class_enqueue.get("inserted", 0),
-            "classification_events_already_pending": class_enqueue.get("already_pending", 0),
+            "classification_events_enqueued": class_enqueue.get("new_inserts", 0),
+            "classification_events_already_pending": class_enqueue.get("skipped_existing", 0),
             # requested_event_types moved to _debug — not used by the Step 3 card.
             "_debug": {
                 "requested_event_types": requested_event_types,
