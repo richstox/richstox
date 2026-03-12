@@ -54,7 +54,7 @@ REMEDIATION_HEARTBEAT_SECONDS = 10
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 _FUNDAMENTALS_EVENTS_INDEX_DONE = False
-_FUNDAMENTALS_EVENTS_INDEX_LOCK = asyncio.Lock()
+_FUNDAMENTALS_EVENTS_INDEX_LOCK: Optional[asyncio.Lock] = None
 
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -185,8 +185,11 @@ async def _ensure_fundamentals_events_index(db) -> None:
     Guarded to run only once per process.
     """
     global _FUNDAMENTALS_EVENTS_INDEX_DONE
+    global _FUNDAMENTALS_EVENTS_INDEX_LOCK
     if _FUNDAMENTALS_EVENTS_INDEX_DONE:
         return
+    if _FUNDAMENTALS_EVENTS_INDEX_LOCK is None:
+        _FUNDAMENTALS_EVENTS_INDEX_LOCK = asyncio.Lock()
     async with _FUNDAMENTALS_EVENTS_INDEX_LOCK:
         if _FUNDAMENTALS_EVENTS_INDEX_DONE:
             return
@@ -230,8 +233,8 @@ async def _enqueue_fundamentals_events(
                 {
                     "$setOnInsert": {
                         "source": source_job,
-                        # Legacy field kept for compatibility with existing fundamentals processors/reports;
-                        # remove after downstream readers drop source_job dependency.
+                        # TODO: remove legacy source_job after downstream fundamentals processors/reports
+                        # drop the dependency (track in scheduler ops backlog).
                         "source_job": source_job,
                         "detector_step": detector_step,
                         "detected_date": detected_date,
