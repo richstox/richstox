@@ -2186,24 +2186,14 @@ async def _run_universe_seed_bg(db):
 
 @api_router.post("/admin/jobs/universe-seed")
 async def admin_run_universe_seed(background_tasks: BackgroundTasks):
-    """Manually trigger Universe Seed job (runs in background). Auth: AdminAuthMiddleware."""
-    # Guard: refuse if a full pipeline chain is currently running.
-    _chain_running = await db.pipeline_chain_runs.find_one({"status": "running"})
-    if _chain_running:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "busy",
-                "message": "A full pipeline chain is currently running. Wait for it to complete before triggering a per-step run.",
-                "chain_run_id": _chain_running.get("chain_run_id"),
-            },
-        )
-    background_tasks.add_task(_run_universe_seed_bg, db)
-    return {
-        "status": "started",
-        "job_name": "universe_seed",
-        "message": "Universe Seed started in background. Poll /api/admin/jobs/universe_seed/status for result.",
-    }
+    """Individually triggering pipeline steps is disabled. Use the full sequential run instead."""
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "per_step_run_disabled",
+            "message": "Individual step execution is disabled. Use the full sequential pipeline run (Run Full Pipeline Now).",
+        },
+    )
 
 @api_router.get("/admin/whitelist/preview")
 async def admin_whitelist_preview():
@@ -5199,6 +5189,19 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
     Returns:
         Job execution result or started status
     """
+    # Pipeline steps must only be run via the full sequential chain.
+    # Note: universe_seed, price_sync, and fundamentals_sync are blocked in their
+    # own dedicated endpoints above. recompute_visibility_all (Step 4) is
+    # accessible via this generic endpoint, so it is blocked here.
+    _PIPELINE_STEP_JOBS = {"recompute_visibility_all"}
+    if job_name in _PIPELINE_STEP_JOBS:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "per_step_run_disabled",
+                "message": "Individual step execution is disabled. Use the full sequential pipeline run (Run Full Pipeline Now).",
+            },
+        )
     from parallel_batch_service import run_scheduled_backfill_all_prices
     from visibility_rules import recompute_visibility_all, clean_zombie_tickers, recompute_visibility_with_zombie_cleanup
     from scheduler_service import save_step4_exclusion_report as _save_step4_exclusion_report
@@ -5267,50 +5270,36 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
 
 @api_router.post("/admin/scheduler/run/price-sync")
 async def admin_manual_price_sync(background_tasks: BackgroundTasks, wait: bool = Query(False, description="Wait for completion (may timeout)")):
-    """
-    Manually trigger daily price sync.
-    
-    This bypasses the scheduler and runs immediately.
-    Kill switch does NOT affect this endpoint.
-    
-    Args:
-        wait: If True, wait for completion (may timeout). Default: run in background.
-    
-    Cost: 1 API credit (bulk endpoint)
-    """
-    if wait:
-        result = await run_daily_price_sync(db, ignore_kill_switch=True, parent_run_id=None)
-        return result
-    
-    # Run in background to avoid timeout
-    background_tasks.add_task(run_daily_price_sync, db, True, None)
-    return {
-        "status": "started",
-        "job_type": "price_sync",
-        "message": "Job started in background. Check /api/admin/scheduler/status for results."
-    }
+    """Individually triggering pipeline steps is disabled. Use the full sequential run instead."""
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "per_step_run_disabled",
+            "message": "Individual step execution is disabled. Use the full sequential pipeline run (Run Full Pipeline Now).",
+        },
+    )
 
 @api_router.post("/admin/scheduler/run/fundamentals-sync")
 async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batch_size: int = Query(10000, ge=1, le=10000), wait: bool = Query(False)):
-    """
-    Manually trigger fundamentals sync for pending events.
-    
-    This bypasses the scheduler and runs immediately.
-    Kill switch does NOT affect this endpoint.
-    
-    Cost: ~10 API credits per ticker
-    """
-    if wait:
-        result = await run_fundamentals_changes_sync(db, batch_size=batch_size, ignore_kill_switch=True, parent_run_id=None)
-        return result
-    
-    background_tasks.add_task(run_fundamentals_changes_sync, db, batch_size, True, None)
-    return {
-        "status": "started",
-        "job_type": "fundamentals_sync",
-        "batch_size": batch_size,
-        "message": "Job started in background. Check /api/admin/scheduler/status for results."
-    }
+    """Individually triggering pipeline steps is disabled. Use the full sequential run instead."""
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "per_step_run_disabled",
+            "message": "Individual step execution is disabled. Use the full sequential pipeline run (Run Full Pipeline Now).",
+        },
+    )
+
+@api_router.post("/admin/scheduler/run/peer-medians")
+async def admin_manual_peer_medians(background_tasks: BackgroundTasks):
+    """Individually triggering pipeline steps is disabled. Use the full sequential run instead."""
+    raise HTTPException(
+        status_code=403,
+        detail={
+            "error": "per_step_run_disabled",
+            "message": "Individual step execution is disabled. Use the full sequential pipeline run (Run Full Pipeline Now).",
+        },
+    )
 
 @api_router.post("/admin/jobs/full-price-history-sync")
 async def admin_full_price_history_sync(background_tasks: BackgroundTasks):

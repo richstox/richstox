@@ -1187,24 +1187,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>
                   <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
-                <View style={s.jobBtnGroup}>
-                  {isRunning ? (
-                    <TouchableOpacity
-                      style={s.cancelBtn}
-                      onPress={() => handleCancelJob(step.job_name)}
-                    >
-                      <Text style={s.cancelBtnText}>■ Stop</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={[s.runBtn, { backgroundColor: step.color }, (!!runningJob || chainRunning) && s.runBtnDisabled]}
-                      onPress={() => handleRunNow(step.job_name)}
-                      disabled={!!runningJob || chainRunning}
-                    >
-                      <Text style={s.runBtnText}>▶ Run</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
+
               </View>
 
               {/* Run Result */}
