@@ -1404,8 +1404,8 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
 
-    # P1-only: do NOT re-check Step 1–3 gates here. Process all tickers.
-    _classified_query = {}
+    # Only tickers that have completed Step 3 (fundamentals).
+    _classified_query = {"fundamentals_status": "complete"}
 
     # Filtered-out = classified AND NOT visible.
     # Use $ne:True (not False) to include tickers where is_visible is null/missing —

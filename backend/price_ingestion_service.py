@@ -83,6 +83,7 @@ async def fetch_eod_history(ticker: str, from_date: str = None, to_date: str = N
     
     ticker_full = ticker if ticker.endswith(".US") else f"{ticker}.US"
     
+    # Remediation URL uses ticker_full constructed above.
     url = f"{EODHD_BASE_URL}/eod/{ticker_full}"
     params = {
         "api_token": EODHD_API_KEY,
