@@ -95,7 +95,9 @@ async def fetch_eod_history(ticker: str, from_date: str = None, to_date: str = N
         params["to"] = to_date
     
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=10, read=30, write=10, pool=10)
+        ) as client:
             response = await client.get(url, params=params)
             
             if response.status_code == 404:

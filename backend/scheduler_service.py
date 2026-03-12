@@ -29,7 +29,7 @@ Kill Switch:
 import os
 import time
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Dict, Any, Optional, List, Callable, Awaitable
 import asyncio
 from zoneinfo import ZoneInfo
@@ -46,6 +46,7 @@ SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Sto
 STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP2_REPORT_STEP = "Step 2 - Price Sync"
+EVENTS_WATERMARK_KEY = "last_events_checked_date"
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
@@ -518,43 +519,70 @@ async def _detect_earnings_candidates_eodhd(db, today_str: str, from_date: Optio
     }
 
 
-async def _get_missed_trading_dates(db, today_str: str, max_lookback_days: int = 14) -> List[str]:
+async def _get_or_init_events_watermark(db, today_dt: date) -> date:
     """
-    Return list of dates (YYYY-MM-DD) that Step 2 detectors may have missed.
-    Looks at the last successful price_sync run and fills in any gap.
-    Excludes weekends. Max lookback: 14 days to avoid excessive API usage.
+    Persistent Step 2 events watermark in ops_config.
+
+    If missing, bootstrap to max(latest Step 1 completion date, today-30).
+    Watermark initialization is a one-time bootstrap; afterwards we advance per-day
+    after successful processing to avoid skipped days.
     """
-    last_run = await db.ops_job_runs.find_one(
-        {"job_name": "price_sync", "status": {"$in": ["success", "completed"]}},
-        {"started_at": 1},
-        sort=[("started_at", -1)],
+    cfg = await db.ops_config.find_one({"key": EVENTS_WATERMARK_KEY})
+    if cfg and cfg.get("value"):
+        try:
+            return datetime.fromisoformat(cfg["value"]).date()
+        except Exception:
+            logger.warning(f"Invalid {EVENTS_WATERMARK_KEY} in ops_config; reinitializing")
+
+    latest_step1 = await db.ops_job_runs.find_one(
+        {"job_name": "universe_seed", "status": {"$in": ["success", "completed"]}},
+        {"finished_at": 1},
+        sort=[("finished_at", -1)],
+    )
+    step1_date: Optional[date] = None
+    if latest_step1 and latest_step1.get("finished_at"):
+        finished_at = latest_step1["finished_at"]
+        if hasattr(finished_at, "tzinfo") and finished_at.tzinfo is None:
+            finished_at = finished_at.replace(tzinfo=timezone.utc)
+        step1_date = finished_at.astimezone(PRAGUE_TZ).date()
+
+    bootstrap_floor = today_dt - timedelta(days=30)
+    init_date = max(step1_date, bootstrap_floor) if step1_date else bootstrap_floor
+
+    await db.ops_config.update_one(
+        {"key": EVENTS_WATERMARK_KEY},
+        {
+            "$set": {
+                "key": EVENTS_WATERMARK_KEY,
+                "value": init_date.isoformat(),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+        upsert=True,
+    )
+    return init_date
+
+
+async def _set_events_watermark(db, new_date: date) -> None:
+    await db.ops_config.update_one(
+        {"key": EVENTS_WATERMARK_KEY},
+        {"$set": {"value": new_date.isoformat(), "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
     )
 
-    today = datetime.strptime(today_str, "%Y-%m-%d").date()
 
-    if last_run and last_run.get("started_at"):
-        last_dt = last_run["started_at"]
-        if hasattr(last_dt, "tzinfo") and last_dt.tzinfo is None:
-            last_dt = last_dt.replace(tzinfo=timezone.utc)
-        last_date = last_dt.astimezone(PRAGUE_TZ).date()
-    else:
-        # No previous run — only check today
-        last_date = today
-
-    # Generate all dates between last_date (exclusive) and today (inclusive)
-    missed = []
-    current = last_date + timedelta(days=1)
-    while current <= today:
-        # Skip weekends (markets closed)
+async def _get_missed_trading_dates(db, today_dt: date) -> List[date]:
+    """
+    Return list of trading dates (date objects) to process from (watermark+1 … today), skipping weekends.
+    Never skips weekdays; any backlog remains queued for the next run.
+    """
+    watermark = await _get_or_init_events_watermark(db, today_dt)
+    missed: List[date] = []
+    current = watermark + timedelta(days=1)
+    while current <= today_dt:
         if current.weekday() < 5:
-            missed.append(current.strftime("%Y-%m-%d"))
+            missed.append(current)
         current += timedelta(days=1)
-
-    # Cap at max_lookback_days to avoid runaway API usage
-    if len(missed) > max_lookback_days:
-        logger.warning(f"Step 2 catchup: {len(missed)} missed days, capping at {max_lookback_days}")
-        missed = missed[-max_lookback_days:]
-
     return missed
 
 
@@ -562,6 +590,10 @@ async def _remediate_price_redownload(
     db,
     tickers_us: List[str],
     now: datetime,
+    *,
+    progress_cb: Optional[Callable[[str], Awaitable[None]]] = None,
+    exclusion_run_id: Optional[str] = None,
+    exclusion_report_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute scoped full price history re-download for split/dividend flagged tickers.
@@ -580,15 +612,33 @@ async def _remediate_price_redownload(
     succeeded = 0
     failed = 0
     unique_tickers = list(dict.fromkeys(t for t in tickers_us if t))
+    failures: List[Dict[str, Any]] = []
+    start_ts = time.monotonic()
+    last_heartbeat = start_ts
+    total = len(unique_tickers)
+    processed = 0
 
-    for ticker_us in unique_tickers:
+    for idx, ticker_us in enumerate(unique_tickers):
+        # Watchdog stop at 300s
+        if time.monotonic() - start_ts > 300:
+            remaining = unique_tickers[idx:]
+            failed += len(remaining)
+            for rem in remaining:
+                failures.append({
+                    "ticker": rem.replace(".US", ""),
+                    "reason": "Price remediation watchdog timeout (>300s)",
+                })
+            logger.warning(
+                f"_remediate_price_redownload: watchdog triggered after 300s, "
+                f"stopping with {len(remaining)} ticker(s) unprocessed"
+            )
+            break
+
         try:
             result = await backfill_ticker_prices(db, ticker_us)
             if result.get("success"):
                 records_upserted = result.get("records_upserted", 0)
                 if records_upserted > 0:
-                    # Full history re-downloaded and persisted — clear the retry
-                    # flag and mark history complete.
                     succeeded += 1
                     await db.tracked_tickers.update_one(
                         {"ticker": ticker_us},
@@ -600,37 +650,54 @@ async def _remediate_price_redownload(
                         }},
                     )
                 else:
-                    # success=True but records_upserted==0: fetch_eod_history
-                    # returned an empty list.  This can happen for a legitimately
-                    # suspended/delisted ticker BUT ALSO for transient errors
-                    # (network, rate-limit) because fetch_eod_history swallows
-                    # exceptions and returns [].  We cannot distinguish the two
-                    # cases here, so we leave needs_price_redownload=True so the
-                    # next scheduled run retries.
                     failed += 1
-                    logger.warning(
-                        f"_remediate_price_redownload: {ticker_us} returned "
-                        f"success=True but records_upserted=0 — leaving "
-                        f"needs_price_redownload=True for retry"
+                    msg = (
+                        "success=True but records_upserted=0 — leaving "
+                        "needs_price_redownload=True for retry"
                     )
+                    failures.append({
+                        "ticker": ticker_us.replace(".US", ""),
+                        "reason": msg,
+                    })
+                    logger.warning(f"_remediate_price_redownload: {ticker_us} {msg}")
             else:
                 failed += 1
+                err_msg = result.get("error") or result.get("message") or "Unknown error"
+                failures.append({"ticker": ticker_us.replace(".US", ""), "reason": err_msg})
                 logger.warning(
-                    f"_remediate_price_redownload: {ticker_us} backfill returned "
-                    f"success=False — {result.get('error') or result.get('message')}"
+                    f"_remediate_price_redownload: {ticker_us} backfill returned success=False — {err_msg}"
                 )
         except Exception as exc:
             failed += 1
+            failures.append({"ticker": ticker_us.replace(".US", ""), "reason": str(exc)})
             logger.error(f"_remediate_price_redownload: {ticker_us} failed — {exc}")
+
+        processed += 1
+        now_ts = time.monotonic()
+        if (processed % 5 == 0) or (now_ts - last_heartbeat >= 10):
+            if progress_cb:
+                await progress_cb(
+                    f"2.7 Remediating split/dividend tickers: {processed}/{total} "
+                    f"(✓{succeeded} ✗{failed})"
+                )
+            last_heartbeat = now_ts
+
+    if failures:
+        await _append_step2_exclusions(db, exclusion_run_id, exclusion_report_date, failures)
 
     return {
         "succeeded": succeeded,
         "failed": failed,
-        "tickers_processed": len(unique_tickers),
+        "tickers_processed": processed,
+        "watchdog_triggered": processed < total,
     }
 
 
-async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
+async def run_step2_event_detectors(
+    db,
+    progress_cb: Optional[Callable[[str], Awaitable[None]]] = None,
+    exclusion_meta: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """
     Execute Step 2 sub-steps with REAL EODHD API calls.
     2.2: bulk splits → needs_price_redownload + needs_fundamentals_refresh
@@ -645,7 +712,8 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
     GAP DETECTION: If Step 2 missed multiple days, iterates through all missed
     trading dates for splits and dividends. Earnings uses a date range call.
     """
-    today_str = datetime.now(PRAGUE_TZ).strftime("%Y-%m-%d")
+    today_dt = datetime.now(PRAGUE_TZ).date()
+    today_str = today_dt.strftime("%Y-%m-%d")
     now = datetime.now(timezone.utc)
 
     async def _p(msg: str) -> None:
@@ -653,18 +721,31 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
             await progress_cb(msg)
 
     # Determine all missed trading dates since last successful run
-    missed_dates = await _get_missed_trading_dates(db, today_str)
-    # Always include today; missed_dates may already include it
-    if today_str not in missed_dates:
-        missed_dates.append(today_str)
+    missed_date_objs = await _get_missed_trading_dates(db, today_dt)
+    if today_dt not in missed_date_objs:
+        missed_date_objs.append(today_dt)
+    missed_dates = [d.strftime("%Y-%m-%d") for d in missed_date_objs]
 
     logger.info(f"Step 2 detectors: processing {len(missed_dates)} date(s): {missed_dates}")
 
-    # --- 2.2 SPLIT DETECTOR (per-day calls, merge results) ---
     split_raw_total = 0
     split_all_in_universe: List[str] = []
     split_flagged_total = 0
     split_endpoints: List[str] = []
+    div_raw_total = 0
+    div_all_in_universe: List[str] = []
+    div_flagged_total = 0
+    div_endpoints: List[str] = []
+    earnings_all: Dict[str, Any] = {
+        "mock_mode": not bool(EODHD_API_KEY),
+        "api_endpoints_all": [],
+        "dates_checked": missed_dates,
+        "raw_count": 0,
+        "universe_count": 0,
+        "flagged_count": 0,
+        "tickers": [],
+    }
+
     for i, date_str in enumerate(missed_dates):
         await _p(f"2.2 Split detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
         s = await _detect_split_candidates_eodhd(db, date_str)
@@ -673,16 +754,7 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
         split_flagged_total += s.get("flagged_count", 0)
         if s.get("api_endpoint"):
             split_endpoints.append(s["api_endpoint"])
-    split_all_in_universe = list(dict.fromkeys(split_all_in_universe))  # dedup
 
-    await _p(f"2.2 Done: {split_flagged_total} split(s) flagged. Running 2.4 Dividend detector…")
-
-    # --- 2.4 DIVIDEND DETECTOR (per-day calls, merge results) ---
-    div_raw_total = 0
-    div_all_in_universe: List[str] = []
-    div_flagged_total = 0
-    div_endpoints: List[str] = []
-    for i, date_str in enumerate(missed_dates):
         await _p(f"2.4 Dividend detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
         d = await _detect_dividend_candidates_eodhd(db, date_str)
         div_raw_total += d.get("raw_count", 0)
@@ -690,14 +762,20 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
         div_flagged_total += d.get("flagged_count", 0)
         if d.get("api_endpoint"):
             div_endpoints.append(d["api_endpoint"])
+
+        await _p(f"2.6 Earnings detector: calling EODHD calendar {date_str} ({i+1}/{len(missed_dates)})…")
+        earnings = await _detect_earnings_candidates_eodhd(db, date_str, from_date=date_str)
+        earnings_all["api_endpoints_all"].append(earnings.get("api_endpoint"))
+        earnings_all["raw_count"] += earnings.get("raw_count", 0)
+        earnings_all["universe_count"] += earnings.get("universe_count", 0)
+        earnings_all["flagged_count"] += earnings.get("flagged_count", 0)
+        earnings_all["tickers"].extend(earnings.get("tickers", []))
+
+        # Advance watermark after successful day processing
+        await _set_events_watermark(db, datetime.strptime(date_str, "%Y-%m-%d").date())
+
+    split_all_in_universe = list(dict.fromkeys(split_all_in_universe))  # dedup
     div_all_in_universe = list(dict.fromkeys(div_all_in_universe))
-
-    await _p(f"2.4 Done: {div_flagged_total} dividend(s) flagged. Running 2.6 Earnings detector…")
-
-    # --- 2.6 EARNINGS DETECTOR (single range call: from=first_missed to=today) ---
-    from_date = missed_dates[0] if missed_dates else today_str
-    await _p(f"2.6 Earnings detector: calling EODHD calendar {from_date} → {today_str}…")
-    earnings = await _detect_earnings_candidates_eodhd(db, today_str, from_date=from_date)
 
     split = {
         "mock_mode": not bool(EODHD_API_KEY),
@@ -718,6 +796,16 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
         "universe_count": len(div_all_in_universe),
         "flagged_count": div_flagged_total,
         "tickers": div_all_in_universe[:50],
+    }
+    earnings = {
+        "mock_mode": earnings_all.get("mock_mode", False),
+        "api_endpoint": (earnings_all.get("api_endpoints_all") or [f"{EODHD_BASE_URL}/calendar/earnings?from={today_str}&to={today_str}"])[0],
+        "api_endpoints_all": earnings_all.get("api_endpoints_all", []),
+        "dates_checked": missed_dates,
+        "raw_count": earnings_all.get("raw_count", 0),
+        "universe_count": earnings_all.get("universe_count", 0),
+        "flagged_count": earnings_all.get("flagged_count", 0),
+        "tickers": (earnings_all.get("tickers") or [])[:50],
     }
 
     # Still enqueue to fundamentals_events collection for Step 3 (backwards compat)
@@ -761,8 +849,15 @@ async def run_step2_event_detectors(db, progress_cb=None) -> Dict[str, Any]:
             f"2.7 Remediating {len(price_redownload_tickers)} split/dividend ticker(s): "
             "full price history re-download…"
         )
+        exclusion_run_id = (exclusion_meta or {}).get("run_id")
+        exclusion_report_date = (exclusion_meta or {}).get("report_date")
         redownload_result = await _remediate_price_redownload(
-            db, price_redownload_tickers, now
+            db,
+            price_redownload_tickers,
+            now,
+            progress_cb=progress_cb,
+            exclusion_run_id=exclusion_run_id,
+            exclusion_report_date=exclusion_report_date,
         )
         remediation_stats["price_redownload_succeeded"] = redownload_result.get("succeeded", 0)
         remediation_stats["price_redownload_failed"] = redownload_result.get("failed", 0)
@@ -920,7 +1015,14 @@ async def run_daily_price_sync(
         )
 
         # Step 2.2 / 2.4 / 2.6 detectors -> enqueue fundamentals refresh events.
-        event_detector_summary = await run_step2_event_detectors(db, progress_cb=_progress)
+        event_detector_summary = await run_step2_event_detectors(
+            db,
+            progress_cb=_progress,
+            exclusion_meta={
+                "run_id": result.get("exclusion_report_run_id"),
+                "report_date": result.get("exclusion_report_date"),
+            },
+        )
         result["event_detectors"] = event_detector_summary
         result["fundamentals_events_enqueued"] = event_detector_summary.get("enqueued_total", 0)
 
@@ -1139,6 +1241,34 @@ async def save_price_sync_exclusion_report(
     }
 
 
+async def _append_step2_exclusions(
+    db,
+    run_id: Optional[str],
+    report_date: Optional[str],
+    rows: List[Dict[str, Any]],
+) -> None:
+    """
+    Append rows to existing Step 2 exclusion report (same run_id).
+    """
+    if not run_id or not report_date or not rows:
+        return
+    docs = []
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        docs.append({
+            "ticker": row.get("ticker", "(unknown)"),
+            "name": row.get("name", "(unknown)"),
+            "step": STEP2_REPORT_STEP,
+            "reason": row.get("reason", "Unknown"),
+            "report_date": report_date,
+            "source_job": "price_sync",
+            "run_id": run_id,
+            "created_at": now,
+        })
+    if docs:
+        await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
+
+
 STEP3_REPORT_STEP = "Step 3 - Fundamentals Sync"
 STEP4_REPORT_STEP = "Step 4 - Visible Universe"
 
@@ -1248,14 +1378,8 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
 
-    # Canonical "classified" base — mirrors step4_query in universe_counts_service:
-    # SEED_QUERY + has_price_data + sector present + industry present.
-    _classified_query = {
-        **SEED_QUERY,
-        "has_price_data": True,
-        "sector":   {"$nin": [None, ""]},
-        "industry": {"$nin": [None, ""]},
-    }
+    # P1-only: do NOT re-check Step 1–3 gates here. Process all tickers.
+    _classified_query = {}
 
     # Filtered-out = classified AND NOT visible.
     # Use $ne:True (not False) to include tickers where is_visible is null/missing —
