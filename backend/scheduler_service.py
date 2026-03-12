@@ -229,9 +229,6 @@ async def _enqueue_fundamentals_events(
                 },
                 {
                     "$setOnInsert": {
-                        "ticker": ticker,
-                        "event_type": event_type,
-                        "status": "pending",
                         "source": source_job,
                         # Legacy field kept for compatibility with existing fundamentals processors/reports;
                         # remove after downstream readers drop source_job dependency.
@@ -240,6 +237,7 @@ async def _enqueue_fundamentals_events(
                         "detected_date": detected_date,
                         "created_at": now,
                     },
+                    # Refresh metadata on every enqueue attempt to reflect the latest detector run.
                     "$set": {
                         "detected_date": detected_date,
                         "source": source_job,
