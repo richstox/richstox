@@ -2173,6 +2173,17 @@ async def _run_universe_seed_bg(db):
 @api_router.post("/admin/jobs/universe-seed")
 async def admin_run_universe_seed(background_tasks: BackgroundTasks):
     """Manually trigger Universe Seed job (runs in background). Auth: AdminAuthMiddleware."""
+    # Guard: refuse if a full pipeline chain is currently running.
+    _chain_running = await db.pipeline_chain_runs.find_one({"status": "running"})
+    if _chain_running:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "busy",
+                "message": "A full pipeline chain is currently running. Wait for it to complete before triggering a per-step run.",
+                "chain_run_id": _chain_running.get("chain_run_id"),
+            },
+        )
     background_tasks.add_task(_run_universe_seed_bg, db)
     return {
         "status": "started",
@@ -7562,6 +7573,31 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
     Auth: AdminAuthMiddleware.
     """
     import uuid as _uuid2
+
+    # Guard: refuse if a per-step manual universe seed is already running.
+    _step_running = await db.ops_job_runs.find_one(
+        {"job_name": "universe_seed", "status": "running", "source": "admin_manual"},
+    )
+    if _step_running:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "busy",
+                "message": "A per-step Universe Seed run is currently in progress. Wait for it to finish before starting the full chain.",
+                "job_id": _step_running.get("job_id"),
+            },
+        )
+    # Guard: refuse if another full chain is already running.
+    _chain_running = await db.pipeline_chain_runs.find_one({"status": "running"})
+    if _chain_running:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "busy",
+                "message": "A full pipeline chain is already running.",
+                "chain_run_id": _chain_running.get("chain_run_id"),
+            },
+        )
 
     chain_run_id = f"chain_{_uuid2.uuid4().hex[:12]}"
 

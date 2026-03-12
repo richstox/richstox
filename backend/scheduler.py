@@ -317,6 +317,116 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
     return {"status": "failed", "error": error_msg}
 
 
+async def _run_universe_seed_scheduled(db):
+    """
+    Run Universe Seed for the nightly scheduler with full sentinel + live progress logging.
+
+    Mirrors the sentinel+progress logic used by the admin manual endpoint
+    (_run_universe_seed_bg in server.py) so that scheduled runs also show
+    a live progress bar and correct Prague finish time in the Admin UI.
+
+    Unlike run_job_with_retry, this function:
+    - Inserts a "running" sentinel BEFORE calling sync_ticker_whitelist.
+    - Passes a progress_callback so UI polls show "N / total tickers" live.
+    - Updates the sentinel in-place on completion/failure (no duplicate doc).
+    - Still logs to system_job_logs for observability parity.
+    """
+    import uuid
+    from whitelist_service import sync_ticker_whitelist
+
+    job_id = f"universe_seed_{uuid.uuid4().hex[:8]}"
+    started_at = datetime.now(timezone.utc)
+    logger.info(f"[scheduler] Universe Seed started (job_id={job_id})")
+
+    # Insert running sentinel so Admin UI shows "running" immediately.
+    _sentinel = await db.ops_job_runs.insert_one({
+        "job_id": job_id,
+        "job_name": "universe_seed",
+        "status": "running",
+        "source": "scheduled",
+        "triggered_by": "scheduler",
+        "started_at": started_at,
+        "started_at_prague": to_prague_iso(started_at),
+        "log_timezone": "Europe/Prague",
+        "progress": "Fetching symbols from EODHD…",
+        "progress_pct": 0,
+    })
+    _doc_id = _sentinel.inserted_id
+
+    async def _progress(processed: int, total: int) -> None:
+        pct = round(100.0 * processed / total) if total else 0
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "progress": f"Seeding… {processed:,} / {total:,} tickers",
+                "progress_processed": processed,
+                "progress_total": total,
+                "progress_pct": pct,
+            }},
+        )
+
+    status = "failed"
+    result: dict = {}
+    try:
+        result = await sync_ticker_whitelist(
+            db, dry_run=False, job_run_id=job_id,
+            progress_callback=_progress,
+        )
+        status = "completed"
+        logger.info(f"[scheduler] Universe Seed completed: {result.get('seeded_total', 0)} seeded")
+    except Exception as exc:
+        result = {"error": str(exc)}
+        logger.error(f"[scheduler] Universe Seed failed: {exc}")
+
+    finished_at = datetime.now(timezone.utc)
+    duration = (finished_at - started_at).total_seconds()
+
+    if status == "completed":
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "status": "completed",
+                "finished_at": finished_at,
+                "finished_at_prague": to_prague_iso(finished_at),
+                "duration_seconds": duration,
+                "result": result,
+                "details": {
+                    "fetched": result.get("fetched") or 0,
+                    "raw_rows_total": result.get("raw_rows_total") or 0,
+                    "seeded_total": result.get("seeded_total") or 0,
+                    "filtered_out_total_step1": result.get("filtered_out_total_step1") or 0,
+                    "fetched_raw_per_exchange": result.get("fetched_raw_per_exchange") or {},
+                },
+                "progress": f"Completed: {result.get('seeded_total', 0):,} seeded",
+                "progress_pct": 100,
+            }},
+        )
+    else:
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "status": "failed",
+                "finished_at": finished_at,
+                "finished_at_prague": to_prague_iso(finished_at),
+                "duration_seconds": duration,
+                "error": result.get("error", "unknown error"),
+                "progress": "Failed",
+            }},
+        )
+
+    # Also log to system_job_logs for observability parity with other jobs.
+    records_processed = result.get("seeded_total", 0) if status == "completed" else 0
+    await log_job_execution(
+        db, "universe_seed",
+        "success" if status == "completed" else "error",
+        started_at, finished_at,
+        records_processed=records_processed,
+        details=result if isinstance(result, dict) else {},
+    )
+
+    return result
+
+
 async def scheduler_loop():
     """
     Main scheduler loop with PERSISTENT STATE and CATCH-UP logic.
@@ -468,8 +578,7 @@ async def scheduler_loop():
             # STEP 1: Universe Seed at 23:00 Mon-Sat
             if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
-                from whitelist_service import sync_ticker_whitelist
-                await run_job_with_retry("universe_seed", sync_ticker_whitelist, db)
+                await _run_universe_seed_scheduled(db)
                 last_run["universe_seed"] = today_str
                 await set_last_run_state(last_run)
 
