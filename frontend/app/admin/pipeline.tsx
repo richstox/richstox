@@ -640,7 +640,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainRunId(cid);
       setChainStatus('running');
       setChainCurrentStep(1);
-      // Poll chain status every 5 s until completed/failed/cancelled.
+      // Poll chain status every 2 s until completed/failed/cancelled.
       if (chainPollRef.current) clearInterval(chainPollRef.current);
       chainPollRef.current = setInterval(async () => {
         try {
@@ -653,14 +653,36 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           setChainStatus(sd.status);
           setChainCurrentStep(sd.current_step ?? null);
           setChainStepsDone(sd.steps_done ?? []);
+          // Refresh overview on every tick so "Last run" / counts stay live.
+          fetchData();
+          // While Step 1 is the active step, poll its progress for the live bar.
+          if (sd.current_step === 1) {
+            try {
+              const jr = await authenticatedFetch(
+                `${API_URL}/api/admin/jobs/universe_seed/status`,
+                {},
+                sessionToken,
+              );
+              if (jr.ok) {
+                const jd = await jr.json();
+                const lr = jd.last_run;
+                if (lr?.status === 'running' && lr.progress_total) {
+                  setStep1Progress({
+                    processed: lr.progress_processed || 0,
+                    total:     lr.progress_total,
+                    pct:       lr.progress_pct || 0,
+                  });
+                }
+              }
+            } catch { /* non-fatal */ }
+          }
           if (sd.status === 'completed' || sd.status === 'failed' || sd.status === 'cancelled') {
             clearInterval(chainPollRef.current!);
             chainPollRef.current = null;
             setChainRunning(false);
-            if (sd.status === 'completed') fetchData();
           }
         } catch { /* keep polling */ }
-      }, 5000);
+      }, 2000);
     } catch (e: any) {
       setChainStatus('error');
       setChainRunning(false);
@@ -1119,9 +1141,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     </TouchableOpacity>
                   ) : (
                     <TouchableOpacity
-                      style={[s.runBtn, { backgroundColor: step.color }, !!runningJob && s.runBtnDisabled]}
+                      style={[s.runBtn, { backgroundColor: step.color }, (!!runningJob || chainRunning) && s.runBtnDisabled]}
                       onPress={() => handleRunNow(step.job_name)}
-                      disabled={!!runningJob}
+                      disabled={!!runningJob || chainRunning}
                     >
                       <Text style={s.runBtnText}>▶ Run</Text>
                     </TouchableOpacity>
