@@ -53,8 +53,8 @@ REMEDIATION_HEARTBEAT_SECONDS = 10
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
-_FUND_EVENTS_INDEX_DONE = False
-_FUND_EVENTS_INDEX_LOCK = asyncio.Lock()
+_FUNDAMENTALS_EVENTS_INDEX_DONE = False
+_FUNDAMENTALS_EVENTS_INDEX_LOCK = asyncio.Lock()
 
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -184,11 +184,11 @@ async def _ensure_fundamentals_events_index(db) -> None:
     Ensure partial unique index for pending fundamentals_events.
     Guarded to run only once per process.
     """
-    global _FUND_EVENTS_INDEX_DONE
-    if _FUND_EVENTS_INDEX_DONE:
+    global _FUNDAMENTALS_EVENTS_INDEX_DONE
+    if _FUNDAMENTALS_EVENTS_INDEX_DONE:
         return
-    async with _FUND_EVENTS_INDEX_LOCK:
-        if _FUND_EVENTS_INDEX_DONE:
+    async with _FUNDAMENTALS_EVENTS_INDEX_LOCK:
+        if _FUNDAMENTALS_EVENTS_INDEX_DONE:
             return
         await db.fundamentals_events.create_index(
             [("ticker", 1), ("event_type", 1)],
@@ -196,7 +196,7 @@ async def _ensure_fundamentals_events_index(db) -> None:
             unique=True,
             partialFilterExpression={"status": "pending"},
         )
-        _FUND_EVENTS_INDEX_DONE = True
+        _FUNDAMENTALS_EVENTS_INDEX_DONE = True
 
 
 async def _enqueue_fundamentals_events(
@@ -233,7 +233,8 @@ async def _enqueue_fundamentals_events(
                         "event_type": event_type,
                         "status": "pending",
                         "source": source_job,
-                        "source_job": source_job,  # legacy field kept for compatibility
+                        # Legacy field kept for compatibility; remove after downstream readers migrate.
+                        "source_job": source_job,
                         "detector_step": detector_step,
                         "detected_date": detected_date,
                         "created_at": now,
@@ -241,7 +242,7 @@ async def _enqueue_fundamentals_events(
                     "$set": {
                         "detected_date": detected_date,
                         "source": source_job,
-                        # Preserve legacy source_job field for readers expecting it.
+                        # Preserve legacy source_job field for readers expecting it (pending deprecation).
                         "source_job": source_job,
                         "detector_step": detector_step,
                         "updated_at": now,
