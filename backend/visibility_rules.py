@@ -253,7 +253,7 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     batch_ops: list = []
     processed = 0
 
-    async for ticker_doc in db.tracked_tickers.find(_CLASSIFIED_FILTER):
+    async for ticker_doc in db.tracked_tickers.find(_STEP4_CLASSIFIED_FILTER):
         ticker = ticker_doc.get("ticker", "")
         is_visible, failed_reason = compute_visibility_step4_only(ticker_doc)
 
