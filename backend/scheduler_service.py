@@ -713,6 +713,7 @@ async def run_step2_event_detectors(
     db,
     progress_cb: Optional[Callable[[str], Awaitable[None]]] = None,
     exclusion_meta: Optional[Dict[str, Any]] = None,
+    cancel_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> Dict[str, Any]:
     """
     Execute Step 2 sub-steps with REAL EODHD API calls.
@@ -727,6 +728,9 @@ async def run_step2_event_detectors(
 
     GAP DETECTION: If Step 2 missed multiple days, iterates through all missed
     trading dates for splits and dividends. Earnings uses a date range call.
+
+    cancel_check: optional async callable — if it returns True the detectors
+    stop processing further dates and return with cancelled=True.
     """
     today_dt = datetime.now(PRAGUE_TZ).date()
     today_str = today_dt.strftime("%Y-%m-%d")
@@ -762,8 +766,15 @@ async def run_step2_event_detectors(
         "tickers": [],
     }
     processed_dates: List[str] = []
+    _cancelled = False
 
     for i, date_obj in enumerate(missed_date_objs):
+        # Check for cancellation before each day's batch of detector calls
+        if cancel_check and await cancel_check():
+            logger.info("Step 2 event detectors cancelled mid-run after %d/%d dates", i, len(missed_dates))
+            _cancelled = True
+            break
+
         date_str = date_obj.strftime("%Y-%m-%d")
         await _p(f"2.2 Split detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
         s = await _detect_split_candidates_eodhd(db, date_str)
@@ -834,28 +845,30 @@ async def run_step2_event_detectors(
     }
 
     # Still enqueue to fundamentals_events collection for Step 3 (backwards compat)
+    # Skip enqueueing if cancelled mid-run (partial data may be incomplete)
     all_flagged: List[str] = []
     price_redownload_tickers: List[str] = []  # split + dividend tickers needing full price refresh
-    for result, event_type, step in [
-        (split, "split_detected", "2.2"),
-        (dividend, "dividend_detected", "2.4"),
-        (earnings, "earnings_refresh_due", "2.6"),
-    ]:
-        tickers = [f"{t}.US" for t in result.get("tickers", [])]
-        if tickers:
-            await _enqueue_fundamentals_events(
-                db,
-                event_type=event_type,
-                tickers=tickers,
-                now=now,
-                source_job="price_sync",
-                detector_step=step,
-            )
-            all_flagged.extend(tickers)
-            # Split and dividend detectors set needs_price_redownload=True.
-            # Collect unique tickers for immediate scoped price re-download.
-            if step in ("2.2", "2.4"):
-                price_redownload_tickers.extend(tickers)
+    if not _cancelled:
+        for result, event_type, step in [
+            (split, "split_detected", "2.2"),
+            (dividend, "dividend_detected", "2.4"),
+            (earnings, "earnings_refresh_due", "2.6"),
+        ]:
+            tickers = [f"{t}.US" for t in result.get("tickers", [])]
+            if tickers:
+                await _enqueue_fundamentals_events(
+                    db,
+                    event_type=event_type,
+                    tickers=tickers,
+                    now=now,
+                    source_job="price_sync",
+                    detector_step=step,
+                )
+                all_flagged.extend(tickers)
+                # Split and dividend detectors set needs_price_redownload=True.
+                # Collect unique tickers for immediate scoped price re-download.
+                if step in ("2.2", "2.4"):
+                    price_redownload_tickers.extend(tickers)
 
     # Deduplicate price_redownload_tickers (split + dividend may overlap).
     price_redownload_tickers = list(dict.fromkeys(price_redownload_tickers))
@@ -925,6 +938,7 @@ async def run_step2_event_detectors(
         ),
         "remediation": remediation_stats,
         "today": today_str,
+        "cancelled": _cancelled,
     }
 
 
@@ -933,21 +947,24 @@ async def run_daily_price_sync(
     ignore_kill_switch: bool = False,
     parent_run_id: Optional[str] = None,
     run_doc_id: Optional[Any] = None,
+    cancel_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> Dict[str, Any]:
     """
     Run daily price sync job with GAP DETECTION AND BULK CATCHUP.
-    
-    This job now:
-    1. Detects gaps in price coverage (dates with <80% tickers)
-    2. Fetches bulk data for gap dates using EODHD bulk API
-    3. Upserts using bulk_write for performance
-    
+
+    Phases:
+    - Phase A: bulk last-day catchup → set has_price_data flags; track progress.
+    - Phase B: detect splits/dividends/earnings since last check → set needs_* flags.
+    - Phase C: download adjusted price history for split/dividend tickers.
+
     Config read from ops_config:
     - lookback_days (default: 30)
     - coverage_threshold (default: 0.80)
 
     run_doc_id: if provided, reuse an externally-inserted ops_job_runs sentinel
     instead of creating a new one (used by the admin full-pipeline chain).
+    cancel_check: optional async callable that returns True if cancellation was
+    requested (used by the full pipeline chain orchestrator).
     """
     from price_ingestion_service import run_daily_bulk_catchup
 
@@ -969,6 +986,16 @@ async def run_daily_price_sync(
             "details": {"parent_run_id": parent_run_id},
         })).inserted_id
 
+    async def _is_cancelled() -> bool:
+        """Check both chain cancel_check and per-job cancel flag."""
+        if cancel_check and await cancel_check():
+            return True
+        flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+        if flag:
+            await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
+            return True
+        return False
+
     try:
         # Check kill switch (manual endpoints can explicitly bypass)
         if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
@@ -983,10 +1010,8 @@ async def run_daily_price_sync(
                 "started_at": started_at.isoformat(),
             }
 
-        # Check for cancel request
-        cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
-        if cancel_flag:
-            await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
+        # Check for cancel request before starting
+        if await _is_cancelled():
             logger.info(f"{job_name} cancelled before start")
             await db.ops_job_runs.update_one(
                 {"_id": _running_doc_id}, {"$set": {"status": "cancelled"}}
@@ -994,31 +1019,52 @@ async def run_daily_price_sync(
             return {
                 "job_name": job_name,
                 "status": "cancelled",
+                "exclusion_report_run_id": None,
                 "started_at": started_at.isoformat(),
             }
 
-        # Progress helper: update running sentinel so UI poll can show status
-        async def _progress(msg: str) -> None:
+        # Progress helper: update running sentinel so UI poll can show live status.
+        # Sets both text progress and structured numeric fields.
+        async def _progress(
+            msg: str,
+            *,
+            processed: Optional[int] = None,
+            total: Optional[int] = None,
+            phase: Optional[str] = None,
+        ) -> None:
+            fields: Dict[str, Any] = {"progress": msg}
+            if phase is not None:
+                fields["phase"] = phase
+            if total is not None:
+                fields["progress_total"] = total
+            if processed is not None:
+                fields["progress_processed"] = processed
+                if total:
+                    fields["progress_pct"] = min(round(100 * processed / total), 100)
             await db.ops_job_runs.update_one(
                 {"_id": _running_doc_id},
-                {"$set": {"progress": msg}},
+                {"$set": fields},
             )
 
-        await _progress("2.1 Detecting price gaps (last 30 days)…")
+        # ── Phase A: bulk price catchup + has_price_data flags ────────────────
+        await _progress("2.1 Detecting price gaps (last 30 days)…", phase="bulk_catchup")
 
-        # Run the NEW bulk catchup with gap detection
+        # Run the bulk catchup with gap detection
         result = await run_daily_bulk_catchup(db)
 
         await _progress(
             f"2.1 Prices synced: {result.get('records_upserted', 0)} records "
             f"across {result.get('dates_processed', 0)} date(s). "
-            "Updating has_price_data flags…"
+            "Updating has_price_data flags…",
+            phase="bulk_catchup",
         )
 
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
         price_flag_summary = await sync_has_price_data_flags(db, include_exclusions=True)
-        result["tickers_seeded_total"] = price_flag_summary["seeded_total"]
-        result["tickers_with_price_data"] = price_flag_summary["with_price_data"]
+        seeded_total = price_flag_summary["seeded_total"]
+        with_price = price_flag_summary["with_price_data"]
+        result["tickers_seeded_total"] = seeded_total
+        result["tickers_with_price_data"] = with_price
         result["tickers_without_price_data"] = price_flag_summary["without_price_data"]
         result["matched_price_tickers_raw"] = price_flag_summary.get("matched_price_tickers_raw", 0)
         result.update(
@@ -1032,25 +1078,112 @@ async def run_daily_price_sync(
             missing_run_id_msg = (
                 "Step 2 price sync result missing required exclusion_report_run_id field"
             )
-            raise RuntimeError(
-                missing_run_id_msg
-            )
+            raise RuntimeError(missing_run_id_msg)
+
         await _progress(
-            f"2.1 Done: {price_flag_summary.get('with_price_data', 0)} tickers with price data. "
-            "Running 2.2 Split detector (EODHD API)…"
+            f"2.1 Done: {with_price} / {seeded_total} tickers with price data. "
+            "Running 2.2 Split detector (EODHD API)…",
+            processed=with_price,
+            total=seeded_total,
+            phase="bulk_catchup",
+        )
+
+        # ── Stop check between Phase A and Phase B ────────────────────────────
+        if await _is_cancelled():
+            logger.info(f"{job_name} cancelled after Phase A (bulk catchup)")
+            _cancelled_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {
+                    "status": "cancelled",
+                    "finished_at": _cancelled_at,
+                    "finished_at_prague": _to_prague_iso(_cancelled_at),
+                    "phase": "cancelled_after_bulk",
+                    "details": {
+                        "dates_processed": result.get("dates_processed", 0),
+                        "records_upserted": result.get("records_upserted", 0),
+                        "tickers_seeded_total": seeded_total,
+                        "tickers_with_price_data": with_price,
+                        "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                        "parent_run_id": parent_run_id,
+                        "stop_reason": "cancel_requested_after_phase_a",
+                    },
+                }},
+            )
+            return {
+                "job_name": job_name,
+                "status": "cancelled",
+                "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                "tickers_seeded_total": seeded_total,
+                "tickers_with_price_data": with_price,
+                "started_at": started_at.isoformat(),
+                "finished_at": _cancelled_at.isoformat(),
+            }
+
+        # ── Phase B+C: event detectors + price history remediation ────────────
+        await _progress(
+            f"2.2 Running split/dividend/earnings detectors…",
+            processed=with_price,
+            total=seeded_total,
+            phase="event_detection",
         )
 
         # Step 2.2 / 2.4 / 2.6 detectors -> enqueue fundamentals refresh events.
         event_detector_summary = await run_step2_event_detectors(
             db,
-            progress_cb=_progress,
+            progress_cb=lambda msg: _progress(
+                msg, processed=with_price, total=seeded_total, phase="event_detection"
+            ),
             exclusion_meta={
                 "run_id": result.get("exclusion_report_run_id"),
                 "report_date": result.get("exclusion_report_date"),
             },
+            cancel_check=_is_cancelled,
         )
         result["event_detectors"] = event_detector_summary
         result["fundamentals_events_enqueued"] = event_detector_summary.get("enqueued_total", 0)
+
+        # Check if detectors were cancelled mid-run
+        if event_detector_summary.get("cancelled"):
+            logger.info(f"{job_name} cancelled during event detection phase")
+            _cancelled_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {
+                    "status": "cancelled",
+                    "finished_at": _cancelled_at,
+                    "finished_at_prague": _to_prague_iso(_cancelled_at),
+                    "phase": "cancelled_during_event_detection",
+                    "details": {
+                        "dates_processed": result.get("dates_processed", 0),
+                        "records_upserted": result.get("records_upserted", 0),
+                        "tickers_seeded_total": seeded_total,
+                        "tickers_with_price_data": with_price,
+                        "event_detectors": event_detector_summary,
+                        "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                        "parent_run_id": parent_run_id,
+                        "stop_reason": "cancel_requested_during_phase_bc",
+                    },
+                }},
+            )
+            return {
+                "job_name": job_name,
+                "status": "cancelled",
+                "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                "tickers_seeded_total": seeded_total,
+                "tickers_with_price_data": with_price,
+                "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
+                "started_at": started_at.isoformat(),
+                "finished_at": _cancelled_at.isoformat(),
+            }
+
+        await _progress(
+            f"Done: {with_price} tickers with prices. "
+            f"{result.get('fundamentals_events_enqueued', 0)} fundamentals events enqueued.",
+            processed=with_price,
+            total=seeded_total,
+            phase="completed",
+        )
 
         # Log to ops_job_runs
         finished_at = datetime.now(timezone.utc)
@@ -1062,6 +1195,10 @@ async def run_daily_price_sync(
                 "finished_at_prague": _to_prague_iso(finished_at),
                 "log_timezone": "Europe/Prague",
                 "status": result.get("status", "completed"),
+                "phase": "completed",
+                "progress_processed": with_price,
+                "progress_total": seeded_total,
+                "progress_pct": min(round(100 * with_price / seeded_total), 100) if seeded_total else 0,
                 "details": {
                     "config": result.get("config"),
                     "gap_analysis": result.get("gap_analysis"),
