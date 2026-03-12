@@ -453,6 +453,7 @@ async def sync_ticker_whitelist(
         "already_exists": 0,
         "reactivated": 0,
         "deactivated": 0,
+        "hard_sync_archived": 0,
         "fundamentals_events_created": 0,
         "errors": [],
     }
@@ -725,6 +726,34 @@ async def sync_ticker_whitelist(
         }
     )
     result["deactivated"] = deactivate_result.modified_count
+
+    # Hard-sync reconciliation: archive every tracked_ticker that belongs to
+    # the Step 1 seed universe (NYSE/NASDAQ Common Stock) but is absent from
+    # this run's seed set.  This stops drift between tracked_tickers and the
+    # latest EODHD payload without deleting any documents.
+    # NOTE: dry_run mode returns early above (line ~608); this block is live-only.
+    latest_seed_set = candidate_tickers  # already built above; named for clarity
+    hard_sync_result = await db.tracked_tickers.update_many(
+        {
+            "exchange": {"$in": exchanges},
+            "asset_type": "Common Stock",
+            "ticker": {"$nin": list(latest_seed_set)},
+        },
+        {
+            "$set": {
+                "archived": True,
+                "is_visible": False,
+                "archived_reason": "not in latest seed",
+                "updated_at": now,
+            }
+        },
+    )
+    result["hard_sync_archived"] = hard_sync_result.modified_count
+    logger.info(
+        f"Step 1 hard-sync: archived {result['hard_sync_archived']} ticker(s) "
+        f"no longer present in EODHD seed payload"
+    )
+
     # Reconciliation audit: verify raw_distinct == seeded + deduped_exclusions.
     # Compute sets from the three populations to identify any gap.
     raw_codes: set = {
