@@ -54,6 +54,7 @@ REMEDIATION_HEARTBEAT_SECONDS = 10
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 _FUND_EVENTS_INDEX_DONE = False
+_FUND_EVENTS_INDEX_LOCK = asyncio.Lock()
 
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -186,13 +187,16 @@ async def _ensure_fundamentals_events_index(db) -> None:
     global _FUND_EVENTS_INDEX_DONE
     if _FUND_EVENTS_INDEX_DONE:
         return
-    await db.fundamentals_events.create_index(
-        [("ticker", 1), ("event_type", 1)],
-        name="fundamentals_events_pending_ticker_event_type",
-        unique=True,
-        partialFilterExpression={"status": "pending"},
-    )
-    _FUND_EVENTS_INDEX_DONE = True
+    async with _FUND_EVENTS_INDEX_LOCK:
+        if _FUND_EVENTS_INDEX_DONE:
+            return
+        await db.fundamentals_events.create_index(
+            [("ticker", 1), ("event_type", 1)],
+            name="fundamentals_events_pending_ticker_event_type",
+            unique=True,
+            partialFilterExpression={"status": "pending"},
+        )
+        _FUND_EVENTS_INDEX_DONE = True
 
 
 async def _enqueue_fundamentals_events(
@@ -248,7 +252,7 @@ async def _enqueue_fundamentals_events(
         )
 
     result = await db.fundamentals_events.bulk_write(ops, ordered=False)
-    new_inserts = len(getattr(result, "upserted_ids", {}) or {})
+    new_inserts = len(getattr(result, "upserted_ids", {}))
     skipped_existing = len(normalized) - new_inserts
 
     return {
@@ -961,6 +965,8 @@ async def run_step2_event_detectors(
     split_skip = enqueue_stats["split"]["skipped_existing"]
     div_skip = enqueue_stats["dividend"]["skipped_existing"]
     earn_skip = enqueue_stats["earnings"]["skipped_existing"]
+    enqueued_total = sum(v.get("new_inserts", 0) for v in enqueue_stats.values())
+    skipped_total = sum(v.get("skipped_existing", 0) for v in enqueue_stats.values())
 
     return {
         "step_2_2_split": {
@@ -993,8 +999,8 @@ async def run_step2_event_detectors(
             "fundamentals_events_enqueued_new": earn_new,
             "fundamentals_events_enqueued_skipped_existing": earn_skip,
         },
-        "enqueued_total": split_new + div_new + earn_new,
-        "skipped_total": split_skip + div_skip + earn_skip,
+        "enqueued_total": enqueued_total,
+        "skipped_total": skipped_total,
         "remediation": remediation_stats,
         "today": today_str,
         "cancelled": _cancelled,
