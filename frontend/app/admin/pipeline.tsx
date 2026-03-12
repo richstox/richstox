@@ -190,6 +190,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
 
+  // ── Step 1 universe seed progress ────────────────────────────────────────
+  const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
+
   // ── Step 4 visibility recompute progress ─────────────────────────────────
   const [step4Progress, setStep4Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
 
@@ -411,6 +414,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           if (st === 'running') {
             const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
             setLiveProgress(progressMsg);
+            // Structured progress for Step 1 universe seed
+            if (jobName === 'universe_seed' && lastRun.progress_total) {
+              setStep1Progress({
+                processed: lastRun.progress_processed || 0,
+                total:     lastRun.progress_total,
+                pct:       lastRun.progress_pct || 0,
+              });
+            }
             // Structured progress for Step 4 visibility recompute
             if (jobName === 'compute_visible_universe' && lastRun.progress_total) {
               setStep4Progress({
@@ -426,6 +437,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           }
           stopPolling();
           setRunningJob(null);
+          // Persist final Step 1 progress on completion so the bar shows 100%
+          if (jobName === 'universe_seed' && lastRun.progress_total) {
+            setStep1Progress({
+              processed: lastRun.progress_total,
+              total:     lastRun.progress_total,
+              pct:       100,
+            });
+          }
           // Persist final Step 4 progress on completion so the bar shows 100%
           if (jobName === 'compute_visible_universe' && lastRun.progress_total) {
             setStep4Progress({
@@ -1185,7 +1204,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Last run:</Text>
                     <Text style={[s.runValue, { color: getStatusColor(run.status) }]}>
-                      {formatTime(run.start_time)} · {formatDuration(run.duration_seconds)}
+                      {formatTime(run.end_time || run.start_time)} · {formatDuration(run.duration_seconds)}
                     </Text>
                   </View>
                   {run.triggered_by && (
@@ -1230,6 +1249,24 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.substepValue}>{fmt(n as number)}</Text>
                     </View>
                   ))}
+                </View>
+              )}
+
+              {/* Step 1 seeding progress bar */}
+              {step.job_name === 'universe_seed' && step1Progress !== null && (
+                <View style={s.step4ProgressWrap}>
+                  <View style={s.step4ProgressBarBg}>
+                    <View style={[s.step4ProgressBarFill, {
+                      width: `${Math.min(step1Progress.pct, 100)}%` as any,
+                      backgroundColor: '#6366F1',
+                    }]} />
+                  </View>
+                  <View style={s.step4ProgressRow}>
+                    <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
+                    <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
+                      {fmt(step1Progress.processed)} / {fmt(step1Progress.total)} · {step1Progress.pct}%
+                    </Text>
+                  </View>
                 </View>
               )}
 
