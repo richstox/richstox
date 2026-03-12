@@ -2087,37 +2087,86 @@ async def admin_whitelist_sync(dry_run: bool = Query(True)):
     return result
 
 async def _run_universe_seed_bg(db):
-    """Background task wrapper for universe seed — logs to ops_job_runs."""
+    """Background task wrapper for universe seed — logs to ops_job_runs with live progress."""
     import uuid as _uuid
-    from zoneinfo import ZoneInfo
-    PRAGUE = ZoneInfo("Europe/Prague")
 
     job_id = f"universe_seed_{_uuid.uuid4().hex[:8]}"
-    started_at = datetime.now(PRAGUE)
+    started_at = datetime.now(timezone.utc)
     logger.info(f"Universe Seed started (job_id={job_id})")
 
+    # Insert running sentinel immediately so the pipeline polling endpoint finds
+    # a "running" document and the progress bar activates without waiting for completion.
+    _sentinel = await db.ops_job_runs.insert_one({
+        "job_id": job_id,
+        "job_name": "universe_seed",
+        "status": "running",
+        "source": "admin_manual",
+        "triggered_by": "admin_manual",
+        "started_at": started_at,
+        "started_at_prague": _sched_to_prague_iso(started_at),
+        "log_timezone": "Europe/Prague",
+        "progress": "Fetching symbols from EODHD…",
+        "progress_pct": 0,
+    })
+    _doc_id = _sentinel.inserted_id
+
+    async def _s1_progress(processed: int, total: int) -> None:
+        pct = round(100 * processed / total) if total else 0
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "progress": f"Seeding… {processed:,} / {total:,} tickers",
+                "progress_processed": processed,
+                "progress_total": total,
+                "progress_pct": pct,
+            }},
+        )
+
     try:
-        result = await sync_ticker_whitelist(db, dry_run=False, job_run_id=job_id)
+        result = await sync_ticker_whitelist(
+            db, dry_run=False, job_run_id=job_id,
+            progress_callback=_s1_progress,
+        )
         status = "completed"
     except Exception as e:
         result = {"error": str(e)}
         status = "failed"
         logger.error(f"Universe Seed failed: {e}")
 
-    finished_at = datetime.now(PRAGUE)
-    await db.ops_job_runs.insert_one({
-        "job_id": job_id,
-        "job_name": "universe_seed",
-        "started_at": started_at,
-        "finished_at": finished_at,
-        "started_at_prague": started_at.isoformat(),
-        "finished_at_prague": finished_at.isoformat(),
-        "log_timezone": "Europe/Prague",
-        "duration_sec": (finished_at - started_at).total_seconds(),
-        "status": status,
-        "result": result,
-        "triggered_by": "admin_manual",
-    })
+    finished_at = datetime.now(timezone.utc)
+    duration = (finished_at - started_at).total_seconds()
+    if status == "completed":
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "status": "completed",
+                "finished_at": finished_at,
+                "finished_at_prague": _sched_to_prague_iso(finished_at),
+                "duration_seconds": duration,
+                "result": result,
+                "details": {
+                    "fetched": result.get("fetched"),
+                    "raw_rows_total": result.get("raw_rows_total"),
+                    "seeded_total": result.get("seeded_total"),
+                    "filtered_out_total_step1": result.get("filtered_out_total_step1"),
+                    "fetched_raw_per_exchange": result.get("fetched_raw_per_exchange"),
+                },
+                "progress": f"Completed: {result.get('seeded_total', 0):,} seeded",
+                "progress_pct": 100,
+            }},
+        )
+    else:
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "status": "failed",
+                "finished_at": finished_at,
+                "finished_at_prague": _sched_to_prague_iso(finished_at),
+                "duration_seconds": duration,
+                "error": result.get("error", "Unknown error"),
+                "progress": f"Failed: {result.get('error', 'Unknown error')}",
+            }},
+        )
     logger.info(f"Universe Seed completed: status={status}, job_id={job_id}")
 
 
