@@ -50,7 +50,7 @@ Collection: stock_prices
 import os
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Callable, Awaitable, Set
+from typing import List, Dict, Any, Optional, Callable, Awaitable, Set, Tuple
 import httpx
 import asyncio
 
@@ -957,6 +957,9 @@ async def run_daily_bulk_catchup(
       a) Immediately after the EODHD API call returns.
       b) Before each bulk_write batch, so an in-flight write is never interrupted.
     On cancel: flag is deleted, job returns cleanly with status="cancelled".
+
+    Optional progress_cb receives (processed_tickers, expected_tickers_count, "2.1 bulk price sync")
+    after each bulk_write batch to stream Step 2 progress.
     """
     from pymongo import UpdateOne
 
@@ -1012,8 +1015,10 @@ async def run_daily_bulk_catchup(
     logger.info(f"[BULK CATCHUP] {len(bulk_data)} raw records, {expected_tickers_count} Step 2 universe tickers")
 
     # Build bulk operations — filter to tracked tickers only
-    bulk_operations = []
-    bulk_operation_tickers: List[str] = []
+    # Group UpdateOne operations with their unique tickers for progress tracking
+    batched_operations_with_tickers: List[Tuple[List[UpdateOne], Set[str]]] = []
+    current_batch_ops: List[UpdateOne] = []
+    current_batch_tickers: Set[str] = set()
     date_seen: Optional[str] = None
 
     for record in bulk_data:
@@ -1024,7 +1029,7 @@ async def run_daily_bulk_catchup(
         date = record.get("date")
         if date:
             date_seen = date
-        bulk_operations.append(
+        current_batch_ops.append(
             UpdateOne(
                 {"ticker": ticker, "date": date},
                 {"$set": {
@@ -1040,9 +1045,21 @@ async def run_daily_bulk_catchup(
                 upsert=True,
             )
         )
-        bulk_operation_tickers.append(ticker)
+        current_batch_tickers.add(ticker)
 
-    if not bulk_operations:
+        if len(current_batch_ops) == BULK_WRITE_BATCH_SIZE:
+            batched_operations_with_tickers.append(
+                (current_batch_ops, current_batch_tickers)
+            )
+            current_batch_ops = []
+            current_batch_tickers = set()
+
+    if current_batch_ops:
+        batched_operations_with_tickers.append(
+            (current_batch_ops, current_batch_tickers)
+        )
+
+    if not batched_operations_with_tickers:
         logger.info("[BULK CATCHUP] No matching tickers in bulk response")
         return {
             "status": "success",
@@ -1059,11 +1076,11 @@ async def run_daily_bulk_catchup(
     bulk_writes = 0
     processed_ticker_set: Set[str] = set()
 
-    for i in range(0, len(bulk_operations), BULK_WRITE_BATCH_SIZE):
+    for batch_index, (batch, batch_unique_tickers) in enumerate(batched_operations_with_tickers):
         # ── Cancel check 2b: before each bulk_write batch ────────────────────
         if await _cancelled():
             logger.info(
-                f"[BULK CATCHUP] Cancelled before batch {i // BULK_WRITE_BATCH_SIZE + 1} "
+                f"[BULK CATCHUP] Cancelled before batch {batch_index + 1} "
                 f"({records_upserted} records already written)"
             )
             return {
@@ -1076,23 +1093,17 @@ async def run_daily_bulk_catchup(
                 "bulk_writes": bulk_writes,
             }
 
-        batch = bulk_operations[i:i + BULK_WRITE_BATCH_SIZE]
-        batch_tickers: Set[str] = set(
-            bulk_operation_tickers[i:i + BULK_WRITE_BATCH_SIZE]
-        )
         write_result = await db.stock_prices.bulk_write(batch, ordered=False)
         records_upserted += write_result.upserted_count + write_result.modified_count
         bulk_writes += 1
 
-        processed_ticker_set.update(batch_tickers)
-        processed_tickers = len(processed_ticker_set)
+        processed_ticker_set.update(batch_unique_tickers)
         if progress_cb:
             await progress_cb(
-                processed_tickers,
+                len(processed_ticker_set),
                 expected_tickers_count,
                 "2.1 bulk price sync",
             )
-        batch_tickers.clear()
 
     logger.info(
         f"[BULK CATCHUP] Complete: date={date_seen}, "
