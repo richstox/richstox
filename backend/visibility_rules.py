@@ -175,7 +175,7 @@ def compute_visibility_step4_only(ticker_doc: dict) -> Tuple[bool, Optional[str]
 
 def get_canonical_sieve_query() -> dict:
     """
-    MongoDB query equivalent of compute_visibility.
+    MongoDB query equivalent of compute_visibility_step4_only (P1 gates).
     Used for count verification and as the cursor filter in recompute_visibility_all.
     """
     return {
