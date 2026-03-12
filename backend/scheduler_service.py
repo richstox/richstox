@@ -984,6 +984,10 @@ async def run_daily_price_sync(
             "started_at": started_at,
             "source": "scheduler",
             "details": {"parent_run_id": parent_run_id},
+            "phase": "bulk_catchup",
+            "progress_processed": 0,
+            "progress_total": 0,
+            "progress_pct": 0,
         })).inserted_id
 
     async def _is_cancelled() -> bool:
@@ -1047,7 +1051,15 @@ async def run_daily_price_sync(
             )
 
         # ── Phase A: bulk price catchup + has_price_data flags ────────────────
-        await _progress("2.1 Detecting price gaps (last 30 days)…", phase="bulk_catchup")
+        # Query seeded ticker count upfront so progress_total is available from
+        # the very first update — before the potentially long bulk catchup runs.
+        seeded_total_early = await db.tracked_tickers.count_documents(SEED_QUERY)
+        await _progress(
+            "2.1 Detecting price gaps (last 30 days)…",
+            processed=0,
+            total=seeded_total_early,
+            phase="bulk_catchup",
+        )
 
         # Run the bulk catchup with gap detection
         result = await run_daily_bulk_catchup(db)
@@ -1098,7 +1110,7 @@ async def run_daily_price_sync(
                     "status": "cancelled",
                     "finished_at": _cancelled_at,
                     "finished_at_prague": _to_prague_iso(_cancelled_at),
-                    "phase": "cancelled_after_bulk",
+                    "phase": "stopped",
                     "details": {
                         "dates_processed": result.get("dates_processed", 0),
                         "records_upserted": result.get("records_upserted", 0),
@@ -1153,7 +1165,7 @@ async def run_daily_price_sync(
                     "status": "cancelled",
                     "finished_at": _cancelled_at,
                     "finished_at_prague": _to_prague_iso(_cancelled_at),
-                    "phase": "cancelled_during_event_detection",
+                    "phase": "stopped",
                     "details": {
                         "dates_processed": result.get("dates_processed", 0),
                         "records_upserted": result.get("records_upserted", 0),
