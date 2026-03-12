@@ -229,7 +229,7 @@ async def _enqueue_fundamentals_events(
                         "event_type": event_type,
                         "status": "pending",
                         "source": source_job,
-                        "source_job": source_job,
+                        "source_job": source_job,  # legacy field kept for compatibility
                         "detector_step": detector_step,
                         "detected_date": detected_date,
                         "created_at": now,
@@ -237,6 +237,7 @@ async def _enqueue_fundamentals_events(
                     "$set": {
                         "detected_date": detected_date,
                         "source": source_job,
+                        # Preserve legacy source_job field for readers expecting it.
                         "source_job": source_job,
                         "detector_step": detector_step,
                         "updated_at": now,
