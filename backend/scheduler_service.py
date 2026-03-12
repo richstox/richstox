@@ -34,6 +34,8 @@ from typing import Dict, Any, Optional, List, Callable, Awaitable
 import asyncio
 from zoneinfo import ZoneInfo
 import httpx
+from pymongo import UpdateOne
+from pymongo.errors import BulkWriteError
 
 logger = logging.getLogger("richstox.scheduler")
 
@@ -185,38 +187,48 @@ async def _enqueue_fundamentals_events(
     detector_step: str,
 ) -> Dict[str, int]:
     """
-    Enqueue fundamentals events idempotently.
-    Creates one pending event per (ticker, event_type) while pending/processing exists.
+    Enqueue fundamentals events idempotently using bulk_write.
+    The partial unique index on (ticker, event_type) WHERE status='pending'
+    ensures at most one pending event per ticker+event_type.
+    Returns new inserts (upserted_ids) and already-existing skipped counts.
     """
-    inserted = 0
-    existing = 0
     normalized = sorted({t for t in tickers if t})
-    for ticker in normalized:
-        result = await db.fundamentals_events.update_one(
+    if not normalized:
+        return {"inserted": 0, "already_pending": 0}
+    ops = [
+        UpdateOne(
+            {"ticker": ticker, "event_type": event_type, "status": "pending"},
             {
-                "ticker": ticker,
-                "event_type": event_type,
-                "status": {"$in": ["pending", "processing"]},
-            },
-            {
+                "$set": {
+                    "updated_at": now,
+                    "source_job": source_job,
+                    "detector_step": detector_step,
+                },
                 "$setOnInsert": {
                     "ticker": ticker,
                     "event_type": event_type,
                     "status": "pending",
-                    "source_job": source_job,
-                    "detector_step": detector_step,
                     "created_at": now,
-                },
-                "$set": {
-                    "updated_at": now,
                 },
             },
             upsert=True,
         )
-        if result.upserted_id is not None:
-            inserted += 1
-        else:
-            existing += 1
+        for ticker in normalized
+    ]
+    try:
+        res = await db.fundamentals_events.bulk_write(ops, ordered=False)
+        inserted = len(res.upserted_ids)
+    except BulkWriteError as bwe:
+        # Partial success: some writes may have failed (e.g., unexpected conflicts).
+        # Expected duplicate-key errors from the partial unique index are prevented by
+        # the upsert filter matching existing pending docs rather than inserting.
+        logger.warning(
+            "fundamentals_events bulk_write partial error (event_type=%s): %s",
+            event_type,
+            bwe.details.get("writeErrors", [])[:3],
+        )
+        inserted = bwe.details.get("nUpserted", 0)
+    existing = len(normalized) - inserted
     return {"inserted": inserted, "already_pending": existing}
 
 
@@ -848,15 +860,17 @@ async def run_step2_event_detectors(
     # Skip enqueueing if cancelled mid-run (partial data may be incomplete)
     all_flagged: List[str] = []
     price_redownload_tickers: List[str] = []  # split + dividend tickers needing full price refresh
+    enqueued_new: Dict[str, int] = {"split": 0, "dividend": 0, "earnings": 0}
+    enqueued_skipped: Dict[str, int] = {"split": 0, "dividend": 0, "earnings": 0}
     if not _cancelled:
         for result, event_type, step in [
-            (split, "split_detected", "2.2"),
-            (dividend, "dividend_detected", "2.4"),
-            (earnings, "earnings_refresh_due", "2.6"),
+            (split, "split", "2.2"),
+            (dividend, "dividend", "2.4"),
+            (earnings, "earnings", "2.6"),
         ]:
             tickers = [f"{t}.US" for t in result.get("tickers", [])]
             if tickers:
-                await _enqueue_fundamentals_events(
+                enqueue_res = await _enqueue_fundamentals_events(
                     db,
                     event_type=event_type,
                     tickers=tickers,
@@ -864,6 +878,8 @@ async def run_step2_event_detectors(
                     source_job="price_sync",
                     detector_step=step,
                 )
+                enqueued_new[event_type] += enqueue_res["inserted"]
+                enqueued_skipped[event_type] += enqueue_res["already_pending"]
                 all_flagged.extend(tickers)
                 # Split and dividend detectors set needs_price_redownload=True.
                 # Collect unique tickers for immediate scoped price re-download.
@@ -936,6 +952,10 @@ async def run_step2_event_detectors(
             + dividend.get("flagged_count", 0)
             + earnings.get("flagged_count", 0)
         ),
+        "enqueued_new": enqueued_new,
+        "enqueued_skipped_existing": enqueued_skipped,
+        "fundamentals_events_enqueued_new": sum(enqueued_new.values()),
+        "fundamentals_events_enqueued_skipped_existing": sum(enqueued_skipped.values()),
         "remediation": remediation_stats,
         "today": today_str,
         "cancelled": _cancelled,
@@ -1173,6 +1193,15 @@ async def run_daily_price_sync(
             phase="event_detection",
         )
 
+        # Ensure partial unique index on fundamentals_events exists (idempotent).
+        # Guarantees at most one pending event per (ticker, event_type).
+        await db.fundamentals_events.create_index(
+            [("ticker", 1), ("event_type", 1)],
+            unique=True,
+            partialFilterExpression={"status": "pending"},
+            name="fundamentals_events_pending_unique",
+        )
+
         # Step 2.2 / 2.4 / 2.6 detectors -> enqueue fundamentals refresh events.
         event_detector_summary = await run_step2_event_detectors(
             db,
@@ -1187,6 +1216,10 @@ async def run_daily_price_sync(
         )
         result["event_detectors"] = event_detector_summary
         result["fundamentals_events_enqueued"] = event_detector_summary.get("enqueued_total", 0)
+        result["fundamentals_events_enqueued_new"] = event_detector_summary.get("fundamentals_events_enqueued_new", 0)
+        result["fundamentals_events_enqueued_skipped_existing"] = event_detector_summary.get("fundamentals_events_enqueued_skipped_existing", 0)
+        result["fundamentals_events_enqueued_new_by_type"] = event_detector_summary.get("enqueued_new", {})
+        result["fundamentals_events_enqueued_skipped_by_type"] = event_detector_summary.get("enqueued_skipped_existing", {})
 
         # Check if detectors were cancelled mid-run
         if event_detector_summary.get("cancelled"):
@@ -1257,6 +1290,10 @@ async def run_daily_price_sync(
                     "api_calls": result.get("api_calls", 0),
                     "bulk_writes": result.get("bulk_writes", 0),
                     "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
+                    "fundamentals_events_enqueued_new": result.get("fundamentals_events_enqueued_new", 0),
+                    "fundamentals_events_enqueued_skipped_existing": result.get("fundamentals_events_enqueued_skipped_existing", 0),
+                    "fundamentals_events_enqueued_new_by_type": result.get("fundamentals_events_enqueued_new_by_type", {}),
+                    "fundamentals_events_enqueued_skipped_by_type": result.get("fundamentals_events_enqueued_skipped_by_type", {}),
                     "event_detectors": result.get("event_detectors", {}),
                     "exclusion_report_run_id": result.get("exclusion_report_run_id"),
                     "parent_run_id": parent_run_id,
@@ -1281,6 +1318,10 @@ async def run_daily_price_sync(
             "dates_processed": result.get("dates_processed", 0),
             "api_calls": result.get("api_calls", 0),
             "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
+            "fundamentals_events_enqueued_new": result.get("fundamentals_events_enqueued_new", 0),
+            "fundamentals_events_enqueued_skipped_existing": result.get("fundamentals_events_enqueued_skipped_existing", 0),
+            "fundamentals_events_enqueued_new_by_type": result.get("fundamentals_events_enqueued_new_by_type", {}),
+            "fundamentals_events_enqueued_skipped_by_type": result.get("fundamentals_events_enqueued_skipped_by_type", {}),
             "event_detectors": result.get("event_detectors", {}),
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now(timezone.utc).isoformat(),
