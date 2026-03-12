@@ -193,6 +193,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // ── Step 1 universe seed progress ────────────────────────────────────────
   const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
 
+  // ── Step 2 price sync progress ────────────────────────────────────────────
+  const [step2Progress, setStep2Progress] = useState<{processed: number; total: number; pct: number; phase?: string} | null>(null);
+
   // ── Step 4 visibility recompute progress ─────────────────────────────────
   const [step4Progress, setStep4Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
 
@@ -422,6 +425,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 pct:       lastRun.progress_pct || 0,
               });
             }
+            // Structured progress for Step 2 price sync
+            if (jobName === 'price_sync' && lastRun.progress_total) {
+              setStep2Progress({
+                processed: lastRun.progress_processed || 0,
+                total:     lastRun.progress_total,
+                pct:       lastRun.progress_pct || 0,
+                phase:     lastRun.phase,
+              });
+            }
             // Structured progress for Step 4 visibility recompute
             if (jobName === 'compute_visible_universe' && lastRun.progress_total) {
               setStep4Progress({
@@ -443,6 +455,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               processed: lastRun.progress_total,
               total:     lastRun.progress_total,
               pct:       100,
+            });
+          }
+          // Persist final Step 2 progress on completion so the bar shows 100%
+          if (jobName === 'price_sync' && lastRun.progress_total) {
+            setStep2Progress({
+              processed: lastRun.progress_total,
+              total:     lastRun.progress_total,
+              pct:       100,
+              phase:     'completed',
             });
           }
           // Persist final Step 4 progress on completion so the bar shows 100%
@@ -676,10 +697,36 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               }
             } catch { /* non-fatal */ }
           }
+          // While Step 2 is the active step, poll its progress for the live bar.
+          if (sd.current_step === 2) {
+            try {
+              const jr = await authenticatedFetch(
+                `${API_URL}/api/admin/jobs/price_sync/status`,
+                {},
+                sessionToken,
+              );
+              if (jr.ok) {
+                const jd = await jr.json();
+                const lr = jd.last_run;
+                if (lr?.status === 'running') {
+                  setStep2Progress({
+                    processed: lr.progress_processed || 0,
+                    total:     lr.progress_total || 0,
+                    pct:       lr.progress_pct || 0,
+                    phase:     lr.phase,
+                  });
+                }
+              }
+            } catch { /* non-fatal */ }
+          }
           if (sd.status === 'completed' || sd.status === 'failed' || sd.status === 'cancelled') {
             clearInterval(chainPollRef.current!);
             chainPollRef.current = null;
             setChainRunning(false);
+            // Freeze Step 2 progress bar at final state
+            if (sd.status === 'completed' && sd.steps_done?.includes(2)) {
+              setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
+            }
           }
         } catch { /* keep polling */ }
       }, 2000);
@@ -705,6 +752,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     setChainRunning(false);
     setChainStatus('cancelled');
     setChainCurrentStep(null);
+    // Immediately show Stopped for any in-progress step 2 progress
+    setStep2Progress(prev => prev ? { ...prev, phase: 'stopped' } : null);
   };
 
   const handleDownloadFullCsv = () => {
@@ -1287,6 +1336,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
                     <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
                       {fmt(step1Progress.processed)} / {fmt(step1Progress.total)} · {step1Progress.pct}%
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Step 2 price sync live progress bar */}
+              {step.job_name === 'price_sync' && step2Progress !== null && (
+                <View style={s.step4ProgressWrap}>
+                  <View style={s.step4ProgressBarBg}>
+                    <View style={[s.step4ProgressBarFill, {
+                      width: `${Math.min(step2Progress.pct, 100)}%` as any,
+                      backgroundColor: '#10B981',
+                    }]} />
+                  </View>
+                  <View style={s.step4ProgressRow}>
+                    <Text style={s.step4ProgressLabel}>
+                      {step2Progress.phase === 'bulk_catchup' ? 'Phase A: Bulk price sync'
+                        : step2Progress.phase === 'event_detection' ? 'Phase B: Event detectors'
+                        : step2Progress.phase === 'completed' ? 'Complete'
+                        : step2Progress.phase === 'stopped' ? 'Stopped'
+                        : 'Price sync'}
+                    </Text>
+                    <Text style={[s.step4ProgressValue, { color: '#10B981' }]}>
+                      {step2Progress.total > 0
+                        ? `${fmt(step2Progress.processed)} / ${fmt(step2Progress.total)} · ${step2Progress.pct}%`
+                        : `${step2Progress.pct}%`}
                     </Text>
                   </View>
                 </View>

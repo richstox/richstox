@@ -5461,7 +5461,8 @@ async def admin_job_status(job_name: str):
         {"job_name": job_name},
         {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
          "details": 1, "records_upserted": 1, "progress": 1,
-         "progress_processed": 1, "progress_total": 1, "progress_pct": 1},
+         "progress_processed": 1, "progress_total": 1, "progress_pct": 1,
+         "phase": 1},
         sort=[("started_at", -1)],
     )
     cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
@@ -7729,7 +7730,11 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 s2_result = await run_daily_price_sync(
                     db, ignore_kill_switch=True, parent_run_id=s1_run_id,
                     run_doc_id=_s2_run_doc_id,
+                    cancel_check=_cancelled,
                 )
+                if s2_result.get("status") == "cancelled":
+                    chain_status = "cancelled"
+                    raise Exception("cancelled")
                 if s2_result.get("status") == "failed":
                     raise RuntimeError(
                         f"Step 2 price_sync failed: {s2_result.get('error', 'unknown error')}"
@@ -7743,18 +7748,20 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     }},
                 )
             except Exception as _s2_exc:
-                _s2_fail_at = datetime.now(timezone.utc)
-                await db.ops_job_runs.update_one(
-                    {"_id": _s2_run_doc_id},
-                    {"$set": {
-                        "status": "failed",
-                        "finished_at": _s2_fail_at,
-                        "finished_at_prague": _sched_to_prague_iso(_s2_fail_at),
-                        "error": str(_s2_exc),
-                    }},
-                )
-                chain_failed_step = 2
-                raise  # re-raise so the outer except marks chain as failed
+                # Only mark as failed if not a cancellation (cancel already sets status in DB)
+                if chain_status != "cancelled":
+                    _s2_fail_at = datetime.now(timezone.utc)
+                    await db.ops_job_runs.update_one(
+                        {"_id": _s2_run_doc_id},
+                        {"$set": {
+                            "status": "failed",
+                            "finished_at": _s2_fail_at,
+                            "finished_at_prague": _sched_to_prague_iso(_s2_fail_at),
+                            "error": str(_s2_exc),
+                        }},
+                    )
+                    chain_failed_step = 2
+                raise  # re-raise so the outer except marks chain as failed/cancelled
             s2_run_id: Optional[str] = s2_result.get("exclusion_report_run_id")
             if not s2_run_id:
                 raise RuntimeError("Step 2 run record not found (exclusion_report_run_id missing)")
