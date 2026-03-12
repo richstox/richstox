@@ -115,7 +115,10 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
                 reason = VisibilityFailedReason.MISSING_FINANCIAL_CURRENCY.value
 
     if reason and reason not in ALLOWED_P1_REASONS:
-        raise RuntimeError(f"Invalid visibility failure reason: {reason}")
+        raise RuntimeError(
+            f"Visibility guard violation (non-P1 reason {reason}) "
+            f"for ticker {ticker_doc.get('ticker')}"
+        )
 
     return reason is None, reason
 

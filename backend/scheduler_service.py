@@ -47,6 +47,7 @@ STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP2_REPORT_STEP = "Step 2 - Price Sync"
 EVENTS_WATERMARK_KEY = "last_events_checked_date"
+REMEDIATION_WATCHDOG_TIMEOUT_SECONDS = 300
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
@@ -620,16 +621,16 @@ async def _remediate_price_redownload(
 
     for idx, ticker_us in enumerate(unique_tickers):
         # Watchdog stop at 300s
-        if time.monotonic() - start_ts > 300:
+        if time.monotonic() - start_ts > REMEDIATION_WATCHDOG_TIMEOUT_SECONDS:
             remaining = unique_tickers[idx:]
             failed += len(remaining)
             for rem in remaining:
                 failures.append({
                     "ticker": rem.replace(".US", ""),
-                    "reason": "Price remediation watchdog timeout (>300s)",
+                    "reason": f"Price remediation watchdog timeout (>{REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s)",
                 })
             logger.warning(
-                f"_remediate_price_redownload: watchdog triggered after 300s, "
+                f"_remediate_price_redownload: watchdog triggered after {REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s, "
                 f"stopping with {len(remaining)} ticker(s) unprocessed"
             )
             break
@@ -739,12 +740,13 @@ async def run_step2_event_detectors(
     earnings_all: Dict[str, Any] = {
         "mock_mode": not bool(EODHD_API_KEY),
         "api_endpoints_all": [],
-        "dates_checked": missed_dates,
+        "dates_checked": [],
         "raw_count": 0,
         "universe_count": 0,
         "flagged_count": 0,
         "tickers": [],
     }
+    processed_dates: List[str] = []
 
     for i, date_str in enumerate(missed_dates):
         await _p(f"2.2 Split detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
@@ -770,9 +772,11 @@ async def run_step2_event_detectors(
         earnings_all["universe_count"] += earnings.get("universe_count", 0)
         earnings_all["flagged_count"] += earnings.get("flagged_count", 0)
         earnings_all["tickers"].extend(earnings.get("tickers", []))
+        earnings_all["dates_checked"].append(date_str)
 
-        # Advance watermark after successful day processing
+        # Advance watermark only after the full detector set for the day succeeds
         await _set_events_watermark(db, datetime.strptime(date_str, "%Y-%m-%d").date())
+        processed_dates.append(date_str)
 
     split_all_in_universe = list(dict.fromkeys(split_all_in_universe))  # dedup
     div_all_in_universe = list(dict.fromkeys(div_all_in_universe))
@@ -781,7 +785,7 @@ async def run_step2_event_detectors(
         "mock_mode": not bool(EODHD_API_KEY),
         "api_endpoint": split_endpoints[0] if split_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=splits&date={today_str}",
         "api_endpoints_all": split_endpoints,
-        "dates_checked": missed_dates,
+        "dates_checked": processed_dates,
         "raw_count": split_raw_total,
         "universe_count": len(split_all_in_universe),
         "flagged_count": split_flagged_total,
@@ -791,7 +795,7 @@ async def run_step2_event_detectors(
         "mock_mode": not bool(EODHD_API_KEY),
         "api_endpoint": div_endpoints[0] if div_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=dividends&date={today_str}",
         "api_endpoints_all": div_endpoints,
-        "dates_checked": missed_dates,
+        "dates_checked": processed_dates,
         "raw_count": div_raw_total,
         "universe_count": len(div_all_in_universe),
         "flagged_count": div_flagged_total,
@@ -799,9 +803,16 @@ async def run_step2_event_detectors(
     }
     earnings = {
         "mock_mode": earnings_all.get("mock_mode", False),
-        "api_endpoint": (earnings_all.get("api_endpoints_all") or [f"{EODHD_BASE_URL}/calendar/earnings?from={today_str}&to={today_str}"])[0],
+        "api_endpoint": (
+            earnings_all.get("api_endpoints_all")
+            or [
+                f"{EODHD_BASE_URL}/calendar/earnings?"
+                f"from={(processed_dates or missed_dates or [today_str])[0]}"
+                f"&to={(processed_dates or missed_dates or [today_str])[-1]}"
+            ]
+        )[0],
         "api_endpoints_all": earnings_all.get("api_endpoints_all", []),
-        "dates_checked": missed_dates,
+        "dates_checked": processed_dates,
         "raw_count": earnings_all.get("raw_count", 0),
         "universe_count": earnings_all.get("universe_count", 0),
         "flagged_count": earnings_all.get("flagged_count", 0),
