@@ -417,6 +417,7 @@ async def sync_ticker_whitelist(
     exchanges: Optional[List[str]] = None,
     job_run_id: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
+    raw_total_callback: Optional[Callable[[int], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """
     Synchronize the tracked_tickers collection with EODHD exchange-symbol-list.
@@ -427,6 +428,10 @@ async def sync_ticker_whitelist(
     progress_callback: optional async callable(processed: int, total: int).
         Called every 1000 tickers during the bulk upsert phase so callers can
         emit live progress to ops_job_runs without blocking the seeding loop.
+    raw_total_callback: optional async callable(raw_rows_total: int).
+        Called once, immediately after all exchange symbols are fetched and
+        raw_rows_total is known — before any filtering or seeding — so callers
+        can write the full raw count to ops_job_runs for early UI display.
     """
     exchanges = exchanges or SUPPORTED_EXCHANGES
     now = datetime.now(timezone.utc)
@@ -527,6 +532,13 @@ async def sync_ticker_whitelist(
 
     result["fetched"] = len(today_fetched_set)
     result["raw_rows_total"] = len(raw_rows_list)
+
+    # Notify caller of raw total as soon as it's known (before filtering/seeding).
+    if raw_total_callback:
+        try:
+            await raw_total_callback(result["raw_rows_total"])
+        except Exception:
+            pass  # never let a callback error abort the seeding
 
     # Group distinct symbols by their assigned exchange for per-exchange filtering.
     from collections import defaultdict as _defaultdict

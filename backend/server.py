@@ -2122,10 +2122,21 @@ async def _run_universe_seed_bg(db):
             }},
         )
 
+    async def _s1_raw_total(raw_rows_total: int) -> None:
+        """Write raw total to sentinel as soon as all exchange symbols are fetched."""
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "raw_rows_total": raw_rows_total,
+                "details.raw_rows_total": raw_rows_total,
+            }},
+        )
+
     try:
         result = await sync_ticker_whitelist(
             db, dry_run=False, job_run_id=job_id,
             progress_callback=_s1_progress,
+            raw_total_callback=_s1_raw_total,
         )
         status = "completed"
     except Exception as e:
@@ -2135,6 +2146,7 @@ async def _run_universe_seed_bg(db):
 
     finished_at = datetime.now(timezone.utc)
     duration = (finished_at - started_at).total_seconds()
+    seeded_total = result.get("seeded_total") or 0
     if status == "completed":
         await db.ops_job_runs.update_one(
             {"_id": _doc_id},
@@ -2147,11 +2159,13 @@ async def _run_universe_seed_bg(db):
                 "details": {
                     "fetched": result.get("fetched") or 0,
                     "raw_rows_total": result.get("raw_rows_total") or 0,
-                    "seeded_total": result.get("seeded_total") or 0,
+                    "seeded_total": seeded_total,
                     "filtered_out_total_step1": result.get("filtered_out_total_step1") or 0,
                     "fetched_raw_per_exchange": result.get("fetched_raw_per_exchange") or {},
                 },
-                "progress": f"Completed: {result.get('seeded_total', 0):,} seeded",
+                "progress": f"Completed: {seeded_total:,} seeded",
+                "progress_processed": seeded_total,
+                "progress_total": seeded_total,
                 "progress_pct": 100,
             }},
         )
@@ -7656,13 +7670,25 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                         }},
                     )
 
+                async def _s1_raw_total(raw_rows_total: int) -> None:
+                    """Write raw total to sentinel as soon as all exchange symbols are fetched."""
+                    await db.ops_job_runs.update_one(
+                        {"_id": _s1_run_doc_id},
+                        {"$set": {
+                            "raw_rows_total": raw_rows_total,
+                            "details.raw_rows_total": raw_rows_total,
+                        }},
+                    )
+
                 s1_result = await sync_ticker_whitelist(
                     db, dry_run=False, job_run_id=job_id_s1,
                     progress_callback=_s1_progress,
+                    raw_total_callback=_s1_raw_total,
                 )
                 s1_finished_at = datetime.now(timezone.utc)
                 s1_run_id: Optional[str] = s1_result.get("raw_run_id") or job_id_s1
-                # Update the sentinel with completed status and full result details.
+                _s1_seeded_total = s1_result.get("seeded_total") or 0
+                # Update the sentinel with completed status, full result, and final progress.
                 await db.ops_job_runs.update_one(
                     {"_id": _s1_run_doc_id},
                     {"$set": {
@@ -7676,10 +7702,14 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                             "exclusion_report_run_id": s1_result.get("raw_run_id"),
                             "fetched": s1_result.get("fetched"),
                             "raw_rows_total": s1_result.get("raw_rows_total"),
-                            "seeded_total": s1_result.get("seeded_total"),
+                            "seeded_total": _s1_seeded_total,
                             "filtered_out_total_step1": s1_result.get("filtered_out_total_step1"),
                             "fetched_raw_per_exchange": s1_result.get("fetched_raw_per_exchange"),
                         },
+                        "progress": f"Completed: {_s1_seeded_total:,} seeded",
+                        "progress_processed": _s1_seeded_total,
+                        "progress_total": _s1_seeded_total,
+                        "progress_pct": 100,
                     }},
                 )
             except Exception as _s1_exc:
@@ -7725,6 +7755,10 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 "started_at_prague": _sched_to_prague_iso(s2_started_at),
                 "log_timezone": "Europe/Prague",
                 "details": {"chain_run_id": chain_id, "parent_run_id": s1_run_id},
+                "phase": "bulk_catchup",
+                "progress_processed": 0,
+                "progress_total": 0,
+                "progress_pct": 0,
             })).inserted_id
             try:
                 s2_result = await run_daily_price_sync(

@@ -677,6 +677,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           // Refresh overview on every tick so "Last run" / counts stay live.
           fetchData();
           // While Step 1 is the active step, poll its progress for the live bar.
+          // Also accept 'completed' status so the final 100% state is picked up
+          // before the chain advances to current_step=2.
           if (sd.current_step === 1) {
             try {
               const jr = await authenticatedFetch(
@@ -687,7 +689,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               if (jr.ok) {
                 const jd = await jr.json();
                 const lr = jd.last_run;
-                if (lr?.status === 'running' && lr.progress_total) {
+                if (lr?.progress_total) {
                   setStep1Progress({
                     processed: lr.progress_processed || 0,
                     total:     lr.progress_total,
@@ -723,9 +725,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             clearInterval(chainPollRef.current!);
             chainPollRef.current = null;
             setChainRunning(false);
-            // Freeze Step 2 progress bar at final state
-            if (sd.status === 'completed' && sd.steps_done?.includes(2)) {
-              setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
+            // Freeze final progress bar states
+            if (sd.status === 'completed') {
+              if (sd.steps_done?.includes(1)) {
+                setStep1Progress(prev => prev ? { processed: prev.total, total: prev.total, pct: 100 } : null);
+              }
+              if (sd.steps_done?.includes(2)) {
+                setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
+              }
             }
           }
         } catch { /* keep polling */ }

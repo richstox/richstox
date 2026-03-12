@@ -38,15 +38,16 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         {"$sort": {"started_at": -1}},
         {"$group": {
             "_id": "$job_name",
-            "status":       {"$first": "$status"},
-            "started_at":   {"$first": "$started_at"},
-            "finished_at":  {"$first": "$finished_at"},
-            "completed_at": {"$first": "$completed_at"},
-            "duration_sec": {"$first": "$duration_sec"},
+            "status":           {"$first": "$status"},
+            "started_at":       {"$first": "$started_at"},
+            "finished_at":      {"$first": "$finished_at"},
+            "completed_at":     {"$first": "$completed_at"},
+            "duration_sec":     {"$first": "$duration_sec"},
             "duration_seconds": {"$first": "$duration_seconds"},
-            "result":       {"$first": "$result"},
-            "details":      {"$first": "$details"},
-            "triggered_by": {"$first": "$triggered_by"},
+            "result":           {"$first": "$result"},
+            "details":          {"$first": "$details"},
+            "triggered_by":     {"$first": "$triggered_by"},
+            "raw_rows_total":   {"$first": "$raw_rows_total"},
         }},
     ]
     docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
@@ -79,8 +80,16 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             result.get("records_upserted") or 0
         )
         doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
-        # Raw symbols fetched from EODHD before filtering (universe_seed only)
-        doc["raw_symbols_fetched"] = result.get("fetched") or None
+        # Raw symbols fetched from EODHD before filtering (universe_seed only).
+        # Prefer the top-level raw_rows_total written by raw_total_callback during
+        # a running job; fall back to result.raw_rows_total (details sub-doc) or
+        # result.fetched from a completed run.
+        doc["raw_symbols_fetched"] = (
+            doc.get("raw_rows_total") or        # top-level field set early during run
+            result.get("raw_rows_total") or     # details sub-doc (also set early)
+            result.get("fetched") or            # completed result fallback
+            None
+        )
         # Canonical Step 1 filtered_out = deduped exclusion rows written (universe_seed only)
         doc["filtered_out_total_step1"] = result.get("filtered_out_total_step1") or None
         # Per-exchange raw counts before distinct deduplication (universe_seed only)
