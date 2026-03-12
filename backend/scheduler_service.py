@@ -186,8 +186,6 @@ async def _ensure_fundamentals_events_index(db) -> None:
     """
     global _FUNDAMENTALS_EVENTS_INDEX_DONE
     global _FUNDAMENTALS_EVENTS_INDEX_LOCK
-    if _FUNDAMENTALS_EVENTS_INDEX_DONE:
-        return
     if _FUNDAMENTALS_EVENTS_INDEX_LOCK is None:
         _FUNDAMENTALS_EVENTS_INDEX_LOCK = asyncio.Lock()
     async with _FUNDAMENTALS_EVENTS_INDEX_LOCK:
@@ -228,6 +226,8 @@ async def _enqueue_fundamentals_events(
                 {
                     "ticker": ticker,
                     "event_type": event_type,
+                    # Only enqueue a new pending item; existing non-pending docs
+                    # should not be flipped back to pending.
                     "status": "pending",
                 },
                 {
@@ -244,7 +244,6 @@ async def _enqueue_fundamentals_events(
                     "$set": {
                         "detected_date": detected_date,
                         "source": source_job,
-                        "source_job": source_job,
                         "detector_step": detector_step,
                         "updated_at": now,
                     },
@@ -254,7 +253,7 @@ async def _enqueue_fundamentals_events(
         )
 
     result = await db.fundamentals_events.bulk_write(ops, ordered=False)
-    new_inserts = len(getattr(result, "upserted_ids", {}))
+    new_inserts = len(result.upserted_ids or {})
     skipped_existing = len(normalized) - new_inserts
 
     return {"new_inserts": new_inserts, "skipped_existing": skipped_existing}
