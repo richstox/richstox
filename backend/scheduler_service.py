@@ -672,7 +672,9 @@ async def _remediate_price_redownload(
 
         processed += 1
         now_ts = time.monotonic()
-        if (processed % 5 == 0) or (now_ts - last_heartbeat >= REMEDIATION_HEARTBEAT_SECONDS):
+        elapsed = now_ts - start_ts
+        since_last_heartbeat = now_ts - last_heartbeat
+        if (processed % 5 == 0) or (since_last_heartbeat >= REMEDIATION_HEARTBEAT_SECONDS):
             if progress_cb:
                 await progress_cb(
                     f"2.7 Remediating split/dividend tickers: {processed}/{total} "
@@ -680,7 +682,7 @@ async def _remediate_price_redownload(
                 )
             last_heartbeat = now_ts
 
-        if time.monotonic() - start_ts > REMEDIATION_WATCHDOG_TIMEOUT_SECONDS:
+        if elapsed > REMEDIATION_WATCHDOG_TIMEOUT_SECONDS:
             remaining = unique_tickers[idx + 1:]
             failed += len(remaining)
             for rem in remaining:
@@ -815,13 +817,13 @@ async def run_step2_event_detectors(
         "flagged_count": div_flagged_total,
         "tickers": div_all_in_universe[:50],
     }
-    dates_for_endpoint = processed_dates or missed_dates or [today_str]
+    audit_endpoint_dates = processed_dates or missed_dates or [today_str]
     earnings = {
         "mock_mode": earnings_all.get("mock_mode", False),
         "api_endpoint": (earnings_all.get("api_endpoints_all") or [
             f"{EODHD_BASE_URL}/calendar/earnings?"
-            f"from={dates_for_endpoint[0]}"
-            f"&to={dates_for_endpoint[-1]}"
+            f"from={audit_endpoint_dates[0]}"
+            f"&to={audit_endpoint_dates[-1]}"
         ])[0],
         "api_endpoints_all": earnings_all.get("api_endpoints_all") or [],
         "dates_checked": processed_dates,
@@ -872,8 +874,9 @@ async def run_step2_event_detectors(
             f"2.7 Remediating {len(price_redownload_tickers)} split/dividend ticker(s): "
             "full price history re-download…"
         )
-        exclusion_run_id = (exclusion_meta or {}).get("run_id")
-        exclusion_report_date = (exclusion_meta or {}).get("report_date")
+        meta = exclusion_meta or {}
+        exclusion_run_id = meta.get("run_id")
+        exclusion_report_date = meta.get("report_date")
         redownload_result = await _remediate_price_redownload(
             db,
             price_redownload_tickers,
@@ -1247,7 +1250,7 @@ async def save_price_sync_exclusion_report(
     for row in rows:
         docs.append({
             "ticker": row.get("ticker", "(unknown)"),
-            "name": row.get("name", "(unknown)"),
+            "name": row.get("name"),
             "step": row.get("step", STEP2_REPORT_STEP),
             "reason": row.get("reason", "Unknown"),
             "report_date": report_date,
