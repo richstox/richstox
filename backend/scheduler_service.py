@@ -548,7 +548,7 @@ async def _get_or_init_events_watermark(db, today_dt: date) -> date:
         step1_date = finished_at.astimezone(PRAGUE_TZ).date()
 
     bootstrap_floor = today_dt - timedelta(days=30)
-    init_date = max(step1_date, bootstrap_floor) if step1_date else bootstrap_floor
+    init_date = step1_date if step1_date and step1_date > bootstrap_floor else bootstrap_floor
 
     await db.ops_config.update_one(
         {"key": EVENTS_WATERMARK_KEY},
@@ -618,15 +618,25 @@ async def _remediate_price_redownload(
     last_heartbeat = start_ts
     total = len(unique_tickers)
     processed = 0
+    names_map: Dict[str, Optional[str]] = {}
+    if unique_tickers:
+        docs = await db.tracked_tickers.find(
+            {"ticker": {"$in": unique_tickers}},
+            {"ticker": 1, "name": 1, "_id": 0},
+        ).to_list(None)
+        names_map = {d.get("ticker"): d.get("name") for d in docs if d.get("ticker")}
 
     for idx, ticker_us in enumerate(unique_tickers):
         # Watchdog stop at 300s
+        # Watchdog evaluated before starting each ticker; if it trips mid-iteration
+        # the current ticker finishes and remaining are marked failed.
         if time.monotonic() - start_ts > REMEDIATION_WATCHDOG_TIMEOUT_SECONDS:
             remaining = unique_tickers[idx:]
             failed += len(remaining)
             for rem in remaining:
                 failures.append({
                     "ticker": rem.replace(".US", ""),
+                    "name": names_map.get(rem),
                     "reason": f"Price remediation watchdog timeout (>{REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s)",
                 })
             logger.warning(
@@ -658,19 +668,28 @@ async def _remediate_price_redownload(
                     )
                     failures.append({
                         "ticker": ticker_us.replace(".US", ""),
+                        "name": names_map.get(ticker_us),
                         "reason": msg,
                     })
                     logger.warning(f"_remediate_price_redownload: {ticker_us} {msg}")
             else:
                 failed += 1
                 err_msg = result.get("error") or result.get("message") or "Unknown error"
-                failures.append({"ticker": ticker_us.replace(".US", ""), "reason": err_msg})
+                failures.append({
+                    "ticker": ticker_us.replace(".US", ""),
+                    "name": names_map.get(ticker_us),
+                    "reason": err_msg,
+                })
                 logger.warning(
                     f"_remediate_price_redownload: {ticker_us} backfill returned success=False — {err_msg}"
                 )
         except Exception as exc:
             failed += 1
-            failures.append({"ticker": ticker_us.replace(".US", ""), "reason": str(exc)})
+            failures.append({
+                "ticker": ticker_us.replace(".US", ""),
+                "name": names_map.get(ticker_us),
+                "reason": str(exc),
+            })
             logger.error(f"_remediate_price_redownload: {ticker_us} failed — {exc}")
 
         processed += 1
@@ -748,7 +767,8 @@ async def run_step2_event_detectors(
     }
     processed_dates: List[str] = []
 
-    for i, date_str in enumerate(missed_dates):
+    for i, date_obj in enumerate(missed_date_objs):
+        date_str = date_obj.strftime("%Y-%m-%d")
         await _p(f"2.2 Split detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
         s = await _detect_split_candidates_eodhd(db, date_str)
         split_raw_total += s.get("raw_count", 0)
@@ -775,7 +795,7 @@ async def run_step2_event_detectors(
         earnings_all["dates_checked"].append(date_str)
 
         # Advance watermark only after the full detector set for the day succeeds
-        await _set_events_watermark(db, datetime.strptime(date_str, "%Y-%m-%d").date())
+        await _set_events_watermark(db, date_obj)
         processed_dates.append(date_str)
 
     split_all_in_universe = list(dict.fromkeys(split_all_in_universe))  # dedup
@@ -803,14 +823,11 @@ async def run_step2_event_detectors(
     }
     earnings = {
         "mock_mode": earnings_all.get("mock_mode", False),
-        "api_endpoint": (
-            earnings_all.get("api_endpoints_all")
-            or [
-                f"{EODHD_BASE_URL}/calendar/earnings?"
-                f"from={(processed_dates or missed_dates or [today_str])[0]}"
-                f"&to={(processed_dates or missed_dates or [today_str])[-1]}"
-            ]
-        )[0],
+        "api_endpoint": (earnings_all.get("api_endpoints_all") or [
+            f"{EODHD_BASE_URL}/calendar/earnings?"
+            f"from={(fallback_dates := (processed_dates or missed_dates or [today_str]))[0]}"
+            f"&to={fallback_dates[-1]}"
+        ])[0],
         "api_endpoints_all": earnings_all.get("api_endpoints_all", []),
         "dates_checked": processed_dates,
         "raw_count": earnings_all.get("raw_count", 0),

@@ -116,7 +116,7 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
 
     if reason and reason not in ALLOWED_P1_REASONS:
         raise RuntimeError(
-            f"Visibility guard violation (non-P1 reason {reason}) "
+            f"Visibility guard violation (non-P1 reason '{reason}') "
             f"for ticker {ticker_doc.get('ticker')}"
         )
 
