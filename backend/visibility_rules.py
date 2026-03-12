@@ -85,52 +85,41 @@ class VisibilityFailedReason(str, Enum):
 VISIBLE_TICKERS_QUERY = {"is_visible": True}
 
 
+ALLOWED_P1_REASONS = {
+    VisibilityFailedReason.DELISTED.value,
+    VisibilityFailedReason.MISSING_SHARES.value,
+    VisibilityFailedReason.MISSING_FINANCIAL_CURRENCY.value,
+}
+
+
 def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
     """
-    Canonical visibility sieve.
-    
-    SEEDING: exchange ∈ {NYSE, NASDAQ} AND asset_type == "Common Stock"
-    ACTIVITY: has_price_data == true
-    QUALITY: sector AND industry present
-    STATUS: is_delisted != true
-    DATA QUALITY: shares_outstanding > 0 AND financial_currency present
-    
-    Returns:
-        (is_visible: bool, visibility_failed_reason: str | None)
+    Canonical visibility sieve (full gates).
     """
-    # SEEDING: exchange ∈ {NYSE, NASDAQ}
     exchange = ticker_doc.get("exchange", "")
     if exchange not in ["NYSE", "NASDAQ"]:
         return False, VisibilityFailedReason.INVALID_EXCHANGE.value
-    
-    # SEEDING: asset_type == "Common Stock"
+
     asset_type = ticker_doc.get("asset_type", "")
     if asset_type != "Common Stock":
         return False, VisibilityFailedReason.NOT_COMMON_STOCK.value
-    
-    # ACTIVITY: has_price_data == true
+
     has_price_data = ticker_doc.get("has_price_data", False)
     if not has_price_data:
         return False, VisibilityFailedReason.NO_PRICE_DATA.value
-    
-    # QUALITY: sector present
+
     sector = (ticker_doc.get("sector") or "").strip()
     if not sector:
         return False, VisibilityFailedReason.MISSING_SECTOR.value
-    
-    # QUALITY: industry present
+
     industry = (ticker_doc.get("industry") or "").strip()
     if not industry:
         return False, VisibilityFailedReason.MISSING_INDUSTRY.value
-    
-    # STATUS: is_delisted != true
+
     is_delisted = ticker_doc.get("is_delisted", False)
     if is_delisted:
         return False, VisibilityFailedReason.DELISTED.value
-    
-    # =========================================
-    # DATA QUALITY: shares_outstanding > 0
-    # =========================================
+
     shares = ticker_doc.get("shares_outstanding")
     if not shares:
         return False, VisibilityFailedReason.MISSING_SHARES.value
@@ -139,35 +128,58 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
             return False, VisibilityFailedReason.MISSING_SHARES.value
     except (ValueError, TypeError):
         return False, VisibilityFailedReason.MISSING_SHARES.value
-    
-    # =========================================
-    # DATA QUALITY: financial_currency present
-    # =========================================
+
     financial_currency = (ticker_doc.get("financial_currency") or "").strip()
     if not financial_currency:
         return False, VisibilityFailedReason.MISSING_FINANCIAL_CURRENCY.value
-    
-    # VISIBLE
+
     return True, None
+
+
+def compute_visibility_step4_only(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
+    """
+    P1 data-quality sieve only.
+
+    Allowed failure reasons: DELISTED, MISSING_SHARES, MISSING_FINANCIAL_CURRENCY.
+    Raises RuntimeError if any other reason would be returned.
+    """
+    _, full_reason = compute_visibility(ticker_doc)
+    if full_reason and full_reason not in ALLOWED_P1_REASONS:
+        raise RuntimeError(
+            f"Visibility guard violation (non-P1 reason '{full_reason}') "
+            f"for ticker {ticker_doc.get('ticker')}"
+        )
+
+    reason: Optional[str] = None
+
+    if ticker_doc.get("is_delisted", False):
+        reason = VisibilityFailedReason.DELISTED.value
+    else:
+        shares = ticker_doc.get("shares_outstanding")
+        if not shares:
+            reason = VisibilityFailedReason.MISSING_SHARES.value
+        else:
+            try:
+                if float(shares) <= 0:
+                    reason = VisibilityFailedReason.MISSING_SHARES.value
+            except (ValueError, TypeError):
+                reason = VisibilityFailedReason.MISSING_SHARES.value
+
+        if reason is None:
+            financial_currency = (ticker_doc.get("financial_currency") or "").strip()
+            if not financial_currency:
+                reason = VisibilityFailedReason.MISSING_FINANCIAL_CURRENCY.value
+
+    return reason is None, reason
 
 
 def get_canonical_sieve_query() -> dict:
     """
-    MongoDB query equivalent of compute_visibility.
+    MongoDB query equivalent of compute_visibility_step4_only (P1 gates).
     Used for count verification and as the cursor filter in recompute_visibility_all.
-
-    Gate 7 (shares_outstanding) reads the FLAT field tracked_tickers.shares_outstanding
-    — NOT any nested fundamentals sub-document.  This matches compute_visibility()
-    and the AGENTS.md canonical rule.
     """
     return {
-        "exchange": {"$in": ["NYSE", "NASDAQ"]},
-        "asset_type": "Common Stock",
-        "has_price_data": True,
-        "sector": {"$nin": [None, ""]},
-        "industry": {"$nin": [None, ""]},
         "is_delisted": {"$ne": True},
-        # Gate 7: flat field — canonical per AGENTS.md
         "shares_outstanding": {"$gt": 0},
         "financial_currency": {"$nin": [None, ""]},
     }
@@ -199,18 +211,8 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
 
     logger.info(f"Starting visibility recompute job: {job_id}")
 
-    # Canonical filter for "Classified tickers" — exchange+Common Stock+price+sector+industry.
-    # Must NOT pre-filter on shares_outstanding or financial_currency here; those are
-    # visibility gates evaluated per-ticker by compute_visibility() below.  Pre-filtering
-    # would leave tickers with null is_visible (never set to False) which then disappear
-    # from the exclusion report and cause classified − visible count mismatches.
-    _CLASSIFIED_FILTER = {
-        "exchange": {"$in": ["NYSE", "NASDAQ"]},
-        "asset_type": "Common Stock",
-        "has_price_data": True,
-        "sector":   {"$nin": [None, ""]},
-        "industry": {"$nin": [None, ""]},
-    }
+    # Process only tickers that have completed Step 3 (fundamentals).
+    _CLASSIFIED_FILTER = {"fundamentals_status": "complete"}
 
     total = await db.tracked_tickers.count_documents(_CLASSIFIED_FILTER)
 
@@ -251,9 +253,9 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     batch_ops: list = []
     processed = 0
 
-    async for ticker_doc in db.tracked_tickers.find(_CLASSIFIED_FILTER):
+    async for ticker_doc in db.tracked_tickers.find(_STEP4_CLASSIFIED_FILTER):
         ticker = ticker_doc.get("ticker", "")
-        is_visible, failed_reason = compute_visibility(ticker_doc)
+        is_visible, failed_reason = compute_visibility_step4_only(ticker_doc)
 
         reason_key = failed_reason or "VISIBLE"
         stats["reasons"][reason_key] = stats["reasons"].get(reason_key, 0) + 1
