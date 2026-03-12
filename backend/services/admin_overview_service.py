@@ -81,12 +81,13 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         )
         doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
         # Raw symbols fetched from EODHD before filtering (universe_seed only).
-        # During a run, prefer the top-level raw_rows_total written by raw_total_callback;
-        # fall back to result.fetched from a completed run.
+        # Prefer the top-level raw_rows_total written by raw_total_callback during
+        # a running job; fall back to result.raw_rows_total (details sub-doc) or
+        # result.fetched from a completed run.
         doc["raw_symbols_fetched"] = (
-            doc.get("raw_rows_total") or
-            result.get("raw_rows_total") or
-            result.get("fetched") or
+            doc.get("raw_rows_total") or        # top-level field set early during run
+            result.get("raw_rows_total") or     # details sub-doc (also set early)
+            result.get("fetched") or            # completed result fallback
             None
         )
         # Canonical Step 1 filtered_out = deduped exclusion rows written (universe_seed only)

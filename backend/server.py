@@ -2128,7 +2128,7 @@ async def _run_universe_seed_bg(db):
             {"_id": _doc_id},
             {"$set": {
                 "raw_rows_total": raw_rows_total,
-                "details": {"raw_rows_total": raw_rows_total},
+                "details.raw_rows_total": raw_rows_total,
             }},
         )
 
