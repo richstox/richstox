@@ -48,6 +48,7 @@ PRAGUE_TZ = ZoneInfo("Europe/Prague")
 STEP2_REPORT_STEP = "Step 2 - Price Sync"
 EVENTS_WATERMARK_KEY = "last_events_checked_date"
 REMEDIATION_WATCHDOG_TIMEOUT_SECONDS = 300
+REMEDIATION_HEARTBEAT_SECONDS = 10
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
@@ -634,25 +635,6 @@ async def _remediate_price_redownload(
         }
 
     for idx, ticker_us in enumerate(unique_tickers):
-        # Watchdog stop at 300s
-        # Watchdog evaluated before starting each ticker; if it trips mid-iteration
-        # the current ticker finishes and remaining are marked failed.
-        if time.monotonic() - start_ts > REMEDIATION_WATCHDOG_TIMEOUT_SECONDS:
-            remaining = unique_tickers[idx:]
-            failed += len(remaining)
-            for rem in remaining:
-                failures.append(
-                    _failure_record(
-                        rem,
-                        f"Price remediation watchdog timeout (>{REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s)",
-                    )
-                )
-            logger.warning(
-                f"_remediate_price_redownload: watchdog triggered after {REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s, "
-                f"stopping with {len(remaining)} ticker(s) unprocessed"
-            )
-            break
-
         try:
             result = await backfill_ticker_prices(db, ticker_us)
             if result.get("success"):
@@ -690,13 +672,29 @@ async def _remediate_price_redownload(
 
         processed += 1
         now_ts = time.monotonic()
-        if (processed % 5 == 0) or (now_ts - last_heartbeat >= 10):
+        if (processed % 5 == 0) or (now_ts - last_heartbeat >= REMEDIATION_HEARTBEAT_SECONDS):
             if progress_cb:
                 await progress_cb(
                     f"2.7 Remediating split/dividend tickers: {processed}/{total} "
                     f"(✓{succeeded} ✗{failed})"
                 )
             last_heartbeat = now_ts
+
+        if time.monotonic() - start_ts > REMEDIATION_WATCHDOG_TIMEOUT_SECONDS:
+            remaining = unique_tickers[idx + 1:]
+            failed += len(remaining)
+            for rem in remaining:
+                failures.append(
+                    _failure_record(
+                        rem,
+                        f"Skipped due to remediation watchdog timeout (>{REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s)",
+                    )
+                )
+            logger.warning(
+                f"_remediate_price_redownload: watchdog triggered after {REMEDIATION_WATCHDOG_TIMEOUT_SECONDS}s, "
+                f"stopping with {len(remaining)} remaining ticker(s) unprocessed"
+            )
+            break
 
     if failures:
         await _append_step2_exclusions(db, exclusion_run_id, exclusion_report_date, failures)

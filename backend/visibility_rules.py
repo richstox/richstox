@@ -130,8 +130,8 @@ def get_canonical_sieve_query() -> dict:
     """
     return {
         "is_delisted": {"$ne": True},
-        "shares_outstanding": {"$exists": True},
-        "financial_currency": {"$exists": True},
+        "shares_outstanding": {"$gt": 0},
+        "financial_currency": {"$nin": [None, ""]},
     }
 
 
