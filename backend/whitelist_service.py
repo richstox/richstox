@@ -626,8 +626,9 @@ async def sync_ticker_whitelist(
     if _empty_counter > 0:
         today_fetched_set.add("(empty)")
 
-    result["fetched"] = len(today_fetched_set)
-    result["raw_distinct_total"] = result["fetched"]
+    raw_distinct_total = len(today_fetched_set)
+    result["fetched"] = raw_distinct_total
+    result["raw_distinct_total"] = raw_distinct_total
 
     # Notify caller of raw total as soon as it's known (before filtering/seeding).
     if raw_total_callback:
@@ -983,10 +984,7 @@ async def sync_ticker_whitelist(
         today_fetched_set=today_fetched_set,
     )
     result.update(report)
-    result["step1_reason_counts"] = {
-        **step1_reason_counts,
-        **(report.get("step1_reason_counts") or {}),
-    }
+    result["step1_reason_counts"] = report.get("step1_reason_counts") or step1_reason_counts
     result["universe_seed_debug"] = {
         **report.get("_debug", {}),
         "reconciliation": reconciliation_debug,
