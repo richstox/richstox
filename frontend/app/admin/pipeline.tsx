@@ -194,7 +194,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
 
   // ── Step 2 price sync progress ────────────────────────────────────────────
-  const [step2Progress, setStep2Progress] = useState<{processed: number; total: number; pct: number; phase?: string} | null>(null);
+  const [step2Progress, setStep2Progress] = useState<{processed: number; total: number; pct: number; phase?: string; message?: string} | null>(null);
 
   // ── Step 4 visibility recompute progress ─────────────────────────────────
   const [step4Progress, setStep4Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
@@ -432,6 +432,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 total:     lastRun.progress_total,
                 pct:       lastRun.progress_pct || 0,
                 phase:     lastRun.phase,
+                message:   lastRun.progress || undefined,
               });
             }
             // Structured progress for Step 4 visibility recompute
@@ -464,6 +465,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               total:     lastRun.progress_total,
               pct:       100,
               phase:     'completed',
+              message:   lastRun.progress || undefined,
             });
           }
           // Persist final Step 4 progress on completion so the bar shows 100%
@@ -1342,8 +1344,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>
                   <View style={s.step4ProgressRow}>
                     <Text style={s.step4ProgressLabel}>
-                      {step2Progress.phase === 'bulk_catchup' ? 'Phase A: Bulk price sync'
-                        : step2Progress.phase === 'event_detection' ? 'Phase B: Event detectors'
+                      {step2Progress.phase === '2.1_bulk_catchup' ? '2.1 Bulk price sync'
+                        : step2Progress.phase === '2.2_split' ? '2.2 Split detector'
+                        : step2Progress.phase === '2.4_dividend' ? '2.4 Dividend detector'
+                        : step2Progress.phase === '2.6_earnings' ? '2.6 Earnings detector'
                         : step2Progress.phase === 'completed' ? 'Complete'
                         : step2Progress.phase === 'stopped' ? 'Stopped'
                         : 'Price sync'}
@@ -1354,6 +1358,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         : `${step2Progress.pct}%`}
                     </Text>
                   </View>
+                  {step2Progress.message && (
+                    <Text style={s.substepMeta} numberOfLines={2}>{step2Progress.message}</Text>
+                  )}
                 </View>
               )}
 
