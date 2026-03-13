@@ -1045,7 +1045,7 @@ async def run_daily_price_sync(
             "started_at": started_at,
             "source": "scheduler",
             "details": {"parent_run_id": parent_run_id},
-            "phase": "bulk_catchup",
+            "phase": "2.1_bulk_catchup",
             "progress_processed": 0,
             "progress_total": 0,
             "progress_pct": 0,
@@ -1152,17 +1152,25 @@ async def run_daily_price_sync(
             "2.1 Detecting price gaps (last 30 days)…",
             processed=0,
             total=progress_total_step2,
-            phase="bulk_catchup",
+            phase="2.1_bulk_catchup",
         )
 
-        # Run the bulk catchup with gap detection
-        result = await run_daily_bulk_catchup(db)
+        # Run the bulk catchup with gap detection, streaming per-batch progress
+        async def _bulk_progress(done: int, total: int, _: str) -> None:
+            await _progress(
+                f"2.1 Bulk price sync: {done} / {total} tickers",
+                processed=done,
+                total=total if total > 0 else progress_total_step2,
+                phase="2.1_bulk_catchup",
+            )
+
+        result = await run_daily_bulk_catchup(db, progress_cb=_bulk_progress)
 
         await _progress(
             f"2.1 Prices synced: {result.get('records_upserted', 0)} records "
             f"across {result.get('dates_processed', 0)} date(s). "
             "Updating has_price_data flags…",
-            phase="bulk_catchup",
+            phase="2.1_bulk_catchup",
         )
 
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
@@ -1191,7 +1199,7 @@ async def run_daily_price_sync(
             "Running 2.2 Split detector (EODHD API)…",
             processed=with_price,
             total=seeded_total,
-            phase="bulk_catchup",
+            phase="2.1_bulk_catchup",
         )
 
         # ── Stop check between Phase A and Phase B ────────────────────────────
@@ -1231,15 +1239,26 @@ async def run_daily_price_sync(
             f"2.2 Running split/dividend/earnings detectors…",
             processed=with_price,
             total=seeded_total,
-            phase="event_detection",
+            phase="2.2_split",
         )
+
+        # Derive the canonical phase label from the detector message prefix.
+        _DETECTOR_PHASE_MAP = {
+            "2.2": "2.2_split",
+            "2.4": "2.4_dividend",
+            "2.6": "2.6_earnings",
+            "2.7": "2.6_earnings",  # price-redownload remediation follows earnings
+        }
+
+        async def _detector_progress(msg: str) -> None:
+            prefix = msg[:3] if len(msg) >= 3 else ""
+            ph = _DETECTOR_PHASE_MAP.get(prefix, "2.2_split")
+            await _progress(msg, processed=with_price, total=seeded_total, phase=ph)
 
         # Step 2.2 / 2.4 / 2.6 detectors -> enqueue fundamentals refresh events.
         event_detector_summary = await run_step2_event_detectors(
             db,
-            progress_cb=lambda msg: _progress(
-                msg, processed=with_price, total=seeded_total, phase="event_detection"
-            ),
+            progress_cb=_detector_progress,
             exclusion_meta={
                 "run_id": result.get("exclusion_report_run_id"),
                 "report_date": result.get("exclusion_report_date"),
