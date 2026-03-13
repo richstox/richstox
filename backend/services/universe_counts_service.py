@@ -4,13 +4,16 @@ Universe Counts Service (P48)
 Single source of truth for universe/funnel counts.
 Used by BOTH Admin Panel and Talk filters.
 
-CANONICAL FUNNEL DEFINITION:
-1. seeded_us_total - All tickers from NYSE + NASDAQ (Sunday seed)
-2. seeded_common_stock - Type == "Common Stock"
-3. active_with_price_data - has_price_data == true
-4. with_classification - sector AND industry present
-5. passes_visibility_rule - shares_outstanding > 0 OR safety_type exception
-6. visible_tickers - is_visible == true (final customer view)
+CANONICAL ADMIN PIPELINE DEFINITION:
+1. step1_seeded_total - Step 1 DB-backed seed universe (NYSE/NASDAQ Common Stock)
+2. active_with_price_data - Step 2 output
+3. with_classification - Step 3 output
+4. passes_visibility_rule - Step 4 rule output
+5. visible_tickers - final customer-visible universe
+
+RAW EXCHANGE UNIVERSE:
+- step1_raw_exchange_total = all NYSE + NASDAQ tracked_tickers before Common Stock scoping
+- kept as metadata for Step 1 auditability / backward compatibility
 
 GUARD: Each step must be <= previous step (monotonic decreasing).
 
@@ -49,9 +52,9 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     # =========================================================================
     
     # Build step queries
-    step1_query = {"exchange": {"$in": ["NYSE", "NASDAQ"]}}
-    step2_query = {**step1_query, "asset_type": "Common Stock"}
-    step3_query = {**step2_query, "has_price_data": True}
+    raw_exchange_query = {"exchange": {"$in": ["NYSE", "NASDAQ"]}}
+    step1_query = {**raw_exchange_query, "asset_type": "Common Stock"}
+    step3_query = {**step1_query, "has_price_data": True}
     step4_query = {
         **step3_query,
         "sector": {"$nin": [None, ""]},
@@ -75,10 +78,10 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     }
     step4_visible_query = {**step4_query, "is_visible": True}
     facet_result = await db.tracked_tickers.aggregate([{"$facet": {
+        "raw_exchange":   [{"$match": raw_exchange_query},       {"$count": "n"}],
         "seeded":         [{"$match": step1_query},              {"$count": "n"}],
         "nyse":           [{"$match": {"exchange": "NYSE"}},     {"$count": "n"}],
         "nasdaq":         [{"$match": {"exchange": "NASDAQ"}},   {"$count": "n"}],
-        "common":         [{"$match": step2_query},              {"$count": "n"}],
         "price":          [{"$match": step3_query},              {"$count": "n"}],
         "step3_output":   [{"$match": step3_output_query},       {"$count": "n"}],
         "classified":     [{"$match": step4_query},              {"$count": "n"}],
@@ -91,10 +94,10 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     def _n(key: str) -> int:
         return (f.get(key) or [{}])[0].get("n", 0)
 
+    step1_raw_exchange_total = _n("raw_exchange")
     seeded_us_total        = _n("seeded")
     nyse_count             = _n("nyse")
     nasdaq_count           = _n("nasdaq")
-    seeded_common_stock    = _n("common")
     active_with_price_data = _n("price")
     step3_output_total     = _n("step3_output")
     with_classification    = _n("classified")
@@ -109,42 +112,35 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     funnel_steps = [
         {
             "step": 1,
-            "name": "Seeded US (NYSE+NASDAQ)",
+            "name": "Universe Seed",
             "count": seeded_us_total,
-            "query": "exchange in [NYSE, NASDAQ]",
+            "query": "exchange in [NYSE, NASDAQ] AND asset_type == Common Stock",
             "source_job": "universe_seed",
-            "breakdown": f"NYSE: {nyse_count}, NASDAQ: {nasdaq_count}"
+            "breakdown": f"raw exchange total: {step1_raw_exchange_total}, NYSE: {nyse_count}, NASDAQ: {nasdaq_count}"
         },
         {
             "step": 2,
-            "name": "Common Stock",
-            "count": seeded_common_stock,
-            "query": "type == Common Stock",
-            "source_job": "universe_seed",
-        },
-        {
-            "step": 3,
             "name": "With Price Data",
             "count": active_with_price_data,
             "query": "has_price_data == true",
             "source_job": "price_sync",
         },
         {
-            "step": 4,
+            "step": 3,
             "name": "With Classification",
             "count": with_classification,
             "query": "sector AND industry present",
             "source_job": "fundamentals_sync",
         },
         {
-            "step": 5,
+            "step": 4,
             "name": "Passes Visibility Rule",
             "count": passes_visibility_rule,
             "query": "shares_outstanding > 0 OR safety_type exception",
             "source_job": "visibility_check",
         },
         {
-            "step": 6,
+            "step": 5,
             "name": "Visible Tickers (Customer View)",
             "count": visible_tickers,
             "query": "is_visible == true",
@@ -196,10 +192,12 @@ async def get_universe_counts(db) -> Dict[str, Any]:
         
         # Quick access to key counts
         "counts": {
+            "step1_raw_exchange_total": step1_raw_exchange_total,
+            "step1_seeded_total": seeded_us_total,
             "seeded_us_total": seeded_us_total,
             "nyse": nyse_count,
             "nasdaq": nasdaq_count,
-            "common_stock": seeded_common_stock,
+            "common_stock": seeded_us_total,
             "with_price_data": active_with_price_data,
             "step3_input_total": active_with_price_data,
             "step3_output_total": step3_output_total,

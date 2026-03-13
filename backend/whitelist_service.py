@@ -103,6 +103,82 @@ WHITELIST_FILTERS = {
     "type": "Common Stock",
 }
 
+STEP1_REASON_COUNT_FIELDS = {
+    "not_common_stock": "filtered_not_common_stock",
+    "duplicates": "filtered_duplicates",
+    "pattern": "filtered_pattern",
+    "empty_code": "filtered_empty_code",
+    "dot_ticker": "filtered_dot_ticker",
+    "other": "filtered_other",
+}
+
+
+def categorize_step1_exclusion_reason(reason: Optional[str]) -> str:
+    raw_reason = (reason or "").strip()
+    normalized = raw_reason.lower()
+    if raw_reason.startswith(DUPLICATE_REASON_PREFIX):
+        return "duplicates"
+    if normalized == "empty ticker code":
+        return "empty_code"
+    if normalized == "ticker contains dot":
+        return "dot_ticker"
+    if normalized.startswith("excluded pattern"):
+        return "pattern"
+    if normalized.startswith("type !="):
+        return "not_common_stock"
+    return "other"
+
+
+def aggregate_step1_reason_counts(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {field_name: 0 for field_name in STEP1_REASON_COUNT_FIELDS.values()}
+    for row in rows:
+        category = categorize_step1_exclusion_reason(row.get("reason"))
+        counts[STEP1_REASON_COUNT_FIELDS.get(category, "filtered_other")] += 1
+    return counts
+
+
+def build_step1_progress_snapshot(
+    *,
+    phase: str,
+    raw_rows_total: int = 0,
+    raw_distinct_total: int = 0,
+    raw_per_exchange: Optional[Dict[str, int]] = None,
+    reason_counts: Optional[Dict[str, int]] = None,
+    filtered_out_total_step1: Optional[int] = None,
+    seeded_total: int = 0,
+    db_written_total: int = 0,
+    progress_processed: Optional[int] = None,
+    progress_total: Optional[int] = None,
+    progress_message: Optional[str] = None,
+) -> Dict[str, Any]:
+    snapshot_reason_counts = {
+        field_name: int((reason_counts or {}).get(field_name, 0))
+        for field_name in STEP1_REASON_COUNT_FIELDS.values()
+    }
+    seeded_total = int(seeded_total or 0)
+    db_written_total = int(db_written_total or 0)
+    processed = db_written_total if progress_processed is None else int(progress_processed or 0)
+    total = seeded_total if progress_total is None else int(progress_total or 0)
+    pct = round(100 * processed / total) if total else 0
+    return {
+        "phase": phase,
+        "raw_rows_total": int(raw_rows_total or 0),
+        "raw_distinct_total": int(raw_distinct_total or 0),
+        "raw_per_exchange": dict(raw_per_exchange or {}),
+        "filtered_out_total_step1": int(
+            filtered_out_total_step1
+            if filtered_out_total_step1 is not None
+            else sum(snapshot_reason_counts.values())
+        ),
+        **snapshot_reason_counts,
+        "seeded_total": seeded_total,
+        "db_written_total": db_written_total,
+        "progress_processed": processed,
+        "progress_total": total,
+        "progress_pct": pct,
+        "progress_message": progress_message,
+    }
+
 # Fields to extract from fundamentals for company_fundamentals_cache
 FUNDAMENTALS_FIELDS = [
     "General.Code",
@@ -293,6 +369,7 @@ async def save_universe_seed_exclusion_report(
     today_fetched_set_count = len(today_fetched_set) if today_fetched_set is not None else raw_symbols_fetched
     # Canonical filtered_out: arithmetic — single source of truth for card invariant.
     filtered_out_total = max(raw_symbols_fetched - seeded_count, 0)
+    step1_reason_counts = aggregate_step1_reason_counts(rows)
 
     if not rows:
         return {
@@ -300,6 +377,7 @@ async def save_universe_seed_exclusion_report(
             "exclusion_report_rows": 0,
             "exclusion_report_run_id": run_id,
             "filtered_out_total_step1": filtered_out_total,
+            "step1_reason_counts": step1_reason_counts,
             "_debug": {
                 "raw_symbols_fetched": raw_symbols_fetched,
                 "today_fetched_set_count": today_fetched_set_count,
@@ -355,6 +433,7 @@ async def save_universe_seed_exclusion_report(
         "exclusion_report_run_id": run_id,
         # Arithmetic invariant — card uses this, not rows_written.
         "filtered_out_total_step1": filtered_out_total,
+        "step1_reason_counts": step1_reason_counts,
         "_debug": {
             "raw_symbols_fetched": raw_symbols_fetched,
             "today_fetched_set_count": today_fetched_set_count,
@@ -416,7 +495,7 @@ async def sync_ticker_whitelist(
     dry_run: bool = False,
     exchanges: Optional[List[str]] = None,
     job_run_id: Optional[str] = None,
-    progress_callback: Optional[Callable[[int, int], Awaitable[None]]] = None,
+    progress_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     raw_total_callback: Optional[Callable[[int], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """
@@ -425,9 +504,9 @@ async def sync_ticker_whitelist(
     This creates CANDIDATES only. Tickers get status='pending_fundamentals'.
     They become 'active' only after fundamentals are fetched successfully.
 
-    progress_callback: optional async callable(processed: int, total: int).
-        Called every 1000 tickers during the bulk upsert phase so callers can
-        emit live progress to ops_job_runs without blocking the seeding loop.
+    progress_callback: optional async callable(snapshot: dict).
+        Called throughout the Step 1 funnel so callers can persist structured
+        live progress into ops_job_runs while the run is active.
     raw_total_callback: optional async callable(raw_rows_total: int).
         Called once, immediately after all exchange symbols are fetched and
         raw_rows_total is known — before any filtering or seeding — so callers
@@ -479,6 +558,14 @@ async def sync_ticker_whitelist(
     distinct_sym_by_code: Dict[str, Dict[str, Any]] = {}  # normalised_code -> sym
     _empty_counter = 0  # sentinel for multiple empty-code symbols
 
+    async def _emit_progress(snapshot: Dict[str, Any]) -> None:
+        result["step1_progress"] = snapshot
+        if progress_callback:
+            try:
+                await progress_callback(snapshot)
+            except Exception:
+                pass
+
     for exchange in exchanges:
         symbols = await fetch_exchange_symbols(exchange)
         raw_per_exchange[exchange] = len(symbols)
@@ -520,6 +607,14 @@ async def sync_ticker_whitelist(
                 distinct_sym_by_code[key] = sym_with_exchange
 
     result["fetched_raw_per_exchange"] = raw_per_exchange
+    result["raw_rows_total"] = len(raw_rows_list)
+    await _emit_progress(build_step1_progress_snapshot(
+        phase="raw_fetched",
+        raw_rows_total=result["raw_rows_total"],
+        raw_per_exchange=raw_per_exchange,
+        filtered_out_total_step1=0,
+        progress_message="Fetched raw NYSE + NASDAQ payloads from EODHD",
+    ))
 
     # today_fetched_set: the canonical distinct universe for this run.
     # Non-empty codes + one "(empty)" representative if empty-code symbols exist.
@@ -532,7 +627,7 @@ async def sync_ticker_whitelist(
         today_fetched_set.add("(empty)")
 
     result["fetched"] = len(today_fetched_set)
-    result["raw_rows_total"] = len(raw_rows_list)
+    result["raw_distinct_total"] = result["fetched"]
 
     # Notify caller of raw total as soon as it's known (before filtering/seeding).
     if raw_total_callback:
@@ -540,6 +635,14 @@ async def sync_ticker_whitelist(
             await raw_total_callback(result["raw_rows_total"])
         except Exception:
             pass  # never let a callback error abort the seeding
+    await _emit_progress(build_step1_progress_snapshot(
+        phase="raw_distinct_built",
+        raw_rows_total=result["raw_rows_total"],
+        raw_distinct_total=result["raw_distinct_total"],
+        raw_per_exchange=raw_per_exchange,
+        filtered_out_total_step1=0,
+        progress_message="Built distinct Step 1 raw universe after deduplication",
+    ))
 
     # Group distinct symbols by their assigned exchange for per-exchange filtering.
     from collections import defaultdict as _defaultdict
@@ -582,10 +685,25 @@ async def sync_ticker_whitelist(
                     if c.get("code", "").upper() != _rcode
                     or _rrow["exchange"] == distinct_sym_by_code.get(_rcode, {}).get("_exchange")
                 ]
+    step1_reason_counts = aggregate_step1_reason_counts(all_exclusions)
+    result["step1_reason_counts"] = step1_reason_counts
     
     if not all_candidates:
         result["errors"].append("No candidates after filtering")
         result["seeded_total"] = 0
+        result["db_written_total"] = 0
+        result["filtered_out_total_step1"] = max(result["fetched"] - result["seeded_total"], 0)
+        await _emit_progress(build_step1_progress_snapshot(
+            phase="completed",
+            raw_rows_total=result["raw_rows_total"],
+            raw_distinct_total=result["raw_distinct_total"],
+            raw_per_exchange=raw_per_exchange,
+            reason_counts=step1_reason_counts,
+            filtered_out_total_step1=result["filtered_out_total_step1"],
+            seeded_total=0,
+            db_written_total=0,
+            progress_message="Completed Step 1 with no seed candidates after filtering",
+        ))
         if not dry_run:
             report = await save_universe_seed_exclusion_report(
                 db, all_exclusions, now,
@@ -601,10 +719,22 @@ async def sync_ticker_whitelist(
     
     candidate_tickers = {c["ticker"] for c in all_candidates}
     result["seeded_total"] = len(candidate_tickers)
+    result["db_written_total"] = 0
     # filtered_out_total_step1: computed directly from fetched and seeded so
     # the identity fetched == seeded + filtered_out holds strictly.
     result["filtered_out_total_step1"] = max(result["fetched"] - result["seeded_total"], 0)
     logger.info(f"Total whitelist candidates: {len(candidate_tickers)}")
+    await _emit_progress(build_step1_progress_snapshot(
+        phase="filtered",
+        raw_rows_total=result["raw_rows_total"],
+        raw_distinct_total=result["raw_distinct_total"],
+        raw_per_exchange=raw_per_exchange,
+        reason_counts=step1_reason_counts,
+        filtered_out_total_step1=result["filtered_out_total_step1"],
+        seeded_total=result["seeded_total"],
+        db_written_total=0,
+        progress_message="Applied Step 1 filters and prepared seed candidates",
+    ))
     
     if dry_run:
         # Count what would happen
@@ -671,6 +801,17 @@ async def sync_ticker_whitelist(
     _progress_total = len(ticker_ops)
     _progress_processed = 0
     _last_progress_milestone = 0
+    await _emit_progress(build_step1_progress_snapshot(
+        phase="upserting",
+        raw_rows_total=result["raw_rows_total"],
+        raw_distinct_total=result["raw_distinct_total"],
+        raw_per_exchange=raw_per_exchange,
+        reason_counts=step1_reason_counts,
+        filtered_out_total_step1=result["filtered_out_total_step1"],
+        seeded_total=result["seeded_total"],
+        db_written_total=0,
+        progress_message="Writing seeded Step 1 universe to tracked_tickers",
+    ))
     for i in range(0, len(ticker_ops), BATCH_SIZE):
         batch = ticker_ops[i:i + BATCH_SIZE]
         try:
@@ -683,14 +824,24 @@ async def sync_ticker_whitelist(
         except Exception as e:
             logger.error(f"Bulk write batch {i // BATCH_SIZE} failed: {e}")
         _progress_processed += len(batch)
+        result["db_written_total"] = _progress_processed
         # Emit progress every 1000 tickers so UI progress bar updates live
         _milestone = _progress_processed // 1000
-        if progress_callback and _milestone > _last_progress_milestone:
+        if _milestone > _last_progress_milestone or _progress_processed == _progress_total:
             _last_progress_milestone = _milestone
-            try:
-                await progress_callback(_progress_processed, _progress_total)
-            except Exception:
-                pass  # never let a callback error abort the seeding
+            await _emit_progress(build_step1_progress_snapshot(
+                phase="upserting",
+                raw_rows_total=result["raw_rows_total"],
+                raw_distinct_total=result["raw_distinct_total"],
+                raw_per_exchange=raw_per_exchange,
+                reason_counts=step1_reason_counts,
+                filtered_out_total_step1=result["filtered_out_total_step1"],
+                seeded_total=result["seeded_total"],
+                db_written_total=result["db_written_total"],
+                progress_processed=_progress_processed,
+                progress_total=_progress_total,
+                progress_message=f"Writing Step 1 seed universe to DB ({_progress_processed:,}/{_progress_total:,})",
+            ))
 
     # Bulk insert fundamentals_events jen pro nové tickery
     if new_ticker_indices:
@@ -832,10 +983,30 @@ async def sync_ticker_whitelist(
         today_fetched_set=today_fetched_set,
     )
     result.update(report)
+    result["step1_reason_counts"] = {
+        **step1_reason_counts,
+        **(report.get("step1_reason_counts") or {}),
+    }
     result["universe_seed_debug"] = {
         **report.get("_debug", {}),
         "reconciliation": reconciliation_debug,
     }
+    await _emit_progress(build_step1_progress_snapshot(
+        phase="completed",
+        raw_rows_total=result["raw_rows_total"],
+        raw_distinct_total=result["raw_distinct_total"],
+        raw_per_exchange=raw_per_exchange,
+        reason_counts=result.get("step1_reason_counts"),
+        filtered_out_total_step1=result.get("filtered_out_total_step1"),
+        seeded_total=result["seeded_total"],
+        db_written_total=result.get("db_written_total", 0),
+        progress_processed=result.get("db_written_total", 0),
+        progress_total=result["seeded_total"],
+        progress_message=(
+            f"Completed Step 1: {result['seeded_total']:,} seeded, "
+            f"{result.get('db_written_total', 0):,} written"
+        ),
+    ))
     
     result["finished_at"] = datetime.now(timezone.utc).isoformat()
     

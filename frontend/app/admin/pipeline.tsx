@@ -29,6 +29,26 @@ interface JobRun {
   triggered_by?: string;
 }
 
+interface Step1ProgressSnapshot {
+  phase?: string;
+  raw_rows_total?: number;
+  raw_distinct_total?: number;
+  raw_per_exchange?: Record<string, number>;
+  filtered_out_total_step1?: number;
+  filtered_not_common_stock?: number;
+  filtered_duplicates?: number;
+  filtered_pattern?: number;
+  filtered_empty_code?: number;
+  filtered_dot_ticker?: number;
+  filtered_other?: number;
+  seeded_total?: number;
+  db_written_total?: number;
+  progress_processed?: number;
+  progress_total?: number;
+  progress_pct?: number;
+  progress_message?: string;
+}
+
 interface Step2SubStep {
   mock_mode?: boolean;
   api_endpoint?: string;
@@ -66,9 +86,12 @@ interface OverviewData {
   };
   universe_funnel?: {
     counts?: {
+      step1_raw_exchange_total?: number;
+      step1_seeded_total?: number;
       seeded_us_total?: number;
       with_price_data?: number;
       with_classification?: number;
+      step4_visible_total?: number;
       visible_tickers?: number;
     };
   };
@@ -103,10 +126,14 @@ interface PipelineExclusionReport {
   by_reason: Record<string, number>;
   latest_run_id_per_step?: Record<string, string> | null;
   step1_counts?: {
+    raw_rows_total?: number;
     raw_distinct?: number;
     seeded_count?: number;
+    db_written_total?: number;
     filtered_out_total_step1?: number;
     fetched_raw_per_exchange?: Record<string, number>;
+    step1_reason_counts?: Record<string, number>;
+    step1_progress?: Step1ProgressSnapshot | null;
     run_id?: string;
   } | null;
 }
@@ -179,18 +206,36 @@ function safeCount(v: any): number {
   return 0;
 }
 
+function getStep1Snapshot(run: any): Step1ProgressSnapshot | null {
+  return run?.details?.step1_progress || run?.result?.step1_progress || run?.step1_progress || null;
+}
+
+function getStep1ReasonCounts(snapshot: Step1ProgressSnapshot | null, fallback?: Record<string, number> | null) {
+  return {
+    filtered_not_common_stock: snapshot?.filtered_not_common_stock ?? fallback?.filtered_not_common_stock ?? 0,
+    filtered_duplicates: snapshot?.filtered_duplicates ?? fallback?.filtered_duplicates ?? 0,
+    filtered_pattern: snapshot?.filtered_pattern ?? fallback?.filtered_pattern ?? 0,
+    filtered_empty_code: snapshot?.filtered_empty_code ?? fallback?.filtered_empty_code ?? 0,
+    filtered_dot_ticker: snapshot?.filtered_dot_ticker ?? fallback?.filtered_dot_ticker ?? 0,
+    filtered_other: snapshot?.filtered_other ?? fallback?.filtered_other ?? 0,
+  };
+}
+
 function normaliseRun(run: any): any {
   if (!run) return run;
   const start = run.started_at || run.start_time;
   const finish = run.finished_at || run.end_time || run.last_run_finished;
   const details = run.details || {};
-  const seededTotal = run.progress_total ?? details.seeded_total ?? details.tickers_seeded_total;
+  const step1Progress = details.step1_progress || run.step1_progress || {};
+  const seededTotal = run.progress_total ?? step1Progress.seeded_total ?? details.seeded_total ?? details.tickers_seeded_total;
   const processedCount =
     run.progress_processed ??
+    step1Progress.db_written_total ??
     details.tickers_with_price_data ??
+    details.db_written_total ??
     details.records_upserted ??
     run.records_processed;
-  const phase = run.phase ?? details.phase;
+  const phase = run.phase ?? step1Progress.phase ?? details.phase;
   const durationSeconds = run.duration_seconds ?? (
     start && finish ? Math.max(0, Math.round((Date.parse(finish) - Date.parse(start)) / 1000)) : undefined
   );
@@ -209,6 +254,7 @@ function normaliseRun(run: any): any {
     phase,
     details: {
       ...details,
+      step1_progress: step1Progress,
       seeded_total: seededTotal ?? details.seeded_total,
       tickers_with_price_data: details.tickers_with_price_data ?? processedCount,
       records_upserted: details.records_upserted ?? run.records_upserted,
@@ -244,6 +290,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [liveLastRuns, setLiveLastRuns] = useState<Record<string, any>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [clockNow, setClockNow] = useState(Date.now());
   const [liveProgress, setLiveProgress] = useState<string>('');
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -251,7 +298,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
 
   // ── Step 1 universe seed progress ────────────────────────────────────────
-  const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
+  const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number; phase?: string; message?: string} | null>(null);
 
   // ── Step 2 price sync progress ────────────────────────────────────────────
   const [step2Progress, setStep2Progress] = useState<{processed: number; total: number; pct: number; phase?: string; message?: string} | null>(null);
@@ -276,6 +323,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // ── Manual / Auto run mode toggle ─────────────────────────────────────────
   const [runMode, setRunMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
   const runModeInitialised = useRef(false);
+
+  useEffect(() => {
+    const id = setInterval(() => setClockNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -733,13 +785,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               );
               if (jr.ok) {
                 const jd = await jr.json();
-                const lr = jd.last_run;
-                if (lr?.progress_total) {
-                  setStep1Progress({
-                    processed: lr.progress_processed || 0,
-                    total:     lr.progress_total,
-                    pct:       lr.progress_pct || 0,
-                  });
+                const lr = normaliseRun(jd.last_run);
+                if (lr) {
+                  setLiveLastRuns(prev => ({ ...prev, universe_seed: lr }));
+                  const progress = deriveProgress(lr);
+                  if (progress) setStep1Progress(progress);
                 }
               }
             } catch { /* non-fatal */ }
@@ -770,7 +820,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             // Freeze final progress bar states
             if (sd.status === 'completed') {
               if (sd.steps_done?.includes(1)) {
-                setStep1Progress(prev => prev ? { processed: prev.total, total: prev.total, pct: 100 } : null);
+                setStep1Progress(prev => prev ? { ...prev, pct: 100 } : null);
               }
               if (sd.steps_done?.includes(2)) {
                 setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
@@ -852,11 +902,27 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const syncStatus = data?.pipeline_sync_status || {};
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
-  const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  const seededFromRun = (jobRuns['universe_seed'] as any)?.progress_total as number | undefined
-    || (jobRuns['universe_seed'] as any)?.details?.seeded_total as number | undefined;
-  const seeded = seededFromRun ?? counts.seeded_us_total;
+  const step1Run = jobRuns['universe_seed'] as any;
+  const step1Snapshot = getStep1Snapshot(step1Run) || exclusionReport?.step1_counts?.step1_progress || null;
+  const step1ReasonCounts = getStep1ReasonCounts(step1Snapshot, exclusionReport?.step1_counts?.step1_reason_counts || null);
+  const rawDistinct = step1Snapshot?.raw_distinct_total
+    ?? exclusionReport?.step1_counts?.raw_distinct
+    ?? (step1Run?.raw_symbols_fetched as number | undefined);
+  const rawRowsTotal = step1Snapshot?.raw_rows_total
+    ?? exclusionReport?.step1_counts?.raw_rows_total
+    ?? counts.step1_raw_exchange_total;
+  const rawPerExchange = step1Snapshot?.raw_per_exchange
+    ?? exclusionReport?.step1_counts?.fetched_raw_per_exchange
+    ?? (step1Run?.fetched_raw_per_exchange as Record<string, number> | undefined);
+  const seededFromRun = step1Snapshot?.seeded_total
+    ?? exclusionReport?.step1_counts?.seeded_count
+    ?? (step1Run?.details?.seeded_total as number | undefined);
+  const seeded = seededFromRun ?? counts.step1_seeded_total ?? counts.seeded_us_total;
+  const step1DbWritten = step1Snapshot?.db_written_total
+    ?? exclusionReport?.step1_counts?.db_written_total
+    ?? (step1Run?.details?.db_written_total as number | undefined);
+  const step1FilteredCurrent = step1Snapshot?.filtered_out_total_step1
+    ?? exclusionReport?.step1_counts?.filtered_out_total_step1;
   const withPriceFromRun = (jobRuns['price_sync'] as any)?.details?.tickers_with_price_data as number | undefined
     || (jobRuns['price_sync'] as any)?.progress_processed as number | undefined;
   const withPrice = withPriceFromRun ?? counts.with_price_data;
@@ -866,18 +932,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   // Exclusion-report filtered_out counts — authoritative source for funnel arithmetic.
   const byStep = (exclusionReport as any)?.by_step as Record<string, number> | undefined;
-  const step1Filtered = byStep?.['Step 1 - Universe Seed'];
+  const step1Filtered = step1FilteredCurrent ?? byStep?.['Step 1 - Universe Seed'];
   const step2Filtered = byStep?.['Step 2 - Price Sync'];
   const step3Filtered = byStep?.['Step 3 - Fundamentals Sync'];
   const step4Filtered = byStep?.['Step 4 - Visible Universe'];
 
   // s1In: total rows in Step 1 export = seeded + filtered = authoritative raw count.
   // Computed as seeded_count + step1Filtered so it matches the CSV row count exactly.
-  const _s1Seeded = (exclusionReport?.step1_counts?.seeded_count as number | undefined);
+  const _s1Seeded = seededFromRun;
   const s1In: number | undefined =
     _s1Seeded !== undefined && step1Filtered !== undefined
       ? _s1Seeded + step1Filtered
-      : rawSymbols;
+      : rawDistinct;
 
   // Arithmetic chain: Output = Input − FilteredOut. Each step chains from previous.
   const s1Out: number | undefined =
@@ -1216,8 +1282,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             : (!run || currentRunTs < prevRunTs)
               ? 'Ready now'
               : `After next Step ${step.step - 1} completion`;
-        const processedCount = outCount ?? run?.records_processed;
-        const processedLabel = step.job_name === 'price_sync' ? 'Processed tickers:' : 'Processed:';
+        const processedCount = step.job_name === 'universe_seed'
+          ? step1DbWritten ?? run?.records_processed
+          : outCount ?? run?.records_processed;
+        const processedLabel = step.job_name === 'universe_seed'
+          ? 'DB written:'
+          : step.job_name === 'price_sync'
+            ? 'Processed tickers:'
+            : 'Processed:';
 
       return (
         <View key={step.job_name}>
@@ -1259,7 +1331,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 <Text style={s.progressText}>
                   {liveProgress || runResult[step.job_name] || JOB_DESCRIPTIONS[step.job_name] || 'Starting…'}
                 </Text>
-                <Text style={s.elapsedText}>Běží {Math.max(0, Math.round(elapsedSeconds / 60))} min</Text>
+                <Text style={s.elapsedText}>{formatDuration(elapsedSeconds)}</Text>
               </View>
             ) : runResult[step.job_name] ? (
               <Text style={[s.runResultText, isRunning && { color: '#F59E0B' }]}>{runResult[step.job_name]}</Text>
@@ -1329,9 +1401,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
-                const runningMinutes = runStart ? Math.max(0, Math.round((Date.now() - Date.parse(runStart)) / 60000)) : 0;
+                const runningSeconds = runStart ? Math.max(0, Math.round((clockNow - Date.parse(runStart)) / 1000)) : 0;
                 const statusText = run.status === 'running'
-                  ? `Běží ${runningMinutes} min`
+                  ? `Running for ${formatDuration(runningSeconds)}`
                   : runStart
                     ? `Naposledy ${formatTime(runStart)}`
                     : 'Naposledy —';
@@ -1379,12 +1451,28 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {step.job_name === 'universe_seed' && (s1In !== undefined || rawPerExchange) && (
+              {step.job_name === 'universe_seed' && (rawDistinct !== undefined || rawRowsTotal !== undefined || rawPerExchange || step1Filtered !== undefined || seeded !== undefined || step1DbWritten !== undefined) && (
                 <View style={s.substepsCard}>
-                  <Text style={s.substepsTitle}>Step 1 raw breakdown</Text>
+                  <Text style={s.substepsTitle}>Step 1 funnel audit</Text>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Elapsed</Text>
+                    <Text style={s.substepValue}>
+                      {run?.status === 'running'
+                        ? formatDuration(run?.start_time || run?.started_at ? Math.max(0, Math.round((clockNow - Date.parse(run.start_time || run.started_at)) / 1000)) : 0)
+                        : formatDuration(run?.duration_seconds)}
+                    </Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Phase</Text>
+                    <Text style={s.substepValue}>{step1Snapshot?.phase || run?.phase || '—'}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Raw total fetched</Text>
+                    <Text style={s.substepValue}>{fmt(rawRowsTotal)}</Text>
+                  </View>
                   <View style={s.substepRow}>
                     <Text style={s.substepName}>Raw distinct (fetched)</Text>
-                    <Text style={s.substepValue}>{s1In !== undefined ? fmt(s1In) : '—'}</Text>
+                    <Text style={s.substepValue}>{fmt(rawDistinct)}</Text>
                   </View>
                   {rawPerExchange && Object.entries(rawPerExchange).map(([exch, n]) => (
                     <View key={exch} style={s.substepRow}>
@@ -1392,6 +1480,43 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.substepValue}>{fmt(n as number)}</Text>
                     </View>
                   ))}
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Filtered out</Text>
+                    <Text style={s.substepValue}>{fmt(step1Filtered)}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Seeded</Text>
+                    <Text style={s.substepValue}>{fmt(seeded)}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>DB written</Text>
+                    <Text style={s.substepValue}>{fmt(step1DbWritten)}</Text>
+                  </View>
+                  <Text style={[s.substepsTitle, { marginTop: 12 }]}>Exclusion reasons</Text>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Non-common-stock</Text>
+                    <Text style={s.substepValue}>{fmt(step1ReasonCounts.filtered_not_common_stock)}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Duplicate code across raw payloads</Text>
+                    <Text style={s.substepValue}>{fmt(step1ReasonCounts.filtered_duplicates)}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Excluded pattern</Text>
+                    <Text style={s.substepValue}>{fmt(step1ReasonCounts.filtered_pattern)}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Empty ticker code</Text>
+                    <Text style={s.substepValue}>{fmt(step1ReasonCounts.filtered_empty_code)}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Ticker contains dot</Text>
+                    <Text style={s.substepValue}>{fmt(step1ReasonCounts.filtered_dot_ticker)}</Text>
+                  </View>
+                  <View style={s.substepRow}>
+                    <Text style={s.substepName}>Other</Text>
+                    <Text style={s.substepValue}>{fmt(step1ReasonCounts.filtered_other)}</Text>
+                  </View>
                 </View>
               )}
 
@@ -1405,11 +1530,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     }]} />
                   </View>
                   <View style={s.step4ProgressRow}>
-                    <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
+                    <Text style={s.step4ProgressLabel}>DB write progress</Text>
                     <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
-                      {fmt(step1Progress.processed)} / {fmt(step1Progress.total)} · {step1Progress.pct}%
+                      {step1Progress.total > 0
+                        ? `${fmt(step1Progress.processed)} / ${fmt(step1Progress.total)} · ${step1Progress.pct}%`
+                        : `${step1Progress.pct}%`}
                     </Text>
                   </View>
+                  {(step1Snapshot?.progress_message || step1Progress.message) && (
+                    <Text style={s.substepMeta} numberOfLines={2}>
+                      {step1Snapshot?.progress_message || step1Progress.message}
+                    </Text>
+                  )}
                 </View>
               )}
 

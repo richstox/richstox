@@ -2110,15 +2110,37 @@ async def _run_universe_seed_bg(db):
     })
     _doc_id = _sentinel.inserted_id
 
-    async def _s1_progress(processed: int, total: int) -> None:
-        pct = round(100 * processed / total) if total else 0
+    _last_s1_snapshot: Dict[str, Any] = {}
+
+    async def _s1_progress(snapshot: Dict[str, Any]) -> None:
+        nonlocal _last_s1_snapshot
+        _last_s1_snapshot = dict(snapshot or {})
+        pct = snapshot.get("progress_pct") or 0
+        raw_per_exchange = snapshot.get("raw_per_exchange") or {}
         await db.ops_job_runs.update_one(
             {"_id": _doc_id},
             {"$set": {
-                "progress": f"Seeding… {processed:,} / {total:,} tickers",
-                "progress_processed": processed,
-                "progress_total": total,
+                "phase": snapshot.get("phase"),
+                "progress": snapshot.get("progress_message") or "Running Step 1 universe seed…",
+                "progress_processed": snapshot.get("progress_processed") or 0,
+                "progress_total": snapshot.get("progress_total") or 0,
                 "progress_pct": pct,
+                "raw_rows_total": snapshot.get("raw_rows_total") or 0,
+                "details.step1_progress": snapshot,
+                "details.raw_rows_total": snapshot.get("raw_rows_total") or 0,
+                "details.raw_distinct_total": snapshot.get("raw_distinct_total") or 0,
+                "details.fetched_raw_per_exchange": raw_per_exchange,
+                "details.filtered_out_total_step1": snapshot.get("filtered_out_total_step1") or 0,
+                "details.seeded_total": snapshot.get("seeded_total") or 0,
+                "details.db_written_total": snapshot.get("db_written_total") or 0,
+                "details.step1_reason_counts": {
+                    "filtered_not_common_stock": snapshot.get("filtered_not_common_stock") or 0,
+                    "filtered_duplicates": snapshot.get("filtered_duplicates") or 0,
+                    "filtered_pattern": snapshot.get("filtered_pattern") or 0,
+                    "filtered_empty_code": snapshot.get("filtered_empty_code") or 0,
+                    "filtered_dot_ticker": snapshot.get("filtered_dot_ticker") or 0,
+                    "filtered_other": snapshot.get("filtered_other") or 0,
+                },
             }},
         )
 
@@ -2159,17 +2181,30 @@ async def _run_universe_seed_bg(db):
                 "details": {
                     "fetched": result.get("fetched") or 0,
                     "raw_rows_total": result.get("raw_rows_total") or 0,
+                    "raw_distinct_total": result.get("raw_distinct_total") or result.get("fetched") or 0,
                     "seeded_total": seeded_total,
+                    "db_written_total": result.get("db_written_total") or 0,
                     "filtered_out_total_step1": result.get("filtered_out_total_step1") or 0,
                     "fetched_raw_per_exchange": result.get("fetched_raw_per_exchange") or {},
+                    "step1_reason_counts": result.get("step1_reason_counts") or {},
+                    "step1_progress": result.get("step1_progress") or _last_s1_snapshot,
                 },
-                "progress": f"Completed: {seeded_total:,} seeded",
-                "progress_processed": seeded_total,
-                "progress_total": seeded_total,
-                "progress_pct": 100,
+                "phase": (result.get("step1_progress") or {}).get("phase") or "completed",
+                "progress": (
+                    (result.get("step1_progress") or {}).get("progress_message")
+                    or f"Completed: {seeded_total:,} seeded"
+                ),
+                "progress_processed": (result.get("step1_progress") or {}).get("progress_processed") or seeded_total,
+                "progress_total": (result.get("step1_progress") or {}).get("progress_total") or seeded_total,
+                "progress_pct": (result.get("step1_progress") or {}).get("progress_pct") or 100,
             }},
         )
     else:
+        failed_snapshot = {
+            **_last_s1_snapshot,
+            "phase": "failed",
+            "progress_message": f"Failed: {result.get('error', 'Unknown error')}",
+        }
         await db.ops_job_runs.update_one(
             {"_id": _doc_id},
             {"$set": {
@@ -2178,7 +2213,10 @@ async def _run_universe_seed_bg(db):
                 "finished_at_prague": _sched_to_prague_iso(finished_at),
                 "duration_seconds": duration,
                 "error": result.get("error", "Unknown error"),
-                "progress": f"Failed: {result.get('error', 'Unknown error')}",
+                "phase": "failed",
+                "progress": failed_snapshot.get("progress_message"),
+                "details.step1_progress": failed_snapshot,
+                "details.step1_reason_counts": result.get("step1_reason_counts") or _last_s1_snapshot.get("step1_reason_counts") or {},
             }},
         )
     logger.info(f"Universe Seed completed: status={status}, job_id={job_id}")
@@ -5098,10 +5136,12 @@ async def admin_get_job_status(job_name: str):
     last_run = None
     if raw_last_run:
         details = raw_last_run.get("details") or {}
+        step1_progress = details.get("step1_progress") or (raw_last_run.get("result") or {}).get("step1_progress") or {}
         started_at = raw_last_run.get("started_at")
         finished_at = raw_last_run.get("finished_at")
         seeded_total = (
             raw_last_run.get("progress_total")
+            or step1_progress.get("seeded_total")
             or details.get("seeded_total")
             or details.get("tickers_seeded_total")
         )
@@ -5123,6 +5163,7 @@ async def admin_get_job_status(job_name: str):
             "duration_seconds": duration_seconds,
             "details": {
                 **details,
+                "step1_progress": step1_progress or details.get("step1_progress"),
                 "seeded_total": seeded_total,
                 "tickers_with_price_data": tickers_with_price_data,
                 "records_upserted": records_upserted,
@@ -7012,10 +7053,14 @@ async def admin_get_pipeline_exclusion_report(
             dbg = r.get("universe_seed_debug") or {}
             step1_reconciliation = dbg.get("reconciliation")
             step1_counts = {
+                "raw_rows_total": r.get("raw_rows_total"),
                 "raw_distinct": r.get("fetched"),
                 "seeded_count": r.get("seeded_total"),
+                "db_written_total": r.get("db_written_total"),
                 "filtered_out_total_step1": r.get("filtered_out_total_step1"),
                 "fetched_raw_per_exchange": r.get("fetched_raw_per_exchange"),
+                "step1_reason_counts": r.get("step1_reason_counts") or {},
+                "step1_progress": r.get("step1_progress"),
                 "run_id": run_id,
             }
 
@@ -7688,14 +7733,35 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             try:
                 # Progress callback: update the sentinel live so UI polls show
                 # "processed / total" tickers without waiting for Step 1 to finish.
-                async def _s1_progress(processed: int, total: int) -> None:
+                _last_s1_snapshot: Dict[str, Any] = {}
+
+                async def _s1_progress(snapshot: Dict[str, Any]) -> None:
+                    nonlocal _last_s1_snapshot
+                    _last_s1_snapshot = dict(snapshot or {})
                     await db.ops_job_runs.update_one(
                         {"_id": _s1_run_doc_id},
                         {"$set": {
-                            "progress": f"Step 1: {processed} / {total} tickers seeded",
-                            "progress_processed": processed,
-                            "progress_total": total,
-                            "progress_pct": round(100 * processed / total) if total else 0,
+                            "phase": snapshot.get("phase"),
+                            "progress": snapshot.get("progress_message") or "Running Step 1 universe seed…",
+                            "progress_processed": snapshot.get("progress_processed") or 0,
+                            "progress_total": snapshot.get("progress_total") or 0,
+                            "progress_pct": snapshot.get("progress_pct") or 0,
+                            "raw_rows_total": snapshot.get("raw_rows_total") or 0,
+                            "details.step1_progress": snapshot,
+                            "details.raw_rows_total": snapshot.get("raw_rows_total") or 0,
+                            "details.raw_distinct_total": snapshot.get("raw_distinct_total") or 0,
+                            "details.fetched_raw_per_exchange": snapshot.get("raw_per_exchange") or {},
+                            "details.filtered_out_total_step1": snapshot.get("filtered_out_total_step1") or 0,
+                            "details.seeded_total": snapshot.get("seeded_total") or 0,
+                            "details.db_written_total": snapshot.get("db_written_total") or 0,
+                            "details.step1_reason_counts": {
+                                "filtered_not_common_stock": snapshot.get("filtered_not_common_stock") or 0,
+                                "filtered_duplicates": snapshot.get("filtered_duplicates") or 0,
+                                "filtered_pattern": snapshot.get("filtered_pattern") or 0,
+                                "filtered_empty_code": snapshot.get("filtered_empty_code") or 0,
+                                "filtered_dot_ticker": snapshot.get("filtered_dot_ticker") or 0,
+                                "filtered_other": snapshot.get("filtered_other") or 0,
+                            },
                         }},
                     )
 
@@ -7731,18 +7797,31 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                             "exclusion_report_run_id": s1_result.get("raw_run_id"),
                             "fetched": s1_result.get("fetched"),
                             "raw_rows_total": s1_result.get("raw_rows_total"),
+                            "raw_distinct_total": s1_result.get("raw_distinct_total") or s1_result.get("fetched"),
                             "seeded_total": _s1_seeded_total,
+                            "db_written_total": s1_result.get("db_written_total") or 0,
                             "filtered_out_total_step1": s1_result.get("filtered_out_total_step1"),
                             "fetched_raw_per_exchange": s1_result.get("fetched_raw_per_exchange"),
+                            "step1_reason_counts": s1_result.get("step1_reason_counts") or {},
+                            "step1_progress": s1_result.get("step1_progress") or _last_s1_snapshot,
                         },
-                        "progress": f"Completed: {_s1_seeded_total:,} seeded",
-                        "progress_processed": _s1_seeded_total,
-                        "progress_total": _s1_seeded_total,
-                        "progress_pct": 100,
+                        "phase": (s1_result.get("step1_progress") or {}).get("phase") or "completed",
+                        "progress": (
+                            (s1_result.get("step1_progress") or {}).get("progress_message")
+                            or f"Completed: {_s1_seeded_total:,} seeded"
+                        ),
+                        "progress_processed": (s1_result.get("step1_progress") or {}).get("progress_processed") or _s1_seeded_total,
+                        "progress_total": (s1_result.get("step1_progress") or {}).get("progress_total") or _s1_seeded_total,
+                        "progress_pct": (s1_result.get("step1_progress") or {}).get("progress_pct") or 100,
                     }},
                 )
             except Exception as _s1_exc:
                 _s1_fail_at = datetime.now(timezone.utc)
+                _failed_snapshot = {
+                    **_last_s1_snapshot,
+                    "phase": "failed",
+                    "progress_message": f"Failed: {_s1_exc}",
+                }
                 await db.ops_job_runs.update_one(
                     {"_id": _s1_run_doc_id},
                     {"$set": {
@@ -7750,6 +7829,9 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                         "finished_at": _s1_fail_at,
                         "finished_at_prague": _sched_to_prague_iso(_s1_fail_at),
                         "error": str(_s1_exc),
+                        "phase": "failed",
+                        "progress": _failed_snapshot.get("progress_message"),
+                        "details.step1_progress": _failed_snapshot,
                     }},
                 )
                 raise  # re-raise so the outer except marks chain as failed

@@ -69,6 +69,11 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         started = doc.get("started_at")
         finished = doc.get("finished_at") or doc.get("completed_at")
         result = doc.get("result") or doc.get("details") or {}
+        step1_progress = (
+            (doc.get("details") or {}).get("step1_progress")
+            or (doc.get("result") or {}).get("step1_progress")
+            or {}
+        )
         doc["start_time"] = _to_iso_utc(started)
         doc["end_time"] = _to_iso_utc(finished)
         doc["duration_seconds"] = doc.get("duration_sec") or doc.get("duration_seconds")
@@ -85,15 +90,26 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         # a running job; fall back to result.raw_rows_total (details sub-doc) or
         # result.fetched from a completed run.
         doc["raw_symbols_fetched"] = (
+            step1_progress.get("raw_distinct_total") or
+            result.get("raw_distinct_total") or
             doc.get("raw_rows_total") or        # top-level field set early during run
             result.get("raw_rows_total") or     # details sub-doc (also set early)
             result.get("fetched") or            # completed result fallback
             None
         )
+        doc["step1_progress"] = step1_progress or None
         # Canonical Step 1 filtered_out = deduped exclusion rows written (universe_seed only)
-        doc["filtered_out_total_step1"] = result.get("filtered_out_total_step1") or None
+        doc["filtered_out_total_step1"] = (
+            step1_progress.get("filtered_out_total_step1")
+            or result.get("filtered_out_total_step1")
+            or None
+        )
         # Per-exchange raw counts before distinct deduplication (universe_seed only)
-        doc["fetched_raw_per_exchange"] = result.get("fetched_raw_per_exchange") or None
+        doc["fetched_raw_per_exchange"] = (
+            step1_progress.get("raw_per_exchange")
+            or result.get("fetched_raw_per_exchange")
+            or None
+        )
         last_runs[job_name] = doc
 
     return last_runs
