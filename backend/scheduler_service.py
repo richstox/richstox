@@ -1007,6 +1007,7 @@ async def run_daily_price_sync(
     db,
     ignore_kill_switch: bool = False,
     parent_run_id: Optional[str] = None,
+    chain_run_id: Optional[str] = None,
     run_doc_id: Optional[Any] = None,
     cancel_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> Dict[str, Any]:
@@ -1021,6 +1022,12 @@ async def run_daily_price_sync(
     Config read from ops_config:
     - lookback_days (default: 30)
     - coverage_threshold (default: 0.80)
+
+    parent_run_id: exclusion_report_run_id of the preceding universe_seed run.
+    chain_run_id: chain identifier shared across all steps in the pipeline run.
+    Both are required; seeded_total is fetched strictly from the matching
+    universe_seed ops_job_runs document. Fails with "missing_seeded_total_for_chain"
+    if the document is not found or seeded_total is absent.
 
     run_doc_id: if provided, reuse an externally-inserted ops_job_runs sentinel
     instead of creating a new one (used by the admin full-pipeline chain).
@@ -1037,6 +1044,20 @@ async def run_daily_price_sync(
     # Use an externally-inserted sentinel (chain orchestrator) or create our own.
     if run_doc_id is not None:
         _running_doc_id = run_doc_id
+        # Persist chain context to the externally-provided sentinel on start.
+        # Uses dot-notation $set so existing fields are never overwritten.
+        _ctx_result = await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {
+                "details.parent_run_id": parent_run_id,
+                "details.chain_run_id": chain_run_id,
+            }},
+        )
+        if _ctx_result.matched_count == 0:
+            logger.warning(
+                f"{job_name}: sentinel doc not found for run_doc_id={_running_doc_id}; "
+                "chain context could not be persisted"
+            )
     else:
         # Insert "running" sentinel so the frontend poll detects the job started
         _running_doc_id = (await db.ops_job_runs.insert_one({
@@ -1044,7 +1065,7 @@ async def run_daily_price_sync(
             "status": "running",
             "started_at": started_at,
             "source": "scheduler",
-            "details": {"parent_run_id": parent_run_id},
+            "details": {"parent_run_id": parent_run_id, "chain_run_id": chain_run_id},
             "phase": "2.1_bulk_catchup",
             "progress_processed": 0,
             "progress_total": 0,
@@ -1112,41 +1133,33 @@ async def run_daily_price_sync(
             )
 
         # ── Phase A: bulk price catchup + has_price_data flags ────────────────
-        # Determine progress_total for Step 2: prefer seeded_total from the
-        # parent universe_seed run (chain-triggered), fall back to live DB count.
-        seeded_total_from_parent: Optional[int] = None
-        if parent_run_id:
-            try:
-                _parent_doc = await db.ops_job_runs.find_one(
-                    {
-                        "job_name": "universe_seed",
-                        "details.exclusion_report_run_id": parent_run_id,
-                    },
-                    {"details.seeded_total": 1, "result.seeded_total": 1},
-                )
-                if _parent_doc:
-                    _d = (_parent_doc.get("details") or {})
-                    _r = (_parent_doc.get("result") or {})
-                    _val = _d.get("seeded_total") if "seeded_total" in _d else _r.get("seeded_total")
-                    if _val is not None:
-                        seeded_total_from_parent = int(_val)
-            except Exception as _lookup_exc:
-                logger.warning(
-                    f"{job_name}: parent universe_seed lookup failed: {_lookup_exc}"
-                )
+        # Strictly fetch seeded_total from the matching universe_seed run.
+        # Requires both parent_run_id (exclusion_report_run_id of universe_seed)
+        # and chain_run_id.  Fails loudly if not found — no fallbacks.
+        if not parent_run_id or not chain_run_id:
+            raise RuntimeError(
+                "price_sync requires both parent_run_id and chain_run_id; "
+                "missing_seeded_total_for_chain"
+            )
 
-        db_count_fallback = await db.tracked_tickers.count_documents(SEED_QUERY)
-
-        if seeded_total_from_parent is not None:
-            progress_total_step2 = seeded_total_from_parent
-            if seeded_total_from_parent != db_count_fallback:
-                logger.warning(
-                    f"{job_name}: seeded_total from parent run "
-                    f"({seeded_total_from_parent}) differs from current DB count "
-                    f"({db_count_fallback}); using parent value for progress_total"
-                )
-        else:
-            progress_total_step2 = db_count_fallback
+        _parent_doc = await db.ops_job_runs.find_one(
+            {
+                "job_name": "universe_seed",
+                "details.exclusion_report_run_id": parent_run_id,
+                "details.chain_run_id": chain_run_id,
+            },
+            {"details.seeded_total": 1},
+        )
+        if not _parent_doc:
+            raise RuntimeError("missing_seeded_total_for_chain")
+        _seeded_val = (_parent_doc.get("details") or {}).get("seeded_total")
+        if _seeded_val is None:
+            raise RuntimeError("missing_seeded_total_for_chain")
+        progress_total_step2 = int(_seeded_val)
+        logger.info(
+            f"{job_name}: seeded_total={progress_total_step2} sourced from universe_seed "
+            f"(parent_run_id={parent_run_id}, chain_run_id={chain_run_id})"
+        )
 
         await _progress(
             "2.1 Detecting price gaps (last 30 days)…",
@@ -1220,6 +1233,7 @@ async def run_daily_price_sync(
                         "tickers_with_price_data": with_price,
                         "exclusion_report_run_id": result.get("exclusion_report_run_id"),
                         "parent_run_id": parent_run_id,
+                        "chain_run_id": chain_run_id,
                         "stop_reason": "cancel_requested_after_phase_a",
                     },
                 }},
@@ -1290,6 +1304,7 @@ async def run_daily_price_sync(
                         "fundamentals_events_enqueued_skipped_existing": result.get("fundamentals_events_enqueued_skipped_existing", 0),
                         "exclusion_report_run_id": result.get("exclusion_report_run_id"),
                         "parent_run_id": parent_run_id,
+                        "chain_run_id": chain_run_id,
                         "stop_reason": "cancel_requested_during_phase_bc",
                     },
                 }},
@@ -1345,6 +1360,7 @@ async def run_daily_price_sync(
                     "event_detectors": result.get("event_detectors", {}),
                     "exclusion_report_run_id": result.get("exclusion_report_run_id"),
                     "parent_run_id": parent_run_id,
+                    "chain_run_id": chain_run_id,
                 },
             }}
         )
@@ -1384,6 +1400,8 @@ async def run_daily_price_sync(
                 "finished_at": _fail_finished_at,
                 "finished_at_prague": _to_prague_iso(_fail_finished_at),
                 "error": error_msg,
+                "details.parent_run_id": parent_run_id,
+                "details.chain_run_id": chain_run_id,
             }},
         )
 

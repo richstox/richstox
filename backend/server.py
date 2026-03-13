@@ -7752,6 +7752,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             try:
                 s2_result = await run_daily_price_sync(
                     db, ignore_kill_switch=True, parent_run_id=s1_run_id,
+                    chain_run_id=chain_id,
                     run_doc_id=_s2_run_doc_id,
                     cancel_check=_cancelled,
                 )

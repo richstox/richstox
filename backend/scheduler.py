@@ -335,6 +335,7 @@ async def _run_universe_seed_scheduled(db):
     from whitelist_service import sync_ticker_whitelist
 
     job_id = f"universe_seed_{uuid.uuid4().hex[:8]}"
+    chain_run_id = f"chain_sched_{uuid.uuid4().hex[:12]}"
     started_at = datetime.now(timezone.utc)
     logger.info(f"[scheduler] Universe Seed started (job_id={job_id})")
 
@@ -350,6 +351,7 @@ async def _run_universe_seed_scheduled(db):
         "log_timezone": "Europe/Prague",
         "progress": "Fetching symbols from EODHD…",
         "progress_pct": 0,
+        "details": {"chain_run_id": chain_run_id},
     })
     _doc_id = _sentinel.inserted_id
 
@@ -391,6 +393,8 @@ async def _run_universe_seed_scheduled(db):
                 "duration_seconds": duration,
                 "result": result,
                 "details": {
+                    "chain_run_id": chain_run_id,
+                    "exclusion_report_run_id": result.get("exclusion_report_run_id"),
                     "fetched": result.get("fetched") or 0,
                     "raw_rows_total": result.get("raw_rows_total") or 0,
                     "seeded_total": result.get("seeded_total") or 0,
@@ -585,14 +589,25 @@ async def scheduler_loop():
             # STEP 2: Price sync immediately after Step 1 completes
             if should_run_after_dependency("price_sync", "universe_seed", last_run, today_str):
                 logger.info("Triggering price_sync (dependency: universe_seed completed)")
-                # Exact Step 1 parent: the raw_run_id from the just-completed Step 1 run.
-                _s1_raw = await db.universe_seed_raw_rows.find_one(
-                    {}, {"run_id": 1}, sort=[("created_at", -1)]
+                # Read the latest completed universe_seed run to get both
+                # parent_run_id (exclusion_report_run_id) and chain_run_id.
+                _s1_doc = await db.ops_job_runs.find_one(
+                    {
+                        "job_name": "universe_seed",
+                        "status": "completed",
+                        "details.exclusion_report_run_id": {"$exists": True, "$ne": None},
+                        "details.chain_run_id": {"$exists": True, "$ne": None},
+                    },
+                    {"details.exclusion_report_run_id": 1, "details.chain_run_id": 1},
+                    sort=[("started_at", -1)],
                 )
-                _s1_run_id_for_s2 = _s1_raw["run_id"] if _s1_raw else None
+                _s1_excl_run_id = (_s1_doc or {}).get("details", {}).get("exclusion_report_run_id")
+                _s1_chain_run_id = (_s1_doc or {}).get("details", {}).get("chain_run_id")
                 await run_job_with_retry(
                     "price_sync",
-                    lambda _db, _pid=_s1_run_id_for_s2: run_daily_price_sync(_db, parent_run_id=_pid),
+                    lambda _db, _pid=_s1_excl_run_id, _cid=_s1_chain_run_id: run_daily_price_sync(
+                        _db, parent_run_id=_pid, chain_run_id=_cid
+                    ),
                     db,
                 )
                 last_run["price_sync"] = today_str
