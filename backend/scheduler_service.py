@@ -2478,7 +2478,7 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
     
     # Get last job runs
     last_price_sync = await db.ops_job_runs.find_one(
-        {"job_name": {"$in": ["price_sync", "scheduled_price_sync", "daily_price_sync"]}},
+        {"job_name": "price_sync"},
         {"_id": 0},
         sort=[("started_at", -1)]
     )
@@ -2499,6 +2499,46 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
     pending_fundamentals = await db.fundamentals_events.count_documents({"status": "pending"})
     active_without_prices = len(await get_tickers_needing_backfill(db, limit=1000))
     
+    def _iso(dt):
+        if not dt:
+            return None
+        return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+
+    def _format_last_run(run: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not run:
+            return None
+        details = run.get("details") or {}
+        started_at = run.get("started_at")
+        finished_at = run.get("finished_at")
+        seeded_total = (
+            run.get("progress_total")
+            or details.get("seeded_total")
+            or details.get("tickers_seeded_total")
+        )
+        tickers_with_price_data = details.get("tickers_with_price_data")
+        records_upserted = details.get("records_upserted") or run.get("records_upserted")
+        phase = run.get("phase") or details.get("phase")
+        duration_seconds = None
+        if started_at and finished_at:
+            duration_seconds = (finished_at - started_at).total_seconds()
+        return {
+            "status": run.get("status"),
+            "started_at": _iso(started_at),
+            "finished_at": _iso(finished_at),
+            "progress_processed": run.get("progress_processed"),
+            "progress_total": seeded_total or run.get("progress_total"),
+            "progress_pct": run.get("progress_pct"),
+            "phase": phase,
+            "duration_seconds": duration_seconds,
+            "details": {
+                **details,
+                "seeded_total": seeded_total,
+                "tickers_with_price_data": tickers_with_price_data,
+                "records_upserted": records_upserted,
+                "phase": phase,
+            },
+        }
+
     return {
         "scheduler_enabled": scheduler_enabled,
         "kill_switch_engaged": not scheduler_enabled,
@@ -2511,21 +2551,9 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
             "price_backfill": "04:45",
         },
         "last_runs": {
-            "price_sync": {
-                "status": last_price_sync.get("status") if last_price_sync else None,
-                "started_at": last_price_sync.get("started_at").isoformat() if last_price_sync and last_price_sync.get("started_at") else None,
-                "records": last_price_sync.get("records_upserted") if last_price_sync else None,
-            } if last_price_sync else None,
-            "fundamentals_sync": {
-                "status": last_fundamentals_sync.get("status") if last_fundamentals_sync else None,
-                "started_at": last_fundamentals_sync.get("started_at").isoformat() if last_fundamentals_sync and last_fundamentals_sync.get("started_at") else None,
-                "processed": last_fundamentals_sync.get("details", {}).get("processed") if last_fundamentals_sync else None,
-            } if last_fundamentals_sync else None,
-            "price_backfill": {
-                "status": last_backfill.get("status") if last_backfill else None,
-                "started_at": last_backfill.get("started_at").isoformat() if last_backfill and last_backfill.get("started_at") else None,
-                "records": last_backfill.get("details", {}).get("total_records") if last_backfill else None,
-            } if last_backfill else None,
+            "price_sync": _format_last_run(last_price_sync),
+            "fundamentals_sync": _format_last_run(last_fundamentals_sync),
+            "price_backfill": _format_last_run(last_backfill),
         },
         "pending_work": {
             "pending_fundamentals_events": pending_fundamentals,

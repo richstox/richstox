@@ -5083,12 +5083,52 @@ async def admin_get_job_status(job_name: str):
     config_key = f"job_{job_name}_enabled"
     config = await db.ops_config.find_one({"key": config_key}, {"_id": 0})
     
-    # Get last run
-    last_run = await db.ops_job_runs.find_one(
+    def _iso(dt):
+        if not dt:
+            return None
+        return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+
+    # Get last run (latest by started_at, no status filter)
+    raw_last_run = await db.ops_job_runs.find_one(
         {"job_name": job_name},
         {"_id": 0},
         sort=[("started_at", -1)]
     )
+
+    last_run = None
+    if raw_last_run:
+        details = raw_last_run.get("details") or {}
+        started_at = raw_last_run.get("started_at")
+        finished_at = raw_last_run.get("finished_at")
+        seeded_total = (
+            raw_last_run.get("progress_total")
+            or details.get("seeded_total")
+            or details.get("tickers_seeded_total")
+        )
+        tickers_with_price_data = details.get("tickers_with_price_data")
+        records_upserted = details.get("records_upserted") or raw_last_run.get("records_upserted")
+        phase = raw_last_run.get("phase") or details.get("phase")
+        duration_seconds = None
+        if started_at and finished_at:
+            duration_seconds = (finished_at - started_at).total_seconds()
+
+        last_run = {
+            "status": raw_last_run.get("status"),
+            "started_at": _iso(started_at),
+            "finished_at": _iso(finished_at),
+            "progress_processed": raw_last_run.get("progress_processed"),
+            "progress_total": seeded_total or raw_last_run.get("progress_total"),
+            "progress_pct": raw_last_run.get("progress_pct"),
+            "phase": phase,
+            "duration_seconds": duration_seconds,
+            "details": {
+                **details,
+                "seeded_total": seeded_total,
+                "tickers_with_price_data": tickers_with_price_data,
+                "records_upserted": records_upserted,
+                "phase": phase,
+            },
+        }
     
     return {
         "job": job_name,

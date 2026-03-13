@@ -3,7 +3,7 @@
  * Universe Pipeline — 5-step sequential process with integrated funnel per step
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   RefreshControl, ActivityIndicator, Alert, Linking, Platform, TextInput,
@@ -131,9 +131,15 @@ function getNextRun(hour: number, minute: number, skipSunday: boolean = false): 
 }
 
 function formatDuration(sec?: number): string {
-  if (!sec) return '';
-  if (sec < 60) return `${Math.round(sec)}s`;
-  return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
+  if (sec === undefined || sec === null) return '';
+  const total = Math.round(sec);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 function formatTime(iso?: string): string {
@@ -173,6 +179,59 @@ function safeCount(v: any): number {
   return 0;
 }
 
+function normaliseRun(run: any): any {
+  if (!run) return run;
+  const start = run.started_at || run.start_time;
+  const finish = run.finished_at || run.end_time || run.last_run_finished;
+  const details = run.details || {};
+  const seededTotal = run.progress_total ?? details.seeded_total ?? details.tickers_seeded_total;
+  const processedCount =
+    run.progress_processed ??
+    details.tickers_with_price_data ??
+    details.records_upserted ??
+    run.records_processed;
+  const phase = run.phase ?? details.phase;
+  const durationSeconds = run.duration_seconds ?? (
+    start && finish ? Math.max(0, Math.round((Date.parse(finish) - Date.parse(start)) / 1000)) : undefined
+  );
+  return {
+    ...run,
+    start_time: start,
+    end_time: finish,
+    started_at: start,
+    finished_at: finish,
+    duration_seconds: durationSeconds,
+    progress_total: seededTotal,
+    progress_processed: processedCount,
+    progress_pct: run.progress_pct ?? (seededTotal ? Math.min(Math.round((processedCount ?? 0) / seededTotal * 100), 100) : undefined),
+    records_processed: processedCount,
+    last_run_finished: finish ?? run.last_run_finished,
+    phase,
+    details: {
+      ...details,
+      seeded_total: seededTotal ?? details.seeded_total,
+      tickers_with_price_data: details.tickers_with_price_data ?? processedCount,
+      records_upserted: details.records_upserted ?? run.records_upserted,
+      phase,
+    },
+  };
+}
+
+function deriveProgress(run: any) {
+  if (!run) return null;
+  const normalized = normaliseRun(run);
+  const total = normalized.progress_total;
+  const processed = normalized.progress_processed ?? 0;
+  const pct = total ? Math.min(Math.round((processed / total) * 100), 100) : (processed ? 100 : 0);
+  return {
+    processed,
+    total,
+    pct,
+    phase: normalized.phase,
+    message: normalized.progress,
+  };
+}
+
 export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [data, setData] = useState<OverviewData | null>(null);
   const [exclusionReport, setExclusionReport] = useState<PipelineExclusionReport | null>(null);
@@ -182,6 +241,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [downloadingReport, setDownloadingReport] = useState(false);
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [runResult, setRunResult] = useState<Record<string, string>>({});
+  const [liveLastRuns, setLiveLastRuns] = useState<Record<string, any>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [liveProgress, setLiveProgress] = useState<string>('');
@@ -395,8 +455,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
     pollRef.current = setInterval(async () => {
       try {
+        const statusUrl = jobName === 'price_sync'
+          ? `${API_URL}/api/admin/job/${jobName}/status`
+          : `${API_URL}/api/admin/jobs/${jobName}/status`;
         const res = await authenticatedFetch(
-          `${API_URL}/api/admin/jobs/${jobName}/status`,
+          statusUrl,
           {},
           sessionToken,
         );
@@ -404,8 +467,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const json = await res.json();
         const lastRun = json.last_run;
         if (!lastRun) return;
+        const normalizedRun = normaliseRun(lastRun);
+        setLiveLastRuns(prev => ({ ...prev, [jobName]: normalizedRun }));
 
-        const rawStart = lastRun.started_at || '';
+        const rawStart = normalizedRun.started_at || '';
         const utcStart = rawStart.endsWith('Z') || rawStart.includes('+')
           ? rawStart : rawStart + 'Z';
         const runStart = utcStart ? Date.parse(utcStart) : 0;
@@ -413,36 +478,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         // Allow up to 10 s of server/client clock skew so we never miss a run
         // that the server started just before the client received the response.
         if (runStart >= startedAt - 10_000) {
-          const st = lastRun.status || 'completed';
+          const st = normalizedRun.status || 'completed';
           if (st === 'running') {
-            const progressMsg = lastRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
+            const progressMsg = normalizedRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
             setLiveProgress(progressMsg);
-            // Structured progress for Step 1 universe seed
-            if (jobName === 'universe_seed' && lastRun.progress_total) {
-              setStep1Progress({
-                processed: lastRun.progress_processed || 0,
-                total:     lastRun.progress_total,
-                pct:       lastRun.progress_pct || 0,
-              });
-            }
-            // Structured progress for Step 2 price sync
-            if (jobName === 'price_sync' && lastRun.progress_total) {
-              setStep2Progress({
-                processed: lastRun.progress_processed || 0,
-                total:     lastRun.progress_total,
-                pct:       lastRun.progress_pct || 0,
-                phase:     lastRun.phase,
-                message:   lastRun.progress || undefined,
-              });
-            }
-            // Structured progress for Step 4 visibility recompute
-            if (jobName === 'compute_visible_universe' && lastRun.progress_total) {
-              setStep4Progress({
-                processed: lastRun.progress_processed || 0,
-                total:     lastRun.progress_total,
-                pct:       lastRun.progress_pct || 0,
-              });
-            }
+            const progress = deriveProgress(normalizedRun);
+            if (jobName === 'universe_seed') setStep1Progress(progress);
+            if (jobName === 'price_sync') setStep2Progress(progress);
+            if (jobName === 'compute_visible_universe') setStep4Progress(progress);
             if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
               fetchData();
             }
@@ -451,28 +494,28 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           stopPolling();
           setRunningJob(null);
           // Persist final Step 1 progress on completion so the bar shows 100%
-          if (jobName === 'universe_seed' && lastRun.progress_total) {
+          if (jobName === 'universe_seed' && normalizedRun.progress_total) {
             setStep1Progress({
-              processed: lastRun.progress_total,
-              total:     lastRun.progress_total,
+              processed: normalizedRun.progress_total,
+              total:     normalizedRun.progress_total,
               pct:       100,
             });
           }
           // Persist final Step 2 progress on completion so the bar shows 100%
-          if (jobName === 'price_sync' && lastRun.progress_total) {
+          if (jobName === 'price_sync' && normalizedRun.progress_total) {
             setStep2Progress({
-              processed: lastRun.progress_total,
-              total:     lastRun.progress_total,
+              processed: normalizedRun.progress_total,
+              total:     normalizedRun.progress_total,
               pct:       100,
               phase:     'completed',
-              message:   lastRun.progress || undefined,
+              message:   normalizedRun.progress || undefined,
             });
           }
           // Persist final Step 4 progress on completion so the bar shows 100%
-          if (jobName === 'compute_visible_universe' && lastRun.progress_total) {
+          if (jobName === 'compute_visible_universe' && normalizedRun.progress_total) {
             setStep4Progress({
-              processed: lastRun.progress_total,
-              total:     lastRun.progress_total,
+              processed: normalizedRun.progress_total,
+              total:     normalizedRun.progress_total,
               pct:       100,
             });
           }
@@ -705,20 +748,17 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           if (sd.current_step === 2) {
             try {
               const jr = await authenticatedFetch(
-                `${API_URL}/api/admin/jobs/price_sync/status`,
+                `${API_URL}/api/admin/job/price_sync/status`,
                 {},
                 sessionToken,
               );
               if (jr.ok) {
                 const jd = await jr.json();
-                const lr = jd.last_run;
-                if (lr?.status === 'running') {
-                  setStep2Progress({
-                    processed: lr.progress_processed || 0,
-                    total:     lr.progress_total || 0,
-                    pct:       lr.progress_pct || 0,
-                    phase:     lr.phase,
-                  });
+                const lr = normaliseRun(jd.last_run);
+                if (lr) {
+                  setLiveLastRuns(prev => ({ ...prev, price_sync: lr }));
+                  const progress = deriveProgress(lr);
+                  if (progress) setStep2Progress(progress);
                 }
               }
             } catch { /* non-fatal */ }
@@ -790,15 +830,36 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     });
   };
 
-  const jobRuns = data?.job_last_runs || {};
+  const jobRunsRaw = data?.job_last_runs || {};
+  const jobRuns = useMemo(() => {
+    const merged: Record<string, any> = { ...jobRunsRaw };
+    Object.entries(liveLastRuns).forEach(([k, v]) => { merged[k] = v; });
+    const normalized: Record<string, any> = {};
+    Object.entries(merged).forEach(([k, v]) => { normalized[k] = normaliseRun(v); });
+    return normalized;
+  }, [jobRunsRaw, liveLastRuns]);
+  useEffect(() => {
+    const lr = jobRuns['price_sync'];
+    if (lr) {
+      setStep2Progress(deriveProgress(lr));
+    }
+    const s1 = jobRuns['universe_seed'];
+    if (s1) {
+      setStep1Progress(deriveProgress(s1));
+    }
+  }, [jobRuns]);
   const counts = data?.universe_funnel?.counts || {};
   const syncStatus = data?.pipeline_sync_status || {};
   const todayStr = new Date().toISOString().split('T')[0];
 
   const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  const seeded = counts.seeded_us_total;
-  const withPrice = counts.with_price_data;
+  const seededFromRun = (jobRuns['universe_seed'] as any)?.progress_total as number | undefined
+    || (jobRuns['universe_seed'] as any)?.details?.seeded_total as number | undefined;
+  const seeded = seededFromRun ?? counts.seeded_us_total;
+  const withPriceFromRun = (jobRuns['price_sync'] as any)?.details?.tickers_with_price_data as number | undefined
+    || (jobRuns['price_sync'] as any)?.progress_processed as number | undefined;
+  const withPrice = withPriceFromRun ?? counts.with_price_data;
   const withClass = counts.with_classification;
   const visible = counts.visible_tickers;
   const step4Visible = counts.step4_visible_total ?? visible;
@@ -1158,12 +1219,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const processedCount = outCount ?? run?.records_processed;
         const processedLabel = step.job_name === 'price_sync' ? 'Processed tickers:' : 'Processed:';
 
-        return (
-          <View key={step.job_name}>
-            <View style={s.stepCard}>
+      return (
+        <View key={step.job_name}>
+          <View style={s.stepCard}>
 
-              {/* Step Header */}
-              <View style={s.stepHeader}>
+            {/* Step Header */}
+            <View style={s.stepHeader}>
                 <View style={[s.stepBadge, { backgroundColor: step.color + '22' }]}>
                   <Ionicons name={step.icon} size={16} color={step.color} />
                 </View>
@@ -1190,19 +1251,19 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
 
-              </View>
+            </View>
 
-              {/* Run Result */}
-              {isRunning ? (
-                <View style={s.progressRow}>
-                  <Text style={s.progressText}>
-                    {liveProgress || runResult[step.job_name] || JOB_DESCRIPTIONS[step.job_name] || 'Starting…'}
-                  </Text>
-                  <Text style={s.elapsedText}>{elapsedSeconds}s</Text>
-                </View>
-              ) : runResult[step.job_name] ? (
-                <Text style={[s.runResultText, isRunning && { color: '#F59E0B' }]}>{runResult[step.job_name]}</Text>
-              ) : null}
+            {/* Run Result */}
+            {isRunning ? (
+              <View style={s.progressRow}>
+                <Text style={s.progressText}>
+                  {liveProgress || runResult[step.job_name] || JOB_DESCRIPTIONS[step.job_name] || 'Starting…'}
+                </Text>
+                <Text style={s.elapsedText}>Běží {Math.max(0, Math.round(elapsedSeconds / 60))} min</Text>
+              </View>
+            ) : runResult[step.job_name] ? (
+              <Text style={[s.runResultText, isRunning && { color: '#F59E0B' }]}>{runResult[step.job_name]}</Text>
+            ) : null}
 
               {/* ── Integrated Funnel Row ── */}
               {/* Steps 2+: waiting state if previous step has 0 output */}
@@ -1262,12 +1323,30 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               )}
 
               {/* Last Run Info */}
-              {run ? (
+              {run ? (() => {
+                const runStart = run.start_time || run.started_at;
+                const runEnd = run.end_time || run.finished_at;
+                const lastDuration = run.duration_seconds ?? (
+                  runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
+                );
+                const runningMinutes = runStart ? Math.max(0, Math.round((Date.now() - Date.parse(runStart)) / 60000)) : 0;
+                const statusText = run.status === 'running'
+                  ? `Běží ${runningMinutes} min`
+                  : runStart
+                    ? `Naposledy ${formatTime(runStart)}`
+                    : 'Naposledy —';
+                const durationText = run.status === 'running'
+                  ? ''
+                  : lastDuration !== undefined
+                    ? `, trvalo ${formatDuration(lastDuration)}`
+                    : '';
+
+                return (
                 <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Last run:</Text>
                     <Text style={[s.runValue, { color: getStatusColor(run.status) }]}>
-                      {formatTime(run.end_time || run.start_time)} · {formatDuration(run.duration_seconds)}
+                      {statusText}{durationText}
                     </Text>
                   </View>
                   {run.triggered_by && (
@@ -1290,7 +1369,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.errorText}>⚠️ {run.error_message}</Text>
                   )}
                 </View>
-              ) : (
+                );
+              })() : (
                 <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Next run:</Text>
