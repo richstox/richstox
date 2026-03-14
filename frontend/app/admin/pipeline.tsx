@@ -701,13 +701,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     4: 'Visible Universe',
   };
 
-  const handleRunFullPipeline = async () => {
+   const handleRunFullPipeline = async () => {
     if (chainRunning) return;
     setChainRunning(true);
     setChainStatus('starting');
     setChainRunId(null);
     setChainCurrentStep(null);
     setChainStepsDone([]);
+    setElapsedSeconds(0);
     try {
       const res = await authenticatedFetch(
         `${API_URL}/api/admin/pipeline/run-full-now`,
@@ -720,6 +721,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainRunId(cid);
       setChainStatus('running');
       setChainCurrentStep(1);
+      // Start elapsed timer for chain run
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      const chainStartedAt = Date.now();
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds(Math.round((Date.now() - chainStartedAt) / 1000));
+      }, 1000);
       // Poll chain status every 2 s until completed/failed/cancelled.
       if (chainPollRef.current) clearInterval(chainPollRef.current);
       chainPollRef.current = setInterval(async () => {
@@ -780,6 +787,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           if (sd.status === 'completed' || sd.status === 'failed' || sd.status === 'cancelled') {
             clearInterval(chainPollRef.current!);
             chainPollRef.current = null;
+            if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+            setElapsedSeconds(0);
+            setRunningJob(null);
             setChainRunning(false);
             // Freeze final progress bar states
             if (sd.status === 'completed') {
@@ -795,6 +805,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       }, 2000);
     } catch (e: any) {
       setChainStatus('error');
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      setElapsedSeconds(0);
       setChainRunning(false);
     }
   };
@@ -812,6 +824,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       clearInterval(chainPollRef.current);
       chainPollRef.current = null;
     }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    setElapsedSeconds(0);
+    setRunningJob(null);
     setChainRunning(false);
     setChainStatus('cancelled');
     setChainCurrentStep(null);
@@ -1159,7 +1177,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         : isChainCancelled
         ? 'Cancelled'
         : chainCurrentStep !== null
-        ? `Running — Step ${chainCurrentStep}/4 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''})`
+        ? `Running — Step ${chainCurrentStep}/4 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}`
         : 'Running…'}
     </Text>
   )}
@@ -1224,7 +1242,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const currentRunTs = run?.start_time ? Date.parse(run.start_time) : 0;
         const eventDetectors = step.job_name === 'price_sync'
           ? ((run as any)?.details?.event_detectors
-            || (jobRunsRaw[step.job_name] as any)?.details?.event_detectors
+            || (data?.job_last_runs?.[step.job_name] as any)?.details?.event_detectors
             || {})
           : {};
         const splitDetector: Step2SubStep = eventDetectors?.step_2_2_split || {};
@@ -1239,7 +1257,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               ? 'Ready now'
               : `After next Step ${step.step - 1} completion`;
         const processedCount = outCount ?? run?.records_processed;
-        const processedLabel = step.job_name === 'price_sync' ? 'Processed tickers:' : 'Processed:';
+        const processedLabel = 'Processed:';
 
       return (
         <View key={step.job_name}>
@@ -1264,7 +1282,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <>
                         <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
                         <Text style={{ marginLeft: 2, fontSize: 11, color: '#F59E0B', fontWeight: '600' }}>
-                          {Math.round(elapsedSeconds / 60)}m
+                          {elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}
                         </Text>
                       </>
                     ) : status ? (
@@ -1688,7 +1706,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     {runningJob === 'full_price_history_sync' && (
                       <View style={s.progressRow}>
                         <Text style={s.progressText}>{liveProgress || JOB_DESCRIPTIONS['full_price_history_sync'] || 'Downloading…'}</Text>
-                        <Text style={s.elapsedText}>{elapsedSeconds}s</Text>
+                        <Text style={s.elapsedText}>{elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}</Text>
                       </View>
                     )}
                     {runResult['full_price_history_sync'] && runningJob !== 'full_price_history_sync' ? (
@@ -1763,7 +1781,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     {runningJob === 'full_fundamentals_sync' && (
                       <View style={s.progressRow}>
                         <Text style={s.progressText}>{liveProgress || JOB_DESCRIPTIONS['full_fundamentals_sync'] || 'Downloading…'}</Text>
-                        <Text style={s.elapsedText}>{elapsedSeconds}s</Text>
+                        <Text style={s.elapsedText}>{elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}</Text>
                       </View>
                     )}
                     {runResult['full_fundamentals_sync'] && runningJob !== 'full_fundamentals_sync' ? (
