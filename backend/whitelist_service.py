@@ -627,6 +627,14 @@ async def sync_ticker_whitelist(
         return result
     
     # LIVE MODE
+    # Reset is_seeded on all previously-seeded tickers so that tickers which
+    # no longer pass filters get un-seeded before the new upsert loop re-seeds
+    # the current candidate set.
+    await db.tracked_tickers.update_many(
+        {"is_seeded": True},
+        {"$set": {"is_seeded": False, "updated_at": datetime.now(timezone.utc)}}
+    )
+
     # BULK UPSERT tracked_tickers v batchích po 500
     from pymongo import UpdateOne
     BATCH_SIZE = 500
@@ -638,6 +646,7 @@ async def sync_ticker_whitelist(
             {"ticker": ticker},
             {
                 "$set": {
+                    "is_seeded": True,
                     "last_seen_date": now,
                     "updated_at": now,
                 },
