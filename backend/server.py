@@ -2634,7 +2634,7 @@ async def admin_benchmark_stats():
     return stats
 
 @api_router.get("/benchmarks/{industry}")
-async def get_benchmark(industry: str):
+async def get_industry_benchmark_detail(industry: str):
     """Get benchmark data for a specific industry."""
     benchmark = await get_industry_benchmark(db, industry)
     if not benchmark:

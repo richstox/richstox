@@ -30,8 +30,8 @@ export default function TickerDetail() {
   const fetchTickerData = async () => {
     try {
       const [infoResponse, pricesResponse] = await Promise.all([
-        axios.get(`${API_URL}/api/tickers/${ticker}`),
-        axios.get(`${API_URL}/api/tickers/${ticker}/prices?days=90`),
+        axios.get(`${API_URL}/api/stock/${ticker}`),
+        axios.get(`${API_URL}/api/stock/${ticker}/prices?days=90`),
       ]);
       setTickerInfo(infoResponse.data);
       setPrices(pricesResponse.data);

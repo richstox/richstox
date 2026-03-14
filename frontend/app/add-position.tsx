@@ -41,8 +41,8 @@ export default function AddPosition() {
 
   const searchTickers = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/tickers/search?q=${searchQuery}`);
-      setSearchResults(response.data.slice(0, 5));
+      const response = await axios.get(`${API_URL}/api/search?q=${searchQuery}`);
+      setSearchResults((response.data.results || []).slice(0, 5));
     } catch (error) {
       console.error('Error searching tickers:', error);
     }
@@ -54,7 +54,7 @@ export default function AddPosition() {
     setSearchResults([]);
 
     try {
-      const response = await axios.get(`${API_URL}/api/tickers/${ticker.ticker}`);
+      const response = await axios.get(`${API_URL}/api/stock/${ticker.ticker}`);
       setEntryPrice(response.data.current_price.toFixed(2));
     } catch (error) {
       console.error('Error getting ticker info:', error);

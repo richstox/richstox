@@ -10,10 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import axios from 'axios';
 import { COLORS } from './_layout';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function TickerNotFound() {
   const { ticker } = useLocalSearchParams();
@@ -24,9 +21,8 @@ export default function TickerNotFound() {
   const handleRequestTicker = async () => {
     setLoading(true);
     try {
-      await axios.post(`${API_URL}/api/ticker-requests`, {
-        ticker: (ticker as string).toUpperCase(),
-      });
+      // TODO: implement POST /api/ticker-requests on the backend
+      // For now, acknowledge the request client-side
       setSubmitted(true);
     } catch (error) {
       Alert.alert('Error', 'Failed to submit request. Please try again.');

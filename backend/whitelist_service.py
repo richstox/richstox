@@ -1195,11 +1195,6 @@ async def is_ticker_in_whitelist(db, ticker: str) -> bool:
     return doc is not None
 
 
-# DEPRECATED - Use VISIBLE_UNIVERSE_QUERY instead
-# Kept for backwards compatibility but should not be used
-LOVABLE_VISIBILITY_FILTER = {"is_visible": True}
-
-
 # SINGLE SOURCE OF TRUTH (mirrors server.py constant)
 VISIBLE_UNIVERSE_QUERY = {"is_visible": True}
 
