@@ -251,15 +251,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [exclusionReport, setExclusionReport] = useState<PipelineExclusionReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [runningJob, setRunningJob] = useState<string | null>(null);
   const [downloadingReport, setDownloadingReport] = useState(false);
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [runResult, setRunResult] = useState<Record<string, string>>({});
   const [liveLastRuns, setLiveLastRuns] = useState<Record<string, any>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [liveProgress, setLiveProgress] = useState<string>('');
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
@@ -400,25 +397,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
-  const stopPolling = () => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    if (fundProgressPollRef.current) {
-      clearInterval(fundProgressPollRef.current);
-      fundProgressPollRef.current = null;
-    }
-    setElapsedSeconds(0);
-    setLiveProgress('');
-    // NOTE: fundamentalsProgress state is intentionally NOT cleared here —
-    // we want the last progress snapshot to remain visible after the job ends.
-  };
-
   const pollFundamentalsProgress = useCallback(async () => {
     try {
       const res = await authenticatedFetch(
@@ -451,223 +429,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     } catch { /* ignore transient poll errors */ }
   }, [sessionToken]);
 
-  const startPolling = (jobName: string, startedAt: number) => {
-    stopPolling();
-    setElapsedSeconds(0);
-
-    // Start fundamentals-progress polling for both Step 3 job variants.
-    // For fundamentals_sync (scheduled), run_active will be false so it auto-stops
-    // after one call — harmless. For full_fundamentals_sync it drives the live bar.
-    if (jobName === 'full_fundamentals_sync' || jobName === 'fundamentals_sync') {
-      pollFundamentalsProgress();
-      fundProgressPollRef.current = setInterval(pollFundamentalsProgress, 2000);
-    }
-
-    timerRef.current = setInterval(() => {
-      setElapsedSeconds(Math.round((Date.now() - startedAt) / 1000));
-    }, 1000);
-
-    pollRef.current = setInterval(async () => {
-      try {
-        const statusUrl = jobName === 'price_sync'
-          ? `${API_URL}/api/admin/job/${jobName}/status`
-          : `${API_URL}/api/admin/jobs/${jobName}/status`;
-        const res = await authenticatedFetch(
-          statusUrl,
-          {},
-          sessionToken,
-        );
-        if (!res.ok) return;
-        const json = await res.json();
-        const lastRun = json.last_run;
-        if (!lastRun) return;
-        const normalizedRun = normaliseRun(lastRun);
-        setLiveLastRuns(prev => ({ ...prev, [jobName]: normalizedRun }));
-
-        const rawStart = normalizedRun.started_at || '';
-        const utcStart = rawStart.endsWith('Z') || rawStart.includes('+')
-          ? rawStart : rawStart + 'Z';
-        const runStart = utcStart ? Date.parse(utcStart) : 0;
-
-        // Allow up to 10 s of server/client clock skew so we never miss a run
-        // that the server started just before the client received the response.
-        if (runStart >= startedAt - 10_000) {
-          const st = normalizedRun.status || 'completed';
-          if (st === 'running') {
-            const progressMsg = normalizedRun.progress || JOB_DESCRIPTIONS[jobName] || 'Running…';
-            setLiveProgress(progressMsg);
-            const progress = deriveProgress(normalizedRun);
-            if (jobName === 'universe_seed') setStep1Progress(progress);
-            if (jobName === 'price_sync') setStep2Progress(progress);
-            if (jobName === 'compute_visible_universe') setStep4Progress(progress);
-            if (elapsedSeconds > 0 && elapsedSeconds % 10 === 0) {
-              fetchData();
-            }
-            return;
-          }
-          stopPolling();
-          setRunningJob(null);
-          // Persist final Step 1 progress on completion so the bar shows 100%
-          if (jobName === 'universe_seed' && normalizedRun.progress_total) {
-            setStep1Progress({
-              processed: normalizedRun.progress_total,
-              total:     normalizedRun.progress_total,
-              pct:       100,
-            });
-          }
-          // Persist final Step 2 progress on completion so the bar shows 100%
-          if (jobName === 'price_sync' && normalizedRun.progress_total) {
-            setStep2Progress({
-              processed: normalizedRun.progress_total,
-              total:     normalizedRun.progress_total,
-              pct:       100,
-              phase:     'completed',
-              message:   normalizedRun.progress || undefined,
-            });
-          }
-          // Persist final Step 4 progress on completion so the bar shows 100%
-          if (jobName === 'compute_visible_universe' && normalizedRun.progress_total) {
-            setStep4Progress({
-              processed: normalizedRun.progress_total,
-              total:     normalizedRun.progress_total,
-              pct:       100,
-            });
-          }
-          if (st === 'cancelled') {
-            setRunResult(prev => ({ ...prev, [jobName]: 'Cancelled' }));
-          } else if (st === 'failed' || st === 'error') {
-            setRunResult(prev => ({ ...prev, [jobName]: `Failed: ${st}` }));
-          } else {
-            setRunResult(prev => ({ ...prev, [jobName]: `Completed: ${st}` }));
-          }
-          fetchData();
-        }
-      } catch { /* ignore poll errors */ }
-    }, 3000);
-  };
-
-  const JOB_DESCRIPTIONS: Record<string, string> = {
-    universe_seed: 'Fetching NYSE + NASDAQ symbols from EODHD…',
-    price_sync: 'Downloading bulk prices + running split/dividend/earnings detectors…',
-    fundamentals_sync: 'Syncing fundamentals for queued tickers…',
-    compute_visible_universe: 'Computing visibility rules for all tickers…',
-    peer_medians: 'Computing peer benchmark medians…',
-    news_refresh: 'Fetching news and sentiment…',
-    full_price_history_sync: 'Downloading complete price history per ticker (eod/{TICKER}.US)…',
-    full_fundamentals_sync: 'Downloading complete fundamentals per ticker (fundamentals/{TICKER}.US)…',
-  };
-
-  const handleRunNow = async (jobName: string) => {
-    if (runningJob) return;
-    setRunningJob(jobName);
-    setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || 'Starting…' }));
-    const triggeredAt = Date.now();
-    try {
-      const endpoint = jobName === 'universe_seed'
-        ? `${API_URL}/api/admin/jobs/universe-seed`
-        : jobName === 'compute_visible_universe'
-        ? `${API_URL}/api/admin/job/recompute_visibility_all/run`
-        : `${API_URL}/api/admin/scheduler/run/${jobName.replace(/_/g, '-')}`;
-      const res = await authenticatedFetch(
-        endpoint,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' } },
-        sessionToken,
-      );
-      const json = await res.json();
-      if (res.ok) {
-        // Immediately overwrite the stale last_run entry so the UI shows
-        // "running" without waiting for the first 3s poll interval.
-        setData(prev => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            job_last_runs: {
-              ...(prev.job_last_runs || {}),
-              [jobName]: {
-                ...((prev.job_last_runs || {})[jobName] || {}),
-                status: 'running',
-                start_time: new Date().toISOString(),
-              },
-            },
-          };
-        });
-        setRunResult(prev => ({ ...prev, [jobName]: JOB_DESCRIPTIONS[jobName] || 'Running…' }));
-        startPolling(jobName, triggeredAt);
-      } else {
-        setRunResult(prev => ({ ...prev, [jobName]: `Error: ${json.error || json.detail || res.statusText}` }));
-        setRunningJob(null);
-      }
-    } catch (e: any) {
-      setRunResult(prev => ({ ...prev, [jobName]: `Error: ${e.message}` }));
-      setRunningJob(null);
-    }
-  };
-
-  const handleCancelJob = async (jobName: string) => {
-    try {
-      await authenticatedFetch(
-        `${API_URL}/api/admin/jobs/${jobName}/cancel`,
-        { method: 'POST' },
-        sessionToken,
-      );
-    } catch { /* ignore network errors — cancel flag still likely set */ }
-
-    // Immediately clean up UI — do not wait for the next poll cycle.
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-    setElapsedSeconds(0);
-    setLiveProgress('');
-
-    // Remove spinner immediately; fundProgressPollRef keeps running and
-    // auto-stops once the backend clears ops_config (run_active → false).
-    setRunningJob(null);
-    setRunResult(prev => ({ ...prev, [jobName]: 'Cancelling…' }));
-
-    // One deferred confirmation check (~4 s) to flip "Cancelling" → "Cancelled"
-    // once the backend cancel_event has propagated and the job has stopped.
-    setTimeout(async () => {
-      try {
-        const res = await authenticatedFetch(
-          `${API_URL}/api/admin/jobs/${jobName}/status`,
-          {},
-          sessionToken,
-        );
-        if (!res.ok) return;
-        const json = await res.json();
-        const st = json.last_run?.status;
-        if (st && st !== 'running') {
-          setRunResult(prev => ({ ...prev, [jobName]: 'Cancelled' }));
-          fetchData();
-        }
-      } catch {}
-    }, 4000);
-  };
-
-  const handleFullSync = async (jobName: string) => {
-    if (runningJob) return;
-    setRunningJob(jobName);
-    setRunResult(prev => ({ ...prev, [jobName]: '' }));
-    const triggeredAt = Date.now();
-    try {
-      const endpoint = `${API_URL}/api/admin/jobs/${jobName.replace(/_/g, '-')}`;
-      const res = await authenticatedFetch(
-        endpoint,
-        { method: 'POST', headers: { 'Content-Type': 'application/json' } },
-        sessionToken,
-      );
-      const json = await res.json();
-      if (res.ok) {
-        setRunResult(prev => ({ ...prev, [jobName]: 'Running… (may take 15–30 min)' }));
-        startPolling(jobName, triggeredAt);
-      } else {
-        setRunResult(prev => ({ ...prev, [jobName]: `Error: ${json.detail || res.statusText}` }));
-        setRunningJob(null);
-      }
-    } catch (e: any) {
-      setRunResult(prev => ({ ...prev, [jobName]: `Error: ${e.message}` }));
-      setRunningJob(null);
-    }
-  };
 
   const handleRunAudit = async () => {
     const raw = auditTicker.trim().toUpperCase();
@@ -789,7 +550,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             chainPollRef.current = null;
             if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
             setElapsedSeconds(0);
-            setRunningJob(null);
             setChainRunning(false);
             // Freeze final progress bar states
             if (sd.status === 'completed') {
@@ -829,7 +589,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       timerRef.current = null;
     }
     setElapsedSeconds(0);
-    setRunningJob(null);
     setChainRunning(false);
     setChainStatus('cancelled');
     setChainCurrentStep(null);
@@ -1055,7 +814,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     <View style={s.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>
   );
 
-  const isRunDisabled = runMode === 'AUTO' || chainRunning || !!runningJob;
+  const isRunDisabled = runMode === 'AUTO' || chainRunning;
   const isChainFailed = chainStatus === 'failed' || chainStatus === 'error';
   const isChainCancelled = chainStatus === 'cancelled';
 
@@ -1217,7 +976,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const run = jobRuns[step.job_name];
         const status = run?.status;
         const isExpanded = expandedSteps.has(step.step);
-        const isRunning = runningJob === step.job_name;
 
         // Chain icon override: when a chain run is active, derive icon state from chain progress.
         const chainStepNum = CHAIN_STEP_FOR_JOB[step.job_name];
@@ -1278,13 +1036,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Ionicons name="checkmark-circle" size={14} color="#22C55E" style={{ marginLeft: 4 }} />
                     ) : chainStepPending ? (
                       <Ionicons name="time-outline" size={14} color={COLORS.textMuted} style={{ marginLeft: 4 }} />
-                    ) : isRunning ? (
-                      <>
-                        <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
-                        <Text style={{ marginLeft: 2, fontSize: 11, color: '#F59E0B', fontWeight: '600' }}>
-                          {elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}
-                        </Text>
-                      </>
                     ) : status ? (
                       <Ionicons
                         name={getStatusIcon(status) as any}
@@ -1299,14 +1050,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             </View>
 
             {/* Run Result */}
-            {isRunning ? (
-              <View style={s.progressRow}>
-                <Text style={s.progressText}>
-                  {liveProgress || runResult[step.job_name] || JOB_DESCRIPTIONS[step.job_name] || 'Starting…'}
-                </Text>
-              </View>
-            ) : runResult[step.job_name] ? (
-              <Text style={[s.runResultText, isRunning && { color: '#F59E0B' }]}>{runResult[step.job_name]}</Text>
+            {runResult[step.job_name] ? (
+              <Text style={s.runResultText}>{runResult[step.job_name]}</Text>
             ) : null}
 
               {/* ── Integrated Funnel Row ── */}
@@ -1703,29 +1448,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       https://eodhd.com/api/eod/{'{'+'TICKER'+'}'}.US?fmt=json&period=d
                     </Text>
-                    {runningJob === 'full_price_history_sync' && (
-                      <View style={s.progressRow}>
-                        <Text style={s.progressText}>{liveProgress || JOB_DESCRIPTIONS['full_price_history_sync'] || 'Downloading…'}</Text>
-                        <Text style={s.elapsedText}>{elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}</Text>
-                      </View>
-                    )}
-                    {runResult['full_price_history_sync'] && runningJob !== 'full_price_history_sync' ? (
+                    {runResult['full_price_history_sync'] ? (
                       <Text style={s.fullSyncResult}>{runResult['full_price_history_sync']}</Text>
                     ) : null}
                   </View>
-                  {runningJob === 'full_price_history_sync' ? (
-                    <TouchableOpacity style={s.cancelBtn} onPress={() => handleCancelJob('full_price_history_sync')}>
-                      <Text style={s.cancelBtnText}>■ Stop</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={[s.fullSyncBtn, !!runningJob && s.runBtnDisabled]}
-                      onPress={() => handleFullSync('full_price_history_sync')}
-                      disabled={!!runningJob}
-                    >
-                      <Text style={s.fullSyncBtnText}>⬇ Full Sync</Text>
-                    </TouchableOpacity>
-                  )}
                 </View>
               )}
 
@@ -1778,29 +1504,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       </View>
                     )}
 
-                    {runningJob === 'full_fundamentals_sync' && (
-                      <View style={s.progressRow}>
-                        <Text style={s.progressText}>{liveProgress || JOB_DESCRIPTIONS['full_fundamentals_sync'] || 'Downloading…'}</Text>
-                        <Text style={s.elapsedText}>{elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}</Text>
-                      </View>
-                    )}
-                    {runResult['full_fundamentals_sync'] && runningJob !== 'full_fundamentals_sync' ? (
+                    {runResult['full_fundamentals_sync'] ? (
                       <Text style={s.fullSyncResult}>{runResult['full_fundamentals_sync']}</Text>
                     ) : null}
                   </View>
-                  {runningJob === 'full_fundamentals_sync' ? (
-                    <TouchableOpacity style={s.cancelBtn} onPress={() => handleCancelJob('full_fundamentals_sync')}>
-                      <Text style={s.cancelBtnText}>■ Stop</Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={[s.fullSyncBtn, !!runningJob && s.runBtnDisabled]}
-                      onPress={() => handleFullSync('full_fundamentals_sync')}
-                      disabled={!!runningJob}
-                    >
-                      <Text style={s.fullSyncBtnText}>⬇ Full Sync</Text>
-                    </TouchableOpacity>
-                  )}
                 </View>
               )}
 
@@ -2035,16 +1742,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             </View>
             <Text style={s.stepSchedule}>Daily 13:00 Prague</Text>
           </View>
-          <TouchableOpacity
-            style={[s.runBtn, { backgroundColor: '#06B6D4' }, runningJob === 'news_refresh' && s.runBtnDisabled]}
-            onPress={() => handleRunNow('news_refresh')}
-            disabled={!!runningJob}
-          >
-            {runningJob === 'news_refresh'
-              ? <ActivityIndicator size="small" color="#fff" />
-              : <Text style={s.runBtnText}>▶ Run</Text>
-            }
-          </TouchableOpacity>
         </View>
         {jobRuns['news_refresh'] ? (
           <View style={s.runInfo}>
