@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -18,17 +17,12 @@ export default function TickerNotFound() {
   const [loading, setLoading] = useState(false);
   const [submitted, setSubmitted] = useState(false);
 
-  const handleRequestTicker = async () => {
+  const handleRequestTicker = () => {
     setLoading(true);
-    try {
-      // TODO: implement POST /api/ticker-requests on the backend
-      // For now, acknowledge the request client-side
-      setSubmitted(true);
-    } catch (error) {
-      Alert.alert('Error', 'Failed to submit request. Please try again.');
-    } finally {
-      setLoading(false);
-    }
+    // TODO: implement POST /api/ticker-requests on the backend
+    // For now, acknowledge the request client-side
+    setSubmitted(true);
+    setLoading(false);
   };
 
   return (
