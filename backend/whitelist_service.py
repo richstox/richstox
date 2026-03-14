@@ -49,7 +49,10 @@ RICHSTOX Whitelist Service - Ticker Pipeline
 Manages the canonical list of trackable tickers (tracked_tickers collection).
 
 CRITICAL DEFINITIONS:
-- is_visible = ticker visible in app (is_seeded && has_price_data && has_classification)
+- is_visible = ticker visible in app
+               (is_seeded && has_price_data && has_classification
+                && shares_outstanding > 0 && financial_currency present
+                && not delisted)
 - is_seeded = from NYSE/NASDAQ Common Stock list
 - has_price_data = appears in daily bulk prices
 - has_classification = sector AND industry non-empty
@@ -787,6 +790,8 @@ async def sync_ticker_whitelist(
                     "is_whitelisted": True,
                     "is_active": False,
                     "has_price_data": False,
+                    "visibility_failed_reason": "NO_PRICE_DATA",
+                    "visibility_reason_updated_at": now,
                     "fundamentals_status": "pending",
                     "status": "pending_fundamentals",
                     "first_seen_date": now,
@@ -1093,6 +1098,30 @@ async def process_fundamentals_events(
             
             # Update fundamentals status - does NOT change is_active
             # is_active is controlled by has_price_data (set by price ingestion)
+            tracked_existing = await db.tracked_tickers.find_one(
+                {"ticker": ticker},
+                {
+                    "_id": 0,
+                    "exchange": 1,
+                    "asset_type": 1,
+                    "has_price_data": 1,
+                    "is_delisted": 1,
+                    "shares_outstanding": 1,
+                    "financial_currency": 1,
+                },
+            ) or {}
+            from visibility_rules import compute_visibility_failed_reason
+            visibility_failed_reason = compute_visibility_failed_reason({
+                "ticker": ticker,
+                "exchange": tracked_existing.get("exchange"),
+                "asset_type": tracked_existing.get("asset_type") or "Common Stock",
+                "has_price_data": tracked_existing.get("has_price_data"),
+                "sector": sector,
+                "industry": industry,
+                "is_delisted": tracked_existing.get("is_delisted", False),
+                "shares_outstanding": tracked_existing.get("shares_outstanding"),
+                "financial_currency": tracked_existing.get("financial_currency"),
+            })
             await db.tracked_tickers.update_one(
                 {"ticker": ticker},
                 {"$set": {
@@ -1104,6 +1133,12 @@ async def process_fundamentals_events(
                     "has_classification": has_classification,
                     "logo_url": cache_doc.get("logo_url"),
                     "fundamentals_updated_at": now,
+                    "last_fundamentals_update": now,
+                    "needs_fundamentals_refresh": False,
+                    "fundamentals_refresh_reasons": [],
+                    "fundamentals_refresh_requested_at": None,
+                    "visibility_failed_reason": visibility_failed_reason,
+                    "visibility_reason_updated_at": now,
                     "updated_at": now,
                 }}
             )
@@ -1164,6 +1199,8 @@ async def get_whitelist_stats(db) -> Dict[str, Any]:
     =============================================================================
     Uses is_visible=true as the only visibility filter.
     is_visible = is_seeded && has_price_data && has_classification
+                 && shares_outstanding > 0 && financial_currency present
+                 && not delisted
     =============================================================================
     """
     # VISIBLE UNIVERSE QUERY

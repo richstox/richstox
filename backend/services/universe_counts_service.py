@@ -55,13 +55,6 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     raw_exchange_query = {"exchange": {"$in": ["NYSE", "NASDAQ"]}}
     step1_query = {**raw_exchange_query, "asset_type": "Common Stock"}
     step3_query = {**step1_query, "has_price_data": True}
-    step4_query = {
-        **step3_query,
-        "sector": {"$nin": [None, ""]},
-        "industry": {"$nin": [None, ""]}
-    }
-    step5_query = {**step4_query, "is_delisted": {"$ne": True}}
-
     # =========================================================================
     # SINGLE ROUND-TRIP: $facet runs all 8 counts in parallel on the server
     # Replaces 8x sequential count_documents (~400ms) with 1 aggregation (~50ms)
@@ -76,7 +69,12 @@ async def get_universe_counts(db) -> Dict[str, Any]:
         "needs_fundamentals_refresh": {"$ne": True},
         "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
     }
-    step4_visible_query = {**step4_query, "is_visible": True}
+    step4_input_query = {
+        **step3_output_query,
+        "sector": {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+    }
+    step4_visible_query = {**step4_input_query, "is_visible": True}
     facet_result = await db.tracked_tickers.aggregate([{"$facet": {
         "raw_exchange":   [{"$match": raw_exchange_query},       {"$count": "n"}],
         "seeded":         [{"$match": step1_query},              {"$count": "n"}],
@@ -84,9 +82,8 @@ async def get_universe_counts(db) -> Dict[str, Any]:
         "nasdaq":         [{"$match": {"exchange": "NASDAQ"}},   {"$count": "n"}],
         "price":          [{"$match": step3_query},              {"$count": "n"}],
         "step3_output":   [{"$match": step3_output_query},       {"$count": "n"}],
-        "classified":     [{"$match": step4_query},              {"$count": "n"}],
+        "classified":     [{"$match": step4_input_query},        {"$count": "n"}],
         "step4_visible":  [{"$match": step4_visible_query},      {"$count": "n"}],
-        "visibility":     [{"$match": step5_query},              {"$count": "n"}],
         "visible":        [{"$match": VISIBLE_TICKERS_QUERY},    {"$count": "n"}],
     }}]).to_list(1)
 
@@ -102,8 +99,8 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     step3_output_total     = _n("step3_output")
     with_classification    = _n("classified")
     step4_visible_total    = _n("step4_visible")
-    passes_visibility_rule = _n("visibility")
     visible_tickers        = _n("visible")
+    passes_visibility_rule = step4_visible_total
     
     # =========================================================================
     # BUILD FUNNEL STEPS

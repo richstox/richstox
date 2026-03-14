@@ -99,23 +99,62 @@ async def get_daily_credit_usage(db) -> Dict[str, Any]:
 
 async def get_pipeline_sync_status(db) -> Dict[str, Any]:
     """
-    Aggregate price_history and fundamentals completion status from tracked_tickers.
+    Aggregate canonical pipeline/freshness state from tracked_tickers.
     Used by Admin Pipeline dashboard.
     """
-    base_query = {
+    seeded_query = {
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
         "asset_type": "Common Stock",
-        "has_price_data": True,
     }
+    priced_query = {**seeded_query, "has_price_data": True}
+    fundamentals_current_query = {
+        **priced_query,
+        "fundamentals_status": "complete",
+        "needs_fundamentals_refresh": {"$ne": True},
+        "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
+        "sector": {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+    }
+    visible_query = {"is_visible": True}
 
     facet_result = await db.tracked_tickers.aggregate([
-        {"$match": base_query},
+        {"$match": seeded_query},
         {"$facet": {
-            "total":                    [{"$count": "n"}],
-            "price_complete":           [{"$match": {"price_history_complete": True}},  {"$count": "n"}],
-            "fundamentals_complete":    [{"$match": {"fundamentals_complete": True}},   {"$count": "n"}],
+            "seeded_total":             [{"$count": "n"}],
+            "visible_total":            [{"$match": {"is_visible": True}}, {"$count": "n"}],
+            "missing_price_data":       [{"$match": {"has_price_data": {"$ne": True}}}, {"$count": "n"}],
+            "missing_classification":   [{
+                "$match": {
+                    "has_price_data": True,
+                    "$or": [
+                        {"sector": {"$in": [None, ""]}},
+                        {"industry": {"$in": [None, ""]}},
+                        {"has_classification": {"$ne": True}},
+                    ],
+                },
+            }, {"$count": "n"}],
+            "pending_fundamentals":     [{
+                "$match": {
+                    "has_price_data": True,
+                    "$or": [
+                        {"fundamentals_status": {"$in": [None, "pending", "processing", "error"]}},
+                        {"fundamentals_updated_at": {"$in": [None, ""]}},
+                        {"fundamentals_updated_at": {"$exists": False}},
+                    ],
+                },
+            }, {"$count": "n"}],
+            "price_complete":           [{"$match": {**visible_query, "price_history_complete": True}}, {"$count": "n"}],
+            "fundamentals_complete":    [{"$match": {**visible_query, **{
+                "fundamentals_status": "complete",
+                "needs_fundamentals_refresh": {"$ne": True},
+                "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
+            }}}, {"$count": "n"}],
             "needs_price_redownload":   [{"$match": {"needs_price_redownload": True}},  {"$count": "n"}],
             "needs_fundamentals_refresh": [{"$match": {"needs_fundamentals_refresh": True}}, {"$count": "n"}],
+            "non_visible_reasons": [
+                {"$match": {"is_visible": {"$ne": True}, "visibility_failed_reason": {"$nin": [None, ""]}}},
+                {"$group": {"_id": "$visibility_failed_reason", "count": {"$sum": 1}}},
+            ],
         }},
     ]).to_list(1)
 
@@ -124,18 +163,60 @@ async def get_pipeline_sync_status(db) -> Dict[str, Any]:
     def _n(key: str) -> int:
         return (f.get(key) or [{}])[0].get("n", 0)
 
-    total = _n("total")
+    seeded_total = _n("seeded_total")
+    visible_total = _n("visible_total")
     price_complete = _n("price_complete")
     fundamentals_complete = _n("fundamentals_complete")
+    missing_price_data = _n("missing_price_data")
+    missing_classification = _n("missing_classification")
+    pending_fundamentals = _n("pending_fundamentals")
+    non_visible_total = max(seeded_total - visible_total, 0)
+    visibility_failed_reasons = {
+        row.get("_id"): row.get("count", 0)
+        for row in (f.get("non_visible_reasons") or [])
+        if row.get("_id")
+    }
+
+    price_freshest = await db.tracked_tickers.find_one(
+        {**priced_query, "price_data_current_through": {"$nin": [None, ""]}},
+        {"_id": 0, "price_data_current_through": 1},
+        sort=[("price_data_current_through", -1)],
+    )
+    fundamentals_freshest = await db.tracked_tickers.find_one(
+        fundamentals_current_query,
+        {"_id": 0, "fundamentals_updated_at": 1},
+        sort=[("fundamentals_updated_at", -1)],
+    )
+    oldest_price_refresh = await db.tracked_tickers.find_one(
+        {**seeded_query, "needs_price_redownload": True, "price_refresh_requested_at": {"$ne": None}},
+        {"_id": 0, "price_refresh_requested_at": 1},
+        sort=[("price_refresh_requested_at", 1)],
+    )
+    oldest_fund_refresh = await db.tracked_tickers.find_one(
+        {**seeded_query, "needs_fundamentals_refresh": True, "fundamentals_refresh_requested_at": {"$ne": None}},
+        {"_id": 0, "fundamentals_refresh_requested_at": 1},
+        sort=[("fundamentals_refresh_requested_at", 1)],
+    )
 
     credits = await get_daily_credit_usage(db)
 
     return {
-        "total_visible_tickers": total,
+        "seeded_tickers": seeded_total,
+        "visible_tickers": visible_total,
+        "non_visible_tickers": non_visible_total,
+        "missing_price_data": missing_price_data,
+        "missing_classification": missing_classification,
+        "pending_fundamentals": pending_fundamentals,
+        "visibility_failed_reasons": visibility_failed_reasons,
+        "price_data_updated_through": (price_freshest or {}).get("price_data_current_through"),
+        "fundamentals_updated_through": (fundamentals_freshest or {}).get("fundamentals_updated_at"),
+        "oldest_price_refresh_requested_at": (oldest_price_refresh or {}).get("price_refresh_requested_at"),
+        "oldest_fundamentals_refresh_requested_at": (oldest_fund_refresh or {}).get("fundamentals_refresh_requested_at"),
+        "total_visible_tickers": visible_total,
         "price_history_complete": price_complete,
-        "price_history_pct": round(price_complete / total * 100, 1) if total else 0,
+        "price_history_pct": round(price_complete / visible_total * 100, 1) if visible_total else 0,
         "fundamentals_complete": fundamentals_complete,
-        "fundamentals_pct": round(fundamentals_complete / total * 100, 1) if total else 0,
+        "fundamentals_pct": round(fundamentals_complete / visible_total * 100, 1) if visible_total else 0,
         "needs_price_redownload": _n("needs_price_redownload"),
         "needs_fundamentals_refresh": _n("needs_fundamentals_refresh"),
         "credits_today": credits["total_credits"],

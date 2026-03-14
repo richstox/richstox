@@ -61,6 +61,17 @@ interface Step2SubStep {
 }
 
 interface PipelineSyncStatus {
+  seeded_tickers?: number;
+  visible_tickers?: number;
+  non_visible_tickers?: number;
+  missing_price_data?: number;
+  missing_classification?: number;
+  pending_fundamentals?: number;
+  visibility_failed_reasons?: Record<string, number>;
+  price_data_updated_through?: string | null;
+  fundamentals_updated_through?: string | null;
+  oldest_price_refresh_requested_at?: string | null;
+  oldest_fundamentals_refresh_requested_at?: string | null;
   total_visible_tickers?: number;
   price_history_complete?: number;
   price_history_pct?: number;
@@ -181,6 +192,12 @@ function formatTime(iso?: string): string {
       minute: '2-digit',
     })} Prague`;
   } catch { return iso; }
+}
+
+function formatMaybeTimestamp(value?: string | null): string {
+  if (!value) return '—';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  return formatTime(value);
 }
 
 function getStatusColor(status?: string): string {
@@ -2026,6 +2043,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               ⚠ {fmt(syncStatus.needs_price_redownload)} pending re-download (splits)
             </Text>
           )}
+          <Text style={s.syncMetaText}>
+            Updated through: {formatMaybeTimestamp(syncStatus.price_data_updated_through)}
+          </Text>
+          {(syncStatus.oldest_price_refresh_requested_at ?? null) && (
+            <Text style={s.syncMetaText}>
+              Oldest targeted price refresh flag: {formatMaybeTimestamp(syncStatus.oldest_price_refresh_requested_at)}
+            </Text>
+          )}
         </View>
 
         {/* Fundamentals */}
@@ -2047,6 +2072,36 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             <Text style={s.syncQueueText}>
               🔄 {fmt(syncStatus.needs_fundamentals_refresh)} pending refresh (events)
             </Text>
+          )}
+          <Text style={s.syncMetaText}>
+            Last refreshed: {formatMaybeTimestamp(syncStatus.fundamentals_updated_through)}
+          </Text>
+          {(syncStatus.oldest_fundamentals_refresh_requested_at ?? null) && (
+            <Text style={s.syncMetaText}>
+              Oldest targeted fundamentals refresh flag: {formatMaybeTimestamp(syncStatus.oldest_fundamentals_refresh_requested_at)}
+            </Text>
+          )}
+        </View>
+
+        <View style={[s.syncRow, { marginTop: 12 }]}>
+          <Text style={s.syncLabel}>Pipeline truth</Text>
+          <View style={s.auditSection}>
+            <Text style={s.syncMetaText}>Seeded: {fmt(syncStatus.seeded_tickers ?? counts.step1_seeded_total ?? counts.seeded_us_total)}</Text>
+            <Text style={s.syncMetaText}>Visible: {fmt(syncStatus.visible_tickers ?? counts.visible_tickers)}</Text>
+            <Text style={s.syncMetaText}>Non-visible: {fmt(syncStatus.non_visible_tickers)}</Text>
+            <Text style={s.syncMetaText}>Missing price data: {fmt(syncStatus.missing_price_data)}</Text>
+            <Text style={s.syncMetaText}>Missing classification: {fmt(syncStatus.missing_classification)}</Text>
+            <Text style={s.syncMetaText}>Pending fundamentals: {fmt(syncStatus.pending_fundamentals)}</Text>
+          </View>
+          {syncStatus.visibility_failed_reasons && Object.keys(syncStatus.visibility_failed_reasons).length > 0 && (
+            <View style={[s.auditSection, { marginTop: 8 }]}>
+              <Text style={s.syncLabel}>Non-visible reasons</Text>
+              {Object.entries(syncStatus.visibility_failed_reasons).map(([reason, count]) => (
+                <Text key={reason} style={s.syncMetaText}>
+                  {reason}: {fmt(count as number)}
+                </Text>
+              ))}
+            </View>
           )}
         </View>
 
@@ -2287,6 +2342,7 @@ const s = StyleSheet.create({
   syncBarBg: { height: 5, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden' },
   syncBarFill: { height: 5, borderRadius: 3 },
   syncQueueText: { fontSize: 9, color: '#F59E0B', marginTop: 3 },
+  syncMetaText: { fontSize: 10, color: COLORS.textMuted, marginTop: 3 },
 
   expandBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start' },
   expandText: { fontSize: 11, color: COLORS.textMuted },

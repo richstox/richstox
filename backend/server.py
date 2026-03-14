@@ -26,6 +26,8 @@ VISIBLE UNIVERSE RULE (PERMANENT)
 Only tickers with is_visible=true may appear anywhere in the app.
 
 is_visible = is_seeded && has_price_data && has_classification
+             && shares_outstanding > 0 && financial_currency present
+             && not delisted
 
 Where:
 - is_seeded: NYSE/NASDAQ + Common Stock
@@ -5521,7 +5523,16 @@ async def admin_enqueue_manual_refresh():
 
         flag_result = await db.tracked_tickers.update_one(
             {"ticker": ticker},
-            {"$set": {"needs_fundamentals_refresh": True, "updated_at": now}},
+            {
+                "$set": {
+                    "needs_fundamentals_refresh": True,
+                    "fundamentals_refresh_requested_at": now,
+                    "updated_at": now,
+                },
+                "$addToSet": {
+                    "fundamentals_refresh_reasons": "manual_refresh",
+                },
+            },
         )
         if flag_result.modified_count:
             flags_set += 1
@@ -7365,6 +7376,9 @@ async def admin_pipeline_funnel_gap(
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
         "asset_type": "Common Stock",
         "has_price_data": True,
+        "fundamentals_status": "complete",
+        "needs_fundamentals_refresh": {"$ne": True},
+        "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
         "sector":   {"$nin": [None, ""]},
         "industry": {"$nin": [None, ""]},
     }
@@ -7444,6 +7458,9 @@ async def admin_pipeline_export_step(
     _STEP3_QUERY = {**_SEED_QUERY, "has_price_data": True}
     _STEP4_QUERY = {
         **_STEP3_QUERY,
+        "fundamentals_status": "complete",
+        "needs_fundamentals_refresh": {"$ne": True},
+        "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
         "sector":   {"$nin": [None, ""]},
         "industry": {"$nin": [None, ""]},
     }

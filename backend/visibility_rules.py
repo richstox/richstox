@@ -136,6 +136,12 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
     return True, None
 
 
+def compute_visibility_failed_reason(ticker_doc: dict) -> Optional[str]:
+    """Return the canonical reason a ticker is not visible, or None if it is visible."""
+    _, reason = compute_visibility(ticker_doc)
+    return reason
+
+
 def compute_visibility_step4_only(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
     """
     P1 data-quality sieve only.
@@ -175,10 +181,15 @@ def compute_visibility_step4_only(ticker_doc: dict) -> Tuple[bool, Optional[str]
 
 def get_canonical_sieve_query() -> dict:
     """
-    MongoDB query equivalent of compute_visibility_step4_only (P1 gates).
-    Used for count verification and as the cursor filter in recompute_visibility_all.
+    MongoDB query equivalent of compute_visibility() (full runtime visibility rule).
+    Used for runtime/search verification and startup guard checks.
     """
     return {
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "has_price_data": True,
+        "sector": {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
         "is_delisted": {"$ne": True},
         "shares_outstanding": {"$gt": 0},
         "financial_currency": {"$nin": [None, ""]},
@@ -211,10 +222,14 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
 
     logger.info(f"Starting visibility recompute job: {job_id}")
 
-    # Process only tickers that have completed Step 3 (fundamentals).
-    _CLASSIFIED_FILTER = {"fundamentals_status": "complete"}
+    # Process the entire Step 1 seeded universe so every seeded ticker has a
+    # current visibility reason, even when it fails before Step 4 quality gates.
+    _SEEDED_FILTER = {
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+    }
 
-    total = await db.tracked_tickers.count_documents(_CLASSIFIED_FILTER)
+    total = await db.tracked_tickers.count_documents(_SEEDED_FILTER)
 
     # Pre-snapshot: tickers that were already invisible BEFORE this run.
     # Cleanup is only allowed for members of this set.
@@ -253,9 +268,9 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     batch_ops: list = []
     processed = 0
 
-    async for ticker_doc in db.tracked_tickers.find(_STEP4_CLASSIFIED_FILTER):
+    async for ticker_doc in db.tracked_tickers.find(_SEEDED_FILTER):
         ticker = ticker_doc.get("ticker", "")
-        is_visible, failed_reason = compute_visibility_step4_only(ticker_doc)
+        is_visible, failed_reason = compute_visibility(ticker_doc)
 
         reason_key = failed_reason or "VISIBLE"
         stats["reasons"][reason_key] = stats["reasons"].get(reason_key, 0) + 1
@@ -267,6 +282,7 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
         update_fields: Dict[str, Any] = {
             "is_visible":            is_visible,
             "visibility_updated_at": datetime.now(timezone.utc),
+            "visibility_reason_updated_at": datetime.now(timezone.utc),
         }
         if is_visible:
             stats["now_visible"] += 1

@@ -48,7 +48,7 @@ ZOMBIE_THRESHOLD_MINUTES = 15
 # every ticker that is not yet complete OR is flagged for refresh.
 _QUEUED_FILTER = {
     "$or": [
-        {"fundamentals_complete": {"$ne": True}},
+        {"fundamentals_status": {"$ne": "complete"}},
         {"needs_fundamentals_refresh": True},
     ]
 }
@@ -208,6 +208,10 @@ async def _process_price_ticker(db, ticker: str, job_name: str,
             "price_history_complete_as_of": complete_as_of,
             "price_history_status": "complete",
             "needs_price_redownload": False,
+            "price_refresh_reasons": [],
+            "price_refresh_requested_at": None,
+            "price_data_updated_at": datetime.now(timezone.utc),
+            "price_data_current_through": complete_as_of,
         }},
     )
 
@@ -502,6 +506,30 @@ async def _process_fundamentals_ticker(
     from utils.currency_utils import extract_statement_currency
     financial_currency = extract_statement_currency(data)
 
+    from visibility_rules import compute_visibility_failed_reason
+
+    tracked_existing = await db.tracked_tickers.find_one(
+        {"ticker": ticker_us},
+        {
+            "_id": 0,
+            "exchange": 1,
+            "asset_type": 1,
+            "has_price_data": 1,
+            "is_delisted": 1,
+        },
+    ) or {}
+    visibility_failed_reason = compute_visibility_failed_reason({
+        "ticker": ticker_us,
+        "exchange": tracked_existing.get("exchange"),
+        "asset_type": tracked_existing.get("asset_type") or "Common Stock",
+        "has_price_data": tracked_existing.get("has_price_data"),
+        "sector": sector,
+        "industry": industry,
+        "is_delisted": tracked_existing.get("is_delisted", False),
+        "shares_outstanding": shares_outstanding,
+        "financial_currency": financial_currency,
+    })
+
     await db.tracked_tickers.update_one(
         {"ticker": ticker_us},
         {"$set": {
@@ -509,11 +537,16 @@ async def _process_fundamentals_ticker(
             "needs_fundamentals_refresh": False,
             "fundamentals_status": "complete",
             "fundamentals_updated_at": now,
+            "last_fundamentals_update": now,
+            "fundamentals_refresh_reasons": [],
+            "fundamentals_refresh_requested_at": None,
             "sector":             sector   or None,
             "industry":           industry or None,
             "has_classification": has_classification,
             "shares_outstanding": shares_outstanding,
             "financial_currency": financial_currency,
+            "visibility_failed_reason": visibility_failed_reason,
+            "visibility_reason_updated_at": now,
         }},
     )
 

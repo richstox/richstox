@@ -228,13 +228,20 @@ async def backfill_ticker_prices(db, ticker: str) -> Dict[str, Any]:
         # CRITICAL: Set has_price_data=true and is_active=true
         # This is what makes the ticker visible in the app
         if upserted > 0:
+            now = datetime.now(timezone.utc)
+            latest_date = max(dates) if dates else None
             await db.tracked_tickers.update_one(
                 {"ticker": ticker_full},
                 {"$set": {
                     "has_price_data": True,
                     "is_active": True,  # Visible in app = has price data
-                    "last_price_date": max(dates) if dates else None,
-                    "updated_at": datetime.now(timezone.utc),
+                    "last_price_date": latest_date,
+                    "price_data_current_through": latest_date,
+                    "price_data_updated_at": now,
+                    "needs_price_redownload": False,
+                    "price_refresh_reasons": [],
+                    "price_refresh_requested_at": None,
+                    "updated_at": now,
                 }}
             )
             logger.info(f"Activated {ticker_full}: has_price_data=true, is_active=true")
@@ -671,6 +678,11 @@ async def sync_ticker_prices_delta(db, ticker: str) -> Dict[str, Any]:
                 "has_price_data": True,
                 "is_active": True,
                 "last_price_date": max(dates),
+                "price_data_current_through": max(dates),
+                "price_data_updated_at": datetime.now(timezone.utc),
+                "needs_price_redownload": False,
+                "price_refresh_reasons": [],
+                "price_refresh_requested_at": None,
                 "updated_at": datetime.now(timezone.utc)
             }}
         )

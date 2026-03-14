@@ -24,6 +24,7 @@ from fundamentals_service import (
     parse_insider_activity,
 )
 from provider_debug_service import upsert_provider_debug_snapshot
+from visibility_rules import compute_visibility_failed_reason
 
 logger = logging.getLogger("richstox.batch_jobs")
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
@@ -124,7 +125,7 @@ async def sync_single_ticker_fundamentals(
 
     async def _set_error(code: str, msg: str) -> None:
         """Mark ticker as error state — never leaves limbo."""
-        err_at = _to_prague_iso(datetime.now(timezone.utc))
+        err_now = datetime.now(timezone.utc)
         try:
             await db.tracked_tickers.update_one(
                 {"ticker": ticker_full},
@@ -134,8 +135,9 @@ async def sync_single_ticker_fundamentals(
                     "needs_fundamentals_refresh": True,
                     "fundamentals_error":         msg,
                     "fundamentals_error_code":    code,
-                    "fundamentals_error_at":      err_at,
-                    "updated_at":                 datetime.now(timezone.utc),
+                    "fundamentals_error_at":      err_now,
+                    "fundamentals_refresh_requested_at": err_now,
+                    "updated_at":                 err_now,
                 }},
             )
         except Exception:
@@ -311,6 +313,28 @@ async def sync_single_ticker_fundamentals(
             f"HasClass: {has_classification}"
         )
 
+        tracked_existing = await db.tracked_tickers.find_one(
+            {"ticker": ticker_full},
+            {
+                "_id": 0,
+                "exchange": 1,
+                "asset_type": 1,
+                "has_price_data": 1,
+                "is_delisted": 1,
+            },
+        ) or {}
+        visibility_failed_reason = compute_visibility_failed_reason({
+            "ticker": ticker_full,
+            "exchange": tracked_existing.get("exchange"),
+            "asset_type": tracked_existing.get("asset_type") or "Common Stock",
+            "has_price_data": tracked_existing.get("has_price_data"),
+            "sector": sector,
+            "industry": industry,
+            "is_delisted": tracked_existing.get("is_delisted", False),
+            "shares_outstanding": shares_outstanding,
+            "financial_currency": financial_currency,
+        })
+
         await db.tracked_tickers.update_one(
             {"ticker": ticker_full},
             {"$set": {
@@ -326,10 +350,15 @@ async def sync_single_ticker_fundamentals(
                 "fundamentals_status":        "complete",
                 "fundamentals_complete":      True,
                 "needs_fundamentals_refresh": False,
-                "fundamentals_updated_at":    _to_prague_iso(now),
+                "fundamentals_updated_at":    now,
+                "last_fundamentals_update":   now,
+                "fundamentals_refresh_reasons": [],
+                "fundamentals_refresh_requested_at": None,
                 "fundamentals_error":         None,
                 "fundamentals_error_code":    None,
                 "fundamentals_error_at":      None,
+                "visibility_failed_reason":   visibility_failed_reason,
+                "visibility_reason_updated_at": now,
                 "updated_at":                 now,
             }},
             upsert=True,

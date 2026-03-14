@@ -362,15 +362,24 @@ async def _detect_split_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
     flagged = 0
     if in_universe:
         tickers_us = [f"{t}.US" for t in in_universe]
+        now = datetime.now(timezone.utc)
         result = await db.tracked_tickers.update_many(
             {"ticker": {"$in": tickers_us}},
-            {"$set": {
-                "needs_price_redownload": True,
-                "needs_fundamentals_refresh": True,
-                "price_history_complete": False,
-                "price_history_status": "pending",
-                "last_split_detected": today_str,
-            }},
+            {
+                "$set": {
+                    "needs_price_redownload": True,
+                    "needs_fundamentals_refresh": True,
+                    "price_history_complete": False,
+                    "price_history_status": "pending",
+                    "last_split_detected": today_str,
+                    "price_refresh_requested_at": now,
+                    "fundamentals_refresh_requested_at": now,
+                },
+                "$addToSet": {
+                    "price_refresh_reasons": "split_detected",
+                    "fundamentals_refresh_reasons": "split_detected",
+                },
+            },
         )
         flagged = result.modified_count
 
@@ -449,15 +458,24 @@ async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any
     flagged = 0
     if in_universe:
         tickers_us = [f"{t}.US" for t in in_universe]
+        now = datetime.now(timezone.utc)
         result = await db.tracked_tickers.update_many(
             {"ticker": {"$in": tickers_us}},
-            {"$set": {
-                "needs_fundamentals_refresh": True,
-                "needs_price_redownload": True,
-                "price_history_complete": False,
-                "price_history_status": "pending",
-                "last_dividend_detected": today_str,
-            }},
+            {
+                "$set": {
+                    "needs_fundamentals_refresh": True,
+                    "needs_price_redownload": True,
+                    "price_history_complete": False,
+                    "price_history_status": "pending",
+                    "last_dividend_detected": today_str,
+                    "price_refresh_requested_at": now,
+                    "fundamentals_refresh_requested_at": now,
+                },
+                "$addToSet": {
+                    "price_refresh_reasons": "dividend_detected",
+                    "fundamentals_refresh_reasons": "dividend_detected",
+                },
+            },
         )
         flagged = result.modified_count
 
@@ -541,12 +559,19 @@ async def _detect_earnings_candidates_eodhd(db, today_str: str, from_date: Optio
     flagged = 0
     if in_universe:
         tickers_us = [f"{t}.US" for t in in_universe]
+        now = datetime.now(timezone.utc)
         result = await db.tracked_tickers.update_many(
             {"ticker": {"$in": tickers_us}},
-            {"$set": {
-                "needs_fundamentals_refresh": True,
-                "last_earnings_detected": today_str,
-            }},
+            {
+                "$set": {
+                    "needs_fundamentals_refresh": True,
+                    "last_earnings_detected": today_str,
+                    "fundamentals_refresh_requested_at": now,
+                },
+                "$addToSet": {
+                    "fundamentals_refresh_reasons": "earnings_detected",
+                },
+            },
         )
         flagged = result.modified_count
 
@@ -686,6 +711,10 @@ async def _remediate_price_redownload(
                             "needs_price_redownload": False,
                             "price_history_complete": True,
                             "price_history_status": "complete",
+                            "price_refresh_reasons": [],
+                            "price_refresh_requested_at": None,
+                            "price_data_updated_at": now,
+                            "price_data_current_through": (result.get("date_range") or {}).get("to"),
                             "updated_at": now,
                         }},
                     )
@@ -1187,7 +1216,11 @@ async def run_daily_price_sync(
         )
 
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
-        price_flag_summary = await sync_has_price_data_flags(db, include_exclusions=True)
+        price_flag_summary = await sync_has_price_data_flags(
+            db,
+            include_exclusions=True,
+            latest_price_date=result.get("date"),
+        )
         seeded_total = price_flag_summary["seeded_total"]
         with_price = price_flag_summary["with_price_data"]
         result["tickers_seeded_total"] = seeded_total
@@ -1417,7 +1450,11 @@ async def run_daily_price_sync(
         }
 
 
-async def sync_has_price_data_flags(db, include_exclusions: bool = False) -> Dict[str, Any]:
+async def sync_has_price_data_flags(
+    db,
+    include_exclusions: bool = False,
+    latest_price_date: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Recompute has_price_data for seeded US Common Stock universe from stock_prices.
     Step 2 canonical: has_price_data=true only for tickers with valid price
@@ -1472,16 +1509,55 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False) -> Dic
     with_price_set = normalized_price_tickers & seeded_set
     any_price_set = normalized_any_price_tickers & seeded_set
 
+    now = datetime.now(timezone.utc)
+
     # Reset all seeded tickers to false, then enable only those with prices.
     await db.tracked_tickers.update_many(
         {"ticker": {"$in": seeded_tickers}},
-        {"$set": {"has_price_data": False, "updated_at": datetime.now(timezone.utc)}},
+        {"$set": {"has_price_data": False, "updated_at": now}},
     )
     if with_price_set:
+        set_fields: Dict[str, Any] = {"has_price_data": True, "updated_at": now}
+        if latest_price_date:
+            set_fields["price_data_current_through"] = latest_price_date
+            set_fields["price_data_updated_at"] = now
         await db.tracked_tickers.update_many(
             {"ticker": {"$in": list(with_price_set)}},
-            {"$set": {"has_price_data": True, "updated_at": datetime.now(timezone.utc)}},
+            {"$set": set_fields},
         )
+
+    # Keep non-visible reasons queryable across the whole seeded universe without
+    # waiting for the next full Step 4 recompute.
+    from visibility_rules import compute_visibility_failed_reason
+
+    visibility_ops: List[UpdateOne] = []
+    async for doc in db.tracked_tickers.find(
+        {"ticker": {"$in": seeded_tickers}},
+        {
+            "_id": 0,
+            "ticker": 1,
+            "exchange": 1,
+            "asset_type": 1,
+            "has_price_data": 1,
+            "sector": 1,
+            "industry": 1,
+            "is_delisted": 1,
+            "shares_outstanding": 1,
+            "financial_currency": 1,
+        },
+    ):
+        failed_reason = compute_visibility_failed_reason(doc)
+        visibility_ops.append(
+            UpdateOne(
+                {"ticker": doc["ticker"]},
+                {"$set": {
+                    "visibility_failed_reason": failed_reason,
+                    "visibility_reason_updated_at": now,
+                }},
+            )
+        )
+    if visibility_ops:
+        await db.tracked_tickers.bulk_write(visibility_ops, ordered=False)
 
     with_price_data = len(with_price_set)
     summary = {
@@ -1690,8 +1766,16 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
     run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
 
-    # Only tickers that have completed Step 3 (fundamentals).
-    _classified_query = {"fundamentals_status": "complete"}
+    # Canonical Step 4 input = Step 3 output (priced tickers with current, usable
+    # fundamentals and classification already present).
+    _classified_query = {
+        **STEP3_QUERY,
+        "fundamentals_status": "complete",
+        "needs_fundamentals_refresh": {"$ne": True},
+        "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
+        "sector": {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+    }
 
     # Filtered-out = classified AND NOT visible.
     # Use $ne:True (not False) to include tickers where is_visible is null/missing —
@@ -2572,7 +2656,7 @@ FUNDAMENTALS_STALE_DAYS = 7  # Re-fetch if older than 7 days
 async def get_tickers_needing_fundamentals_update(db, limit: int = 100) -> List[str]:
     """
     Get tickers that need fundamentals update, prioritized by:
-    1. Never updated (last_fundamentals_update is null)
+    1. Never updated (fundamentals_updated_at is null)
     2. Oldest updates first (older than FUNDAMENTALS_STALE_DAYS)
     
     Returns:
@@ -2585,8 +2669,8 @@ async def get_tickers_needing_fundamentals_update(db, limit: int = 100) -> List[
         {
             "is_visible": True,
             "$or": [
-                {"last_fundamentals_update": {"$exists": False}},
-                {"last_fundamentals_update": None}
+                {"fundamentals_updated_at": {"$exists": False}},
+                {"fundamentals_updated_at": None}
             ]
         },
         {"_id": 0, "ticker": 1}
@@ -2601,10 +2685,10 @@ async def get_tickers_needing_fundamentals_update(db, limit: int = 100) -> List[
     stale_tickers = await db.tracked_tickers.find(
         {
             "is_visible": True,
-            "last_fundamentals_update": {"$lt": stale_threshold}
+            "fundamentals_updated_at": {"$lt": stale_threshold}
         },
         {"_id": 0, "ticker": 1}
-    ).sort("last_fundamentals_update", 1).limit(remaining).to_list(remaining)
+    ).sort("fundamentals_updated_at", 1).limit(remaining).to_list(remaining)
     
     return [t["ticker"] for t in never_updated] + [t["ticker"] for t in stale_tickers]
 
@@ -2614,9 +2698,9 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
     Smart fundamentals sync: only update stale or missing data.
     
     This is the delta fetching logic:
-    1. Find tickers with no last_fundamentals_update
-    2. Find tickers with last_fundamentals_update > STALE_DAYS old
-    3. Update fundamentals and set last_fundamentals_update timestamp
+    1. Find tickers with no fundamentals_updated_at
+    2. Find tickers with fundamentals_updated_at > STALE_DAYS old
+    3. Update fundamentals and keep the canonical freshness timestamps aligned
     
     Returns:
         Summary of sync operation
@@ -2668,10 +2752,16 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
             
             if sync_result.get("success"):
                 result["tickers_success"] += 1
-                # Update last_fundamentals_update timestamp
+                # Keep legacy and canonical freshness timestamps aligned
                 await db.tracked_tickers.update_one(
                     {"ticker": ticker_full},
-                    {"$set": {"last_fundamentals_update": datetime.now(timezone.utc)}}
+                    {"$set": {
+                        "last_fundamentals_update": datetime.now(timezone.utc),
+                        "fundamentals_updated_at": datetime.now(timezone.utc),
+                        "needs_fundamentals_refresh": False,
+                        "fundamentals_refresh_reasons": [],
+                        "fundamentals_refresh_requested_at": None,
+                    }}
                 )
             else:
                 result["tickers_failed"] += 1
