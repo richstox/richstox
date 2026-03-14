@@ -157,7 +157,11 @@ function formatDuration(sec?: number): string {
 function formatTime(iso?: string): string {
   if (!iso) return 'Never';
   try {
-    const d = new Date(iso);
+    let s = iso;
+    if (s && !s.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(s) && !/[+-]\d{4}$/.test(s)) {
+      s = s + 'Z';
+    }
+    const d = new Date(s);
     return `${d.toLocaleString('en-GB', {
       timeZone: 'Europe/Prague',
       month: 'short',
@@ -243,11 +247,14 @@ function deriveProgress(run: any) {
   const total = normalized.progress_total;
   const processed = normalized.progress_processed ?? 0;
   const pct = total ? Math.min(Math.round((processed / total) * 100), 100) : (processed ? 100 : 0);
+  const effectivePhase = (normalized.phase === '2.1_bulk_catchup' && pct >= 100)
+    ? '2.2_split'
+    : normalized.phase;
   return {
     processed,
     total,
     pct,
-    phase: normalized.phase,
+    phase: effectivePhase,
     message: normalized.progress,
   };
 }
@@ -543,6 +550,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const jd = await jr.json();
                 const lr = normaliseRun(jd.last_run);
                 if (lr) {
+                  if (jd.previous_completed_run) {
+                    lr.previous_completed_run = jd.previous_completed_run;
+                  }
                   setLiveLastRuns(prev => ({ ...prev, price_sync: lr }));
                   const progress = deriveProgress(lr);
                   if (progress) setStep2Progress(progress);
@@ -1120,19 +1130,26 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {/* Last Run Info */}
               {run ? (() => {
-                const runStart = run.start_time || run.started_at;
-                const runEnd = run.end_time || run.finished_at;
+                const runStart = run.started_at_prague || run.start_time || run.started_at;
+                const runEnd = run.finished_at_prague || run.end_time || run.finished_at;
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
                 const isLiveRun = run.status === 'running';
+                const prevCompleted = run.previous_completed_run;
+                const prevEnd = prevCompleted?.finished_at_prague || prevCompleted?.finished_at;
                 const statusText = isLiveRun
-                  ? `Started ${formatTime(runStart)}`
+                  ? (prevEnd
+                    ? formatTime(prevEnd)
+                    : `Started ${formatTime(runStart)}`)
                   : (runEnd || runStart)
                     ? formatTime(runEnd || runStart)
                     : '—';
+                const prevDuration = prevCompleted?.duration_seconds;
                 const durationText = isLiveRun
-                  ? (chainStepRunning
+                  ? (prevEnd && prevDuration !== undefined && prevDuration !== null
+                    ? ` (${formatDuration(prevDuration)})`
+                    : chainStepRunning
                       ? ` · ${formatElapsed(elapsedSeconds)}`
                       : '')
                   : run.status === 'cancelled'
@@ -1306,7 +1323,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <Text style={s.substepsTitle}>Step 2 Sub-Steps</Text>
 
                   {!hasStep2DetectorPayload && (
-                    <Text style={s.substepMeta}>No data yet — run Step 2 to populate.</Text>
+                    <Text style={s.substepMeta}>
+                      {run?.status === 'running'
+                        ? 'Detectors running — results will appear when Step 2 completes.'
+                        : 'No data yet — run Step 2 to populate.'}
+                    </Text>
                   )}
 
                   {(() => {
