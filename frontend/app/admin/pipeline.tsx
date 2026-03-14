@@ -559,6 +559,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
               }
             }
+            // Delayed refresh so backend has time to flush final run timestamps
+            setTimeout(() => fetchData(), 3000);
           }
         } catch { /* keep polling */ }
       }, 2000);
@@ -1030,7 +1032,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.stepNum}>STEP {step.step}</Text>
                     <Text style={s.stepTitle}>{step.title}</Text>
                     {chainStepRunning ? (
-                      <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
+                      <>
+                        <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
+                        <Text style={{ marginLeft: 4, color: '#F59E0B', fontSize: 12 }}>
+                          {elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}
+                        </Text>
+                      </>
                     ) : chainStepDone ? (
                       <Ionicons name="checkmark-circle" size={14} color="#22C55E" style={{ marginLeft: 4 }} />
                     ) : chainStepPending ? (
@@ -1112,13 +1119,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
-                const statusText = run.status === 'running'
-                  ? 'Running…'
+                const isLiveRun = run.status === 'running';
+                const statusText = isLiveRun
+                  ? `Started ${formatTime(runStart)}`
                   : (runEnd || runStart)
                     ? formatTime(runEnd || runStart)
                     : '—';
-                const durationText = run.status === 'running'
-                  ? ''
+                const durationText = isLiveRun
+                  ? (chainStepRunning
+                      ? ` · ${elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}`
+                      : '')
                   : run.status === 'cancelled'
                     ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
                     : lastDuration !== undefined
@@ -1234,35 +1244,56 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               })()}
 
               {/* Step 2 price sync live progress bar */}
-              {step.job_name === 'price_sync' && step2Progress !== null && (
-                <View style={s.step4ProgressWrap}>
-                  <View style={s.step4ProgressBarBg}>
-                    <View style={[s.step4ProgressBarFill, {
-                      width: `${Math.min(step2Progress.pct, 100)}%` as any,
-                      backgroundColor: '#10B981',
-                    }]} />
+              {step.job_name === 'price_sync' && step2Progress !== null && (() => {
+                const isDetectorPhase = step2Progress.phase &&
+                  ['2.2_split', '2.4_dividend', '2.6_earnings'].includes(step2Progress.phase);
+                const isBulkPhase = step2Progress.phase === '2.1_bulk_catchup';
+                const isTerminal = step2Progress.phase === 'completed' || step2Progress.phase === 'stopped';
+
+                const detectorPhasePct: Record<string, number> = {
+                  '2.2_split': 33,
+                  '2.4_dividend': 66,
+                  '2.6_earnings': 90,
+                };
+                const displayPct = isDetectorPhase
+                  ? detectorPhasePct[step2Progress.phase!] ?? 50
+                  : isTerminal ? 100
+                  : step2Progress.pct;
+
+                return (
+                  <View style={s.step4ProgressWrap}>
+                    <View style={s.step4ProgressBarBg}>
+                      <View style={[s.step4ProgressBarFill, {
+                        width: `${Math.min(displayPct, 100)}%` as any,
+                        backgroundColor: '#10B981',
+                      }]} />
+                    </View>
+                    <View style={s.step4ProgressRow}>
+                      <Text style={s.step4ProgressLabel}>
+                        {step2Progress.phase === '2.1_bulk_catchup' ? '2.1 Bulk price sync'
+                          : step2Progress.phase === '2.2_split' ? '2.2 Split detector'
+                          : step2Progress.phase === '2.4_dividend' ? '2.4 Dividend detector'
+                          : step2Progress.phase === '2.6_earnings' ? '2.6 Earnings detector'
+                          : step2Progress.phase === 'completed' ? 'Complete'
+                          : step2Progress.phase === 'stopped' ? 'Stopped'
+                          : 'Price sync'}
+                      </Text>
+                      <Text style={[s.step4ProgressValue, { color: '#10B981' }]}>
+                        {isBulkPhase && step2Progress.total > 0
+                          ? `${fmt(step2Progress.processed)} / ${fmt(step2Progress.total)} · ${step2Progress.pct}%`
+                          : isDetectorPhase
+                            ? `Phase ${displayPct}%`
+                            : isTerminal
+                              ? '100%'
+                              : `${step2Progress.pct}%`}
+                      </Text>
+                    </View>
+                    {step2Progress.message && (
+                      <Text style={s.substepMeta} numberOfLines={2}>{step2Progress.message}</Text>
+                    )}
                   </View>
-                  <View style={s.step4ProgressRow}>
-                    <Text style={s.step4ProgressLabel}>
-                      {step2Progress.phase === '2.1_bulk_catchup' ? '2.1 Bulk price sync'
-                        : step2Progress.phase === '2.2_split' ? '2.2 Split detector'
-                        : step2Progress.phase === '2.4_dividend' ? '2.4 Dividend detector'
-                        : step2Progress.phase === '2.6_earnings' ? '2.6 Earnings detector'
-                        : step2Progress.phase === 'completed' ? 'Complete'
-                        : step2Progress.phase === 'stopped' ? 'Stopped'
-                        : 'Price sync'}
-                    </Text>
-                    <Text style={[s.step4ProgressValue, { color: '#10B981' }]}>
-                      {step2Progress.total > 0
-                        ? `${fmt(step2Progress.processed)} / ${fmt(step2Progress.total)} · ${step2Progress.pct}%`
-                        : `${step2Progress.pct}%`}
-                    </Text>
-                  </View>
-                  {step2Progress.message && (
-                    <Text style={s.substepMeta} numberOfLines={2}>{step2Progress.message}</Text>
-                  )}
-                </View>
-              )}
+                );
+              })()}
 
               {step.job_name === 'price_sync' && (
                 <View style={s.substepsCard}>
