@@ -143,10 +143,9 @@ function formatDuration(sec?: number): string {
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
-  if (hours > 0) {
-    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-  }
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${seconds}s`;
+  return `${seconds}s`;
 }
 
 function formatTime(iso?: string): string {
@@ -859,8 +858,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const syncStatus = data?.pipeline_sync_status || {};
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched as number | undefined;
-  const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
+  const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched
+    ?? (jobRuns['universe_seed'] as any)?.details?.raw_symbols_fetched as number | undefined;
+  const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange
+    ?? (jobRuns['universe_seed'] as any)?.details?.fetched_raw_per_exchange
+    ?? exclusionReport?.step1_counts?.fetched_raw_per_exchange as Record<string, number> | undefined;
   const seededFromRun = (jobRuns['universe_seed'] as any)?.progress_total as number | undefined
     || (jobRuns['universe_seed'] as any)?.details?.seeded_total as number | undefined;
   // Prefer canonical 'seeded' field; fall back to legacy alias and run-derived value.
@@ -1342,13 +1344,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const runningMinutes = runStart ? Math.max(0, Math.round((Date.now() - Date.parse(runStart)) / 60000)) : 0;
                 const statusText = run.status === 'running'
                   ? `Běží ${runningMinutes} min`
-                  : runStart
-                    ? `Naposledy ${formatTime(runStart)}`
-                    : 'Naposledy —';
+                  : (runEnd || runStart)
+                    ? formatTime(runEnd || runStart)
+                    : '—';
                 const durationText = run.status === 'running'
                   ? ''
                   : lastDuration !== undefined
-                    ? `, trvalo ${formatDuration(lastDuration)}`
+                    ? ` (${formatDuration(lastDuration)})`
                     : '';
 
                 return (
@@ -1368,7 +1370,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   {processedCount !== undefined && processedCount > 0 && (
                     <View style={s.runInfoRow}>
                       <Text style={s.runLabel}>{processedLabel}</Text>
-                      <Text style={s.runValue}>{processedCount.toLocaleString()}</Text>
+                      <Text style={s.runValue}>
+                        {processedCount.toLocaleString()}
+                        {step.job_name === 'universe_seed' && rawSymbols ? ` / ${rawSymbols.toLocaleString()}` : ''}
+                      </Text>
                     </View>
                   )}
                   <View style={s.runInfoRow}>
@@ -1406,22 +1411,55 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               )}
 
               {/* Step 1 seeding progress bar */}
-              {step.job_name === 'universe_seed' && step1Progress !== null && (
-                <View style={s.step4ProgressWrap}>
-                  <View style={s.step4ProgressBarBg}>
-                    <View style={[s.step4ProgressBarFill, {
-                      width: `${Math.min(step1Progress.pct, 100)}%` as any,
-                      backgroundColor: '#6366F1',
-                    }]} />
-                  </View>
-                  <View style={s.step4ProgressRow}>
-                    <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
-                    <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
-                      {fmt(step1Progress.processed)} / {fmt(step1Progress.total)} · {step1Progress.pct}%
-                    </Text>
-                  </View>
-                </View>
-              )}
+              {step.job_name === 'universe_seed' && (() => {
+                const seedRun = jobRuns['universe_seed'];
+                const seedStatus = seedRun?.status;
+                const isStep1Running = seedStatus === 'running';
+                const seedRawFetched = rawSymbols;
+                const seedProcessed = seedRun?.records_processed as number | undefined;
+                if (isStep1Running && step1Progress !== null) {
+                  // Live progress while running
+                  return (
+                    <View style={s.step4ProgressWrap}>
+                      <View style={s.step4ProgressBarBg}>
+                        <View style={[s.step4ProgressBarFill, {
+                          width: `${Math.min(step1Progress.pct, 100)}%` as any,
+                          backgroundColor: '#6366F1',
+                        }]} />
+                      </View>
+                      <View style={s.step4ProgressRow}>
+                        <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
+                        <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
+                          {fmt(step1Progress.processed)} / {fmt(step1Progress.total)} · {step1Progress.pct}%
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                }
+                if (!isStep1Running && (seedRawFetched || seedProcessed)) {
+                  // Final summary after completion
+                  return (
+                    <View style={s.step4ProgressWrap}>
+                      <View style={s.step4ProgressBarBg}>
+                        <View style={[s.step4ProgressBarFill, {
+                          width: '100%' as any,
+                          backgroundColor: '#6366F1',
+                        }]} />
+                      </View>
+                      <View style={s.step4ProgressRow}>
+                        <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
+                        <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
+                          {seedRawFetched ? `${fmt(seedRawFetched)} fetched` : ''}
+                          {seedRawFetched && seedProcessed ? ' → ' : ''}
+                          {seedProcessed ? `${fmt(seedProcessed)} Common Stock → ${fmt(seedProcessed)} written` : ''}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                }
+                // No data — hide entirely
+                return null;
+              })()}
 
               {/* Step 2 price sync live progress bar */}
               {step.job_name === 'price_sync' && step2Progress !== null && (
