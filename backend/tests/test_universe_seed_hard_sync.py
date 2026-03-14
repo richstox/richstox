@@ -38,9 +38,10 @@ def _make_db_mock(
     bulk_result.upserted_ids = {}
     tt.bulk_write = AsyncMock(return_value=bulk_result)
 
-    # update_many: first call = deactivate, second call = hard-sync archive
+    # update_many: first call = is_seeded reset, second = deactivate, third = hard-sync archive
     tt.update_many = AsyncMock(
         side_effect=[
+            MockUpdateResult(0),                  # is_seeded reset
             MockUpdateResult(deactivate_modified),
             MockUpdateResult(hard_sync_modified),
         ]
@@ -116,9 +117,9 @@ class TestHardSyncReconciliation:
 
         # Second update_many call is the hard-sync
         calls = db.tracked_tickers.update_many.call_args_list
-        assert len(calls) == 2, "Expected exactly 2 update_many calls (deactivate + hard-sync)"
+        assert len(calls) == 3, "Expected exactly 3 update_many calls (is_seeded reset + deactivate + hard-sync)"
 
-        hard_sync_call = calls[1]
+        hard_sync_call = calls[2]
         filter_doc, update_doc = hard_sync_call.args
 
         assert filter_doc["exchange"] == {"$in": ["NYSE"]}
@@ -221,6 +222,6 @@ class TestHardSyncReconciliation:
             )
 
         calls = db.tracked_tickers.update_many.call_args_list
-        hard_sync_filter = calls[1].args[0]
+        hard_sync_filter = calls[2].args[0]
         assert hard_sync_filter["exchange"] == {"$in": ["NYSE"]}
         assert "NASDAQ" not in hard_sync_filter["exchange"]["$in"]
