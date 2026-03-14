@@ -7,8 +7,8 @@ Used by BOTH Admin Panel and Talk filters.
 CANONICAL FUNNEL DEFINITION:
   raw        - All tickers from NYSE + NASDAQ exchanges (raw exchange universe)
   seeded     - NYSE/NASDAQ Common Stock (seeded universe / step1 definition)
-  with_price - has_price_data == true
-  classified - sector AND industry present
+  with_price - seeded + has_price_data == true
+  classified - with_price + sector AND industry present (strict subset of with_price)
   visible    - is_visible == true (all 7 visibility gates satisfied)
 
 GUARD: Each step must be <= previous step (monotonic decreasing).
@@ -40,7 +40,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
           counts.raw        - NYSE+NASDAQ raw exchange total
           counts.seeded     - seeded universe (Common Stock, is_seeded=True)
           counts.with_price - seeded tickers with current price data
-          counts.classified - seeded tickers with sector+industry
+          counts.classified - with_price tickers that also have sector+industry
           counts.visible    - fully visible tickers (all 7 gates)
     """
     now_prague = datetime.now(PRAGUE_TZ)
@@ -50,7 +50,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     # raw:        exchange ∈ {NYSE, NASDAQ}  (all asset types)
     # seeded:     is_seeded == True          (Common Stock seed)
     # with_price: seeded + has_price_data
-    # classified: seeded + sector + industry
+    # classified: with_price + sector + industry  (strict subset of with_price)
     # visible:    is_visible == True         (canonical runtime filter)
     # =========================================================================
     raw_query        = {"exchange": {"$in": ["NYSE", "NASDAQ"]}}
@@ -58,6 +58,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     with_price_query = {"is_seeded": True, "has_price_data": True}
     classified_query = {
         "is_seeded": True,
+        "has_price_data": True,   # classified is a strict subset of with_price
         "sector":   {"$nin": [None, ""]},
         "industry": {"$nin": [None, ""]},
     }
@@ -134,7 +135,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "step": 3,
             "name": "With Classification",
             "count": classified_total,
-            "query": "is_seeded == true AND sector AND industry present",
+            "query": "is_seeded == true AND has_price_data == true AND sector AND industry present",
             "source_job": "fundamentals_sync",
         },
         {
@@ -187,7 +188,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "raw":          raw_total,        # NYSE+NASDAQ all asset types
             "seeded":       seeded_total,      # is_seeded=True (Common Stock)
             "with_price":   with_price_total,  # seeded + has_price_data
-            "classified":   classified_total,  # seeded + sector + industry
+            "classified":   classified_total,  # with_price + sector + industry
             "visible":      visible_total,     # is_visible=True (all gates)
 
             # Exchange breakdown (audit)
@@ -198,8 +199,10 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "step3_output_total": step3_output_total,
 
             # Backward-compatibility aliases (do not use in new code)
-            "seeded_us_total":      raw_total,       # legacy: was all NYSE+NASDAQ
-            "common_stock":         seeded_total,    # legacy: Common Stock count
+            # NOTE: seeded_us_total previously counted all NYSE+NASDAQ (all asset types).
+            #       New code should use 'seeded' (Common Stock only) or 'raw' (all asset types).
+            "seeded_us_total":      raw_total,       # legacy: all NYSE+NASDAQ regardless of type
+            "common_stock":         seeded_total,    # legacy: Common Stock count (= seeded)
             "with_price_data":      with_price_total,
             "with_classification":  classified_total,
             "visible_tickers":      visible_total,

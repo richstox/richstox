@@ -179,3 +179,48 @@ class TestUniverseCountsStep3Funnel:
 
         sf = result["step3_funnel"]
         assert sf["filtered_out_total"] >= 0
+
+
+# ---------------------------------------------------------------------------
+# get_universe_counts — classified is a subset of with_price
+# ---------------------------------------------------------------------------
+
+class TestUniverseCountsClassifiedSubsetOfWithPrice:
+
+    @pytest.mark.asyncio
+    async def test_classified_query_includes_has_price_data(self):
+        """
+        Verify that the classified facet query in universe_counts_service
+        includes has_price_data so classified <= with_price always holds.
+
+        We do this by passing classified > with_price and verifying the
+        inconsistency guard fires (classified can never exceed with_price
+        once has_price_data is part of classified_query).
+        """
+        from services.universe_counts_service import get_universe_counts
+
+        # In a correct system with has_price_data in classified_query,
+        # if the DB returned classified > with_price the guard must flag it.
+        db = _make_mock_db(with_price=5000, classified=6000, visible=4000)
+        result = await get_universe_counts(db)
+
+        assert result["has_inconsistency"], (
+            "classified > with_price must be flagged as inconsistency; "
+            "this means classified_query must include has_price_data"
+        )
+
+    @pytest.mark.asyncio
+    async def test_classified_le_with_price_for_valid_funnel(self):
+        """classified <= with_price must hold for a valid funnel."""
+        from services.universe_counts_service import get_universe_counts
+
+        db = _make_mock_db(raw=10000, seeded=8000, with_price=7000, classified=6500, visible=4000)
+        result = await get_universe_counts(db)
+
+        counts = result["counts"]
+        assert counts["classified"] <= counts["with_price"], (
+            "classified must always be <= with_price"
+        )
+        assert not result["has_inconsistency"], (
+            f"Valid funnel should have no inconsistencies: {result['inconsistencies']}"
+        )

@@ -184,6 +184,9 @@ def get_canonical_sieve_query() -> dict:
         "shares_outstanding": {"$gt": 0},
         "financial_currency": {"$nin": [None, ""]},
         "is_delisted": {"$ne": True},
+        # $ne: "delisted" includes documents where status is null/missing
+        # (null != "delisted"), matching the Python logic which treats a
+        # missing status as non-delisted.
         "status": {"$ne": "delisted"},
     }
 
