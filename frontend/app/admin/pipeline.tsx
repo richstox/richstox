@@ -137,6 +137,12 @@ function getNextRun(hour: number, minute: number, skipSunday: boolean = false): 
   } catch { return '—'; }
 }
 
+function formatElapsed(seconds: number): string {
+  return seconds < 60
+    ? `${seconds}s`
+    : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
 function formatDuration(sec?: number): string {
   if (sec === undefined || sec === null) return '';
   const total = Math.round(sec);
@@ -937,7 +943,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         : isChainCancelled
         ? 'Cancelled'
         : chainCurrentStep !== null
-        ? `Running — Step ${chainCurrentStep}/4 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}`
+        ? `Running — Step ${chainCurrentStep}/4 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${formatElapsed(elapsedSeconds)}`
         : 'Running…'}
     </Text>
   )}
@@ -1035,7 +1041,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <>
                         <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
                         <Text style={{ marginLeft: 4, color: '#F59E0B', fontSize: 12 }}>
-                          {elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}
+                          {formatElapsed(elapsedSeconds)}
                         </Text>
                       </>
                     ) : chainStepDone ? (
@@ -1127,7 +1133,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     : '—';
                 const durationText = isLiveRun
                   ? (chainStepRunning
-                      ? ` · ${elapsedSeconds < 60 ? `${elapsedSeconds}s` : `${Math.floor(elapsedSeconds / 60)}m ${elapsedSeconds % 60}s`}`
+                      ? ` · ${formatElapsed(elapsedSeconds)}`
                       : '')
                   : run.status === 'cancelled'
                     ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
