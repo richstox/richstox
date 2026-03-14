@@ -6,10 +6,10 @@ Used by BOTH Admin Panel and Talk filters.
 
 CANONICAL FUNNEL DEFINITION:
   raw        - All tickers from NYSE + NASDAQ exchanges (raw exchange universe)
-  seeded     - NYSE/NASDAQ Common Stock (seeded universe / step1 definition)
+  seeded     - NYSE/NASDAQ Common Stock (is_seeded == true / step1 definition)
   with_price - seeded + has_price_data == true
-  classified - with_price + sector AND industry present (strict subset of with_price)
-  visible    - is_visible == true (all 7 visibility gates satisfied)
+  classified - with_price + fundamentals_status == "complete"  (step3 output)
+  visible    - classified + is_visible == true (scoped to classified for monotonicity)
 
 GUARD: Each step must be <= previous step (monotonic decreasing).
 
@@ -40,40 +40,33 @@ async def get_universe_counts(db) -> Dict[str, Any]:
           counts.raw        - NYSE+NASDAQ raw exchange total
           counts.seeded     - seeded universe (Common Stock, is_seeded=True)
           counts.with_price - seeded tickers with current price data
-          counts.classified - with_price tickers that also have sector+industry
-          counts.visible    - fully visible tickers (all 7 gates)
+          counts.classified - with_price tickers where fundamentals_status=="complete"
+          counts.visible    - classified tickers where is_visible==true
     """
     now_prague = datetime.now(PRAGUE_TZ)
 
     # =========================================================================
     # FUNNEL STEP QUERIES
     # raw:        exchange ∈ {NYSE, NASDAQ}  (all asset types)
-    # seeded:     is_seeded == True          (Common Stock seed)
+    # seeded:     is_seeded == True          (NYSE/NASDAQ Common Stock seed)
     # with_price: seeded + has_price_data
-    # classified: with_price + sector + industry  (strict subset of with_price)
-    # visible:    is_visible == True         (canonical runtime filter)
+    # classified: with_price + fundamentals_status == "complete"  (step3 output)
+    # visible:    classified + is_visible == True  (scoped for monotonicity)
     # =========================================================================
     raw_query        = {"exchange": {"$in": ["NYSE", "NASDAQ"]}}
     seeded_query     = {"is_seeded": True}
     with_price_query = {"is_seeded": True, "has_price_data": True}
     classified_query = {
         "is_seeded": True,
-        "has_price_data": True,   # classified is a strict subset of with_price
-        "sector":   {"$nin": [None, ""]},
-        "industry": {"$nin": [None, ""]},
+        "has_price_data": True,
+        "fundamentals_status": "complete",
     }
-    visible_query    = VISIBLE_TICKERS_QUERY  # {"is_visible": True}
-
-    # Step 3 "up-to-date" output rule (ticker-level):
-    #   fundamentals_status='complete'
-    #   AND needs_fundamentals_refresh != True
-    #   AND fundamentals_updated_at not null/missing
-    step3_output_query = {
+    # Visible is scoped to classified so that visible <= classified always holds.
+    visible_query    = {
         "is_seeded": True,
         "has_price_data": True,
         "fundamentals_status": "complete",
-        "needs_fundamentals_refresh": {"$ne": True},
-        "fundamentals_updated_at": {"$nin": [None, ""], "$exists": True},
+        "is_visible": True,
     }
 
     # =========================================================================
@@ -81,11 +74,11 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     # =========================================================================
     facet_result = await db.tracked_tickers.aggregate([{"$facet": {
         "raw":          [{"$match": raw_query},        {"$count": "n"}],
-        "nyse":         [{"$match": {"exchange": "NYSE"}},    {"$count": "n"}],
-        "nasdaq":       [{"$match": {"exchange": "NASDAQ"}},  {"$count": "n"}],
+        # NYSE/NASDAQ breakdown scoped to seeded so counts never exceed seeded_total
+        "nyse":         [{"$match": {"is_seeded": True, "exchange": "NYSE"}},    {"$count": "n"}],
+        "nasdaq":       [{"$match": {"is_seeded": True, "exchange": "NASDAQ"}},  {"$count": "n"}],
         "seeded":       [{"$match": seeded_query},     {"$count": "n"}],
         "with_price":   [{"$match": with_price_query}, {"$count": "n"}],
-        "step3_output": [{"$match": step3_output_query}, {"$count": "n"}],
         "classified":   [{"$match": classified_query}, {"$count": "n"}],
         "visible":      [{"$match": visible_query},    {"$count": "n"}],
     }}]).to_list(1)
@@ -95,14 +88,13 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     def _n(key: str) -> int:
         return (f.get(key) or [{}])[0].get("n", 0)
 
-    raw_total          = _n("raw")
-    nyse_count         = _n("nyse")
-    nasdaq_count       = _n("nasdaq")
-    seeded_total       = _n("seeded")
-    with_price_total   = _n("with_price")
-    step3_output_total = _n("step3_output")
-    classified_total   = _n("classified")
-    visible_total      = _n("visible")
+    raw_total        = _n("raw")
+    nyse_count       = _n("nyse")
+    nasdaq_count     = _n("nasdaq")
+    seeded_total     = _n("seeded")
+    with_price_total = _n("with_price")
+    classified_total = _n("classified")
+    visible_total    = _n("visible")
 
     # =========================================================================
     # BUILD FUNNEL STEPS
@@ -133,16 +125,16 @@ async def get_universe_counts(db) -> Dict[str, Any]:
         },
         {
             "step": 3,
-            "name": "With Classification",
+            "name": "With Fundamentals (Classified)",
             "count": classified_total,
-            "query": "is_seeded == true AND has_price_data == true AND sector AND industry present",
+            "query": "is_seeded == true AND has_price_data == true AND fundamentals_status == 'complete'",
             "source_job": "fundamentals_sync",
         },
         {
             "step": 4,
             "name": "Visible Tickers (Customer View)",
             "count": visible_total,
-            "query": "is_visible == true",
+            "query": "classified == true AND is_visible == true",
             "source_job": "compute_visible_universe",
             "note": "All 7 visibility gates satisfied",
         },
@@ -188,15 +180,12 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "raw":          raw_total,        # NYSE+NASDAQ all asset types
             "seeded":       seeded_total,      # is_seeded=True (Common Stock)
             "with_price":   with_price_total,  # seeded + has_price_data
-            "classified":   classified_total,  # with_price + sector + industry
-            "visible":      visible_total,     # is_visible=True (all gates)
+            "classified":   classified_total,  # with_price + fundamentals_status=="complete"
+            "visible":      visible_total,     # classified + is_visible=True
 
-            # Exchange breakdown (audit)
+            # Exchange breakdown (audit; scoped to seeded)
             "nyse":   nyse_count,
             "nasdaq": nasdaq_count,
-
-            # Step 3 funnel detail
-            "step3_output_total": step3_output_total,
 
             # Backward-compatibility aliases (do not use in new code)
             # NOTE: seeded_us_total previously counted all NYSE+NASDAQ (all asset types).
@@ -208,11 +197,13 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "visible_tickers":      visible_total,
         },
 
-        # Step 3 ticker-level funnel
+        # Step 3 ticker-level funnel (fundamentals sync):
+        #   input  = with_price tickers entering step 3
+        #   output = classified tickers (fundamentals_status=="complete")
         "step3_funnel": {
-            "input_total":       with_price_total,
-            "output_total":      step3_output_total,
-            "filtered_out_total": max(with_price_total - step3_output_total, 0),
+            "input_total":        with_price_total,
+            "output_total":       classified_total,
+            "filtered_out_total": max(with_price_total - classified_total, 0),
         },
 
         # For Talk filters compatibility

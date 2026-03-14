@@ -138,11 +138,11 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
         return False, VisibilityFailedReason.MISSING_CURRENCY.value
 
     # Gate 7: not delisted
-    if ticker_doc.get("is_delisted", False) or ticker_doc.get("status") == "delisted":
+    status = (ticker_doc.get("status") or "").strip().lower()
+    if ticker_doc.get("is_delisted", False) or status == "delisted":
         return False, VisibilityFailedReason.DELISTED.value
 
     return True, None
-
 
 def compute_visibility_failed_reason(ticker_doc: dict) -> Optional[str]:
     """
@@ -184,10 +184,9 @@ def get_canonical_sieve_query() -> dict:
         "shares_outstanding": {"$gt": 0},
         "financial_currency": {"$nin": [None, ""]},
         "is_delisted": {"$ne": True},
-        # $ne: "delisted" includes documents where status is null/missing
-        # (null != "delisted"), matching the Python logic which treats a
-        # missing status as non-delisted.
-        "status": {"$ne": "delisted"},
+        # Case-insensitive match: compute_visibility normalises status to lower-case
+        # before comparing, so "Delisted", "DELISTED", etc. are all excluded.
+        "status": {"$not": {"$regex": "^delisted$", "$options": "i"}},
     }
 
 

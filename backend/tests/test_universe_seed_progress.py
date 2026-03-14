@@ -30,7 +30,6 @@ def _make_mock_db(
     nasdaq: int = 5000,
     seeded: int = 8000,
     with_price: int = 7000,
-    step3_output: int = 5000,
     classified: int = 6000,
     visible: int = 4000,
 ):
@@ -41,7 +40,6 @@ def _make_mock_db(
         "nasdaq":       [{"n": nasdaq}],
         "seeded":       [{"n": seeded}],
         "with_price":   [{"n": with_price}],
-        "step3_output": [{"n": step3_output}],
         "classified":   [{"n": classified}],
         "visible":      [{"n": visible}],
     }]
@@ -156,25 +154,30 @@ class TestUniverseCountsMonotonicGuard:
 # ---------------------------------------------------------------------------
 
 class TestUniverseCountsStep3Funnel:
+    """
+    Step 3 funnel reflects the fundamentals_sync step:
+      input  = with_price
+      output = classified (fundamentals_status=="complete")
+    """
 
     @pytest.mark.asyncio
     async def test_step3_funnel_present(self):
         from services.universe_counts_service import get_universe_counts
 
-        db = _make_mock_db(with_price=7000, step3_output=5000)
+        db = _make_mock_db(with_price=7000, classified=5000)
         result = await get_universe_counts(db)
 
         sf = result["step3_funnel"]
-        assert sf["input_total"]       == 7000
-        assert sf["output_total"]      == 5000
+        assert sf["input_total"]        == 7000
+        assert sf["output_total"]       == 5000
         assert sf["filtered_out_total"] == 2000
 
     @pytest.mark.asyncio
     async def test_step3_filtered_out_never_negative(self):
         from services.universe_counts_service import get_universe_counts
 
-        # step3_output > with_price (data anomaly) → clamped to 0
-        db = _make_mock_db(with_price=1000, step3_output=2000)
+        # classified > with_price (data anomaly) → clamped to 0
+        db = _make_mock_db(with_price=1000, classified=2000, visible=1000)
         result = await get_universe_counts(db)
 
         sf = result["step3_funnel"]
@@ -182,31 +185,24 @@ class TestUniverseCountsStep3Funnel:
 
 
 # ---------------------------------------------------------------------------
-# get_universe_counts — classified is a subset of with_price
+# get_universe_counts — classified is a strict subset of with_price
 # ---------------------------------------------------------------------------
 
 class TestUniverseCountsClassifiedSubsetOfWithPrice:
 
     @pytest.mark.asyncio
-    async def test_classified_query_includes_has_price_data(self):
+    async def test_classified_le_with_price_flagged_when_exceeded(self):
         """
-        Verify that the classified facet query in universe_counts_service
-        includes has_price_data so classified <= with_price always holds.
-
-        We do this by passing classified > with_price and verifying the
-        inconsistency guard fires (classified can never exceed with_price
-        once has_price_data is part of classified_query).
+        classified > with_price must be flagged as an inconsistency because
+        classified_query includes has_price_data == true.
         """
         from services.universe_counts_service import get_universe_counts
 
-        # In a correct system with has_price_data in classified_query,
-        # if the DB returned classified > with_price the guard must flag it.
         db = _make_mock_db(with_price=5000, classified=6000, visible=4000)
         result = await get_universe_counts(db)
 
         assert result["has_inconsistency"], (
-            "classified > with_price must be flagged as inconsistency; "
-            "this means classified_query must include has_price_data"
+            "classified > with_price must be flagged as inconsistency"
         )
 
     @pytest.mark.asyncio
@@ -224,3 +220,24 @@ class TestUniverseCountsClassifiedSubsetOfWithPrice:
         assert not result["has_inconsistency"], (
             f"Valid funnel should have no inconsistencies: {result['inconsistencies']}"
         )
+
+    @pytest.mark.asyncio
+    async def test_classified_uses_fundamentals_status_not_sector_industry(self):
+        """
+        Verify that the classified funnel step reflects fundamentals_status=="complete",
+        not sector/industry presence. The canonical label is 'With Fundamentals'.
+        """
+        from services.universe_counts_service import get_universe_counts
+
+        db = _make_mock_db()
+        result = await get_universe_counts(db)
+
+        classified_step = next(
+            (s for s in result["funnel_steps"] if s["step"] == 3), None
+        )
+        assert classified_step is not None, "Step 3 not found in funnel_steps"
+        assert "fundamentals" in classified_step["query"].lower() or \
+               "fundamentals" in classified_step["name"].lower(), (
+            f"Step 3 should reference fundamentals_status, got: {classified_step}"
+        )
+

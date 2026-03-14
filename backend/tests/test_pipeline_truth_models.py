@@ -138,6 +138,14 @@ class TestComputeVisibilityGates:
         assert is_visible is False
         assert reason == VisibilityFailedReason.DELISTED.value
 
+    def test_status_delisted_mixed_case_returns_delisted(self):
+        """status check must be case-insensitive: Delisted, DELISTED, etc."""
+        for val in ("Delisted", "DELISTED", "DeLiStEd"):
+            doc = _full_ticker(status=val)
+            is_visible, reason = compute_visibility(doc)
+            assert is_visible is False, f"Expected invisible for status={val!r}"
+            assert reason == VisibilityFailedReason.DELISTED.value, f"status={val!r}"
+
 
 # ---------------------------------------------------------------------------
 # Deterministic precedence order
@@ -229,7 +237,7 @@ class TestComputeVisibilityStep4OnlyAlias:
     def test_delegates_to_full_compute_visibility(self):
         doc = _full_ticker(has_price_data=False)
         result_alias = compute_visibility_step4_only(doc)
-        result_full  = compute_visibility(doc)
+        result_full = compute_visibility(doc)
         assert result_alias == result_full
 
 
@@ -295,6 +303,25 @@ class TestGetCanonicalSieveQuery:
         delisted_filter = q["is_delisted"]
         assert "$ne" in delisted_filter
         assert delisted_filter["$ne"] is True
+
+    def test_sieve_status_filter_is_case_insensitive(self):
+        """
+        The status gate must use a case-insensitive regex so that
+        "Delisted", "DELISTED", etc. are excluded — matching compute_visibility
+        which normalises status with .lower().
+        """
+        q = get_canonical_sieve_query()
+        assert "status" in q, "Sieve must include a status filter"
+        status_filter = q["status"]
+        # Must use $not + $regex with case-insensitive option
+        assert "$not" in status_filter, (
+            f"status filter should use $not, got: {status_filter}"
+        )
+        regex_part = status_filter["$not"]
+        assert "$regex" in regex_part, f"$not must contain $regex, got: {regex_part}"
+        assert "$options" in regex_part and "i" in regex_part["$options"], (
+            f"regex must be case-insensitive ($options: 'i'), got: {regex_part}"
+        )
 
     def test_sieve_all_7_gates_present(self):
         q = get_canonical_sieve_query()
