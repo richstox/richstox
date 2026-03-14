@@ -40,7 +40,7 @@ logger = logging.getLogger("richstox.scheduler")
 
 # Constants
 SCHEDULER_CONFIG_KEY = "scheduler_enabled"
-SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
+SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock", "is_seeded": True}
 # Canonical Step 3 universe — tickers that are seeded and have price data.
 # This is the exact filter used by universe_counts_service step3_query and
 # is the source of truth for "Tickers with prices" on the Step 3 pipeline card.
@@ -1171,13 +1171,24 @@ async def run_daily_price_sync(
         # Run the bulk catchup with gap detection, streaming per-batch progress
         async def _bulk_progress(done: int, total: int, _: str) -> None:
             await _progress(
-                f"2.1 Bulk price sync: {done} / {total} tickers",
+                f"2.1 Bulk price sync: {done} / {progress_total_step2} tickers",
                 processed=done,
-                total=total if total > 0 else progress_total_step2,
+                total=progress_total_step2,  # ALWAYS use the Step 1 seeded total
                 phase="2.1_bulk_catchup",
             )
 
-        result = await run_daily_bulk_catchup(db, progress_cb=_bulk_progress)
+        # Load seeded ticker set so bulk catchup filters against the exact
+        # same universe that Step 1 produced (respects suffix/dot filters).
+        _seeded_docs = await db.tracked_tickers.find(
+            SEED_QUERY, {"_id": 0, "ticker": 1}
+        ).to_list(None)
+        _seeded_set = {d["ticker"] for d in _seeded_docs if d.get("ticker")}
+
+        result = await run_daily_bulk_catchup(
+            db,
+            progress_cb=_bulk_progress,
+            seeded_tickers_override=_seeded_set,
+        )
 
         await _progress(
             f"2.1 Prices synced: {result.get('records_upserted', 0)} records "

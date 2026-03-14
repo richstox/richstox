@@ -915,6 +915,7 @@ async def run_daily_bulk_catchup(
     db,
     job_name: str = "price_sync",
     progress_cb: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
+    seeded_tickers_override: Optional[Set[str]] = None,
 ) -> Dict[str, Any]:
     """
     Fetch the EODHD latest-day bulk file once and upsert into stock_prices.
@@ -968,16 +969,21 @@ async def run_daily_bulk_catchup(
         }
 
     # Load Step 2 universe tickers for filtering bulk_data rows.
-    # SEED_QUERY: NYSE/NASDAQ Common Stock.  distinct() is unavoidable here
-    # because we need a Python set for O(1) lookup during the bulk_data loop.
+    # When seeded_tickers_override is provided (chained pipeline call), use it
+    # directly so the ticker set and count match the exact Step 1 output.
+    # Otherwise fall back to querying tracked_tickers (standalone / backward compat).
     _STEP2_QUERY: Dict[str, Any] = {
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
         "asset_type": "Common Stock",
     }
-    step2_tickers: set = set(
-        await db.tracked_tickers.distinct("ticker", _STEP2_QUERY)
-    )
-    expected_tickers_count = len(step2_tickers)
+    if seeded_tickers_override is not None:
+        step2_tickers: set = seeded_tickers_override
+        expected_tickers_count = len(step2_tickers)
+    else:
+        step2_tickers = set(
+            await db.tracked_tickers.distinct("ticker", _STEP2_QUERY)
+        )
+        expected_tickers_count = len(step2_tickers)
     logger.info(f"[BULK CATCHUP] {len(bulk_data)} raw records, {expected_tickers_count} Step 2 universe tickers")
 
     # Build bulk operations — filter to tracked tickers only
