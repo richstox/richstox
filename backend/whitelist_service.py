@@ -763,11 +763,23 @@ async def sync_ticker_whitelist(
     # LIVE MODE
     # BULK UPSERT tracked_tickers v batchích po 500
     from pymongo import UpdateOne
+    from visibility_rules import compute_visibility_failed_reason
     BATCH_SIZE = 500
 
     ticker_ops = []
     for candidate in all_candidates:
         ticker = candidate["ticker"]
+        initial_visibility_reason = compute_visibility_failed_reason({
+            "ticker": ticker,
+            "exchange": candidate["exchange"],
+            "asset_type": candidate["type"],
+            "has_price_data": False,
+            "sector": None,
+            "industry": None,
+            "is_delisted": False,
+            "shares_outstanding": None,
+            "financial_currency": None,
+        })
         ticker_ops.append(UpdateOne(
             {"ticker": ticker},
             {
@@ -790,7 +802,7 @@ async def sync_ticker_whitelist(
                     "is_whitelisted": True,
                     "is_active": False,
                     "has_price_data": False,
-                    "visibility_failed_reason": "NO_PRICE_DATA",
+                    "visibility_failed_reason": initial_visibility_reason,
                     "visibility_reason_updated_at": now,
                     "fundamentals_status": "pending",
                     "status": "pending_fundamentals",

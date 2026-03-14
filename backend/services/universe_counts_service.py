@@ -194,8 +194,9 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "seeded_us_total": seeded_us_total,
             "nyse": nyse_count,
             "nasdaq": nasdaq_count,
-            # Backward compatibility alias: "common_stock" now follows the
-            # Admin pipeline Step 1 seeded Common Stock universe semantics.
+            # Backward compatibility alias retained for older consumers that still
+            # read "common_stock"; it now mirrors the canonical Step 1 seeded
+            # NYSE/NASDAQ Common Stock universe count exactly.
             "common_stock": seeded_us_total,
             "with_price_data": active_with_price_data,
             "step3_input_total": active_with_price_data,
