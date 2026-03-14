@@ -66,6 +66,13 @@ interface OverviewData {
   };
   universe_funnel?: {
     counts?: {
+      // Primary (canonical) names
+      raw?: number;
+      seeded?: number;
+      with_price?: number;
+      classified?: number;
+      visible?: number;
+      // Backward-compat aliases
       seeded_us_total?: number;
       with_price_data?: number;
       with_classification?: number;
@@ -856,13 +863,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange as Record<string, number> | undefined;
   const seededFromRun = (jobRuns['universe_seed'] as any)?.progress_total as number | undefined
     || (jobRuns['universe_seed'] as any)?.details?.seeded_total as number | undefined;
-  const seeded = seededFromRun ?? counts.seeded_us_total;
+  // Prefer canonical 'seeded' field; fall back to legacy alias and run-derived value.
+  const seeded = seededFromRun ?? counts.seeded ?? counts.seeded_us_total;
   const withPriceFromRun = (jobRuns['price_sync'] as any)?.details?.tickers_with_price_data as number | undefined
     || (jobRuns['price_sync'] as any)?.progress_processed as number | undefined;
-  const withPrice = withPriceFromRun ?? counts.with_price_data;
-  const withClass = counts.with_classification;
-  const visible = counts.visible_tickers;
-  const step4Visible = counts.step4_visible_total ?? visible;
+  // Prefer canonical 'with_price' field; fall back to legacy alias and run-derived value.
+  const withPrice = withPriceFromRun ?? counts.with_price ?? counts.with_price_data;
+  // Prefer canonical 'classified' field; fall back to legacy alias.
+  const withClass = counts.classified ?? counts.with_classification;
+  // Prefer canonical 'visible' field; fall back to legacy alias.
+  const visible = counts.visible ?? counts.visible_tickers;
 
   // Exclusion-report filtered_out counts — authoritative source for funnel arithmetic.
   const byStep = (exclusionReport as any)?.by_step as Record<string, number> | undefined;
@@ -888,7 +898,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const s3Out: number | undefined =
     s2Out !== undefined && step3Filtered !== undefined ? s2Out - step3Filtered : withClass;
   const s4Out: number | undefined =
-    s3Out !== undefined && step4Filtered !== undefined ? s3Out - step4Filtered : step4Visible;
+    s3Out !== undefined && step4Filtered !== undefined ? s3Out - step4Filtered : visible;
 
   const JOB_OUTPUT: Record<string, number | undefined> = {
     universe_seed: s1Out,
