@@ -196,7 +196,15 @@ function normaliseRun(run: any): any {
     details.tickers_with_price_data ??
     details.records_upserted ??
     run.records_processed;
-  const phase = run.phase ?? details.phase;
+  // Explicit phase field; fall back to inferring from progress message prefix
+  // so the label updates even when the overview aggregation omits top-level phase.
+  const progressStr: string = run.progress || '';
+  const inferredPhase = progressStr.startsWith('2.1') ? '2.1_bulk_catchup'
+    : progressStr.startsWith('2.2') ? '2.2_split'
+    : progressStr.startsWith('2.4') ? '2.4_dividend'
+    : (progressStr.startsWith('2.6') || progressStr.startsWith('2.7')) ? '2.6_earnings'
+    : undefined;
+  const phase = run.phase ?? details.phase ?? inferredPhase;
   const durationSeconds = run.duration_seconds ?? (
     start && finish ? Math.max(0, Math.round((Date.parse(finish) - Date.parse(start)) / 1000)) : undefined
   );
@@ -1215,7 +1223,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const prevRunTs = prevRun?.start_time ? Date.parse(prevRun.start_time) : 0;
         const currentRunTs = run?.start_time ? Date.parse(run.start_time) : 0;
         const eventDetectors = step.job_name === 'price_sync'
-          ? ((run as any)?.details?.event_detectors || {})
+          ? ((run as any)?.details?.event_detectors
+            || (jobRunsRaw[step.job_name] as any)?.details?.event_detectors
+            || {})
           : {};
         const splitDetector: Step2SubStep = eventDetectors?.step_2_2_split || {};
         const dividendDetector: Step2SubStep = eventDetectors?.step_2_4_dividend || {};
@@ -1251,7 +1261,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     ) : chainStepPending ? (
                       <Ionicons name="time-outline" size={14} color={COLORS.textMuted} style={{ marginLeft: 4 }} />
                     ) : isRunning ? (
-                      <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
+                      <>
+                        <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
+                        <Text style={{ marginLeft: 2, fontSize: 11, color: '#F59E0B', fontWeight: '600' }}>
+                          {Math.round(elapsedSeconds / 60)}m
+                        </Text>
+                      </>
                     ) : status ? (
                       <Ionicons
                         name={getStatusIcon(status) as any}
@@ -1271,7 +1286,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 <Text style={s.progressText}>
                   {liveProgress || runResult[step.job_name] || JOB_DESCRIPTIONS[step.job_name] || 'Starting…'}
                 </Text>
-                <Text style={s.elapsedText}>Běží {Math.max(0, Math.round(elapsedSeconds / 60))} min</Text>
               </View>
             ) : runResult[step.job_name] ? (
               <Text style={[s.runResultText, isRunning && { color: '#F59E0B' }]}>{runResult[step.job_name]}</Text>
@@ -1341,17 +1355,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
-                const runningMinutes = runStart ? Math.max(0, Math.round((Date.now() - Date.parse(runStart)) / 60000)) : 0;
                 const statusText = run.status === 'running'
-                  ? `Běží ${runningMinutes} min`
+                  ? 'Running…'
                   : (runEnd || runStart)
                     ? formatTime(runEnd || runStart)
                     : '—';
                 const durationText = run.status === 'running'
                   ? ''
-                  : lastDuration !== undefined
-                    ? ` (${formatDuration(lastDuration)})`
-                    : '';
+                  : run.status === 'cancelled'
+                    ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
+                    : lastDuration !== undefined
+                      ? ` (${formatDuration(lastDuration)})`
+                      : '';
 
                 return (
                 <View style={s.runInfo}>
