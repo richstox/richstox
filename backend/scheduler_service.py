@@ -1171,9 +1171,9 @@ async def run_daily_price_sync(
         # Run the bulk catchup with gap detection, streaming per-batch progress
         async def _bulk_progress(done: int, total: int, _: str) -> None:
             await _progress(
-                f"2.1 Bulk price sync: {done} / {progress_total_step2} tickers",
+                f"2.1 Bulk price sync: {done} / {total} tickers",
                 processed=done,
-                total=progress_total_step2,  # ALWAYS use the Step 1 seeded total
+                total=total,
                 phase="2.1_bulk_catchup",
             )
 
@@ -1198,7 +1198,11 @@ async def run_daily_price_sync(
         )
 
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
-        price_flag_summary = await sync_has_price_data_flags(db, include_exclusions=True)
+        _bulk_tickers_with_price = result.get("tickers_with_price", None)
+        price_flag_summary = await sync_has_price_data_flags(
+            db, include_exclusions=True,
+            tickers_with_price=_bulk_tickers_with_price,
+        )
         seeded_total = price_flag_summary["seeded_total"]
         with_price = price_flag_summary["with_price_data"]
         result["tickers_seeded_total"] = seeded_total
@@ -1219,10 +1223,10 @@ async def run_daily_price_sync(
             raise RuntimeError(missing_run_id_msg)
 
         await _progress(
-            f"2.1 Done: {with_price} / {seeded_total} tickers with price data. "
+            f"2.1 Done: {with_price} / {with_price} tickers with price data. "
             "Running 2.2 Split detector (EODHD API)…",
             processed=with_price,
-            total=seeded_total,
+            total=with_price,
             phase="2.1_bulk_catchup",
         )
 
@@ -1428,11 +1432,13 @@ async def run_daily_price_sync(
         }
 
 
-async def sync_has_price_data_flags(db, include_exclusions: bool = False) -> Dict[str, Any]:
+async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None) -> Dict[str, Any]:
     """
-    Recompute has_price_data for seeded US Common Stock universe from stock_prices.
-    Step 2 canonical: has_price_data=true only for tickers with valid price
-    (close > 0 OR adjusted_close > 0).
+    Recompute has_price_data for seeded US Common Stock universe.
+
+    When *tickers_with_price* is provided (from the bulk feed result), only
+    those tickers are marked has_price_data=True — no stock_prices query needed.
+    Fallback: query stock_prices for valid prices (close > 0 OR adjusted_close > 0).
     """
     seeded_docs = await db.tracked_tickers.find(
         SEED_QUERY,
@@ -1456,32 +1462,45 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False) -> Dic
             base["exclusions"] = []
         return base
 
-    # Backward compatibility: older stock_prices may contain ticker without .US suffix.
-    seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
-    ticker_candidates = list(set(seeded_tickers) | set(seeded_codes))
-    valid_price_query = {
-        "ticker": {"$in": ticker_candidates},
-        "$or": [
-            {"close": {"$gt": 0}},
-            {"adjusted_close": {"$gt": 0}},
-        ],
-    }
-    raw_price_tickers = await db.stock_prices.distinct("ticker", valid_price_query)
-    raw_any_price_tickers = await db.stock_prices.distinct(
-        "ticker",
-        {"ticker": {"$in": ticker_candidates}}
-    )
-
-    def normalize_ticker(value: str) -> str:
-        if not value:
-            return value
-        return value if value.endswith(".US") else f"{value}.US"
-
-    normalized_price_tickers = {normalize_ticker(t) for t in raw_price_tickers if t}
-    normalized_any_price_tickers = {normalize_ticker(t) for t in raw_any_price_tickers if t}
     seeded_set = set(seeded_tickers)
-    with_price_set = normalized_price_tickers & seeded_set
-    any_price_set = normalized_any_price_tickers & seeded_set
+
+    if tickers_with_price is not None:
+        # ── Fast path: use the set returned by the bulk feed ─────────────
+        def _normalize(value: str) -> str:
+            if not value:
+                return value
+            return value if value.endswith(".US") else f"{value}.US"
+
+        with_price_set = {_normalize(t) for t in tickers_with_price if t} & seeded_set
+        any_price_set = with_price_set  # same set when sourced from bulk feed
+        matched_raw = len(tickers_with_price)
+    else:
+        # ── Legacy fallback: query stock_prices collection ───────────────
+        seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
+        ticker_candidates = list(set(seeded_tickers) | set(seeded_codes))
+        valid_price_query = {
+            "ticker": {"$in": ticker_candidates},
+            "$or": [
+                {"close": {"$gt": 0}},
+                {"adjusted_close": {"$gt": 0}},
+            ],
+        }
+        raw_price_tickers = await db.stock_prices.distinct("ticker", valid_price_query)
+        raw_any_price_tickers = await db.stock_prices.distinct(
+            "ticker",
+            {"ticker": {"$in": ticker_candidates}}
+        )
+
+        def _normalize(value: str) -> str:
+            if not value:
+                return value
+            return value if value.endswith(".US") else f"{value}.US"
+
+        normalized_price_tickers = {_normalize(t) for t in raw_price_tickers if t}
+        normalized_any_price_tickers = {_normalize(t) for t in raw_any_price_tickers if t}
+        with_price_set = normalized_price_tickers & seeded_set
+        any_price_set = normalized_any_price_tickers & seeded_set
+        matched_raw = len(raw_price_tickers)
 
     # Reset all seeded tickers to false, then enable only those with prices.
     await db.tracked_tickers.update_many(
@@ -1499,7 +1518,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False) -> Dic
         "seeded_total": seeded_total,
         "with_price_data": with_price_data,
         "without_price_data": max(seeded_total - with_price_data, 0),
-        "matched_price_tickers_raw": len(raw_price_tickers),
+        "matched_price_tickers_raw": matched_raw,
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []

@@ -1041,12 +1041,15 @@ async def run_daily_bulk_catchup(
             "records_upserted": 0,
             "api_calls": 1,
             "bulk_writes": 0,
+            "tickers_with_price": [],
         }
 
     # Execute in batches — cancel check before each batch (soft stop)
     records_upserted = 0
     bulk_writes = 0
     processed_ticker_set: Set[str] = set()
+    # Pre-compute matched ticker count across all batches for accurate progress total
+    matched_ticker_total = len(set().union(*(tks for _, tks in batched_operations_with_tickers)))
 
     for batch_index, (batch, batch_unique_tickers) in enumerate(batched_operations_with_tickers):
         # ── Cancel check 2b: before each bulk_write batch ────────────────────
@@ -1063,6 +1066,7 @@ async def run_daily_bulk_catchup(
                 "records_upserted": records_upserted,
                 "api_calls": 1,
                 "bulk_writes": bulk_writes,
+                "tickers_with_price": sorted(processed_ticker_set),
             }
 
         write_result = await db.stock_prices.bulk_write(batch, ordered=False)
@@ -1073,7 +1077,7 @@ async def run_daily_bulk_catchup(
         if progress_cb:
             await progress_cb(
                 len(processed_ticker_set),
-                expected_tickers_count,
+                matched_ticker_total,
                 "2.1 bulk price sync",
             )
 
@@ -1116,4 +1120,5 @@ async def run_daily_bulk_catchup(
         "api_calls": 1,
         "bulk_writes": bulk_writes,
         "gap_analysis": gap_debug,
+        "tickers_with_price": sorted(processed_ticker_set),
     }
