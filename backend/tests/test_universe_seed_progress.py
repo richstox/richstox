@@ -4,7 +4,7 @@ Universe Seed Progress Tests
 Tests for Step 1 seed progress tracking and universe counts funnel.
 
 Tests cover:
-1. Funnel field naming — canonical names (raw, seeded, with_price, classified, visible)
+1. Funnel field naming — canonical names (seeded, with_price, classified, visible)
    are present in universe_counts output.
 2. Backward-compat aliases map to the same values.
 3. Monotonic-decreasing guard fires when counts increase.
@@ -25,7 +25,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ---------------------------------------------------------------------------
 
 def _make_mock_db(
-    raw: int = 10000,
     nyse: int = 5000,
     nasdaq: int = 5000,
     seeded: int = 8000,
@@ -35,7 +34,6 @@ def _make_mock_db(
 ):
     """Build a mock db.tracked_tickers that returns fixed facet counts."""
     facet_data = [{
-        "raw":          [{"n": raw}],
         "nyse":         [{"n": nyse}],
         "nasdaq":       [{"n": nasdaq}],
         "seeded":       [{"n": seeded}],
@@ -69,7 +67,7 @@ class TestUniverseCountsFieldNames:
         result = await get_universe_counts(db)
 
         counts = result["counts"]
-        for field in ("raw", "seeded", "with_price", "classified", "visible"):
+        for field in ("seeded", "with_price", "classified", "visible"):
             assert field in counts, f"Missing canonical field: {field}"
 
     @pytest.mark.asyncio
@@ -81,7 +79,6 @@ class TestUniverseCountsFieldNames:
 
         counts = result["counts"]
         aliases = (
-            "seeded_us_total",
             "with_price_data",
             "with_classification",
             "visible_tickers",
@@ -93,7 +90,7 @@ class TestUniverseCountsFieldNames:
     async def test_canonical_and_alias_values_match(self):
         from services.universe_counts_service import get_universe_counts
 
-        db = _make_mock_db(raw=10000, seeded=8000, with_price=7000, classified=6000, visible=4000)
+        db = _make_mock_db(seeded=8000, with_price=7000, classified=6000, visible=4000)
         result = await get_universe_counts(db)
 
         counts = result["counts"]
@@ -102,8 +99,6 @@ class TestUniverseCountsFieldNames:
         assert counts["with_price"]  == counts["with_price_data"]    == 7000
         assert counts["classified"]  == counts["with_classification"] == 6000
         assert counts["visible"]     == counts["visible_tickers"]    == 4000
-        # raw -> legacy seeded_us_total
-        assert counts["raw"]         == counts["seeded_us_total"]    == 10000
 
     @pytest.mark.asyncio
     async def test_funnel_steps_use_canonical_names(self):
@@ -118,6 +113,26 @@ class TestUniverseCountsFieldNames:
         # Visible step must be present
         assert any("Visible" in n for n in step_names), "No visible step in funnel"
 
+    @pytest.mark.asyncio
+    async def test_funnel_has_exactly_4_steps(self):
+        from services.universe_counts_service import get_universe_counts
+
+        db = _make_mock_db()
+        result = await get_universe_counts(db)
+
+        assert len(result["funnel_steps"]) == 4, (
+            f"Expected 4 funnel steps, got {len(result['funnel_steps'])}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_visible_universe_count_equals_visible(self):
+        from services.universe_counts_service import get_universe_counts
+
+        db = _make_mock_db(visible=3500)
+        result = await get_universe_counts(db)
+
+        assert result["visible_universe_count"] == result["counts"]["visible"] == 3500
+
 
 # ---------------------------------------------------------------------------
 # get_universe_counts — monotonic guard
@@ -129,7 +144,7 @@ class TestUniverseCountsMonotonicGuard:
     async def test_no_inconsistency_for_valid_funnel(self):
         from services.universe_counts_service import get_universe_counts
 
-        db = _make_mock_db(raw=10000, seeded=8000, with_price=7000, classified=6000, visible=4000)
+        db = _make_mock_db(seeded=8000, with_price=7000, classified=6000, visible=4000)
         result = await get_universe_counts(db)
 
         assert not result["has_inconsistency"], (
@@ -210,7 +225,7 @@ class TestUniverseCountsClassifiedSubsetOfWithPrice:
         """classified <= with_price must hold for a valid funnel."""
         from services.universe_counts_service import get_universe_counts
 
-        db = _make_mock_db(raw=10000, seeded=8000, with_price=7000, classified=6500, visible=4000)
+        db = _make_mock_db(seeded=8000, with_price=7000, classified=6500, visible=4000)
         result = await get_universe_counts(db)
 
         counts = result["counts"]
@@ -240,4 +255,5 @@ class TestUniverseCountsClassifiedSubsetOfWithPrice:
                "fundamentals" in classified_step["name"].lower(), (
             f"Step 3 should reference fundamentals_status, got: {classified_step}"
         )
+
 

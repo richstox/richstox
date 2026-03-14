@@ -5,25 +5,24 @@ Single source of truth for universe/funnel counts.
 Used by BOTH Admin Panel and Talk filters.
 
 CANONICAL FUNNEL DEFINITION:
-  raw        - All tickers from NYSE + NASDAQ exchanges (raw exchange universe)
-  seeded     - NYSE/NASDAQ Common Stock (is_seeded == true / step1 definition)
-  with_price - seeded + has_price_data == true
-  classified - with_price + fundamentals_status == "complete"  (step3 output)
-  visible    - classified + is_visible == true (scoped to classified for monotonicity)
+  seeded     - exchange ∈ {NYSE, NASDAQ} AND asset_type == "Common Stock"
+  with_price - seeded AND has_price_data == true
+  classified - with_price AND fundamentals_status == "complete"  (step3 output)
+  visible    - classified AND is_visible == true (scoped for monotonicity)
 
 GUARD: Each step must be <= previous step (monotonic decreasing).
 
 BINDING: Do not change without Richard's approval.
 """
 
-from datetime import datetime, timezone
-from typing import Dict, Any, List, Tuple
+from datetime import datetime
+from typing import Dict, Any, List
 from zoneinfo import ZoneInfo
 
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 # Import canonical visibility query from visibility_rules (DATA SUPREMACY MANIFESTO v1.0)
-from visibility_rules import VISIBLE_TICKERS_QUERY, get_canonical_sieve_query
+from visibility_rules import VISIBLE_TICKERS_QUERY
 
 # Keep backward compatibility alias
 VISIBLE_UNIVERSE_QUERY = VISIBLE_TICKERS_QUERY
@@ -37,8 +36,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     Returns:
         Dictionary with funnel steps and metadata.
         Key counts:
-          counts.raw        - NYSE+NASDAQ raw exchange total
-          counts.seeded     - seeded universe (Common Stock, is_seeded=True)
+          counts.seeded     - seeded universe (NYSE/NASDAQ Common Stock)
           counts.with_price - seeded tickers with current price data
           counts.classified - with_price tickers where fundamentals_status=="complete"
           counts.visible    - classified tickers where is_visible==true
@@ -46,41 +44,32 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     now_prague = datetime.now(PRAGUE_TZ)
 
     # =========================================================================
-    # FUNNEL STEP QUERIES
-    # raw:        exchange ∈ {NYSE, NASDAQ}  (all asset types)
-    # seeded:     is_seeded == True          (NYSE/NASDAQ Common Stock seed)
-    # with_price: seeded + has_price_data
-    # classified: with_price + fundamentals_status == "complete"  (step3 output)
-    # visible:    classified + is_visible == True  (scoped for monotonicity)
+    # FUNNEL STEP QUERIES (each is a strict superset of the previous)
+    # seeded:     exchange ∈ {NYSE, NASDAQ} AND asset_type == "Common Stock"
+    # with_price: seeded AND has_price_data == true
+    # classified: with_price AND fundamentals_status == "complete"  (step3 output)
+    # visible:    classified AND is_visible == true  (scoped for monotonicity)
     # =========================================================================
-    raw_query        = {"exchange": {"$in": ["NYSE", "NASDAQ"]}}
-    seeded_query     = {"is_seeded": True}
-    with_price_query = {"is_seeded": True, "has_price_data": True}
-    classified_query = {
-        "is_seeded": True,
-        "has_price_data": True,
-        "fundamentals_status": "complete",
+    seeded_query = {
+        "exchange":   {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
     }
+    with_price_query = {**seeded_query, "has_price_data": True}
+    classified_query = {**with_price_query, "fundamentals_status": "complete"}
     # Visible is scoped to classified so that visible <= classified always holds.
-    visible_query    = {
-        "is_seeded": True,
-        "has_price_data": True,
-        "fundamentals_status": "complete",
-        "is_visible": True,
-    }
+    visible_query = {**classified_query, "is_visible": True}
 
     # =========================================================================
     # SINGLE ROUND-TRIP: $facet runs all counts in parallel on the server
     # =========================================================================
     facet_result = await db.tracked_tickers.aggregate([{"$facet": {
-        "raw":          [{"$match": raw_query},        {"$count": "n"}],
         # NYSE/NASDAQ breakdown scoped to seeded so counts never exceed seeded_total
-        "nyse":         [{"$match": {"is_seeded": True, "exchange": "NYSE"}},    {"$count": "n"}],
-        "nasdaq":       [{"$match": {"is_seeded": True, "exchange": "NASDAQ"}},  {"$count": "n"}],
-        "seeded":       [{"$match": seeded_query},     {"$count": "n"}],
-        "with_price":   [{"$match": with_price_query}, {"$count": "n"}],
-        "classified":   [{"$match": classified_query}, {"$count": "n"}],
-        "visible":      [{"$match": visible_query},    {"$count": "n"}],
+        "nyse":       [{"$match": {"exchange": "NYSE",   "asset_type": "Common Stock"}}, {"$count": "n"}],
+        "nasdaq":     [{"$match": {"exchange": "NASDAQ", "asset_type": "Common Stock"}}, {"$count": "n"}],
+        "seeded":     [{"$match": seeded_query},     {"$count": "n"}],
+        "with_price": [{"$match": with_price_query}, {"$count": "n"}],
+        "classified": [{"$match": classified_query}, {"$count": "n"}],
+        "visible":    [{"$match": visible_query},    {"$count": "n"}],
     }}]).to_list(1)
 
     f = facet_result[0] if facet_result else {}
@@ -88,7 +77,6 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     def _n(key: str) -> int:
         return (f.get(key) or [{}])[0].get("n", 0)
 
-    raw_total        = _n("raw")
     nyse_count       = _n("nyse")
     nasdaq_count     = _n("nasdaq")
     seeded_total     = _n("seeded")
@@ -101,40 +89,32 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     # =========================================================================
     funnel_steps = [
         {
-            "step": 0,
-            "name": "Raw Exchange Universe (NYSE+NASDAQ)",
-            "count": raw_total,
-            "query": "exchange in [NYSE, NASDAQ]",
-            "source_job": "universe_seed",
-            "breakdown": f"NYSE: {nyse_count}, NASDAQ: {nasdaq_count}",
-            "note": "Audit metadata only — includes all asset types",
-        },
-        {
             "step": 1,
             "name": "Seeded Universe (Common Stock)",
             "count": seeded_total,
-            "query": "is_seeded == true",
+            "query": "exchange in [NYSE, NASDAQ] AND asset_type == 'Common Stock'",
             "source_job": "universe_seed",
+            "breakdown": f"NYSE: {nyse_count}, NASDAQ: {nasdaq_count}",
         },
         {
             "step": 2,
             "name": "With Price Data",
             "count": with_price_total,
-            "query": "is_seeded == true AND has_price_data == true",
+            "query": "seeded AND has_price_data == true",
             "source_job": "price_sync",
         },
         {
             "step": 3,
             "name": "With Fundamentals (Classified)",
             "count": classified_total,
-            "query": "is_seeded == true AND has_price_data == true AND fundamentals_status == 'complete'",
+            "query": "with_price AND fundamentals_status == 'complete'",
             "source_job": "fundamentals_sync",
         },
         {
             "step": 4,
             "name": "Visible Tickers (Customer View)",
             "count": visible_total,
-            "query": "classified == true AND is_visible == true",
+            "query": "classified AND is_visible == true",
             "source_job": "compute_visible_universe",
             "note": "All 7 visibility gates satisfied",
         },
@@ -146,8 +126,6 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     inconsistencies = []
 
     # Check monotonic decreasing: each step count must be <= previous step count.
-    # raw (step 0) is expected to be >= seeded (step 1) since it includes all asset types.
-    # Any step that increases over the previous is flagged as an inconsistency.
     for i in range(1, len(funnel_steps)):
         prev = funnel_steps[i - 1]
         curr = funnel_steps[i]
@@ -176,25 +154,21 @@ async def get_universe_counts(db) -> Dict[str, Any]:
         # Primary counts — unambiguous, consistent field names.
         # These are the authoritative values for Admin UI and Talk.
         "counts": {
-            # Funnel
-            "raw":          raw_total,        # NYSE+NASDAQ all asset types
-            "seeded":       seeded_total,      # is_seeded=True (Common Stock)
-            "with_price":   with_price_total,  # seeded + has_price_data
-            "classified":   classified_total,  # with_price + fundamentals_status=="complete"
-            "visible":      visible_total,     # classified + is_visible=True
+            # Canonical funnel
+            "seeded":     seeded_total,      # exchange∈{NYSE,NASDAQ} AND asset_type=="Common Stock"
+            "with_price": with_price_total,  # seeded AND has_price_data
+            "classified": classified_total,  # with_price AND fundamentals_status=="complete"
+            "visible":    visible_total,     # classified AND is_visible==true
 
             # Exchange breakdown (audit; scoped to seeded)
             "nyse":   nyse_count,
             "nasdaq": nasdaq_count,
 
             # Backward-compatibility aliases (do not use in new code)
-            # NOTE: seeded_us_total previously counted all NYSE+NASDAQ (all asset types).
-            #       New code should use 'seeded' (Common Stock only) or 'raw' (all asset types).
-            "seeded_us_total":      raw_total,       # legacy: all NYSE+NASDAQ regardless of type
-            "common_stock":         seeded_total,    # legacy: Common Stock count (= seeded)
-            "with_price_data":      with_price_total,
-            "with_classification":  classified_total,
-            "visible_tickers":      visible_total,
+            "common_stock":        seeded_total,
+            "with_price_data":     with_price_total,
+            "with_classification": classified_total,
+            "visible_tickers":     visible_total,
         },
 
         # Step 3 ticker-level funnel (fundamentals sync):
