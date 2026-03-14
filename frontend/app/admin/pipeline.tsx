@@ -247,6 +247,8 @@ function deriveProgress(run: any) {
   const total = normalized.progress_total;
   const processed = normalized.progress_processed ?? 0;
   const pct = total ? Math.min(Math.round((processed / total) * 100), 100) : (processed ? 100 : 0);
+  // Auto-advance past 2.1@100%: when bulk sync is done the backend transitions
+  // to 2.2 but the frontend poll may not catch it before completion.
   const effectivePhase = (normalized.phase === '2.1_bulk_catchup' && pct >= 100)
     ? '2.2_split'
     : normalized.phase;
