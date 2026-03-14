@@ -253,11 +253,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [refreshing, setRefreshing] = useState(false);
   const [downloadingReport, setDownloadingReport] = useState(false);
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
-  const [runResult, setRunResult] = useState<Record<string, string>>({});
   const [liveLastRuns, setLiveLastRuns] = useState<Record<string, any>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); // chain run elapsed timer
   const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
 
@@ -1049,11 +1048,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
             </View>
 
-            {/* Run Result */}
-            {runResult[step.job_name] ? (
-              <Text style={s.runResultText}>{runResult[step.job_name]}</Text>
-            ) : null}
-
               {/* ── Integrated Funnel Row ── */}
               {/* Steps 2+: waiting state if previous step has 0 output */}
               {inCount === 0 && step.step > 1 ? (
@@ -1448,9 +1442,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       https://eodhd.com/api/eod/{'{'+'TICKER'+'}'}.US?fmt=json&period=d
                     </Text>
-                    {runResult['full_price_history_sync'] ? (
-                      <Text style={s.fullSyncResult}>{runResult['full_price_history_sync']}</Text>
-                    ) : null}
                   </View>
                 </View>
               )}
@@ -1504,9 +1495,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       </View>
                     )}
 
-                    {runResult['full_fundamentals_sync'] ? (
-                      <Text style={s.fullSyncResult}>{runResult['full_fundamentals_sync']}</Text>
-                    ) : null}
                   </View>
                 </View>
               )}
@@ -1795,15 +1783,7 @@ const s = StyleSheet.create({
   stepSchedule: { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
 
   jobBtnGroup: { flexDirection: 'row', gap: 6 },
-  runBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center' },
   runBtnDisabled: { opacity: 0.5 },
-  runBtnText: { color: '#fff', fontSize: 11, fontWeight: '600' },
-  cancelBtn: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6, minWidth: 54, alignItems: 'center', backgroundColor: '#EF4444' },
-  cancelBtnText: { color: '#fff', fontSize: 11, fontWeight: '600' },
-  runResultText: { fontSize: 11, marginTop: 6, color: COLORS.textMuted },
-  progressRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 8 },
-  progressText: { flex: 1, fontSize: 11, color: '#F59E0B' },
-  elapsedText: { fontSize: 13, fontWeight: '700', color: '#F59E0B', minWidth: 36, textAlign: 'right' },
 
   funnelRow: { flexDirection: 'row', alignItems: 'center', marginTop: 12, marginBottom: 4, gap: 6 },
   funnelBox: { alignItems: 'center', flex: 2.5, backgroundColor: COLORS.border + '44', borderRadius: 8, paddingVertical: 8, paddingHorizontal: 4 },
@@ -1876,9 +1856,6 @@ const s = StyleSheet.create({
   fullSyncInfo: { flex: 1 },
   fullSyncTitle: { fontSize: 11, fontWeight: '700', color: COLORS.text, marginBottom: 2 },
   fullSyncDesc: { fontSize: 10, color: COLORS.textMuted, lineHeight: 14 },
-  fullSyncResult: { fontSize: 10, color: '#10B981', marginTop: 3 },
-  fullSyncBtn: { backgroundColor: '#10B981', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 6, alignItems: 'center', minWidth: 70 },
-  fullSyncBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
 
   fundProgressWrap: { marginTop: 8, marginBottom: 4 },
   fundProgressHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
