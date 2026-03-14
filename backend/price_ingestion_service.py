@@ -911,40 +911,6 @@ async def detect_price_gaps(db) -> Dict[str, Any]:
     }
 
 
-async def fetch_bulk_prices_for_date(date: str) -> List[dict]:
-    """
-    Fetch bulk prices for a specific date from EODHD.
-    
-    API: https://eodhd.com/api/eod-bulk-last-day/US?api_token=XXX&date=YYYY-MM-DD&fmt=json
-    """
-    import aiohttp
-    
-    # Use module-level constant (loaded at import time from .env)
-    api_token = EODHD_API_KEY
-    if not api_token:
-        logger.error("EODHD_API_KEY not configured")
-        return []
-    
-    url = f"https://eodhd.com/api/eod-bulk-last-day/US"
-    params = {
-        "api_token": api_token,
-        "date": date,
-        "fmt": "json"
-    }
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, timeout=60) as response:
-                if response.status != 200:
-                    logger.error(f"EODHD bulk API error: {response.status}")
-                    return []
-                data = await response.json()
-                return data if isinstance(data, list) else []
-    except Exception as e:
-        logger.error(f"EODHD bulk fetch error for {date}: {e}")
-        return []
-
-
 async def run_daily_bulk_catchup(
     db,
     job_name: str = "price_sync",

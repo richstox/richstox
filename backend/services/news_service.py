@@ -216,9 +216,9 @@ async def get_hot_symbols(db, n: int = 50) -> List[str]:
         {"$limit": n}
     ]
     
-    # Combine follows and portfolio holdings
-    follows = await db.follows.aggregate(pipeline).to_list(100)
-    holdings = await db.portfolio_holdings.aggregate(pipeline).to_list(100)
+    # Combine watchlist and portfolio positions
+    follows = await db.user_watchlist.aggregate(pipeline).to_list(100)
+    holdings = await db.positions.aggregate(pipeline).to_list(100)
     
     # Merge and dedupe
     all_symbols = {}

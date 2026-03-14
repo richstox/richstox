@@ -84,8 +84,8 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
     sector_raw   = (general.get("Sector")   or "").strip()
     industry_raw = (general.get("Industry") or "").strip()
 
-    # CRITICAL DEBUG: log exactly what EODHD returned so parser issues are visible
-    logger.critical(
+    # DEBUG: log exactly what EODHD returned so parser issues are visible
+    logger.debug(
         f"PARSER DEBUG: Ticker {ticker} -> "
         f"Sector: '{sector_raw}', Industry: '{industry_raw}', "
         f"HasClass: {bool(sector_raw and industry_raw)}"
