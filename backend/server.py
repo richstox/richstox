@@ -5116,6 +5116,8 @@ async def admin_get_job_status(job_name: str):
             "status": raw_last_run.get("status"),
             "started_at": _iso(started_at),
             "finished_at": _iso(finished_at),
+            "started_at_prague": raw_last_run.get("started_at_prague"),
+            "finished_at_prague": raw_last_run.get("finished_at_prague"),
             "progress_processed": raw_last_run.get("progress_processed"),
             "progress_total": seeded_total or raw_last_run.get("progress_total"),
             "progress_pct": raw_last_run.get("progress_pct"),
@@ -5129,12 +5131,35 @@ async def admin_get_job_status(job_name: str):
                 "phase": phase,
             },
         }
-    
+
+    # Get previous completed run (most recent successful/completed run)
+    previous_completed_run = None
+    raw_prev = await db.ops_job_runs.find_one(
+        {"job_name": job_name, "status": {"$in": ["success", "completed"]}},
+        {"_id": 0},
+        sort=[("finished_at", -1)],
+    )
+    if raw_prev:
+        prev_started = raw_prev.get("started_at")
+        prev_finished = raw_prev.get("finished_at")
+        prev_duration = None
+        if prev_started and prev_finished:
+            prev_duration = (prev_finished - prev_started).total_seconds()
+        previous_completed_run = {
+            "status": raw_prev.get("status"),
+            "started_at": _iso(prev_started),
+            "finished_at": _iso(prev_finished),
+            "started_at_prague": raw_prev.get("started_at_prague"),
+            "finished_at_prague": raw_prev.get("finished_at_prague"),
+            "duration_seconds": prev_duration,
+        }
+
     return {
         "job": job_name,
         "enabled": config.get("value", False) if config else False,
         "config_key": config_key,
-        "last_run": last_run
+        "last_run": last_run,
+        "previous_completed_run": previous_completed_run,
     }
 
 

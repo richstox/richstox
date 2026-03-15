@@ -55,6 +55,9 @@ EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 _FUNDAMENTALS_EVENTS_INDEX_DONE = False
 _FUNDAMENTALS_EVENTS_INDEX_LOCK: Optional[asyncio.Lock] = None
+# Delay between detector phases so the frontend (polling every ~2 s) can observe
+# intermediate 2.2 / 2.4 / 2.6 progress updates before the run completes.
+_DETECTOR_PHASE_POLL_DELAY = 0.5
 
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -822,6 +825,7 @@ async def run_step2_event_detectors(
         split_flagged_total += s.get("flagged_count", 0)
         if s.get("api_endpoint"):
             split_endpoints.append(s["api_endpoint"])
+        await asyncio.sleep(_DETECTOR_PHASE_POLL_DELAY)
 
         await _p(f"2.4 Dividend detector: calling EODHD for {date_str} ({i+1}/{len(missed_dates)})…")
         d = await _detect_dividend_candidates_eodhd(db, date_str)
@@ -830,6 +834,7 @@ async def run_step2_event_detectors(
         div_flagged_total += d.get("flagged_count", 0)
         if d.get("api_endpoint"):
             div_endpoints.append(d["api_endpoint"])
+        await asyncio.sleep(_DETECTOR_PHASE_POLL_DELAY)
 
         await _p(f"2.6 Earnings detector: calling EODHD calendar {date_str} ({i+1}/{len(missed_dates)})…")
         earnings = await _detect_earnings_candidates_eodhd(db, date_str, from_date=date_str)
@@ -1223,11 +1228,10 @@ async def run_daily_price_sync(
             raise RuntimeError(missing_run_id_msg)
 
         await _progress(
-            f"2.1 Done: {with_price} / {with_price} tickers with price data. "
-            "Running 2.2 Split detector (EODHD API)…",
+            f"2.2 Running split/dividend/earnings detectors…",
             processed=with_price,
-            total=with_price,
-            phase="2.1_bulk_catchup",
+            total=seeded_total,
+            phase="2.2_split",
         )
 
         # ── Stop check between Phase A and Phase B ────────────────────────────
