@@ -301,7 +301,7 @@ async def _get_prices_from_db(ticker: str, days: int = 365, from_date: str = Non
     cursor = db.stock_prices.find(
         query,
         {"_id": 0}
-    ).sort("date", 1).limit(days + 60)  # small margin for weekends/holidays
+    ).sort("date", 1).limit(days + 60)  # margin covers weekends/holidays in the date window
 
     return await cursor.to_list(length=days + 60)
 
