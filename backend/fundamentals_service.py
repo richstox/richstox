@@ -13,6 +13,8 @@ Schema is NORMALIZED (not JSONB) for query speed and indexing.
 """
 
 import os
+import hashlib
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
@@ -67,7 +69,7 @@ async def fetch_fundamentals_from_eodhd(ticker: str) -> Optional[Dict[str, Any]]
         return None
 
 
-def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, Any]:
+def parse_company_fundamentals(ticker: str, data: Dict[str, Any], raw_payload_hash: Optional[str] = None) -> Dict[str, Any]:
     """
     Parse EODHD fundamentals into company_fundamentals_cache schema.
     Includes ALL fields needed for stock detail page.
@@ -101,6 +103,18 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         eps_values = [q.get("epsActual") for q in quarters if q and q.get("epsActual") is not None]
         if len(eps_values) == 4:
             eps_ttm = sum(eps_values)
+
+    # Canonical delisted status
+    is_delisted_raw = general.get("IsDelisted")
+    is_delisted = bool(is_delisted_raw) if is_delisted_raw is not None else False
+    canonical_status = "delisted" if is_delisted else "active"
+
+    # Extract financial_currency from financial statements
+    try:
+        from utils.currency_utils import extract_statement_currency
+        financial_currency = extract_statement_currency(data)
+    except Exception:
+        financial_currency = general.get("CurrencyCode") or "USD"
     
     return {
         "ticker": ticker if ticker.endswith(".US") else f"{ticker}.US",
@@ -110,6 +124,7 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         "name": general.get("Name") or "",
         "exchange": general.get("Exchange") or "",
         "currency_code": general.get("CurrencyCode") or "USD",
+        "financial_currency": financial_currency,
         "country_iso": general.get("CountryISO") or "US",
         "country_name": general.get("CountryName") or "USA",
         
@@ -128,7 +143,8 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         "full_time_employees": general.get("FullTimeEmployees"),
         "ipo_date": general.get("IPODate"),
         "fiscal_year_end": general.get("FiscalYearEnd"),
-        "is_delisted": general.get("IsDelisted") or False,
+        "is_delisted": is_delisted,
+        "status": canonical_status,
         
         # Address
         "address": general.get("Address"),
@@ -199,6 +215,13 @@ def parse_company_fundamentals(ticker: str, data: Dict[str, Any]) -> Dict[str, A
         "eodhd_updated_at": general.get("UpdatedAt"),
         "created_at": now,
         "updated_at": now,
+
+        # Provenance
+        "fundamentals_last_fetched_at": now,
+        "fundamentals_status": "complete",
+        "fundamentals_error_reason": None,
+        "fundamentals_raw_payload_hash": raw_payload_hash,
+        "needs_fundamentals_refresh": False,
     }
 
 
@@ -412,6 +435,9 @@ def parse_insider_activity(ticker: str, data: Dict[str, Any]) -> Optional[Dict[s
         "status": status,
         "created_at": now,
         "updated_at": now,
+        "window_start_date": six_months_ago.strftime("%Y-%m-%d"),
+        "window_end_date": now.strftime("%Y-%m-%d"),
+        "last_fetched_at": now,
     }
 
 
@@ -460,8 +486,12 @@ async def sync_ticker_fundamentals(
             source_job="manual_fundamentals_sync",
         )
 
+        # Compute stable hash of raw payload for change detection
+        raw_json = json.dumps(data, sort_keys=True, default=str)
+        raw_payload_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+
         # 1. Parse and store company fundamentals
-        company_doc = parse_company_fundamentals(ticker_upper, data)
+        company_doc = parse_company_fundamentals(ticker_upper, data, raw_payload_hash=raw_payload_hash)
         await db.company_fundamentals_cache.update_one(
             {"ticker": ticker_full},
             {"$set": company_doc},

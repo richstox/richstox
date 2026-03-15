@@ -10,6 +10,8 @@ Manages large-scale data sync jobs with:
 """
 
 import os
+import hashlib
+import json
 import logging
 from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
@@ -159,6 +161,10 @@ async def sync_single_ticker_fundamentals(
         )
         result["provider_debug_snapshot_stored"] = bool(debug_result.get("stored"))
 
+        # Compute stable hash of raw payload for change detection
+        raw_json = json.dumps(data, sort_keys=True, default=str)
+        raw_payload_hash = hashlib.sha256(raw_json.encode("utf-8")).hexdigest()
+
         # --- Provider-side counts (for corruption detection) ---
         raw_fin = data.get("Financials") or {}
         provider_financial_period_count = sum(
@@ -173,7 +179,7 @@ async def sync_single_ticker_fundamentals(
         provider_shares_outstanding = _as_float(shares_stats.get("SharesOutstanding"))
 
         # 1. Company fundamentals cache
-        company_doc = parse_company_fundamentals(ticker_full, data)
+        company_doc = parse_company_fundamentals(ticker_full, data, raw_payload_hash=raw_payload_hash)
         company_doc["updated_at"] = now
         await db.company_fundamentals_cache.update_one(
             {"ticker": ticker_full},

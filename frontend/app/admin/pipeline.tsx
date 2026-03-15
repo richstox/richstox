@@ -1261,6 +1261,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 );
               })()}
 
+              {/* Price History completeness — inside Step 2 */}
+              {step.job_name === 'price_sync' && (
+                <View style={{ marginTop: 8, marginHorizontal: 4 }}>
+                  <View style={s.syncRow}>
+                    <View style={s.syncLabelRow}>
+                      <Text style={s.syncLabel}>Price History</Text>
+                      <Text style={s.syncCount}>
+                        {fmt(syncStatus.price_history_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
+                        {(syncStatus.price_history_pct !== undefined) ? `  ${syncStatus.price_history_pct}%` : ''}
+                      </Text>
+                    </View>
+                    <View style={s.syncBarBg}>
+                      <View style={[s.syncBarFill, {
+                        width: `${Math.min(syncStatus.price_history_pct ?? 0, 100)}%` as any,
+                        backgroundColor: (syncStatus.price_history_pct ?? 0) >= 100 ? '#22C55E' : '#10B981',
+                      }]} />
+                    </View>
+                    {(syncStatus.needs_price_redownload ?? 0) > 0 && (
+                      <Text style={s.syncQueueText}>
+                        ⚠ {fmt(syncStatus.needs_price_redownload)} pending re-download (splits)
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              )}
+
               {step.job_name === 'price_sync' && (
                 <View style={s.substepsCard}>
                   <Text style={s.substepsTitle}>Step 2 Sub-Steps</Text>
@@ -1428,6 +1454,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
+              {/* Fundamentals completeness — inside Step 3 */}
+              {step.job_name === 'fundamentals_sync' && (
+                <View style={{ marginTop: 8, marginHorizontal: 4 }}>
+                  <View style={s.syncRow}>
+                    <View style={s.syncLabelRow}>
+                      <Text style={s.syncLabel}>Fundamentals</Text>
+                      <Text style={s.syncCount}>
+                        {fmt(syncStatus.fundamentals_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
+                        {(syncStatus.fundamentals_pct !== undefined) ? `  ${syncStatus.fundamentals_pct}%` : ''}
+                      </Text>
+                    </View>
+                    <View style={s.syncBarBg}>
+                      <View style={[s.syncBarFill, {
+                        width: `${Math.min(syncStatus.fundamentals_pct ?? 0, 100)}%` as any,
+                        backgroundColor: (syncStatus.fundamentals_pct ?? 0) >= 100 ? '#22C55E' : '#F59E0B',
+                      }]} />
+                    </View>
+                    {(syncStatus.needs_fundamentals_refresh ?? 0) > 0 && (
+                      <Text style={s.syncQueueText}>
+                        🔄 {fmt(syncStatus.needs_fundamentals_refresh)} pending refresh (events)
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              )}
+
               {step.job_name === 'fundamentals_sync' && run?.details?.requested_event_types && (
                 <View style={s.substepsCard}>
                   <Text style={s.substepsTitle}>Step 3 input event types</Text>
@@ -1572,56 +1624,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         );
       })}
 
-      {/* Data Completeness Dashboard */}
+      {/* API Credits */}
       <View style={s.syncCard}>
-        <Text style={s.syncTitle}>Data Completeness</Text>
+        <Text style={s.syncTitle}>API Credits</Text>
 
-        {/* Price History */}
         <View style={s.syncRow}>
-          <View style={s.syncLabelRow}>
-            <Text style={s.syncLabel}>Price History</Text>
-            <Text style={s.syncCount}>
-              {fmt(syncStatus.price_history_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
-              {(syncStatus.price_history_pct !== undefined) ? `  ${syncStatus.price_history_pct}%` : ''}
-            </Text>
-          </View>
-          <View style={s.syncBarBg}>
-            <View style={[s.syncBarFill, {
-              width: `${Math.min(syncStatus.price_history_pct ?? 0, 100)}%` as any,
-              backgroundColor: (syncStatus.price_history_pct ?? 0) >= 100 ? '#22C55E' : '#10B981',
-            }]} />
-          </View>
-          {(syncStatus.needs_price_redownload ?? 0) > 0 && (
-            <Text style={s.syncQueueText}>
-              ⚠ {fmt(syncStatus.needs_price_redownload)} pending re-download (splits)
-            </Text>
-          )}
-        </View>
-
-        {/* Fundamentals */}
-        <View style={[s.syncRow, { marginTop: 10 }]}>
-          <View style={s.syncLabelRow}>
-            <Text style={s.syncLabel}>Fundamentals</Text>
-            <Text style={s.syncCount}>
-              {fmt(syncStatus.fundamentals_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
-              {(syncStatus.fundamentals_pct !== undefined) ? `  ${syncStatus.fundamentals_pct}%` : ''}
-            </Text>
-          </View>
-          <View style={s.syncBarBg}>
-            <View style={[s.syncBarFill, {
-              width: `${Math.min(syncStatus.fundamentals_pct ?? 0, 100)}%` as any,
-              backgroundColor: (syncStatus.fundamentals_pct ?? 0) >= 100 ? '#22C55E' : '#F59E0B',
-            }]} />
-          </View>
-          {(syncStatus.needs_fundamentals_refresh ?? 0) > 0 && (
-            <Text style={s.syncQueueText}>
-              🔄 {fmt(syncStatus.needs_fundamentals_refresh)} pending refresh (events)
-            </Text>
-          )}
-        </View>
-
-        {/* API Credits */}
-        <View style={[s.syncRow, { marginTop: 10 }]}>
           <View style={s.syncLabelRow}>
             <Text style={s.syncLabel}>API Credits Today</Text>
             <Text style={s.syncCount}>

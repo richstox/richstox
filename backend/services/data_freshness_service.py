@@ -65,6 +65,10 @@ async def _get_fundamentals_age(db) -> dict:
     month_ago = now - timedelta(days=30)
 
     pipeline = [
+        {"$match": {
+            "is_seeded": True,
+            "fundamentals_status": "complete",
+        }},
         {"$facet": {
             "total": [{"$count": "n"}],
             "fresh_7d": [
@@ -101,7 +105,7 @@ async def _get_fundamentals_age(db) -> dict:
         }}
     ]
 
-    result = await db.company_fundamentals_cache.aggregate(pipeline).to_list(1)
+    result = await db.tracked_tickers.aggregate(pipeline).to_list(1)
     r = result[0] if result else {}
 
     def _n(key: str) -> int:
