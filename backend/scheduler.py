@@ -364,12 +364,23 @@ async def _run_universe_seed_scheduled(db):
             }},
         )
 
+    async def _raw_total(raw_rows_total: int) -> None:
+        """Write raw total to sentinel as soon as all exchange symbols are fetched."""
+        await db.ops_job_runs.update_one(
+            {"_id": _doc_id},
+            {"$set": {
+                "raw_rows_total": raw_rows_total,
+                "details.raw_rows_total": raw_rows_total,
+            }},
+        )
+
     status = "failed"
     result: dict = {}
     try:
         result = await sync_ticker_whitelist(
             db, dry_run=False, job_run_id=job_id,
             progress_callback=_progress,
+            raw_total_callback=_raw_total,
         )
         status = "completed"
         logger.info(f"[scheduler] Universe Seed completed: {result.get('seeded_total', 0)} seeded")
