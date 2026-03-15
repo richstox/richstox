@@ -235,12 +235,9 @@ async def _enqueue_fundamentals_events(
                 },
                 {
                     "$setOnInsert": {
-                        "source": source_job,
                         # TODO: remove legacy source_job after downstream fundamentals processors/reports
                         # drop the dependency (track in scheduler ops backlog).
                         "source_job": source_job,
-                        "detector_step": detector_step,
-                        "detected_date": detected_date,
                         "created_at": now,
                     },
                     # Refresh metadata on every enqueue attempt to reflect the latest detector run.
@@ -255,10 +252,17 @@ async def _enqueue_fundamentals_events(
             )
         )
 
-    result = await db.fundamentals_events.bulk_write(ops, ordered=False)
-    new_inserts = len(result.upserted_ids or {})
-    skipped_existing = len(normalized) - new_inserts
+    ENQUEUE_BATCH_SIZE = 500
+    new_inserts = 0
+    for i in range(0, len(ops), ENQUEUE_BATCH_SIZE):
+        batch = ops[i:i + ENQUEUE_BATCH_SIZE]
+        try:
+            batch_result = await db.fundamentals_events.bulk_write(batch, ordered=False)
+            new_inserts += len(batch_result.upserted_ids or {})
+        except Exception as exc:
+            logger.error(f"_enqueue_fundamentals_events batch {i//ENQUEUE_BATCH_SIZE} failed: {exc}")
 
+    skipped_existing = len(normalized) - new_inserts
     return {"new_inserts": new_inserts, "skipped_existing": skipped_existing}
 
 
@@ -977,6 +981,8 @@ async def run_step2_event_detectors(
             "universe_count": split.get("universe_count", 0),
             "flagged_count": split.get("flagged_count", 0),
             "tickers_sample": split.get("tickers", [])[:10],
+            "dates_checked": split.get("dates_checked", []),
+            "verified_through_date": split.get("dates_checked", [])[-1] if split.get("dates_checked") else today_str,
             "fundamentals_events_enqueued_new": split_new,
             "fundamentals_events_enqueued_skipped_existing": split_skip,
         },
@@ -987,6 +993,8 @@ async def run_step2_event_detectors(
             "universe_count": dividend.get("universe_count", 0),
             "flagged_count": dividend.get("flagged_count", 0),
             "tickers_sample": dividend.get("tickers", [])[:10],
+            "dates_checked": dividend.get("dates_checked", []),
+            "verified_through_date": dividend.get("dates_checked", [])[-1] if dividend.get("dates_checked") else today_str,
             "fundamentals_events_enqueued_new": div_new,
             "fundamentals_events_enqueued_skipped_existing": div_skip,
         },
@@ -997,6 +1005,8 @@ async def run_step2_event_detectors(
             "universe_count": earnings.get("universe_count", 0),
             "flagged_count": earnings.get("flagged_count", 0),
             "tickers_sample": earnings.get("tickers", [])[:10],
+            "dates_checked": earnings.get("dates_checked", []),
+            "verified_through_date": earnings.get("dates_checked", [])[-1] if earnings.get("dates_checked") else today_str,
             "fundamentals_events_enqueued_new": earn_new,
             "fundamentals_events_enqueued_skipped_existing": earn_skip,
         },
