@@ -5366,23 +5366,6 @@ async def admin_manual_peer_medians(background_tasks: BackgroundTasks):
         },
     )
 
-@api_router.post("/admin/jobs/full-price-history-sync")
-async def admin_full_price_history_sync(background_tasks: BackgroundTasks):
-    """
-    Download complete EOD price history (IPO → today) for all visible tickers.
-    Runs cleanup first (removes data for invisible/delisted tickers).
-    Runs in background — poll /api/admin/jobs/full_price_history_sync/status.
-    Credits: ~1 per ticker (~6,435 credits total).
-    """
-    from full_sync_service import run_full_price_history_sync
-    background_tasks.add_task(run_full_price_history_sync, db, True)
-    return {
-        "status": "started",
-        "job_name": "full_price_history_sync",
-        "message": "Full price history download started in background.",
-    }
-
-
 @api_router.post("/admin/jobs/full-fundamentals-sync")
 async def admin_full_fundamentals_sync(background_tasks: BackgroundTasks):
     """

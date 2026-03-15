@@ -34,6 +34,7 @@ interface Step2SubStep {
   api_endpoint?: string;
   api_endpoints_all?: string[];
   dates_checked?: string[];
+  verified_through_date?: string;
   raw_count?: number;
   universe_count?: number;
   flagged_count?: number;
@@ -1355,6 +1356,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     {substepLastRunLabel && (
                       <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
                     )}
+                    {splitDetector.verified_through_date && (
+                      <Text style={s.substepLastRun}>Verified through: {splitDetector.verified_through_date}</Text>
+                    )}
                     <Text style={s.substepDesc}>Detects stock splits today. Flagged tickers need full price history re-download (adjusted prices change) and a fundamentals refresh.</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {splitDetector.api_endpoint || `https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date=${eventDetectors.today || todayStr}`}
@@ -1398,6 +1402,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     </View>
                     {substepLastRunLabel && (
                       <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
+                    )}
+                    {dividendDetector.verified_through_date && (
+                      <Text style={s.substepLastRun}>Verified through: {dividendDetector.verified_through_date}</Text>
                     )}
                     <Text style={s.substepDesc}>Detects ex-dividend events today. Flagged tickers need a full price history re-download and a fundamentals refresh (dividend yield, payout ratio).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
@@ -1443,6 +1450,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     {substepLastRunLabel && (
                       <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
                     )}
+                    {earningsDetector.verified_through_date && (
+                      <Text style={s.substepLastRun}>Verified through: {earningsDetector.verified_through_date}</Text>
+                    )}
                     <Text style={s.substepDesc}>Detects earnings reports due today. Flagged tickers need fundamentals refresh (EPS, revenue, guidance).</Text>
                     <Text style={s.substepEndpoint} numberOfLines={1}>
                       {earningsDetector.api_endpoint || `https://eodhd.com/api/calendar/earnings?from=${eventDetectors.today || todayStr}&to=${eventDetectors.today || todayStr}`}
@@ -1487,22 +1497,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.substepValue}>{fmt(count as number)}</Text>
                     </View>
                   ))}
-                </View>
-              )}
-
-              {/* Full Price History button — Step 2 only */}
-              {step.job_name === 'price_sync' && (
-                <View style={s.fullSyncBlock}>
-                  <View style={s.fullSyncInfo}>
-                    <Text style={s.fullSyncTitle}>Full Price History Download</Text>
-                    <Text style={s.fullSyncDesc}>
-                      Downloads complete EOD history (IPO → today) for all visible tickers.{'\n'}
-                      ~{fmt(safeCount(syncStatus.total_visible_tickers))} tickers · ~1 credit each · ~15 min
-                    </Text>
-                    <Text style={s.substepEndpoint} numberOfLines={1}>
-                      https://eodhd.com/api/eod/{'{'+'TICKER'+'}'}.US?fmt=json&period=d
-                    </Text>
-                  </View>
                 </View>
               )}
 
