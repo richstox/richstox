@@ -38,16 +38,20 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         {"$sort": {"started_at": -1}},
         {"$group": {
             "_id": "$job_name",
-            "status":           {"$first": "$status"},
-            "started_at":       {"$first": "$started_at"},
-            "finished_at":      {"$first": "$finished_at"},
-            "completed_at":     {"$first": "$completed_at"},
-            "duration_sec":     {"$first": "$duration_sec"},
-            "duration_seconds": {"$first": "$duration_seconds"},
-            "result":           {"$first": "$result"},
-            "details":          {"$first": "$details"},
-            "triggered_by":     {"$first": "$triggered_by"},
-            "raw_rows_total":   {"$first": "$raw_rows_total"},
+            "status":             {"$first": "$status"},
+            "started_at":         {"$first": "$started_at"},
+            "finished_at":        {"$first": "$finished_at"},
+            "completed_at":       {"$first": "$completed_at"},
+            "duration_sec":       {"$first": "$duration_sec"},
+            "duration_seconds":   {"$first": "$duration_seconds"},
+            "result":             {"$first": "$result"},
+            "details":            {"$first": "$details"},
+            "triggered_by":       {"$first": "$triggered_by"},
+            "raw_rows_total":     {"$first": "$raw_rows_total"},
+            "progress":           {"$first": "$progress"},
+            "progress_total":     {"$first": "$progress_total"},
+            "progress_processed": {"$first": "$progress_processed"},
+            "progress_pct":       {"$first": "$progress_pct"},
         }},
     ]
     docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
@@ -94,6 +98,13 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         doc["filtered_out_total_step1"] = result.get("filtered_out_total_step1") or None
         # Per-exchange raw counts before distinct deduplication (universe_seed only)
         doc["fetched_raw_per_exchange"] = result.get("fetched_raw_per_exchange") or None
+        # Seeded total from result or details — used by frontend for seededFromRun.
+        details = doc.get("details") or {}
+        if isinstance(details, dict):
+            _seeded = result.get("seeded_total")
+            if _seeded is None:
+                _seeded = details.get("seeded_total")
+            doc["seeded_total"] = _seeded
         last_runs[job_name] = doc
 
     return last_runs

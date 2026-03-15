@@ -2285,138 +2285,76 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 logger.error(f"{job_name}: Visibility recompute failed: {vis_error}")
         result["step3_visibility"] = step3_visibility
 
-        # ── Step 3.2: New ticker fundamentals qualification ──────────────
-        from visibility_rules import compute_visibility
-        from price_ingestion_service import backfill_ticker_prices
+        # ── Phase C: Download complete price history for VISIBLE tickers only ──
+        # Only tickers with is_visible == true AND (price_history_complete != true
+        # OR needs_price_redownload == true) get full EOD history downloaded.
+        # Uses _process_price_ticker from full_sync_service (handles split redownload).
+        from full_sync_service import _process_price_ticker
 
-        step32_stats = {
-            "tickers_targeted": 0,
-            "tickers_synced": 0,
-            "tickers_qualified": 0,
-            "tickers_not_qualified": 0,
-            "tickers_failed": 0,
-        }
-        qualified_for_backfill: List[str] = []
-
-        if result["status"] == "completed":
-            _step32_cursor = db.tracked_tickers.find(
-                {
-                    **STEP3_QUERY,
-                    "$or": [
-                        {"fundamentals_complete": {"$ne": True}},
-                        {"fundamentals_complete": {"$exists": False}},
-                    ],
-                },
-                {"_id": 0, "ticker": 1},
-            )
-            step32_tickers = [doc["ticker"] async for doc in _step32_cursor]
-            step32_stats["tickers_targeted"] = len(step32_tickers)
-
-            if not step32_tickers:
-                await _progress("3.2 New ticker fundamentals: 0 tickers to process")
-                logger.info(f"{job_name}: Step 3.2 — no tickers to process")
-            else:
-                total_32 = len(step32_tickers)
-                logger.info(f"{job_name}: Step 3.2 — processing {total_32} tickers")
-
-                for idx, ticker in enumerate(step32_tickers):
-                    if cancel_check and await cancel_check():
-                        result["status"] = "cancelled"
-                        result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-                        logger.info(f"{job_name}: Step 3.2 cancelled after {idx}/{total_32}")
-                        break
-
-                    # sync_single_ticker_fundamentals normalises the ticker internally
-                    sync_result = await sync_single_ticker_fundamentals(
-                        db, ticker, source_job="step3_2_new_ticker_qualification"
-                    )
-                    step32_stats["tickers_synced"] += 1
-
-                    if sync_result.get("success"):
-                        ticker_full_32 = ticker if ticker.endswith(".US") else f"{ticker}.US"
-                        ticker_doc = await db.tracked_tickers.find_one({"ticker": ticker_full_32})
-                        if ticker_doc:
-                            is_visible, _failed_reason = compute_visibility(ticker_doc)
-                            if is_visible:
-                                step32_stats["tickers_qualified"] += 1
-                                if not ticker_doc.get("price_history_complete"):
-                                    qualified_for_backfill.append(ticker)
-                            else:
-                                step32_stats["tickers_not_qualified"] += 1
-                        else:
-                            step32_stats["tickers_not_qualified"] += 1
-                    else:
-                        step32_stats["tickers_failed"] += 1
-
-                    done_32 = idx + 1
-                    if done_32 % 10 == 0 or done_32 == total_32:
-                        await _progress(
-                            f"3.2 New ticker fundamentals: {done_32}/{total_32} "
-                            f"(qualified: {step32_stats['tickers_qualified']}, "
-                            f"skipped: {step32_stats['tickers_not_qualified']}, "
-                            f"failed: {step32_stats['tickers_failed']})"
-                        )
-
-                    await asyncio.sleep(0.2)
-
-        result["step32_stats"] = step32_stats
-
-        # ── Step 3.3: Initial history backfill (qualified tickers only) ──
-        step33_stats = {
+        phase_c_stats = {
             "tickers_targeted": 0,
             "tickers_succeeded": 0,
             "tickers_failed": 0,
-            "total_records_upserted": 0,
+            "total_records": 0,
         }
 
-        if result["status"] == "completed" and qualified_for_backfill:
-            step33_stats["tickers_targeted"] = len(qualified_for_backfill)
-            total_33 = len(qualified_for_backfill)
-            logger.info(f"{job_name}: Step 3.3 — backfilling {total_33} tickers")
+        if result["status"] == "completed":
+            _phase_c_cursor = db.tracked_tickers.find(
+                {
+                    **STEP3_QUERY,
+                    "is_visible": True,
+                    "$or": [
+                        {"price_history_complete": {"$ne": True}},
+                        {"needs_price_redownload": True},
+                    ],
+                },
+                {"_id": 0, "ticker": 1, "needs_price_redownload": 1},
+            )
+            phase_c_tickers = [
+                (doc["ticker"], bool(doc.get("needs_price_redownload")))
+                async for doc in _phase_c_cursor
+            ]
+            phase_c_stats["tickers_targeted"] = len(phase_c_tickers)
 
-            for idx, ticker in enumerate(qualified_for_backfill):
-                if cancel_check and await cancel_check():
-                    result["status"] = "cancelled"
-                    result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-                    logger.info(f"{job_name}: Step 3.3 cancelled after {idx}/{total_33}")
-                    break
+            if not phase_c_tickers:
+                await _progress("Phase C price history: 0 visible tickers to backfill")
+                logger.info(f"{job_name}: Phase C — no visible tickers need price history")
+            else:
+                total_c = len(phase_c_tickers)
+                logger.info(f"{job_name}: Phase C — downloading price history for {total_c} visible tickers")
 
-                try:
-                    backfill_result = await backfill_ticker_prices(db, ticker)
-                    records = backfill_result.get("records_upserted", 0) if backfill_result else 0
-                    if records > 0:
-                        step33_stats["tickers_succeeded"] += 1
-                        step33_stats["total_records_upserted"] += records
-                        ticker_full_33 = ticker if ticker.endswith(".US") else f"{ticker}.US"
-                        await db.tracked_tickers.update_one(
-                            {"ticker": ticker_full_33},
-                            {"$set": {
-                                "price_history_complete": True,
-                                "price_history_status": "complete",
-                                "price_history_completed_at": datetime.now(timezone.utc),
-                                "needs_price_redownload": False,
-                                "updated_at": datetime.now(timezone.utc),
-                            }},
+                for idx, (ticker, needs_redownload) in enumerate(phase_c_tickers):
+                    if cancel_check and await cancel_check():
+                        result["status"] = "cancelled"
+                        result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+                        logger.info(f"{job_name}: Phase C cancelled after {idx}/{total_c}")
+                        break
+
+                    try:
+                        ph_result = await _process_price_ticker(
+                            db, ticker, job_name=job_name,
+                            needs_redownload=needs_redownload,
                         )
-                    else:
-                        step33_stats["tickers_failed"] += 1
-                except Exception as bf_err:
-                    step33_stats["tickers_failed"] += 1
-                    logger.warning(f"{job_name}: Step 3.3 backfill failed for {ticker}: {bf_err}")
+                        if ph_result.get("success"):
+                            phase_c_stats["tickers_succeeded"] += 1
+                            phase_c_stats["total_records"] += ph_result.get("records", 0)
+                        else:
+                            phase_c_stats["tickers_failed"] += 1
+                    except Exception as ph_err:
+                        phase_c_stats["tickers_failed"] += 1
+                        logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
 
-                done_33 = idx + 1
-                if done_33 % 10 == 0 or done_33 == total_33:
-                    await _progress(
-                        f"3.3 Initial history backfill: {done_33}/{total_33} "
-                        f"(✓{step33_stats['tickers_succeeded']} ✗{step33_stats['tickers_failed']})"
-                    )
+                    done_c = idx + 1
+                    if done_c % 10 == 0 or done_c == total_c:
+                        await _progress(
+                            f"Phase C price history: {done_c}/{total_c} "
+                            f"(✓{phase_c_stats['tickers_succeeded']} "
+                            f"✗{phase_c_stats['tickers_failed']})"
+                        )
 
-                await asyncio.sleep(0.15)
-        elif result["status"] == "completed":
-            await _progress("3.3 Initial history backfill: no tickers to backfill")
-            logger.info(f"{job_name}: Step 3.3 — no tickers to backfill")
+                    await asyncio.sleep(0.15)
 
-        result["step33_stats"] = step33_stats
+        result["phase_c_stats"] = phase_c_stats
 
         finished_at = datetime.now(timezone.utc)
         result["finished_at"] = finished_at.isoformat()
@@ -2431,10 +2369,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             f"Fundamentals sync: {result['success']}/{total_to_sync} done "
             f"(✓{result['success']} ✗{result['failed']})"
         )
-        if step32_stats["tickers_targeted"] or step33_stats["tickers_targeted"]:
+        if phase_c_stats["tickers_targeted"]:
             _done_msg += (
-                f" | New: qualified {step32_stats['tickers_qualified']}, "
-                f"backfilled {step33_stats['tickers_succeeded']}/{step33_stats['tickers_targeted']}"
+                f" | Price history: "
+                f"✓{phase_c_stats['tickers_succeeded']}/{phase_c_stats['tickers_targeted']}"
             )
 
         await db.ops_job_runs.update_one(
