@@ -6454,11 +6454,14 @@ async def admin_get_pipeline_exclusion_report(
     step1_counts = None
     if run_id and run_id.startswith("universe_seed_"):
         seed_run_doc = await db.ops_job_runs.find_one(
-            {"job_name": "universe_seed", "result.exclusion_report_run_id": run_id},
-            {"_id": 0, "result": 1},
+            {"job_name": "universe_seed", "$or": [
+                {"result.exclusion_report_run_id": run_id},
+                {"details.exclusion_report_run_id": run_id},
+            ]},
+            {"_id": 0, "result": 1, "details": 1},
         )
-        if seed_run_doc and seed_run_doc.get("result"):
-            r = seed_run_doc["result"]
+        if seed_run_doc:
+            r = seed_run_doc.get("result") or seed_run_doc.get("details") or {}
             dbg = r.get("universe_seed_debug") or {}
             step1_reconciliation = dbg.get("reconciliation")
             step1_counts = {
