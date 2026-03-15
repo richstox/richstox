@@ -114,14 +114,14 @@ class TestUniverseCountsFieldNames:
         assert any("Visible" in n for n in step_names), "No visible step in funnel"
 
     @pytest.mark.asyncio
-    async def test_funnel_has_exactly_4_steps(self):
+    async def test_funnel_has_exactly_3_steps(self):
         from services.universe_counts_service import get_universe_counts
 
         db = _make_mock_db()
         result = await get_universe_counts(db)
 
-        assert len(result["funnel_steps"]) == 4, (
-            f"Expected 4 funnel steps, got {len(result['funnel_steps'])}"
+        assert len(result["funnel_steps"]) == 3, (
+            f"Expected 3 funnel steps, got {len(result['funnel_steps'])}"
         )
 
     @pytest.mark.asyncio
@@ -237,23 +237,22 @@ class TestUniverseCountsClassifiedSubsetOfWithPrice:
         )
 
     @pytest.mark.asyncio
-    async def test_classified_uses_fundamentals_status_not_sector_industry(self):
+    async def test_step3_is_visible_universe(self):
         """
-        Verify that the classified funnel step reflects fundamentals_status=="complete",
-        not sector/industry presence. The canonical label is 'With Fundamentals'.
+        Verify that funnel step 3 reflects the visible universe
+        (fundamentals + visibility gates merged into one step).
         """
         from services.universe_counts_service import get_universe_counts
 
         db = _make_mock_db()
         result = await get_universe_counts(db)
 
-        classified_step = next(
+        visible_step = next(
             (s for s in result["funnel_steps"] if s["step"] == 3), None
         )
-        assert classified_step is not None, "Step 3 not found in funnel_steps"
-        assert "fundamentals" in classified_step["query"].lower() or \
-               "fundamentals" in classified_step["name"].lower(), (
-            f"Step 3 should reference fundamentals_status, got: {classified_step}"
+        assert visible_step is not None, "Step 3 not found in funnel_steps"
+        assert "visible" in visible_step["name"].lower(), (
+            f"Step 3 should reference visible universe, got: {visible_step}"
         )
 
 

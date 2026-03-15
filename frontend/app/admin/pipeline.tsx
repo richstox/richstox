@@ -83,17 +83,6 @@ interface OverviewData {
   pipeline_sync_status?: PipelineSyncStatus;
 }
 
-interface FundamentalsProgress {
-  total_queued: number;
-  pending: number;
-  processing: number;
-  complete: number;
-  error: number;
-  percentage: number;
-  run_active?: boolean;
-  run_id?: string;
-  zombies_reclaimed?: number;
-}
 
 interface PipelineExclusionRow {
   ticker: string;
@@ -273,17 +262,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); // chain run elapsed timer
-  const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
 
   // ── Step 1 universe seed progress ────────────────────────────────────────
   const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
 
   // ── Step 2 price sync progress ────────────────────────────────────────────
   const [step2Progress, setStep2Progress] = useState<{processed: number; total: number; pct: number; phase?: string; message?: string} | null>(null);
-
-  // ── Step 4 visibility recompute progress ─────────────────────────────────
-  const [step4Progress, setStep4Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
 
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
@@ -412,39 +396,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
-  const pollFundamentalsProgress = useCallback(async () => {
-    try {
-      const res = await authenticatedFetch(
-        `${API_URL}/api/admin/pipeline/fundamentals-progress`,
-        {},
-        sessionToken,
-      );
-      if (!res.ok) return;
-      const progress: FundamentalsProgress = await res.json();
-
-      // No active run — stop polling and preserve last known state.
-      // Covers both normal completion and post-cancel cleanup.
-      if (!progress.run_active || progress.total_queued === 0) {
-        if (fundProgressPollRef.current) {
-          clearInterval(fundProgressPollRef.current);
-          fundProgressPollRef.current = null;
-        }
-        return;
-      }
-
-      setFundamentalsProgress(progress);
-
-      // Queue fully drained — stop polling, preserve final state
-      if (progress.pending === 0 && progress.processing === 0) {
-        if (fundProgressPollRef.current) {
-          clearInterval(fundProgressPollRef.current);
-          fundProgressPollRef.current = null;
-        }
-      }
-    } catch { /* ignore transient poll errors */ }
-  }, [sessionToken]);
-
-
   const handleRunAudit = async () => {
     const raw = auditTicker.trim().toUpperCase();
     if (!raw) return;
@@ -473,8 +424,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const CHAIN_STEP_NAMES: Record<number, string> = {
     1: 'Universe Seed',
     2: 'Price Sync',
-    3: 'Fundamentals Sync',
-    4: 'Visible Universe',
+    3: 'Fundamentals & Visibility',
   };
 
    const handleRunFullPipeline = async () => {
@@ -686,7 +636,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const step1Filtered = byStep?.['Step 1 - Universe Seed'];
   const step2Filtered = byStep?.['Step 2 - Price Sync'];
   const step3Filtered = byStep?.['Step 3 - Fundamentals Sync'];
-  const step4Filtered = byStep?.['Step 4 - Visible Universe'];
 
   // s1In: total rows in Step 1 export = seeded + filtered = authoritative raw count.
   // Computed as seeded_count + step1Filtered so it matches the CSV row count exactly.
@@ -702,24 +651,22 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     : (exclusionReport?.step1_counts?.seeded_count as number | undefined) ?? seeded;
   const s2Out: number | undefined =
     s1Out !== undefined && step2Filtered !== undefined ? s1Out - step2Filtered : withPrice;
+  // Step 3 now includes fundamentals + visibility gates (merged old steps 3+4)
   const s3Out: number | undefined =
-    s2Out !== undefined && step3Filtered !== undefined ? s2Out - step3Filtered : withClass;
-  const s4Out: number | undefined =
-    s3Out !== undefined && step4Filtered !== undefined ? s3Out - step4Filtered : visible;
+    s2Out !== undefined && step3Filtered !== undefined ? s2Out - step3Filtered : visible;
 
   const JOB_OUTPUT: Record<string, number | undefined> = {
     universe_seed: s1Out,
     price_sync: s2Out,
     fundamentals_sync: s3Out,
-    compute_visible_universe: s4Out,
     peer_medians: visible,
   };
-  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'compute_visible_universe', 'peer_medians'].filter(j => {
+  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'peer_medians'].filter(j => {
     const r = jobRuns[j];
     const ok = r?.status === 'success' || r?.status === 'completed';
     return ok && (JOB_OUTPUT[j] === undefined || (JOB_OUTPUT[j] ?? 0) > 0);
   }).length;
-  const healthPct = Math.round((completedCount / 5) * 100);
+  const healthPct = Math.round((completedCount / 4) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
   const steps = [
@@ -770,7 +717,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     {
       step: 3,
       job_name: 'fundamentals_sync',
-      title: 'Fundamentals Sync',
+      title: 'Fundamentals & Visibility',
       schedule: 'After Step 2 completion',
       scheduledHour: 4,
       scheduledMinute: 30,
@@ -781,39 +728,21 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       inputCount: s2Out,
       outputCount: s3Out,
       droppedCount: step3Filtered,
-      outputLabel: 'classified',
+      outputLabel: 'visible',
       filters: [
         'EODHD returns no fundamentals (404)',
         'Sector missing or empty',
         'Industry missing or empty',
+        'Ticker is delisted',
+        'Shares outstanding missing or zero',
+        'Financial currency missing',
       ],
     },
     {
       step: 4,
-      job_name: 'compute_visible_universe',
-      title: 'Compute Visible Universe',
-      schedule: 'After Step 3 completion',
-      scheduledHour: 4,
-      scheduledMinute: 30,
-      icon: 'eye-outline' as const,
-      color: '#8B5CF6',
-      apiUrl: 'Local DB only — no external API',
-      inputLabel: 'Classified tickers',
-      inputCount: s3Out,
-      outputCount: s4Out,
-      droppedCount: step4Filtered,
-      outputLabel: 'visible',
-      filters: [
-        'is_delisted = true',
-        'shares_outstanding = 0 or missing',
-        'financial_currency missing',
-      ],
-    },
-    {
-      step: 5,
       job_name: 'peer_medians',
       title: 'Peer Medians',
-      schedule: 'After Step 4 completion',
+      schedule: 'After Step 3 completion',
       scheduledHour: 5,
       scheduledMinute: 30,
       icon: 'stats-chart-outline' as const,
@@ -843,7 +772,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     universe_seed: 1,
     price_sync: 2,
     fundamentals_sync: 3,
-    compute_visible_universe: 4,
   };
   // Chain icon override is active when a chain is running or just finished.
   const chainIconActive = chainRunning || chainStatus === 'completed' || isChainFailed || isChainCancelled;
@@ -956,7 +884,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         : isChainCancelled
         ? 'Cancelled'
         : chainCurrentStep !== null
-        ? `Running — Step ${chainCurrentStep}/4 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${formatElapsed(elapsedSeconds)}`
+        ? `Running — Step ${chainCurrentStep}/3 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${formatElapsed(elapsedSeconds)}`
         : 'Running…'}
     </Text>
   )}
@@ -1500,58 +1428,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {/* Full Fundamentals button — Step 3 only */}
-              {step.job_name === 'fundamentals_sync' && (
-                <View style={s.fullSyncBlock}>
-                  <View style={s.fullSyncInfo}>
-                    <Text style={s.fullSyncTitle}>Full Fundamentals Download</Text>
-                    <Text style={s.fullSyncDesc}>
-                      Downloads complete fundamentals for all queued tickers.{'\n'}
-                      ~{fmt(fundamentalsProgress?.total_queued ?? safeCount(syncStatus.total_visible_tickers))} tickers · ~10 credits each · ~20 min
-                    </Text>
-                    <Text style={s.substepEndpoint} numberOfLines={1}>
-                      https://eodhd.com/api/fundamentals/{'{'+'TICKER'+'}'}.US?fmt=json
-                    </Text>
-
-                    {/* Live / persisted fundamentals progress bar */}
-                    {fundamentalsProgress !== null && (
-                      <View style={s.fundProgressWrap}>
-                        {/* Header: percentage + total queued + zombies reset */}
-                        <View style={s.fundProgressHeaderRow}>
-                          <Text style={s.fundProgressPct}>
-                            {fundamentalsProgress.percentage}%
-                          </Text>
-                          <Text style={s.fundProgressTotal}>
-                            {fmt(fundamentalsProgress.total_queued)} queued
-                            {(fundamentalsProgress.zombies_reclaimed ?? 0) > 0
-                              ? ` · ${fmt(fundamentalsProgress.zombies_reclaimed)} reset` : ''}
-                          </Text>
-                        </View>
-                        {/* Progress bar */}
-                        <View style={s.fundProgressBarBg}>
-                          <View style={[
-                            s.fundProgressBarFill,
-                            { width: `${Math.min(fundamentalsProgress.percentage, 100)}%` as any },
-                          ]} />
-                        </View>
-                        {/* State counts */}
-                        <View style={s.fundProgressCountRow}>
-                          <Text style={s.fundProgressCounts}>
-                            {fmt(fundamentalsProgress.complete)} done
-                            {fundamentalsProgress.processing > 0
-                              ? ` · ${fmt(fundamentalsProgress.processing)} active` : ''}
-                            {fundamentalsProgress.pending > 0
-                              ? ` · ${fmt(fundamentalsProgress.pending)} pending` : ''}
-                            {fundamentalsProgress.error > 0
-                              ? ` · ${fmt(fundamentalsProgress.error)} errors` : ''}
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-
-                  </View>
-                </View>
-              )}
 
               {/* Per-ticker Fundamentals Audit — Step 3 only */}
               {step.job_name === 'fundamentals_sync' && (
@@ -1654,22 +1530,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {/* Step 4 visibility recompute progress */}
-              {step.job_name === 'compute_visible_universe' && step4Progress !== null && (
-                <View style={s.step4ProgressWrap}>
-                  <View style={s.step4ProgressBarBg}>
-                    <View style={[s.step4ProgressBarFill, {
-                      width: `${Math.min(step4Progress.pct, 100)}%` as any,
-                    }]} />
-                  </View>
-                  <View style={s.step4ProgressRow}>
-                    <Text style={s.step4ProgressLabel}>Visibility recompute</Text>
-                    <Text style={s.step4ProgressValue}>
-                      {fmt(step4Progress.processed)} / {fmt(step4Progress.total)} · {step4Progress.pct}%
-                    </Text>
-                  </View>
-                </View>
-              )}
 
               {/* Expand Filter Details */}
               <TouchableOpacity style={s.expandBtn} onPress={() => toggleExpand(step.step)}>
@@ -1905,20 +1765,6 @@ const s = StyleSheet.create({
   mockBadgeText: { fontSize: 8, fontWeight: '700', color: '#F59E0B' },
   substepLastRun: { fontSize: 9, color: COLORS.textMuted, marginBottom: 3, fontStyle: 'italic' },
   catchupBadge: { fontSize: 9, color: '#6366F1', marginBottom: 4, fontStyle: 'italic' },
-
-  fullSyncBlock: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  fullSyncInfo: { flex: 1 },
-  fullSyncTitle: { fontSize: 11, fontWeight: '700', color: COLORS.text, marginBottom: 2 },
-  fullSyncDesc: { fontSize: 10, color: COLORS.textMuted, lineHeight: 14 },
-
-  fundProgressWrap: { marginTop: 8, marginBottom: 4 },
-  fundProgressHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  fundProgressBarBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 4 },
-  fundProgressBarFill: { height: 6, borderRadius: 3, backgroundColor: '#F59E0B' },
-  fundProgressCountRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  fundProgressPct: { fontSize: 12, fontWeight: '700', color: '#F59E0B', minWidth: 36 },
-  fundProgressTotal: { fontSize: 10, color: COLORS.textMuted },
-  fundProgressCounts: { fontSize: 10, color: COLORS.textMuted, flex: 1 },
 
   // ── Per-ticker audit panel ──────────────────────────────────────────────
   auditCard: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },

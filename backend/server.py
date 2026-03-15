@@ -5256,7 +5256,7 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
     """
     # Pipeline steps must only be run via the full sequential chain.
     # Note: universe_seed, price_sync, and fundamentals_sync are blocked in their
-    # own dedicated endpoints above. recompute_visibility_all (Step 4) is
+    # own dedicated endpoints above. recompute_visibility_all (visibility recompute) is
     # accessible via this generic endpoint, so it is blocked here.
     _PIPELINE_STEP_JOBS = {"recompute_visibility_all"}
     if job_name in _PIPELINE_STEP_JOBS:
@@ -5269,18 +5269,18 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
         )
     from parallel_batch_service import run_scheduled_backfill_all_prices
     from visibility_rules import recompute_visibility_all, clean_zombie_tickers, recompute_visibility_with_zombie_cleanup
-    from scheduler_service import save_step4_exclusion_report as _save_step4_exclusion_report
+    from scheduler_service import save_step3_visibility_exclusion_report as _save_step3_vis_report
 
     async def _recompute_visibility_and_report(database):
-        """Run recompute_visibility_all then regenerate Step 4 exclusion report."""
+        """Run recompute_visibility_all then regenerate Step 3 visibility exclusion report."""
         result = await recompute_visibility_all(database, parent_run_id=None)
-        now_step4 = datetime.now(timezone.utc)
-        step4_report = await _save_step4_exclusion_report(database, now_step4)
-        result["step4_exclusion_report"] = {
-            "rows_written": step4_report.get("step4_exclusion_rows", 0),
-            "_debug":       step4_report.get("_debug", {}),
+        now_vis = datetime.now(timezone.utc)
+        vis_report = await _save_step3_vis_report(database, now_vis)
+        result["step3_visibility_exclusion_report"] = {
+            "rows_written": vis_report.get("visibility_exclusion_rows", 0),
+            "_debug":       vis_report.get("_debug", {}),
         }
-        result["exclusion_report_run_id"] = step4_report.get("exclusion_report_run_id")
+        result["exclusion_report_run_id"] = vis_report.get("exclusion_report_run_id")
         return result
 
     JOB_RUNNERS = {
@@ -5365,22 +5365,6 @@ async def admin_manual_peer_medians(background_tasks: BackgroundTasks):
             "message": "Individual step execution is disabled. Use the full sequential pipeline run (Run Full Pipeline Now).",
         },
     )
-
-@api_router.post("/admin/jobs/full-fundamentals-sync")
-async def admin_full_fundamentals_sync(background_tasks: BackgroundTasks):
-    """
-    Download complete fundamentals for all visible tickers.
-    Runs cleanup first (removes data for invisible/delisted tickers).
-    Runs in background — poll /api/admin/jobs/full_fundamentals_sync/status.
-    Credits: ~10 per ticker (~64,350 credits total).
-    """
-    from full_sync_service import run_full_fundamentals_sync
-    background_tasks.add_task(run_full_fundamentals_sync, db, True)
-    return {
-        "status": "started",
-        "job_name": "full_fundamentals_sync",
-        "message": "Full fundamentals download started in background.",
-    }
 
 
 @api_router.post("/admin/jobs/{job_name}/cancel")
@@ -7046,82 +7030,6 @@ async def admin_get_pipeline_exclusion_report(
     }
 
 
-@api_router.get("/admin/pipeline/fundamentals-progress")
-async def admin_get_fundamentals_progress():
-    """
-    Return live progress counts for the active fundamentals sync run.
-
-    Uses the run_id architecture:
-      1. Read active_fundamentals_run from ops_config to get the current run_id.
-         If no active run exists, return zeros with run_active=False.
-      2. Aggregate tracked_tickers WHERE fundamentals_run_id == active_run_id.
-         This set is stable — tickers tagged at job start are never un-tagged,
-         so total_queued is fixed and complete grows as workers finish.
-      3. Any fundamentals_status value outside {"processing","complete","error"}
-         (including null/missing or legacy strings) is normalised to "pending".
-    """
-    _KNOWN_STATUSES = {"processing", "complete", "error"}
-
-    # ── Resolve active run ────────────────────────────────────────────────────
-    run_doc = await db.ops_config.find_one({"key": "active_fundamentals_run"})
-    if not run_doc:
-        return {
-            "total_queued": 0, "pending": 0, "processing": 0,
-            "complete": 0, "error": 0, "percentage": 0,
-            "run_active": False,
-        }
-
-    active_run_id: str = run_doc["run_id"]
-    zombies_reclaimed: int = run_doc.get("zombies_reclaimed", 0)
-
-    # ── Aggregate by normalised status for this run ───────────────────────────
-    agg_pipeline = [
-        {"$match": {"fundamentals_run_id": active_run_id}},
-        {
-            "$group": {
-                "_id": {
-                    "$let": {
-                        "vars": {
-                            "raw": {"$ifNull": ["$fundamentals_status", "pending"]}
-                        },
-                        "in": {
-                            "$switch": {
-                                "branches": [
-                                    {"case": {"$eq": ["$$raw", "processing"]}, "then": "processing"},
-                                    {"case": {"$eq": ["$$raw", "complete"]},   "then": "complete"},
-                                    {"case": {"$eq": ["$$raw", "error"]},      "then": "error"},
-                                ],
-                                "default": "pending",
-                            }
-                        },
-                    }
-                },
-                "count": {"$sum": 1},
-            }
-        },
-    ]
-
-    counts: Dict[str, int] = {"pending": 0, "processing": 0, "complete": 0, "error": 0}
-    async for doc in db.tracked_tickers.aggregate(agg_pipeline):
-        bucket = doc["_id"] if doc["_id"] in _KNOWN_STATUSES else "pending"
-        counts[bucket] += doc["count"]
-
-    total_queued = counts["pending"] + counts["processing"] + counts["complete"] + counts["error"]
-    percentage = round(counts["complete"] / total_queued * 100) if total_queued > 0 else 0
-
-    return {
-        "total_queued":     total_queued,
-        "pending":          counts["pending"],
-        "processing":       counts["processing"],
-        "complete":         counts["complete"],
-        "error":            counts["error"],
-        "percentage":       percentage,
-        "run_active":       True,
-        "run_id":           active_run_id,
-        "zombies_reclaimed": zombies_reclaimed,
-    }
-
-
 @api_router.get("/admin/pipeline/fundamentals-health")
 async def admin_fundamentals_health():
     """
@@ -7298,17 +7206,15 @@ async def admin_pipeline_funnel_gap(
     report_date: str = Query(None, description="Report date YYYY-MM-DD (defaults to latest)"),
 ):
     """
-    Identify tickers that appear in the Step 4 classified universe but are
+    Identify tickers that appear in the classified universe but are
     unaccounted for in the pipeline exclusion report — i.e. the 'ghost' gap
-    between recompute_visibility_all denominator (5858) and the exclusion-report
-    arithmetic chain (5852).
+    between classified count and the exclusion-report arithmetic chain.
 
     Returns:
-      - classified_count   : count(STEP3_QUERY + sector + industry)  [Step 4 denominator]
+      - classified_count   : count(classified query)
       - report_step3_count : distinct tickers in pipeline_exclusion_report Step 3 rows
-      - report_step4_count : distinct tickers in pipeline_exclusion_report Step 4 rows
       - visible_count      : count(is_visible=True) in classified universe
-      - gap_tickers        : classified tickers NOT in (visible ∪ step3_report ∪ step4_report)
+      - gap_tickers        : classified tickers NOT in (visible ∪ step3_report)
       - gap_count          : len(gap_tickers)
     """
     from zoneinfo import ZoneInfo as _ZoneInfo
@@ -7340,19 +7246,14 @@ async def admin_pipeline_funnel_gap(
         await db.tracked_tickers.distinct("ticker", {**_CLASSIFIED_QUERY, "is_visible": True})
     )
 
-    # Sets from exclusion report for this date
+    # Sets from exclusion report for this date (all Step 3 rows including visibility gates)
     step3_reported: set = set(
         await db.pipeline_exclusion_report.distinct(
             "ticker", {"report_date": report_date, "step": "Step 3 - Fundamentals Sync"}
         )
     )
-    step4_reported: set = set(
-        await db.pipeline_exclusion_report.distinct(
-            "ticker", {"report_date": report_date, "step": "Step 4 - Visible Universe"}
-        )
-    )
 
-    accounted = visible_tickers | step3_reported | step4_reported
+    accounted = visible_tickers | step3_reported
     gap_tickers = sorted(classified_tickers - accounted)
 
     # Fetch name for each gap ticker for readability
@@ -7372,7 +7273,6 @@ async def admin_pipeline_funnel_gap(
         "classified_count": len(classified_tickers),
         "visible_count": len(visible_tickers),
         "report_step3_count": len(step3_reported),
-        "report_step4_count": len(step4_reported),
         "accounted_count": len(accounted & classified_tickers),
         "gap_count": len(gap_tickers),
         "gap_tickers": gap_docs,
@@ -7395,8 +7295,7 @@ async def admin_pipeline_export_step(
             Seeded set and exclusion reasons are also run-scoped.
             Supports ?run_id= param; defaults to latest run.
     Step 2: input has_price_data tickers + Step 2 exclusion report.
-    Step 3: input classified tickers + Step 3 exclusion report.
-    Step 4: input classified tickers + Step 4 exclusion report / is_visible.
+    Step 3: input classified tickers + Step 3 exclusion report (incl. visibility gates).
     """
     from fastapi.responses import StreamingResponse as _SR
     from fastapi import HTTPException as _HTTPException
@@ -7405,14 +7304,9 @@ async def admin_pipeline_export_step(
 
     _SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock"}
     _STEP3_QUERY = {**_SEED_QUERY, "has_price_data": True}
-    _STEP4_QUERY = {
-        **_STEP3_QUERY,
-        "sector":   {"$nin": [None, ""]},
-        "industry": {"$nin": [None, ""]},
-    }
 
-    if step_number not in (1, 2, 3, 4):
-        raise _HTTPException(status_code=400, detail="step_number must be 1, 2, 3 or 4")
+    if step_number not in (1, 2, 3):
+        raise _HTTPException(status_code=400, detail="step_number must be 1, 2, or 3")
 
     output = _io.StringIO()
     writer = _csv.writer(output, quoting=_csv.QUOTE_ALL)
@@ -7490,11 +7384,10 @@ async def admin_pipeline_export_step(
                         or _excl.get(code_norm)
                         or "Filtered"])
 
-    else:  # step_number in (2, 3, 4)
+    else:  # step_number in (2, 3)
         _STEP_META: Dict[int, tuple] = {
             2: ("Step 2 - Price Sync",        "price_sync"),
             3: ("Step 3 - Fundamentals Sync",  "fundamentals_sync"),
-            4: ("Step 4 - Visible Universe",   "compute_visible_universe"),
         }
         _step_label, _step_job = _STEP_META[step_number]
 
@@ -7521,10 +7414,9 @@ async def admin_pipeline_export_step(
                     f"with details.exclusion_report_run_id={run_id}. "
                     "Run the full pipeline once with current version deployed."])
             else:
-                # Walk the parent chain to resolve s1/s2/s3 run_ids.
+                # Walk the parent chain to resolve s1/s2 run_ids.
                 _s1_run_id: Optional[str] = None
                 _s2_run_id: Optional[str] = None
-                _s3_run_id: Optional[str] = None
 
                 if step_number == 2:
                     _s1_run_id = _jdoc.get("details", {}).get("parent_run_id")
@@ -7537,22 +7429,6 @@ async def admin_pipeline_export_step(
                             {"_id": 0, "details.parent_run_id": 1},
                         )
                         _s1_run_id = (_s2jdoc or {}).get("details", {}).get("parent_run_id")
-                elif step_number == 4:
-                    _s3_run_id = _jdoc.get("details", {}).get("parent_run_id")
-                    if _s3_run_id:
-                        _s3jdoc = await db.ops_job_runs.find_one(
-                            {"job_name": "fundamentals_sync",
-                             "details.exclusion_report_run_id": _s3_run_id},
-                            {"_id": 0, "details.parent_run_id": 1},
-                        )
-                        _s2_run_id = (_s3jdoc or {}).get("details", {}).get("parent_run_id")
-                    if _s2_run_id:
-                        _s2jdoc2 = await db.ops_job_runs.find_one(
-                            {"job_name": "price_sync",
-                             "details.exclusion_report_run_id": _s2_run_id},
-                            {"_id": 0, "details.parent_run_id": 1},
-                        )
-                        _s1_run_id = (_s2jdoc2 or {}).get("details", {}).get("parent_run_id")
 
                 if not _s1_run_id:
                     writer.writerow(["(chain broken)", "",
@@ -7573,13 +7449,6 @@ async def admin_pipeline_export_step(
                     if step_number >= 3 and _s2_run_id:
                         async for edoc in db.pipeline_exclusion_report.find(
                             {"run_id": _s2_run_id, "step": "Step 2 - Price Sync"},
-                            {"_id": 0, "ticker": 1},
-                        ):
-                            _input.discard(edoc["ticker"])
-
-                    if step_number >= 4 and _s3_run_id:
-                        async for edoc in db.pipeline_exclusion_report.find(
-                            {"run_id": _s3_run_id, "step": "Step 3 - Fundamentals Sync"},
                             {"_id": 0, "ticker": 1},
                         ):
                             _input.discard(edoc["ticker"])
@@ -7618,8 +7487,9 @@ async def admin_pipeline_export_step(
 @api_router.post("/admin/pipeline/run-full-now")
 async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
     """
-    Run the full Step 1→4 pipeline chain immediately, exactly like the scheduler.
+    Run the full Step 1→3 pipeline chain immediately, exactly like the scheduler.
     Each step receives the exact parent_run_id from the preceding step.
+    Step 3 includes fundamentals sync + visibility recompute.
     Returns a chain_run_id — use it to poll /chain-status/<id> and download
     /export/full?chain_run_id=<id>.
     Auth: AdminAuthMiddleware.
@@ -7664,7 +7534,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         })
 
         step_run_ids: Dict[str, Optional[str]] = {
-            "step1": None, "step2": None, "step3": None, "step4": None
+            "step1": None, "step2": None, "step3": None, "step3_visibility": None
         }
         chain_status = "completed"
         chain_error: Optional[str] = None
@@ -7849,7 +7719,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 chain_status = "cancelled"
                 raise Exception("cancelled")
 
-            # ── Step 3 (auto-chains Step 4 internally) ────────────────────────
+            # ── Step 3 (includes visibility recompute) ───────────────────────
             s3_result = await run_fundamentals_changes_sync(
                 db, ignore_kill_switch=True, parent_run_id=s2_run_id,
                 cancel_check=_cancelled,
@@ -7858,25 +7728,25 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 chain_status = "cancelled"
                 raise Exception("cancelled")
             s3_run_id: Optional[str] = s3_result.get("exclusion_report_run_id")
-            # Step 4 exclusion_report_run_id is set by the Step 3 auto-chain.
-            s4_run_id: Optional[str] = s3_result.get("step4_exclusion_report_run_id")
+            # Visibility exclusion_report_run_id is set by the Step 3 visibility recompute.
+            s3_vis_run_id: Optional[str] = s3_result.get("step3_visibility_exclusion_report_run_id")
 
             # Chain robustness: verify Step 3 produced a usable run_id.
             if not s3_run_id:
                 raise RuntimeError("Step 3 run record not found (exclusion_report_run_id missing)")
 
             step_run_ids["step3"] = s3_run_id
-            step_run_ids["step4"] = s4_run_id
+            step_run_ids["step3_visibility"] = s3_vis_run_id
             await db.pipeline_chain_runs.update_one(
                 {"chain_run_id": chain_id},
                 {"$set": {
                     "step_run_ids.step3": s3_run_id,
-                    "step_run_ids.step4": s4_run_id,
+                    "step_run_ids.step3_visibility": s3_vis_run_id,
                     "status": "step3_done",
                 }},
             )
-            logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, Step 4: {s4_run_id}")
-            last_completed_step = 4 if s4_run_id else 3
+            logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, visibility: {s3_vis_run_id}")
+            last_completed_step = 3
 
         except Exception as exc:
             if chain_status != "cancelled":
@@ -7884,10 +7754,10 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             chain_error = str(exc) if chain_status != "cancelled" else None
             if chain_failed_step is None and chain_status == "failed":
                 # Fallback inference for unexpected failures not caught above.
-                # Step 2 handler sets failed_step explicitly; Steps 1/3/4/post-run rely on this branch.
+                # Step 2 handler sets failed_step explicitly; Steps 1/3/post-run rely on this branch.
                 if last_completed_step == 0:
                     chain_failed_step = 1
-                elif last_completed_step < 4:
+                elif last_completed_step < 3:
                     chain_failed_step = last_completed_step + 1
                 else:
                     logger.warning(
@@ -7936,7 +7806,7 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     # Derive current_step, steps_done, failed_step for UI live progress.
     _status = doc.get("status")
     _srids = doc.get("step_run_ids", {})
-    _steps_done = [i for i, k in enumerate(("step1", "step2", "step3", "step4"), 1) if _srids.get(k)]
+    _steps_done = [i for i, k in enumerate(("step1", "step2", "step3"), 1) if _srids.get(k)]
     _current_step: Optional[int] = None
     _failed_step: Optional[int] = None
     if _status == "running":
@@ -7946,11 +7816,11 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     elif _status == "step2_done":
         _current_step = 3
     elif _status == "step3_done":
-        _current_step = 4
+        _current_step = None  # Step 3 is the last step; chain is effectively complete
     elif _status == "failed":
         _failed_step = next(
-            (i for i, k in enumerate(("step1", "step2", "step3", "step4"), 1) if not _srids.get(k)),
-            4,
+            (i for i, k in enumerate(("step1", "step2", "step3"), 1) if not _srids.get(k)),
+            3,
         )
     doc["current_step"] = _current_step
     doc["steps_done"] = _steps_done
@@ -7965,7 +7835,7 @@ async def admin_pipeline_chain_cancel(chain_run_id: str):
     doc = await db.pipeline_chain_runs.find_one({"chain_run_id": chain_run_id}, {"status": 1})
     if not doc:
         raise _HEc(status_code=404, detail=f"chain_run_id not found: {chain_run_id}")
-    _active = {"running", "step1_done", "step2_done", "step3_done"}
+    _active = {"running", "step1_done", "step2_done"}
     if doc.get("status") not in _active:
         raise _HEc(status_code=400, detail=f"Chain is not running (status={doc.get('status')})")
     await db.pipeline_chain_runs.update_one(
@@ -8011,11 +7881,10 @@ async def admin_pipeline_export_full(
         "step1": "Step 1 - Universe Seed",
         "step2": "Step 2 - Price Sync",
         "step3": "Step 3 - Fundamentals Sync",
-        "step4": "Step 4 - Visible Universe",
     }
 
     # Preload exclusion reasons per step — one query each (O(n) total).
-    _excl: Dict[str, Dict[str, str]] = {"step1": {}, "step2": {}, "step3": {}, "step4": {}}
+    _excl: Dict[str, Dict[str, str]] = {"step1": {}, "step2": {}, "step3": {}}
     for _sk, _label in _STEP_LABELS.items():
         _rid = sids.get(_sk)
         if not _rid:
@@ -8025,6 +7894,15 @@ async def admin_pipeline_export_full(
             {"_id": 0, "ticker": 1, "reason": 1},
         ):
             _excl[_sk][edoc["ticker"]] = edoc["reason"]
+
+    # Also load step3 visibility exclusion rows (different run_id, same step label)
+    _s3_vis_rid = sids.get("step3_visibility")
+    if _s3_vis_rid:
+        async for edoc in db.pipeline_exclusion_report.find(
+            {"run_id": _s3_vis_rid, "step": "Step 3 - Fundamentals Sync"},
+            {"_id": 0, "ticker": 1, "reason": 1},
+        ):
+            _excl["step3"].setdefault(edoc["ticker"], edoc["reason"])
 
     output = _io2.StringIO()
     writer = _csv2.writer(output, quoting=_csv2.QUOTE_ALL)
@@ -8068,7 +7946,7 @@ async def admin_pipeline_export_full(
         # occurrences of the code, not the first occurrence we are outputting now.
         _out_step:   Optional[str] = None
         _out_reason: Optional[str] = None
-        for _sk in ("step1", "step2", "step3", "step4"):
+        for _sk in ("step1", "step2", "step3"):
             _r = _excl[_sk].get(ticker_us)
             if _r is not None:
                 if _sk == "step1" and isinstance(_r, str) and _r.startswith(DUPLICATE_REASON_PREFIX):

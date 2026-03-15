@@ -73,11 +73,11 @@ cd frontend && yarn lint
 The data pipeline runs nightly (cron) and can be triggered manually from the Admin panel (`/admin` → Pipeline).
 
 ### Prefer "Run full"
-- **Run full** (`POST /api/admin/pipeline/run-full-now`) executes Steps 1–4 end-to-end in a single audited run.
+- **Run full** (`POST /api/admin/pipeline/run-full-now`) executes Steps 1–3 end-to-end in a single audited run.
 - Use this for any production data refresh. A `run_id` ties all steps together for auditability.
 
 ### Per-step runs (Advanced / debug only)
-- Steps 1–4 can be triggered individually via the "Advanced" section in the Admin pipeline panel.
+- Steps 1–3 can be triggered individually via the "Advanced" section in the Admin pipeline panel.
 - Intended for targeted debugging — **not** for production refreshes.
 - If a full chain is already running, per-step endpoints return **HTTP 409** (busy).
 
