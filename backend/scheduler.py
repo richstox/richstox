@@ -118,9 +118,6 @@ PRICE_SYNC_MINUTE = 0
 FUNDAMENTALS_SYNC_HOUR = 4
 FUNDAMENTALS_SYNC_MINUTE = 30
 
-BACKFILL_HOUR = 4
-BACKFILL_MINUTE = 45
-
 # NEW: Parallel backfill all prices at 05:00
 BACKFILL_ALL_HOUR = 5
 BACKFILL_ALL_MINUTE = 0
@@ -450,7 +447,6 @@ async def scheduler_loop():
     logger.info(f"  {PRICE_SYNC_HOUR:02d}:{PRICE_SYNC_MINUTE:02d} - Daily price sync (bulk)")
     logger.info(f"  {SP500TR_UPDATE_HOUR:02d}:{SP500TR_UPDATE_MINUTE:02d} - SP500TR benchmark update")
     logger.info(f"  {FUNDAMENTALS_SYNC_HOUR:02d}:{FUNDAMENTALS_SYNC_MINUTE:02d} - Fundamentals sync")
-    logger.info(f"  {BACKFILL_HOUR:02d}:{BACKFILL_MINUTE:02d} - Price backfill (gaps)")
     logger.info(f"  {KEY_METRICS_HOUR:02d}:{KEY_METRICS_MINUTE:02d} - Key Metrics + Peer Medians")
     logger.info(f"  {PAIN_CACHE_HOUR:02d}:{PAIN_CACHE_MINUTE:02d} - PAIN cache refresh")
     logger.info(f"  {ADMIN_REPORT_HOUR:02d}:{ADMIN_REPORT_MINUTE:02d} - Admin Report")
@@ -526,7 +522,6 @@ async def scheduler_loop():
     from scheduler_service import (
         run_daily_price_sync,
         run_fundamentals_changes_sync,
-        run_price_backfill_gaps,
         get_scheduler_enabled,
     )
     from parallel_batch_service import run_scheduled_backfill_all_prices
@@ -640,13 +635,6 @@ async def scheduler_loop():
                     db,
                 )
                 last_run["fundamentals_sync"] = today_str
-                await set_last_run_state(last_run)
-            
-            # Backfill gaps at 04:45 (catch-up enabled)
-            if should_run("backfill", BACKFILL_HOUR, BACKFILL_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering backfill_gaps (hour={current_hour}, scheduled={BACKFILL_HOUR}:{BACKFILL_MINUTE:02d})")
-                await run_job_with_retry("backfill_gaps", run_price_backfill_gaps, db)
-                last_run["backfill"] = today_str
                 await set_last_run_state(last_run)
             
             # BACKFILL_ALL: MANUAL ONLY by default

@@ -1027,16 +1027,12 @@ async def run_daily_price_sync(
     cancel_check: Optional[Callable[[], Awaitable[bool]]] = None,
 ) -> Dict[str, Any]:
     """
-    Run daily price sync job with GAP DETECTION AND BULK CATCHUP.
+    Run daily price sync job with BULK CATCHUP.
 
     Phases:
     - Phase A: bulk last-day catchup → set has_price_data flags; track progress.
     - Phase B: detect splits/dividends/earnings since last check → set needs_* flags.
     - Phase C: download adjusted price history for split/dividend tickers.
-
-    Config read from ops_config:
-    - lookback_days (default: 30)
-    - coverage_threshold (default: 0.80)
 
     parent_run_id: exclusion_report_run_id of the preceding universe_seed run.
     chain_run_id: chain identifier shared across all steps in the pipeline run.
@@ -1177,7 +1173,7 @@ async def run_daily_price_sync(
         )
 
         await _progress(
-            "2.1 Detecting price gaps (last 30 days)…",
+            "2.1 Fetching latest prices (bulk)…",
             processed=0,
             total=progress_total_step2,
             phase="2.1_bulk_catchup",
@@ -1373,8 +1369,6 @@ async def run_daily_price_sync(
                 "progress_total": seeded_total,
                 "progress_pct": min(round(100 * with_price / seeded_total), 100) if seeded_total else 0,
                 "details": {
-                    "config": result.get("config"),
-                    "gap_analysis": result.get("gap_analysis"),
                     "dates_processed": result.get("dates_processed", 0),
                     "records_upserted": result.get("records_upserted", 0),
                     "tickers_seeded_total": result.get("tickers_seeded_total", 0),
@@ -2361,164 +2355,6 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         }
 
 
-async def get_tickers_needing_backfill(db, limit: int = 100) -> List[str]:
-    """
-    Get tickers that need price backfill.
-    
-    Returns tickers that:
-    1. Are active (have fundamentals) but no price data
-    2. Have detected price gaps
-    3. Have corporate actions requiring price refresh (splits, etc.)
-    """
-    tickers_to_backfill = []
-    
-    # 1. Active tickers without price data
-    active_tickers = await db.company_fundamentals_cache.distinct("ticker")
-    tickers_with_prices = await db.stock_prices.distinct("ticker")
-    tickers_with_prices_set = set(tickers_with_prices)
-    
-    missing_prices = [t for t in active_tickers if t not in tickers_with_prices_set]
-    tickers_to_backfill.extend(missing_prices[:limit])
-    
-    if len(tickers_to_backfill) >= limit:
-        return tickers_to_backfill[:limit]
-    
-    # 2. Tickers with detected data gaps (price field)
-    remaining = limit - len(tickers_to_backfill)
-    gaps = await db.data_gaps.find(
-        {"missing_price": True, "resolved": {"$ne": True}},
-        {"ticker": 1}
-    ).limit(remaining).to_list(length=remaining)
-    
-    gap_tickers = [g.get("ticker") for g in gaps if g.get("ticker") and g.get("ticker") not in tickers_to_backfill]
-    tickers_to_backfill.extend(gap_tickers)
-    
-    # 3. Future: Corporate actions (splits, etc.) - placeholder
-    # This would check a corporate_actions collection
-    
-    return tickers_to_backfill[:limit]
-
-
-async def run_price_backfill_gaps(db, batch_size: int = 50, ignore_kill_switch: bool = False) -> Dict[str, Any]:
-    """
-    Run price backfill for tickers that need it.
-    
-    Only processes:
-    - Newly activated tickers (have fundamentals, no prices)
-    - Tickers with detected price gaps
-    - Tickers with corporate actions (splits)
-    
-    Does NOT backfill all tickers - only those flagged.
-    """
-    from price_ingestion_service import backfill_ticker_prices
-    
-    started_at = datetime.now(timezone.utc)
-    job_name = "price_backfill"
-    
-    logger.info(f"Starting {job_name}")
-    
-    try:
-        # Check kill switch (manual endpoints can explicitly bypass)
-        if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
-            logger.warning(f"{job_name} skipped: kill switch engaged")
-            return {
-                "job_name": job_name,
-                "status": "skipped",
-                "reason": "kill_switch_engaged",
-                "started_at": started_at.isoformat(),
-            }
-        
-        # Get tickers that need backfill
-        tickers_to_backfill = await get_tickers_needing_backfill(db, limit=batch_size)
-        
-        if not tickers_to_backfill:
-            logger.info(f"{job_name}: No tickers need backfill")
-            return {
-                "job_name": job_name,
-                "status": "completed",
-                "message": "No tickers need backfill",
-                "processed": 0,
-                "started_at": started_at.isoformat(),
-            }
-        
-        # Process tickers
-        result = {
-            "job_name": job_name,
-            "status": "completed",
-            "processed": 0,
-            "success": 0,
-            "failed": 0,
-            "total_records": 0,
-            "tickers_processed": [],
-            "started_at": started_at.isoformat(),
-        }
-        
-        for ticker in tickers_to_backfill:
-            # Check kill switch between tickers (manual endpoints can bypass)
-            if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
-                result["status"] = "interrupted"
-                result["reason"] = "kill_switch_engaged"
-                break
-            
-            ticker_result = await backfill_ticker_prices(db, ticker)
-            result["processed"] += 1
-            
-            if ticker_result["success"]:
-                result["success"] += 1
-                result["total_records"] += ticker_result.get("records_upserted", 0)
-                result["tickers_processed"].append({
-                    "ticker": ticker,
-                    "records": ticker_result.get("records_upserted", 0)
-                })
-                
-                # Mark data gap as resolved if it existed
-                await db.data_gaps.update_one(
-                    {"ticker": ticker, "missing_price": True},
-                    {"$set": {"resolved": True, "resolved_at": datetime.now(timezone.utc)}}
-                )
-            else:
-                result["failed"] += 1
-            
-            # Small delay to avoid overwhelming API
-            await asyncio.sleep(0.3)
-        
-        result["finished_at"] = datetime.now(timezone.utc).isoformat()
-        
-        # Log job run
-        await log_scheduled_job(
-            db,
-            job_name=job_name,
-            status=result["status"],
-            details={k: v for k, v in result.items() if k != "tickers_processed"},  # Don't store full list
-            started_at=started_at,
-            finished_at=datetime.now(timezone.utc)
-        )
-        
-        logger.info(f"{job_name} completed: processed={result['processed']}, records={result['total_records']}")
-        
-        return result
-        
-    except Exception as e:
-        error_msg = str(e)
-        logger.error(f"{job_name} failed: {error_msg}")
-        
-        await log_scheduled_job(
-            db,
-            job_name=job_name,
-            status="failed",
-            details={"error": error_msg},
-            started_at=started_at,
-            error=error_msg
-        )
-        
-        return {
-            "job_name": job_name,
-            "status": "failed",
-            "error": error_msg,
-            "started_at": started_at.isoformat(),
-        }
-
-
 async def get_scheduler_status(db) -> Dict[str, Any]:
     """
     Get comprehensive scheduler status.
@@ -2549,7 +2385,6 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
     
     # Get pending work counts
     pending_fundamentals = await db.fundamentals_events.count_documents({"status": "pending"})
-    active_without_prices = len(await get_tickers_needing_backfill(db, limit=1000))
     
     def _iso(dt):
         if not dt:
@@ -2609,7 +2444,6 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
         },
         "pending_work": {
             "pending_fundamentals_events": pending_fundamentals,
-            "tickers_needing_price_backfill": active_without_prices,
         },
     }
 
