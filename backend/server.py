@@ -53,7 +53,6 @@ import asyncio
 import httpx
 import json
 import hashlib
-import math
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -90,32 +89,16 @@ app = FastAPI(title="RICHSTOX API")
 api_router = APIRouter(prefix="/api")
 
 # =============================================================================
-# VISIBLE UNIVERSE QUERY (PERMANENT - USE EVERYWHERE)
-# =============================================================================
-# This is the ONLY query that should be used for app-facing ticker lists.
-# Do NOT use is_active alone. Always use VISIBLE_UNIVERSE_QUERY.
-# =============================================================================
-VISIBLE_UNIVERSE_QUERY = {"is_visible": True}
-
-# =============================================================================
 # RUNTIME EODHD GUARD
 # =============================================================================
 # App runtime NEVER calls EODHD. All data comes from MongoDB only.
 # Only scheduler/backfill jobs may call EODHD.
-# 
-# ALLOWED EODHD ENDPOINTS (scheduler/backfill only):
-# 1. SEED:         https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}
-# 2. PRICES:       https://eodhd.com/api/eod-bulk-last-day/US
-# 3. FUNDAMENTALS: https://eodhd.com/api/fundamentals/{TICKER}.US
 #
 # Any runtime EODHD call is a BUG. Fix it immediately.
 # =============================================================================
 
 # ========== CONFIGURATION ==========
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
-EODHD_BASE_URL = "https://eodhd.com/api"
-CACHE_DIR = ROOT_DIR / "cache"
-CACHE_DIR.mkdir(exist_ok=True)
 
 # S&P 500 benchmark ticker
 SP500_TICKER = "GSPC.INDX"  # S&P 500 Index
@@ -258,53 +241,6 @@ async def startup_visibility_guard():
 
 
 # =============================================================================
-# RUNTIME EODHD GUARD - ACTIVE ENFORCEMENT
-# =============================================================================
-# Context flag to mark scheduler/admin operations
-# Set this to True ONLY in scheduler jobs and admin backfill endpoints
-# =============================================================================
-_EODHD_CONTEXT_ALLOWED = False
-
-
-def set_eodhd_context_allowed(allowed: bool):
-    """Set whether EODHD calls are allowed in current context."""
-    global _EODHD_CONTEXT_ALLOWED
-    _EODHD_CONTEXT_ALLOWED = allowed
-
-
-def is_eodhd_context_allowed() -> bool:
-    """Check if EODHD calls are allowed in current context."""
-    return _EODHD_CONTEXT_ALLOWED
-
-
-class EODHDRuntimeGuard:
-    """
-    Guard that logs CRITICAL error if EODHD is called outside scheduler context.
-    
-    Usage in scheduler/admin code:
-        set_eodhd_context_allowed(True)
-        try:
-            # EODHD calls here
-        finally:
-            set_eodhd_context_allowed(False)
-    """
-    
-    @staticmethod
-    def check_context(url: str):
-        """Check if EODHD call is allowed in current context."""
-        if "eodhd.com/api" in url and not is_eodhd_context_allowed():
-            error_msg = (
-                f"EODHD RUNTIME VIOLATION: Attempted to call {url} "
-                f"outside scheduler/admin context. "
-                f"This violates the Universe System rule: NO RUNTIME EODHD CALLS."
-            )
-            logger.critical(error_msg)
-            # In production, we log but don't crash
-            # In dev, you can uncomment the raise to fail fast:
-            # raise RuntimeError(error_msg)
-
-
-# =============================================================================
 
 # ========== MODELS ==========
 
@@ -338,253 +274,134 @@ class PositionCreate(BaseModel):
     buy_price: float
     buy_date: str
 
-# ========== EODHD SERVICE ==========
+# ========== MONGO READ HELPERS (replace runtime EODHD calls) ==========
 
-class EODHDService:
-    """EODHD API service with caching."""
-    
-    def __init__(self):
-        self.api_key = EODHD_API_KEY
-        self.is_live = bool(self.api_key and self.api_key != "demo" and len(self.api_key) > 10)
-        self._request_count = 0
-        logger.info(f"EODHD Service: {'LIVE' if self.is_live else 'MOCK'} mode")
-        
-    def _cache_key(self, endpoint: str, params: dict) -> str:
-        key = f"{endpoint}:{json.dumps(params, sort_keys=True)}"
-        return hashlib.md5(key.encode()).hexdigest()
-    
-    def _cache_path(self, key: str) -> Path:
-        return CACHE_DIR / f"{key}.json"
-    
-    def _is_cache_valid(self, path: Path, max_age_hours: int = 24) -> bool:
-        if not path.exists():
-            return False
-        mtime = datetime.fromtimestamp(path.stat().st_mtime)
-        return datetime.now() < mtime + timedelta(hours=max_age_hours)
-    
-    async def _fetch(self, endpoint: str, params: dict = {}, cache_hours: int = 24) -> Any:
-        """Fetch from API with caching."""
-        cache_key = self._cache_key(endpoint, params)
-        cache_path = self._cache_path(cache_key)
-        
-        # Check cache
-        if self._is_cache_valid(cache_path, cache_hours):
-            with open(cache_path) as f:
-                logger.info(f"Cache HIT: {endpoint}")
-                return json.load(f)
-        
-        # If no API key, return empty
-        if not self.is_live:
-            logger.warning(f"MOCK mode - no live data for: {endpoint}")
-            return []
-        
-        # Fetch from API
-        url = f"{EODHD_BASE_URL}/{endpoint}"
-        full_params = {**params, "api_token": self.api_key, "fmt": "json"}
-        
-        async with httpx.AsyncClient(timeout=60) as http_client:
-            response = await http_client.get(url, params=full_params)
-            self._request_count += 1
-            
-            if response.status_code != 200:
-                logger.error(f"API error {response.status_code}: {response.text[:200]}")
-                return []
-            
-            data = response.json()
-            
-            # Save to cache
-            with open(cache_path, 'w') as f:
-                json.dump(data, f)
-            
-            logger.info(f"API fetch: {endpoint} ({len(data) if isinstance(data, list) else 'object'})")
-            return data
-    
-    async def get_eod_prices(self, ticker: str, days: int = 365, from_date: str = None) -> List[dict]:
-        """Get historical EOD prices for a ticker."""
-        if not from_date:
-            from_date = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-        
-        # Add exchange suffix if not present
-        if "." not in ticker:
-            ticker = f"{ticker}.US"
-        
-        params = {"from": from_date}
-        return await self._fetch(f"eod/{ticker}", params, cache_hours=24)
-    
-    async def get_bulk_eod(self, date: str = None) -> List[dict]:
-        """Get bulk EOD prices for US market."""
-        params = {}
-        if date:
-            params["date"] = date
-        return await self._fetch("eod-bulk-last-day/US", params, cache_hours=24)
-    
-    async def get_fundamentals(self, ticker: str) -> dict:
-        """Get fundamental data for a ticker."""
-        if "." not in ticker:
-            ticker = f"{ticker}.US"
-        return await self._fetch(f"fundamentals/{ticker}", {}, cache_hours=168)  # Cache 1 week
-    
-    async def search_tickers(self, query: str) -> List[dict]:
-        """Search for tickers."""
-        return await self._fetch(f"search/{query}", {}, cache_hours=720)  # Cache 1 month
-    
-    async def get_dividends(self, ticker: str, from_date: str = None) -> List[dict]:
-        """Get dividend history."""
-        if "." not in ticker:
-            ticker = f"{ticker}.US"
-        params = {}
-        if from_date:
-            params["from"] = from_date
-        return await self._fetch(f"div/{ticker}", params, cache_hours=168)
-
-# Global service instance
-eodhd = EODHDService()
-
-# ========== CALCULATION HELPERS ==========
-
-def calculate_cagr(start_value: float, end_value: float, years: float) -> float:
-    """Calculate Compound Annual Growth Rate."""
-    if start_value <= 0 or years <= 0:
-        return 0
-    return ((end_value / start_value) ** (1 / years) - 1) * 100
-
-def calculate_max_drawdown(prices: List[dict]) -> float:
-    """Calculate maximum drawdown from price history."""
-    if not prices:
-        return 0
-    
-    peak = prices[0].get("adjusted_close", prices[0].get("close", 0))
-    max_dd = 0
-    
-    for p in prices:
-        close = p.get("adjusted_close", p.get("close", 0))
-        if close > peak:
-            peak = close
-        drawdown = (peak - close) / peak if peak > 0 else 0
-        max_dd = max(max_dd, drawdown)
-    
-    return max_dd * 100  # Return as percentage
+def _normalize_ticker(ticker: str) -> str:
+    """Normalize ticker to the canonical DB format (e.g. 'AAPL' -> 'AAPL.US')."""
+    t = ticker.upper().strip()
+    if not t.endswith(".US") and "." not in t:
+        return f"{t}.US"
+    return t
 
 
-def calculate_pain_details(prices: List[dict]) -> dict:
+async def _get_prices_from_db(ticker: str, days: int = 365, from_date: str = None) -> List[dict]:
     """
-    P25: Calculate PAIN (max drawdown) with exact dates from full daily series.
-    
-    Returns:
-        dict with: pain_pct, pain_percentage, pain_peak_date, pain_trough_date, 
-                   pain_duration_days, pain_recovery_date, is_recovered
+    Read historical EOD prices from MongoDB stock_prices collection.
+    Returns list of dicts sorted by date ascending, matching the shape
+    previously returned by the inline EODHDService.
     """
-    if not prices or len(prices) < 2:
+    ticker_full = _normalize_ticker(ticker)
+    query: dict = {"ticker": ticker_full}
+    if from_date:
+        query["date"] = {"$gte": from_date}
+    else:
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        query["date"] = {"$gte": cutoff}
+
+    cursor = db.stock_prices.find(
+        query,
+        {"_id": 0}
+    ).sort("date", 1).limit(days + 60)  # small margin for weekends/holidays
+
+    return await cursor.to_list(length=days + 60)
+
+
+async def _get_latest_price_from_db(ticker: str) -> Optional[dict]:
+    """Get the most recent price record for a ticker from stock_prices."""
+    ticker_full = _normalize_ticker(ticker)
+    return await db.stock_prices.find_one(
+        {"ticker": ticker_full},
+        {"_id": 0},
+        sort=[("date", -1)]
+    )
+
+
+async def _get_fundamentals_from_db(ticker: str) -> dict:
+    """
+    Read fundamentals from MongoDB.
+    Tries company_fundamentals_cache first, falls back to tracked_tickers.fundamentals.
+    Returns a dict compatible with EODHD fundamentals shape (General, Highlights, Technicals, etc.)
+    or an empty dict if nothing is available.
+    """
+    ticker_full = _normalize_ticker(ticker)
+
+    # 1. Try company_fundamentals_cache
+    cache_doc = await db.company_fundamentals_cache.find_one(
+        {"ticker": ticker_full}, {"_id": 0}
+    )
+    if cache_doc:
+        # If the cache stores EODHD-shaped data, return as-is
+        if cache_doc.get("General"):
+            return cache_doc
+        # Otherwise build a compat dict from flat fields
         return {
-            "pain_pct": 0,
-            "pain_percentage": 0,
-            "pain_peak_date": None,
-            "pain_trough_date": None,
-            "pain_duration_days": 0,
-            "pain_recovery_date": None,
-            "is_recovered": False
+            "General": {
+                "Name": cache_doc.get("name"),
+                "Exchange": cache_doc.get("exchange"),
+                "Sector": cache_doc.get("sector"),
+                "Industry": cache_doc.get("industry"),
+                "Description": cache_doc.get("description"),
+            },
+            "Highlights": {},
+            "Technicals": {},
         }
-    
-    # Find max drawdown with exact dates
-    peak_idx = 0
-    peak_val = prices[0].get("adjusted_close", prices[0].get("close", 0))
-    peak_date = prices[0].get("date")
-    
-    trough_idx = 0
-    trough_val = peak_val
-    trough_date = peak_date
-    
-    max_drawdown = 0
-    running_max = peak_val
-    running_max_idx = 0
-    running_max_date = peak_date
-    
-    for i, p in enumerate(prices):
-        close = p.get("adjusted_close", p.get("close", 0))
-        
-        if close > running_max:
-            running_max = close
-            running_max_idx = i
-            running_max_date = p.get("date")
-        
-        drawdown = (running_max - close) / running_max if running_max > 0 else 0
-        
-        if drawdown > max_drawdown:
-            max_drawdown = drawdown
-            peak_idx = running_max_idx
-            peak_val = running_max
-            peak_date = running_max_date
-            trough_idx = i
-            trough_val = close
-            trough_date = p.get("date")
-    
-    # Calculate duration in days
-    duration_days = 0
-    if peak_date and trough_date:
-        try:
-            peak_dt = datetime.strptime(peak_date, "%Y-%m-%d")
-            trough_dt = datetime.strptime(trough_date, "%Y-%m-%d")
-            duration_days = (trough_dt - peak_dt).days
-        except:
-            pass
-    
-    # Find recovery date: first day after trough where adjusted_close >= peak_val
-    recovery_date = None
-    is_recovered = False
-    
-    for i in range(trough_idx + 1, len(prices)):
-        close = prices[i].get("adjusted_close", prices[i].get("close", 0))
-        if close >= peak_val:
-            recovery_date = prices[i].get("date")
-            is_recovered = True
-            break
-    
-    # P26 ADDENDUM: pain_percentage = (trough / peak - 1) * 100 (negative value for UI)
-    pain_percentage = 0
-    if peak_val > 0:
-        pain_percentage = round((trough_val / peak_val - 1) * 100, 2)
-    
-    return {
-        "pain_pct": round(max_drawdown * 100, 2),  # Internal use (positive)
-        "pain_percentage": pain_percentage,  # UI display (negative, e.g., -89.7)
-        "pain_peak_date": peak_date,
-        "pain_trough_date": trough_date,
-        "pain_duration_days": duration_days,
-        "pain_recovery_date": recovery_date,
-        "is_recovered": is_recovered
-    }
 
-def calculate_volatility(prices: List[dict]) -> float:
-    """Calculate annualized volatility (standard deviation of daily returns)."""
-    if len(prices) < 2:
-        return 0
-    
-    returns = []
-    for i in range(1, len(prices)):
-        prev = prices[i-1].get("adjusted_close", prices[i-1].get("close", 1))
-        curr = prices[i].get("adjusted_close", prices[i].get("close", 1))
-        if prev > 0:
-            returns.append((curr - prev) / prev)
-    
-    if not returns:
-        return 0
-    
-    avg = sum(returns) / len(returns)
-    variance = sum((r - avg) ** 2 for r in returns) / len(returns)
-    daily_vol = math.sqrt(variance)
-    
-    # Annualize (252 trading days)
-    return daily_vol * math.sqrt(252) * 100
+    # 2. Fall back to tracked_tickers.fundamentals
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full}, {"_id": 0, "fundamentals": 1, "name": 1, "sector": 1, "industry": 1}
+    )
+    if tracked and tracked.get("fundamentals"):
+        return tracked["fundamentals"]
+    if tracked:
+        return {
+            "General": {
+                "Name": tracked.get("name"),
+                "Sector": tracked.get("sector"),
+                "Industry": tracked.get("industry"),
+            },
+            "Highlights": {},
+            "Technicals": {},
+        }
 
-def calculate_52w_high_low(prices: List[dict]) -> tuple:
-    """Calculate 52-week high and low."""
-    if not prices:
-        return 0, 0
-    
-    highs = [p.get("high", 0) for p in prices[-252:]]
-    lows = [p.get("low", float('inf')) for p in prices[-252:]]
-    
-    return max(highs) if highs else 0, min(lows) if lows else 0
+    return {}
+
+
+async def _get_dividends_from_db(ticker: str, from_date: str = None) -> List[dict]:
+    """
+    Read dividend history from MongoDB dividend_history collection.
+    Returns list of dicts with date/value keys.
+    """
+    ticker_full = _normalize_ticker(ticker)
+    query: dict = {"ticker": ticker_full}
+    if from_date:
+        query["$or"] = [
+            {"ex_date": {"$gte": from_date}},
+            {"date": {"$gte": from_date}}
+        ]
+
+    cursor = db.dividend_history.find(query, {"_id": 0}).sort(
+        [("ex_date", -1), ("date", -1)]
+    )
+    raw = await cursor.to_list(length=500)
+
+    # Normalize to consistent shape expected by callers
+    result = []
+    for d in raw:
+        div_date = d.get("ex_date") or d.get("date")
+        amount = d.get("amount") or d.get("value") or 0
+        result.append({"date": div_date, "value": amount, "dividend": amount})
+    return result
+
+
+# ========== CALCULATION HELPERS (imported from calculators_service) ==========
+
+from calculators_service import (
+    calculate_cagr,
+    calculate_max_drawdown,
+    calculate_pain_details,
+    calculate_volatility,
+    calculate_52w_high_low,
+)
 
 # ========== API ENDPOINTS ==========
 
@@ -593,14 +410,14 @@ async def root():
     return {
         "message": "RICHSTOX API",
         "version": "2.0",
-        "mode": "LIVE" if eodhd.is_live else "MOCK",
-        "api_calls": eodhd._request_count
+        "mode": "DB_ONLY",
+        "api_calls": 0
     }
 
 # ----- Health Check -----
 @api_router.get("/health")
 async def health_check():
-    return {"status": "healthy", "mode": "LIVE" if eodhd.is_live else "MOCK"}
+    return {"status": "healthy", "mode": "DB_ONLY"}
 
 # ----- Authentication Endpoints -----
 
@@ -958,17 +775,17 @@ async def get_stock_detail(ticker: str):
     """
     ticker = ticker.upper()
     
-    # Get price history (1 year)
-    prices = await eodhd.get_eod_prices(ticker, days=365)
+    # Get price history (1 year) from MongoDB
+    prices = await _get_prices_from_db(ticker, days=365)
     
     if not prices:
         raise HTTPException(404, f"No data found for {ticker}")
     
-    # Get fundamentals
-    fundamentals = await eodhd.get_fundamentals(ticker)
+    # Get fundamentals from MongoDB
+    fundamentals = await _get_fundamentals_from_db(ticker)
     
-    # Get dividends
-    dividends = await eodhd.get_dividends(ticker)
+    # Get dividends from MongoDB
+    dividends = await _get_dividends_from_db(ticker)
     
     # Calculate metrics
     latest_price = prices[-1] if prices else {}
@@ -1042,7 +859,7 @@ async def get_stock_detail(ticker: str):
         "dividend_count_year": len([d for d in dividends if d.get("date", "")[:4] == str(datetime.now().year)]),
         
         # Meta
-        "data_source": "EODHD",
+        "data_source": "MongoDB",
         "last_updated": datetime.utcnow().isoformat()
     }
 
@@ -1055,7 +872,7 @@ async def get_stock_prices(
 ):
     """Get historical prices for a stock."""
     ticker = ticker.upper()
-    prices = await eodhd.get_eod_prices(ticker, days=days, from_date=from_date)
+    prices = await _get_prices_from_db(ticker, days=days, from_date=from_date)
     
     return {
         "ticker": ticker,
@@ -1069,7 +886,7 @@ async def get_stock_prices(
 @api_router.get("/benchmark")
 async def get_benchmark(days: int = Query(365, ge=1, le=3650)):
     """Get S&P 500 benchmark data for comparison."""
-    prices = await eodhd.get_eod_prices(SP500_TR_TICKER, days=days)
+    prices = await _get_prices_from_db(SP500_TR_TICKER, days=days)
     
     if not prices:
         raise HTTPException(404, "Benchmark data not available")
@@ -1113,14 +930,14 @@ async def calculate_buy_hold(
     """
     ticker = ticker.upper()
     
-    # Get price history
-    prices = await eodhd.get_eod_prices(ticker, days=days, from_date=start_date)
+    # Get price history from MongoDB
+    prices = await _get_prices_from_db(ticker, days=days, from_date=start_date)
     
     if not prices:
         raise HTTPException(404, f"No price data for {ticker}")
     
-    # Get benchmark for comparison
-    benchmark_prices = await eodhd.get_eod_prices(SP500_TR_TICKER, days=days, from_date=start_date)
+    # Get benchmark for comparison from MongoDB
+    benchmark_prices = await _get_prices_from_db(SP500_TR_TICKER, days=days, from_date=start_date)
     
     # Calculate for stock
     start_price = prices[0].get("adjusted_close", prices[0].get("close", 1))
@@ -1186,8 +1003,8 @@ async def calculate_dca(
     """
     ticker = ticker.upper()
     
-    # Get price history
-    prices = await eodhd.get_eod_prices(ticker, days=days)
+    # Get price history from MongoDB
+    prices = await _get_prices_from_db(ticker, days=days)
     
     if not prices:
         raise HTTPException(404, f"No price data for {ticker}")
@@ -1269,10 +1086,10 @@ async def calculate_portfolio_value(
     total_weight = sum(weight_list)
     weight_list = [w / total_weight * 100 for w in weight_list]
     
-    # Get prices for each ticker
+    # Get prices for each ticker from MongoDB
     all_prices = {}
     for ticker in ticker_list:
-        prices = await eodhd.get_eod_prices(ticker, days=days)
+        prices = await _get_prices_from_db(ticker, days=days)
         if prices:
             for p in prices:
                 date = p.get("date")
@@ -1392,8 +1209,8 @@ async def get_portfolio(portfolio_id: str, request: Request):
         shares = pos.get("shares", 0)
         buy_price = pos.get("buy_price", 0)
 
-        prices = await eodhd.get_eod_prices(ticker, days=5)
-        current_price = prices[-1].get("adjusted_close", buy_price) if prices else buy_price
+        latest = await _get_latest_price_from_db(ticker)
+        current_price = (latest.get("adjusted_close") or latest.get("close", buy_price)) if latest else buy_price
 
         market_value = shares * current_price
         cost_basis = shares * buy_price
@@ -1663,8 +1480,8 @@ async def get_homepage_data():
     - Sorted: Portfolio first, then Watchlist-only
     ==========================================================================
     """
-    # Get S&P 500 benchmark
-    benchmark = await eodhd.get_eod_prices(SP500_TR_TICKER, days=30)
+    # Get S&P 500 benchmark from MongoDB
+    benchmark = await _get_prices_from_db(SP500_TR_TICKER, days=30)
     
     if benchmark:
         sp_current = benchmark[-1].get("adjusted_close", 0)
@@ -1822,8 +1639,8 @@ async def get_homepage_data():
         "watchlist_count": len(watchlist_tickers & visible_set),
         "portfolio_count": len(portfolio_tickers & visible_set),
         "total_count": len(ordered_tickers),
-        "data_source": "EODHD",
-        "api_mode": "LIVE" if eodhd.is_live else "MOCK"
+        "data_source": "MongoDB",
+        "api_mode": "DB_ONLY"
     }
 
 # ----- Admin Endpoints -----
@@ -1860,28 +1677,30 @@ async def get_admin_stats():
         "portfolios": _n(port_r, "portfolios"),
         "positions": _n(pos_r, "positions"),
         "tracked_tickers": tracked,
-        "api_mode": "LIVE" if eodhd.is_live else "MOCK",
-        "api_calls": eodhd._request_count,
-        "cache_files": len(list(CACHE_DIR.glob("*.json")))
+        "api_mode": "DB_ONLY",
+        "api_calls": 0,
+        "cache_files": 0
     }
 
 @api_router.post("/admin/cache/clear")
 async def clear_cache():
-    """Clear API cache."""
+    """Clear API cache (legacy — file cache no longer used at runtime)."""
+    cache_dir = ROOT_DIR / "cache"
     count = 0
-    for f in CACHE_DIR.glob("*.json"):
-        f.unlink()
-        count += 1
+    if cache_dir.exists():
+        for f in cache_dir.glob("*.json"):
+            f.unlink()
+            count += 1
     return {"message": f"Cleared {count} cache files"}
 
 @api_router.get("/admin/api-status")
 async def api_status():
     """Check EODHD API status."""
     return {
-        "mode": "LIVE" if eodhd.is_live else "MOCK",
+        "mode": "DB_ONLY",
         "api_key_configured": bool(EODHD_API_KEY),
-        "requests_made": eodhd._request_count,
-        "cache_files": len(list(CACHE_DIR.glob("*.json")))
+        "requests_made": 0,
+        "cache_files": 0
     }
 
 # ----- Admin Report Endpoints (P45) -----
@@ -3057,7 +2876,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "_fundamentals_pending": True,
         }
     
-    # 2. Get latest price from stock_prices (or use from company)
+    # 2. Get latest price from stock_prices (DB-only, no EODHD fallback)
     latest_price = await db.stock_prices.find_one(
         {"ticker": ticker_full},
         {"_id": 0},
@@ -3066,45 +2885,6 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
     
     current_price = None
     price_data = None
-    
-    # If stock_prices has stale data (more than 1 day old on trading day), fetch fresh
-    if latest_price:
-        from datetime import datetime, timedelta
-        last_date = latest_price.get("date")
-        if last_date:
-            try:
-                last_dt = datetime.strptime(last_date, "%Y-%m-%d")
-                now = datetime.utcnow()
-                # If data is more than 2 days old, try to get fresh prices
-                if (now - last_dt).days >= 2:
-                    # Fetch fresh prices (last 5 days)
-                    fresh_prices = await eodhd.get_eod_prices(ticker_full, days=5)
-                    if fresh_prices and len(fresh_prices) > 0:
-                        latest_price = fresh_prices[-1]  # Most recent
-                        # Update cache with fresh data
-                        for p in fresh_prices:
-                            await db.stock_prices.update_one(
-                                {"ticker": ticker_full, "date": p.get("date")},
-                                {"$set": {**p, "ticker": ticker_full}},
-                                upsert=True
-                            )
-            except Exception as e:
-                print(f"Error refreshing prices for {ticker_full}: {e}")
-    else:
-        # No cached data - fetch fresh
-        try:
-            fresh_prices = await eodhd.get_eod_prices(ticker_full, days=5)
-            if fresh_prices and len(fresh_prices) > 0:
-                latest_price = fresh_prices[-1]
-                # Cache the fresh data
-                for p in fresh_prices:
-                    await db.stock_prices.update_one(
-                        {"ticker": ticker_full, "date": p.get("date")},
-                        {"$set": {**p, "ticker": ticker_full}},
-                        upsert=True
-                    )
-        except Exception as e:
-            print(f"Error fetching prices for {ticker_full}: {e}")
     
     if latest_price:
         prev_price = await db.stock_prices.find_one(
