@@ -75,7 +75,7 @@ function formatTime(iso?: string): string {
   } catch { return iso; }
 }
 
-const PIPELINE_JOB_NAMES = ['universe_seed', 'price_sync', 'fundamentals_sync', 'compute_visible_universe', 'peer_medians'];
+const PIPELINE_JOB_NAMES = ['universe_seed', 'price_sync', 'fundamentals_sync', 'peer_medians'];
 
 // ─── Dashboard Tab ────────────────────────────────────────────────────────────
 

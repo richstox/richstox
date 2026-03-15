@@ -83,17 +83,6 @@ interface OverviewData {
   pipeline_sync_status?: PipelineSyncStatus;
 }
 
-interface FundamentalsProgress {
-  total_queued: number;
-  pending: number;
-  processing: number;
-  complete: number;
-  error: number;
-  percentage: number;
-  run_active?: boolean;
-  run_id?: string;
-  zombies_reclaimed?: number;
-}
 
 interface PipelineExclusionRow {
   ticker: string;
@@ -273,8 +262,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); // chain run elapsed timer
-  const fundProgressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [fundamentalsProgress, setFundamentalsProgress] = useState<FundamentalsProgress | null>(null);
 
   // ── Step 1 universe seed progress ────────────────────────────────────────
   const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
@@ -408,39 +395,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setSchedulerUpdating(false);
     }
   };
-
-  const pollFundamentalsProgress = useCallback(async () => {
-    try {
-      const res = await authenticatedFetch(
-        `${API_URL}/api/admin/pipeline/fundamentals-progress`,
-        {},
-        sessionToken,
-      );
-      if (!res.ok) return;
-      const progress: FundamentalsProgress = await res.json();
-
-      // No active run — stop polling and preserve last known state.
-      // Covers both normal completion and post-cancel cleanup.
-      if (!progress.run_active || progress.total_queued === 0) {
-        if (fundProgressPollRef.current) {
-          clearInterval(fundProgressPollRef.current);
-          fundProgressPollRef.current = null;
-        }
-        return;
-      }
-
-      setFundamentalsProgress(progress);
-
-      // Queue fully drained — stop polling, preserve final state
-      if (progress.pending === 0 && progress.processing === 0) {
-        if (fundProgressPollRef.current) {
-          clearInterval(fundProgressPollRef.current);
-          fundProgressPollRef.current = null;
-        }
-      }
-    } catch { /* ignore transient poll errors */ }
-  }, [sessionToken]);
-
 
   const handleRunAudit = async () => {
     const raw = auditTicker.trim().toUpperCase();
@@ -1811,20 +1765,6 @@ const s = StyleSheet.create({
   mockBadgeText: { fontSize: 8, fontWeight: '700', color: '#F59E0B' },
   substepLastRun: { fontSize: 9, color: COLORS.textMuted, marginBottom: 3, fontStyle: 'italic' },
   catchupBadge: { fontSize: 9, color: '#6366F1', marginBottom: 4, fontStyle: 'italic' },
-
-  fullSyncBlock: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border, flexDirection: 'row', alignItems: 'center', gap: 10 },
-  fullSyncInfo: { flex: 1 },
-  fullSyncTitle: { fontSize: 11, fontWeight: '700', color: COLORS.text, marginBottom: 2 },
-  fullSyncDesc: { fontSize: 10, color: COLORS.textMuted, lineHeight: 14 },
-
-  fundProgressWrap: { marginTop: 8, marginBottom: 4 },
-  fundProgressHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
-  fundProgressBarBg: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden', marginBottom: 4 },
-  fundProgressBarFill: { height: 6, borderRadius: 3, backgroundColor: '#F59E0B' },
-  fundProgressCountRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  fundProgressPct: { fontSize: 12, fontWeight: '700', color: '#F59E0B', minWidth: 36 },
-  fundProgressTotal: { fontSize: 10, color: COLORS.textMuted },
-  fundProgressCounts: { fontSize: 10, color: COLORS.textMuted, flex: 1 },
 
   // ── Per-ticker audit panel ──────────────────────────────────────────────
   auditCard: { marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
