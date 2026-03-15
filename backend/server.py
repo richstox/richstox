@@ -7030,6 +7030,13 @@ async def admin_get_pipeline_exclusion_report(
     }
 
 
+@api_router.get("/admin/pipeline/data-freshness")
+async def admin_data_freshness():
+    """Return data-freshness metrics for the pipeline dashboard."""
+    from services.data_freshness_service import get_data_freshness
+    return await get_data_freshness(db)
+
+
 @api_router.get("/admin/pipeline/fundamentals-health")
 async def admin_fundamentals_health():
     """
