@@ -435,7 +435,7 @@ def parse_insider_activity(ticker: str, data: Dict[str, Any]) -> Optional[Dict[s
         "status": status,
         "created_at": now,
         "updated_at": now,
-        "window_start_date": (now - timedelta(days=180)).strftime("%Y-%m-%d"),
+        "window_start_date": six_months_ago.strftime("%Y-%m-%d"),
         "window_end_date": now.strftime("%Y-%m-%d"),
         "last_fetched_at": now,
     }
