@@ -98,6 +98,7 @@ interface PipelineExclusionReport {
   empty_report_hint?: string | null;
   rows: PipelineExclusionRow[];
   by_reason: Record<string, number>;
+  by_step?: Record<string, number>;
   latest_run_id_per_step?: Record<string, string> | null;
   step1_counts?: {
     raw_distinct?: number;
@@ -323,6 +324,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             if (s1Res.ok) {
               const s1Data = await s1Res.json();
               excl.step1_counts = s1Data.step1_counts ?? null;
+              // Merge Step 1 by_step counts so step1Filtered is available.
+              if (s1Data.by_step) {
+                excl.by_step = { ...(excl.by_step || {}), ...s1Data.by_step };
+              }
             }
           } catch (_) { /* non-fatal */ }
         }
@@ -644,8 +649,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const visible = counts.visible ?? counts.visible_tickers;
 
   // Exclusion-report filtered_out counts — authoritative source for funnel arithmetic.
-  const byStep = (exclusionReport as any)?.by_step as Record<string, number> | undefined;
-  const step1Filtered = byStep?.['Step 1 - Universe Seed'];
+  const byStep = exclusionReport?.by_step;
+  const step1Filtered = byStep?.['Step 1 - Universe Seed']
+    ?? exclusionReport?.step1_counts?.filtered_out_total_step1;
   const step2Filtered = byStep?.['Step 2 - Price Sync'];
   const step3Filtered = byStep?.['Step 3 - Fundamentals Sync'];
 
@@ -655,7 +661,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const s1In: number | undefined =
     _s1Seeded !== undefined && step1Filtered !== undefined
       ? _s1Seeded + step1Filtered
-      : rawSymbols;
+      : exclusionReport?.step1_counts?.raw_distinct ?? rawSymbols;
 
   // Arithmetic chain: Output = Input − FilteredOut. Each step chains from previous.
   const s1Out: number | undefined =
