@@ -105,18 +105,11 @@ async def get_universe_counts(db) -> Dict[str, Any]:
         },
         {
             "step": 3,
-            "name": "With Fundamentals (Classified)",
-            "count": classified_total,
-            "query": "with_price AND fundamentals_status == 'complete'",
-            "source_job": "fundamentals_sync",
-        },
-        {
-            "step": 4,
             "name": "Visible Tickers (Customer View)",
             "count": visible_total,
             "query": "classified AND is_visible == true",
-            "source_job": "compute_visible_universe",
-            "note": "All 7 visibility gates satisfied",
+            "source_job": "fundamentals_sync",
+            "note": "Fundamentals + visibility gates (delisted, shares, currency)",
         },
     ]
 

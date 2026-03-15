@@ -1626,7 +1626,7 @@ async def _append_step2_exclusions(
 
 
 STEP3_REPORT_STEP = "Step 3 - Fundamentals Sync"
-STEP4_REPORT_STEP = "Step 4 - Visible Universe"
+_VISIBILITY_EXCLUSION_REASONS = {"DELISTED", "MISSING_SHARES", "MISSING_FINANCIAL_CURRENCY"}
 
 
 async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
@@ -1717,46 +1717,43 @@ async def save_step3_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     return {"step3_exclusion_rows": len(docs), "report_date": report_date, "exclusion_report_run_id": run_id}
 
 
-async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
+async def save_step3_visibility_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     """
-    Write Step 4 exclusion rows using the canonical Step 4 funnel definition.
+    Write Step 3 visibility-gate exclusion rows for classified tickers that
+    fail one of the 3 visibility gates added during Step 3 (DELISTED,
+    MISSING_SHARES, MISSING_FINANCIAL_CURRENCY).
 
-    Canonical Step 4 funnel:
-      classified_total = count(classified_query)
-      visible_total    = count(classified_query AND is_visible=True)
-      filtered_out     = classified_query AND is_visible=False
+    Uses the CORRECT classified query matching universe_counts_service.py:
+      seeded + has_price_data + fundamentals_status=="complete"
 
-    One row per ticker in filtered_out. Reason = visibility_failed_reason set by
-    recompute_visibility_all (all enum values mapped to human-readable labels).
+    Rows are written with step = "Step 3 - Fundamentals Sync" so they
+    appear alongside other Step 3 exclusion rows in the CSV.
 
-    Returns _debug counts so the caller can store them in ops_job_runs.details.
+    Only the 3 visibility-specific reasons are written here — NOT_SEEDED,
+    NO_PRICE_DATA, MISSING_SECTOR, MISSING_INDUSTRY are already handled
+    by Steps 1–3 exclusion reports.
     """
     report_date = now.astimezone(PRAGUE_TZ).strftime("%Y-%m-%d")
-    run_id = f"visible_universe_{now.strftime('%Y%m%d_%H%M%S')}"
+    run_id = f"fundamentals_visibility_{now.strftime('%Y%m%d_%H%M%S')}"
 
-    # Only tickers that have completed Step 3 (fundamentals).
-    _classified_query = {"fundamentals_status": "complete"}
+    # Correct classified query matching universe_counts_service.py
+    _classified_query = {
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "is_seeded": True,
+        "has_price_data": True,
+        "fundamentals_status": "complete",
+    }
 
-    # Filtered-out = classified AND NOT visible.
-    # Use $ne:True (not False) to include tickers where is_visible is null/missing —
-    # tickers that are classified but were never processed by recompute_visibility_all
-    # (e.g. they fail shares/currency gates so the recompute cursor skips them)
-    # are legitimately not visible and must appear in the exclusion report.
     _filtered_query = {**_classified_query, "is_visible": {"$ne": True}}
 
-    # Snapshot counts matching the canonical Step 4 funnel.
-    step4_card_classified_count = await db.tracked_tickers.count_documents(_classified_query)
-    step4_card_visible_count    = await db.tracked_tickers.count_documents(
+    classified_count = await db.tracked_tickers.count_documents(_classified_query)
+    visible_count = await db.tracked_tickers.count_documents(
         {**_classified_query, "is_visible": True}
     )
-    step4_report_query_count    = await db.tracked_tickers.count_documents(_filtered_query)
+    filtered_query_count = await db.tracked_tickers.count_documents(_filtered_query)
 
-    all_reason_labels = {
-        "INVALID_EXCHANGE":           "Invalid exchange",
-        "NOT_COMMON_STOCK":           "Not common stock",
-        "NO_PRICE_DATA":              "No price data",
-        "MISSING_SECTOR":             "Sector missing",
-        "MISSING_INDUSTRY":           "Industry missing",
+    _reason_labels = {
         "DELISTED":                   "Ticker is delisted",
         "MISSING_SHARES":             "Shares outstanding missing or zero",
         "MISSING_FINANCIAL_CURRENCY": "Financial currency missing",
@@ -1768,20 +1765,29 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
          "shares_outstanding": 1},
     )
 
+    # Delete ONLY the visibility-gate rows for this date, not all Step 3 rows
+    _visibility_reason_labels = list(_reason_labels.values())
     await db.pipeline_exclusion_report.delete_many(
-        {"report_date": report_date, "step": STEP4_REPORT_STEP}
+        {
+            "report_date": report_date,
+            "step": STEP3_REPORT_STEP,
+            "reason": {"$in": _visibility_reason_labels},
+        }
     )
 
     docs = []
     async for doc in docs_cursor:
         raw_reason = doc.get("visibility_failed_reason") or "UNKNOWN"
+        # Only write rows for the 3 visibility-specific reasons
+        if raw_reason not in _VISIBILITY_EXCLUSION_REASONS:
+            continue
         row = {
             "ticker":      doc.get("ticker", "(unknown)"),
             "name":        doc.get("name", ""),
-            "step":        STEP4_REPORT_STEP,
-            "reason":      all_reason_labels.get(raw_reason, raw_reason),
+            "step":        STEP3_REPORT_STEP,
+            "reason":      _reason_labels.get(raw_reason, raw_reason),
             "report_date": report_date,
-            "source_job":  "compute_visible_universe",
+            "source_job":  "fundamentals_sync",
             "run_id":      run_id,
             "created_at":  now,
         }
@@ -1795,16 +1801,16 @@ async def save_step4_exclusion_report(db, now: datetime) -> Dict[str, Any]:
     if docs:
         await db.pipeline_exclusion_report.insert_many(docs, ordered=False)
 
-    step4_report_rows_written = len(docs)
+    rows_written = len(docs)
     return {
-        "step4_exclusion_rows": step4_report_rows_written,
+        "visibility_exclusion_rows": rows_written,
         "exclusion_report_run_id": run_id,
         "report_date": report_date,
         "_debug": {
-            "step4_card_classified_count": step4_card_classified_count,
-            "step4_card_visible_count":    step4_card_visible_count,
-            "step4_report_rows_written":   step4_report_rows_written,
-            "step4_report_query_count":    step4_report_query_count,
+            "classified_count": classified_count,
+            "visible_count":    visible_count,
+            "rows_written":     rows_written,
+            "filtered_query_count": filtered_query_count,
         },
     }
 
@@ -2245,17 +2251,17 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "filtered_out_total": step3_filtered_out_total,
         }
 
-        # Step 4 auto-chain: after successful Step 3 completion, recompute visibility.
-        step4_chain = {
+        # Step 3 visibility auto-chain: after successful Step 3 completion, recompute visibility.
+        step3_visibility = {
             "triggered": False,
             "status": "skipped",
         }
         if result["status"] == "completed":
             try:
-                # Pass Step 3 exclusion_report_run_id as parent for Step 4.
+                # Pass Step 3 exclusion_report_run_id as parent for visibility recompute.
                 _s3_excl_run_id = result.get("exclusion_report_run_id")
                 visibility_result = await recompute_visibility_all(db, parent_run_id=_s3_excl_run_id)
-                step4_chain = {
+                step3_visibility = {
                     "triggered": True,
                     "status": "completed",
                     "job_id": visibility_result.get("job_id"),
@@ -2264,24 +2270,24 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     "now_visible": visibility_result.get("after", {}).get("visible_count"),
                 }
                 logger.info(
-                    f"{job_name}: Step 4 auto-chain completed "
-                    f"(job_id={step4_chain.get('job_id')}, changed={step4_chain.get('changed')})"
+                    f"{job_name}: Visibility recompute completed "
+                    f"(job_id={step3_visibility.get('job_id')}, changed={step3_visibility.get('changed')})"
                 )
-                # Step 4 exclusion report: tickers filtered by visibility sieve
-                now_step4 = datetime.now(timezone.utc)
-                step4_report = await save_step4_exclusion_report(db, now_step4)
-                step4_chain["exclusion_rows"] = step4_report.get("step4_exclusion_rows", 0)
-                step4_chain["_debug"] = step4_report.get("_debug", {})
-                step4_chain["exclusion_report_run_id"] = step4_report.get("exclusion_report_run_id")
-                result["step4_exclusion_report_run_id"] = step4_report.get("exclusion_report_run_id")
-            except Exception as step4_error:
-                step4_chain = {
+                # Visibility exclusion report: tickers filtered by visibility gates
+                now_vis = datetime.now(timezone.utc)
+                vis_report = await save_step3_visibility_exclusion_report(db, now_vis)
+                step3_visibility["exclusion_rows"] = vis_report.get("visibility_exclusion_rows", 0)
+                step3_visibility["_debug"] = vis_report.get("_debug", {})
+                step3_visibility["exclusion_report_run_id"] = vis_report.get("exclusion_report_run_id")
+                result["step3_visibility_exclusion_report_run_id"] = vis_report.get("exclusion_report_run_id")
+            except Exception as vis_error:
+                step3_visibility = {
                     "triggered": True,
                     "status": "failed",
-                    "error": str(step4_error),
+                    "error": str(vis_error),
                 }
-                logger.error(f"{job_name}: Step 4 auto-chain failed: {step4_error}")
-        result["step4_visibility"] = step4_chain
+                logger.error(f"{job_name}: Visibility recompute failed: {vis_error}")
+        result["step3_visibility"] = step3_visibility
         
         finished_at = datetime.now(timezone.utc)
         result["finished_at"] = finished_at.isoformat()
