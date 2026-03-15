@@ -1694,7 +1694,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
                 {fa.oldest && (
                   <Text style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>
-                    Oldest: {fa.oldest.ticker} · Newest: {fa.newest?.ticker}
+                    Oldest: {fa.oldest?.ticker} · Newest: {fa.newest?.ticker}
                   </Text>
                 )}
               </View>
