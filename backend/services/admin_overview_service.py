@@ -101,11 +101,10 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         # Seeded total from result or details — used by frontend for seededFromRun.
         details = doc.get("details") or {}
         if isinstance(details, dict):
-            doc["seeded_total"] = (
-                result.get("seeded_total") or
-                details.get("seeded_total") or
-                None
-            )
+            _seeded = result.get("seeded_total")
+            if _seeded is None:
+                _seeded = details.get("seeded_total")
+            doc["seeded_total"] = _seeded
         last_runs[job_name] = doc
 
     return last_runs
