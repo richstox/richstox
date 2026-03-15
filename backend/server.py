@@ -5256,7 +5256,7 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
     """
     # Pipeline steps must only be run via the full sequential chain.
     # Note: universe_seed, price_sync, and fundamentals_sync are blocked in their
-    # own dedicated endpoints above. recompute_visibility_all (Step 4) is
+    # own dedicated endpoints above. recompute_visibility_all (visibility recompute) is
     # accessible via this generic endpoint, so it is blocked here.
     _PIPELINE_STEP_JOBS = {"recompute_visibility_all"}
     if job_name in _PIPELINE_STEP_JOBS:
@@ -7892,7 +7892,7 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     elif _status == "step2_done":
         _current_step = 3
     elif _status == "step3_done":
-        _current_step = None  # all done
+        _current_step = None  # Step 3 is the last step; chain is effectively complete
     elif _status == "failed":
         _failed_step = next(
             (i for i, k in enumerate(("step1", "step2", "step3"), 1) if not _srids.get(k)),

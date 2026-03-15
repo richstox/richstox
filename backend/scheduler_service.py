@@ -1778,7 +1778,9 @@ async def save_step3_visibility_exclusion_report(db, now: datetime) -> Dict[str,
     docs = []
     async for doc in docs_cursor:
         raw_reason = doc.get("visibility_failed_reason") or "UNKNOWN"
-        # Only write rows for the 3 visibility-specific reasons
+        # Only write rows for the 3 visibility-specific reasons.
+        # Other reasons (NOT_SEEDED, NO_PRICE_DATA, MISSING_SECTOR, MISSING_INDUSTRY)
+        # are already covered by Steps 1–3 exclusion reports.
         if raw_reason not in _VISIBILITY_EXCLUSION_REASONS:
             continue
         row = {
