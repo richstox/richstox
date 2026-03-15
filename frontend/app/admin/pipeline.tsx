@@ -185,6 +185,13 @@ function safeCount(v: any): number {
   return 0;
 }
 
+function extractDayProgress(message: string | undefined): string | null {
+  if (!message) return null;
+  const match = message.match(/\((\d+)\/(\d+)\)/);
+  if (!match) return null;
+  return `Day ${match[1]}/${match[2]}`;
+}
+
 function normaliseRun(run: any): any {
   if (!run) return run;
   const start = run.started_at || run.start_time;
@@ -263,6 +270,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); // chain run elapsed timer
 
+  // ── Data Freshness ────────────────────────────────────────────────────────
+  const [freshness, setFreshness] = useState<Record<string, any> | null>(null);
+
   // ── Step 1 universe seed progress ────────────────────────────────────────
   const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
 
@@ -289,12 +299,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const fetchData = useCallback(async () => {
     try {
-      const [overviewRes, exclusionRes] = await Promise.all([
+      const [overviewRes, exclusionRes, freshnessRes] = await Promise.all([
         authenticatedFetch(`${API_URL}/api/admin/overview`, {}, sessionToken),
         authenticatedFetch(`${API_URL}/api/admin/pipeline/exclusion-report?limit=20`, {}, sessionToken),
+        authenticatedFetch(`${API_URL}/api/admin/pipeline/data-freshness`, {}, sessionToken),
       ]);
 
       if (overviewRes.ok) setData(await overviewRes.json());
+      if (freshnessRes.ok) setFreshness(await freshnessRes.json());
       if (exclusionRes.ok) {
         const excl = await exclusionRes.json();
         // Fetch step1_counts by re-querying with the latest Step 1 run_id so
@@ -1236,7 +1248,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         {isBulkPhase && step2Progress.total > 0
                           ? `${fmt(step2Progress.processed)} / ${fmt(step2Progress.total)} · ${step2Progress.pct}%`
                           : isDetectorPhase
-                            ? `Phase ${displayPct}%`
+                            ? `${extractDayProgress(step2Progress.message) ?? 'Phase'} · ${displayPct}%`
                             : isTerminal
                               ? '100%'
                               : `${step2Progress.pct}%`}
@@ -1625,6 +1637,100 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           </View>
         </View>
       </View>
+
+      {/* Data Freshness Dashboard */}
+      {freshness && (
+        <View style={s.syncCard}>
+          <Text style={s.syncTitle}>Data Freshness</Text>
+
+          {/* Events Watermark */}
+          {freshness.events_watermark && (
+            <View style={s.syncRow}>
+              <View style={s.syncLabelRow}>
+                <Text style={s.syncLabel}>Events Watermark</Text>
+                <Text style={[s.syncCount, {
+                  color: freshness.events_watermark.status === 'current' ? '#22C55E'
+                    : freshness.events_watermark.status === 'behind' ? '#F59E0B'
+                    : freshness.events_watermark.status === 'stale' ? '#EF4444'
+                    : COLORS.textMuted,
+                }]}>
+                  {freshness.events_watermark.date ?? 'unknown'}
+                  {freshness.events_watermark.days_behind != null
+                    ? ` (${freshness.events_watermark.days_behind} trading day${freshness.events_watermark.days_behind !== 1 ? 's' : ''} behind)`
+                    : ''}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Fundamentals Age Distribution */}
+          {freshness.fundamentals_age && (() => {
+            const fa = freshness.fundamentals_age;
+            return (
+              <View style={[s.syncRow, { marginTop: 10 }]}>
+                <View style={s.syncLabelRow}>
+                  <Text style={s.syncLabel}>Fundamentals Age</Text>
+                  <Text style={s.syncCount}>{fmt(fa.total)} tickers</Text>
+                </View>
+                <View style={[s.syncBarBg, { height: 8, flexDirection: 'row' }]}>
+                  {fa.fresh_7d?.pct > 0 && (
+                    <View style={{ width: `${fa.fresh_7d.pct}%` as any, height: 8, backgroundColor: '#22C55E' }} />
+                  )}
+                  {fa.stale_7_30d?.pct > 0 && (
+                    <View style={{ width: `${fa.stale_7_30d.pct}%` as any, height: 8, backgroundColor: '#F59E0B' }} />
+                  )}
+                  {fa.stale_30d_plus?.pct > 0 && (
+                    <View style={{ width: `${fa.stale_30d_plus.pct}%` as any, height: 8, backgroundColor: '#EF4444' }} />
+                  )}
+                  {fa.never_synced?.pct > 0 && (
+                    <View style={{ width: `${fa.never_synced.pct}%` as any, height: 8, backgroundColor: '#6B7280' }} />
+                  )}
+                </View>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 4, gap: 8 }}>
+                  <Text style={{ fontSize: 9, color: '#22C55E' }}>● &lt;7d: {fmt(fa.fresh_7d?.count)} ({fa.fresh_7d?.pct}%)</Text>
+                  <Text style={{ fontSize: 9, color: '#F59E0B' }}>● 7–30d: {fmt(fa.stale_7_30d?.count)} ({fa.stale_7_30d?.pct}%)</Text>
+                  <Text style={{ fontSize: 9, color: '#EF4444' }}>● &gt;30d: {fmt(fa.stale_30d_plus?.count)} ({fa.stale_30d_plus?.pct}%)</Text>
+                  <Text style={{ fontSize: 9, color: '#6B7280' }}>● Never: {fmt(fa.never_synced?.count)} ({fa.never_synced?.pct}%)</Text>
+                </View>
+                {fa.oldest && (
+                  <Text style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>
+                    Oldest: {fa.oldest?.ticker} · Newest: {fa.newest?.ticker}
+                  </Text>
+                )}
+              </View>
+            );
+          })()}
+
+          {/* Pending Fundamentals Events */}
+          {freshness.pending_events && (
+            <View style={[s.syncRow, { marginTop: 10 }]}>
+              <View style={s.syncLabelRow}>
+                <Text style={s.syncLabel}>Pending Events Queue</Text>
+                <Text style={[s.syncCount, {
+                  color: freshness.pending_events.count > 20 ? '#F59E0B' : COLORS.textMuted,
+                }]}>
+                  {fmt(freshness.pending_events.count)} pending
+                </Text>
+              </View>
+              {freshness.pending_events.count > 0 && freshness.pending_events.by_type && (
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginTop: 2, gap: 6 }}>
+                  {Object.entries(freshness.pending_events.by_type).map(([type, count]) => (
+                    <Text key={type} style={{ fontSize: 9, color: COLORS.textMuted }}>{type}: {fmt(count as number)}</Text>
+                  ))}
+                </View>
+              )}
+              {freshness.pending_events.oldest_ticker && (
+                <Text style={{ fontSize: 9, color: COLORS.textMuted, marginTop: 2 }}>
+                  Oldest: {freshness.pending_events.oldest_ticker}
+                  {freshness.pending_events.oldest_created_at
+                    ? ` (${new Date(freshness.pending_events.oldest_created_at).toLocaleDateString()})`
+                    : ''}
+                </Text>
+              )}
+            </View>
+          )}
+        </View>
+      )}
 
       {/* Morning Fresh — independent job, not part of universe pipeline */}
       <View style={[s.stepCard, { marginTop: 16, borderLeftColor: '#06B6D4', borderLeftWidth: 3 }]}>
