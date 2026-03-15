@@ -2284,7 +2284,140 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 }
                 logger.error(f"{job_name}: Visibility recompute failed: {vis_error}")
         result["step3_visibility"] = step3_visibility
-        
+
+        # ── Step 3.2: New ticker fundamentals qualification ──────────────
+        from visibility_rules import compute_visibility
+        from price_ingestion_service import backfill_ticker_prices
+
+        step32_stats = {
+            "tickers_targeted": 0,
+            "tickers_synced": 0,
+            "tickers_qualified": 0,
+            "tickers_not_qualified": 0,
+            "tickers_failed": 0,
+        }
+        qualified_for_backfill: List[str] = []
+
+        if result["status"] == "completed":
+            _step32_cursor = db.tracked_tickers.find(
+                {
+                    **STEP3_QUERY,
+                    "$or": [
+                        {"fundamentals_complete": {"$ne": True}},
+                        {"fundamentals_complete": {"$exists": False}},
+                    ],
+                },
+                {"_id": 0, "ticker": 1},
+            )
+            step32_tickers = [doc["ticker"] async for doc in _step32_cursor]
+            step32_stats["tickers_targeted"] = len(step32_tickers)
+
+            if not step32_tickers:
+                await _progress("3.2 New ticker fundamentals: 0 tickers to process")
+                logger.info(f"{job_name}: Step 3.2 — no tickers to process")
+            else:
+                total_32 = len(step32_tickers)
+                logger.info(f"{job_name}: Step 3.2 — processing {total_32} tickers")
+
+                for idx, ticker in enumerate(step32_tickers):
+                    if cancel_check and await cancel_check():
+                        result["status"] = "cancelled"
+                        result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+                        logger.info(f"{job_name}: Step 3.2 cancelled after {idx}/{total_32}")
+                        break
+
+                    # sync_single_ticker_fundamentals normalises the ticker internally
+                    sync_result = await sync_single_ticker_fundamentals(
+                        db, ticker, source_job="step3_2_new_ticker_qualification"
+                    )
+                    step32_stats["tickers_synced"] += 1
+
+                    if sync_result.get("success"):
+                        ticker_full_32 = ticker if ticker.endswith(".US") else f"{ticker}.US"
+                        ticker_doc = await db.tracked_tickers.find_one({"ticker": ticker_full_32})
+                        if ticker_doc:
+                            is_visible, _failed_reason = compute_visibility(ticker_doc)
+                            if is_visible:
+                                step32_stats["tickers_qualified"] += 1
+                                if not ticker_doc.get("price_history_complete"):
+                                    qualified_for_backfill.append(ticker)
+                            else:
+                                step32_stats["tickers_not_qualified"] += 1
+                        else:
+                            step32_stats["tickers_not_qualified"] += 1
+                    else:
+                        step32_stats["tickers_failed"] += 1
+
+                    done_32 = idx + 1
+                    if done_32 % 10 == 0 or done_32 == total_32:
+                        await _progress(
+                            f"3.2 New ticker fundamentals: {done_32}/{total_32} "
+                            f"(qualified: {step32_stats['tickers_qualified']}, "
+                            f"skipped: {step32_stats['tickers_not_qualified']}, "
+                            f"failed: {step32_stats['tickers_failed']})"
+                        )
+
+                    await asyncio.sleep(0.2)
+
+        result["step32_stats"] = step32_stats
+
+        # ── Step 3.3: Initial history backfill (qualified tickers only) ──
+        step33_stats = {
+            "tickers_targeted": 0,
+            "tickers_succeeded": 0,
+            "tickers_failed": 0,
+            "total_records_upserted": 0,
+        }
+
+        if result["status"] == "completed" and qualified_for_backfill:
+            step33_stats["tickers_targeted"] = len(qualified_for_backfill)
+            total_33 = len(qualified_for_backfill)
+            logger.info(f"{job_name}: Step 3.3 — backfilling {total_33} tickers")
+
+            for idx, ticker in enumerate(qualified_for_backfill):
+                if cancel_check and await cancel_check():
+                    result["status"] = "cancelled"
+                    result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+                    logger.info(f"{job_name}: Step 3.3 cancelled after {idx}/{total_33}")
+                    break
+
+                try:
+                    backfill_result = await backfill_ticker_prices(db, ticker)
+                    records = backfill_result.get("records_upserted", 0) if backfill_result else 0
+                    if records > 0:
+                        step33_stats["tickers_succeeded"] += 1
+                        step33_stats["total_records_upserted"] += records
+                        ticker_full_33 = ticker if ticker.endswith(".US") else f"{ticker}.US"
+                        await db.tracked_tickers.update_one(
+                            {"ticker": ticker_full_33},
+                            {"$set": {
+                                "price_history_complete": True,
+                                "price_history_status": "complete",
+                                "price_history_completed_at": datetime.now(timezone.utc),
+                                "needs_price_redownload": False,
+                                "updated_at": datetime.now(timezone.utc),
+                            }},
+                        )
+                    else:
+                        step33_stats["tickers_failed"] += 1
+                except Exception as bf_err:
+                    step33_stats["tickers_failed"] += 1
+                    logger.warning(f"{job_name}: Step 3.3 backfill failed for {ticker}: {bf_err}")
+
+                done_33 = idx + 1
+                if done_33 % 10 == 0 or done_33 == total_33:
+                    await _progress(
+                        f"3.3 Initial history backfill: {done_33}/{total_33} "
+                        f"(✓{step33_stats['tickers_succeeded']} ✗{step33_stats['tickers_failed']})"
+                    )
+
+                await asyncio.sleep(0.15)
+        elif result["status"] == "completed":
+            await _progress("3.3 Initial history backfill: no tickers to backfill")
+            logger.info(f"{job_name}: Step 3.3 — no tickers to backfill")
+
+        result["step33_stats"] = step33_stats
+
         finished_at = datetime.now(timezone.utc)
         result["finished_at"] = finished_at.isoformat()
         result["started_at_prague"] = _to_prague_iso(started_at)
@@ -2293,6 +2426,16 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         result["universe_total"] = universe_total  # informational only
 
         total_to_sync = len(tickers_to_sync) if tickers_to_sync else 0
+
+        _done_msg = (
+            f"Fundamentals sync: {result['success']}/{total_to_sync} done "
+            f"(✓{result['success']} ✗{result['failed']})"
+        )
+        if step32_stats["tickers_targeted"] or step33_stats["tickers_targeted"]:
+            _done_msg += (
+                f" | New: qualified {step32_stats['tickers_qualified']}, "
+                f"backfilled {step33_stats['tickers_succeeded']}/{step33_stats['tickers_targeted']}"
+            )
 
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
@@ -2303,10 +2446,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "finished_at_prague": _to_prague_iso(finished_at),
                 "log_timezone": "Europe/Prague",
                 "details": result,
-                "progress": (
-                    f"Fundamentals sync: {result['success']}/{total_to_sync} done "
-                    f"(✓{result['success']} ✗{result['failed']})"
-                ),
+                "progress": _done_msg,
                 "progress_processed": done_count if tickers_to_sync else 0,
                 "progress_total":     total_to_sync,
                 "progress_pct":       round(done_count / total_to_sync * 100) if total_to_sync else 0,
