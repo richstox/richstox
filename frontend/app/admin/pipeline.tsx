@@ -300,38 +300,40 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const fetchData = useCallback(async () => {
     try {
-      const [overviewRes, exclusionRes, freshnessRes] = await Promise.all([
+      const [overviewRes, exclusionRes, freshnessRes] = await Promise.allSettled([
         authenticatedFetch(`${API_URL}/api/admin/overview`, {}, sessionToken),
         authenticatedFetch(`${API_URL}/api/admin/pipeline/exclusion-report?limit=20`, {}, sessionToken),
         authenticatedFetch(`${API_URL}/api/admin/pipeline/data-freshness`, {}, sessionToken),
       ]);
 
-      if (overviewRes.ok) setData(await overviewRes.json());
-      if (freshnessRes.ok) setFreshness(await freshnessRes.json());
-      if (exclusionRes.ok) {
-        const excl = await exclusionRes.json();
-        // Fetch step1_counts by re-querying with the latest Step 1 run_id so
-        // seededFromRun is available without backend changes to the default path.
-        const step1RunId: string | undefined =
-          (excl as any)?.latest_run_id_per_step?.['Step 1 - Universe Seed'];
-        if (step1RunId) {
-          try {
-              const s1Res = await authenticatedFetch(
-              `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(step1RunId)}&limit=1`,
-              {},
-              sessionToken,
-            );
-            if (s1Res.ok) {
-              const s1Data = await s1Res.json();
-              excl.step1_counts = s1Data.step1_counts ?? null;
-              // Merge Step 1 by_step counts so step1Filtered is available.
-              if (s1Data.by_step) {
-                excl.by_step = { ...(excl.by_step || {}), ...s1Data.by_step };
+      if (overviewRes.status === 'fulfilled' && overviewRes.value.ok) setData(await overviewRes.value.json());
+      if (freshnessRes.status === 'fulfilled' && freshnessRes.value.ok) setFreshness(await freshnessRes.value.json());
+      if (exclusionRes.status === 'fulfilled' && exclusionRes.value.ok) {
+        try {
+          const excl = await exclusionRes.value.json();
+          // Fetch step1_counts by re-querying with the latest Step 1 run_id so
+          // seededFromRun is available without backend changes to the default path.
+          const step1RunId: string | undefined =
+            (excl as any)?.latest_run_id_per_step?.['Step 1 - Universe Seed'];
+          if (step1RunId) {
+            try {
+                const s1Res = await authenticatedFetch(
+                `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(step1RunId)}&limit=1`,
+                {},
+                sessionToken,
+              );
+              if (s1Res.ok) {
+                const s1Data = await s1Res.json();
+                excl.step1_counts = s1Data.step1_counts ?? null;
+                // Merge Step 1 by_step counts so step1Filtered is available.
+                if (s1Data.by_step) {
+                  excl.by_step = { ...(excl.by_step || {}), ...s1Data.by_step };
+                }
               }
-            }
-          } catch (_) { /* non-fatal */ }
-        }
-        setExclusionReport(excl);
+            } catch (_) { /* non-fatal */ }
+          }
+          setExclusionReport(excl);
+        } catch (e) { console.error('exclusion processing error', e); }
       }
     } catch (e) {
       console.error(e);
