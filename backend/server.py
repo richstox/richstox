@@ -7235,6 +7235,24 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             else:
                 logger.error(f"[run-full-now] Chain {chain_id} failed: {exc}")
 
+        if chain_status == "cancelled":
+            _cancelled_at = datetime.now(timezone.utc)
+            _cancelled_at_prague = _sched_to_prague_iso(_cancelled_at)
+            _upd = await db.ops_job_runs.update_many(
+                {"details.chain_run_id": chain_id, "status": "running"},
+                {"$set": {
+                    "status": "cancelled",
+                    "finished_at": _cancelled_at,
+                    "finished_at_prague": _cancelled_at_prague,
+                    "details.cancelled_by": "chain_cancel",
+                }},
+            )
+            if _upd.modified_count:
+                logger.info(
+                    f"[run-full-now] Chain {chain_id} cancelled: "
+                    f"marked {_upd.modified_count} running ops_job_runs as cancelled"
+                )
+
         await db.pipeline_chain_runs.update_one(
             {"chain_run_id": chain_id},
             {"$set": {
