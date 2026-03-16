@@ -1990,6 +1990,16 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             {"_id": _running_doc_id}, {"$set": {"progress": msg}}
         )
 
+    # Initialized up front so the exception handler can safely reference them even
+    # if a failure occurs before queue construction. done_count is incremented in
+    # the asyncio.as_completed loop when each ticker finishes processing.
+    done_count = 0
+    # Populated from the pending fundamentals_events queue before processing
+    # (see tickers_to_sync assignment below the queue hygiene steps).
+    tickers_to_sync: List[str] = []
+
+    result: Dict[str, Any] = {}
+
     try:
         # Check kill switch (manual endpoints can explicitly bypass)
         if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
@@ -2392,15 +2402,6 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             }}
         )
 
-        await log_scheduled_job(
-            db,
-            job_name=job_name,
-            status=result["status"],
-            details=result,
-            started_at=started_at,
-            finished_at=finished_at,
-        )
-
         logger.info(
             f"{job_name} {result['status']}: "
             f"processed={result['processed']}, success={result['success']}"
@@ -2412,17 +2413,34 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         error_msg = str(e)
         logger.error(f"{job_name} failed: {error_msg}")
 
+        finished_ts = datetime.now(timezone.utc)
+        progress_done = done_count
+        # result["processed"] mirrors done_count; prefer it when set so failure progress
+        # matches the same counter used in the success path update.
+        if "processed" in result:
+            progress_done = result["processed"]
+        progress_total = len(tickers_to_sync) if tickers_to_sync else 0
+        # tickers_to_sync remains empty if the queue fails before construction.
+        if progress_total > 0:
+            progress_pct = int(round(progress_done / progress_total * 100))
+        else:
+            logger.warning(f"{job_name}: failure before queuing tickers; progress fields default to 0")
+            progress_pct = 0
+
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
-            {"$set": {"status": "failed", "finished_at": datetime.now(timezone.utc), "error": error_msg}},
-        )
-        await log_scheduled_job(
-            db,
-            job_name=job_name,
-            status="failed",
-            details={"error": error_msg},
-            started_at=started_at,
-            error=error_msg
+            {"$set": {
+                "status": "failed",
+                "finished_at": finished_ts,
+                "started_at_prague": _to_prague_iso(started_at),
+                "finished_at_prague": _to_prague_iso(finished_ts),
+                "log_timezone": "Europe/Prague",
+                "error": error_msg,
+                "details": {"error": error_msg},
+                "progress_processed": progress_done,
+                "progress_total": progress_total,
+                "progress_pct": progress_pct,
+            }},
         )
 
         return {
