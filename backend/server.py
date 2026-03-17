@@ -7241,30 +7241,48 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             # Guarantee finalization even if a BaseException (e.g. asyncio.CancelledError)
             # bypassed the except block, which would leave the chain stuck in a non-terminal
             # status (e.g. "step1_done") with no finished_at.
+            _fin_doc: Dict[str, Any] = {}
+            try:
+                _fin_doc = await db.pipeline_chain_runs.find_one(
+                    {"chain_run_id": chain_id},
+                    {"cancel_requested": 1, "status": 1, "finished_at": 1},
+                ) or {}
+            except Exception:
+                _fin_doc = {}
+            _cancel_requested = bool(_fin_doc.get("cancel_requested"))
+            _current_status = _fin_doc.get("status")
+            _current_finished_at = _fin_doc.get("finished_at")
+
             if not _all_steps_done and chain_status == "completed":
                 # Reached here via BaseException — determine correct terminal status.
-                try:
-                    _fin_doc = await db.pipeline_chain_runs.find_one(
-                        {"chain_run_id": chain_id}, {"cancel_requested": 1}
-                    )
-                    if _fin_doc and _fin_doc.get("cancel_requested"):
-                        chain_status = "cancelled"
-                    else:
-                        chain_status = "failed"
-                except Exception:
+                if _cancel_requested:
+                    chain_status = "cancelled"
+                else:
                     chain_status = "failed"
 
-            _finished_now = datetime.now(timezone.utc)
+            _chain_set: Dict[str, Any] = {
+                "step_run_ids": step_run_ids,
+                "error": chain_error,
+                "failed_step": chain_failed_step,
+            }
+            _finished_now = None
+            if _cancel_requested and _current_status != "failed":
+                chain_status = "cancelled"
+                _chain_set["status"] = "cancelled"
+                if _current_status != "cancelled" and _current_finished_at is None:
+                    _finished_now = datetime.now(timezone.utc)
+                    _chain_set["finished_at"] = _finished_now
+                    _chain_set["finished_at_prague"] = _sched_to_prague_iso(_finished_now)
+            else:
+                _chain_set["status"] = chain_status
+                if _current_finished_at is None:
+                    _finished_now = datetime.now(timezone.utc)
+                    _chain_set["finished_at"] = _finished_now
+                    _chain_set["finished_at_prague"] = _sched_to_prague_iso(_finished_now)
+
             await db.pipeline_chain_runs.update_one(
                 {"chain_run_id": chain_id},
-                {"$set": {
-                    "status":             chain_status,
-                    "finished_at":        _finished_now,
-                    "finished_at_prague": _sched_to_prague_iso(_finished_now),
-                    "step_run_ids":       step_run_ids,
-                    "error":              chain_error,
-                    "failed_step":        chain_failed_step,
-                }},
+                {"$set": _chain_set},
             )
             logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
 
