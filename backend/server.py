@@ -7269,7 +7269,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             if _cancel_requested and _current_status != "failed":
                 chain_status = "cancelled"
                 _chain_set["status"] = "cancelled"
-                if _current_status != "cancelled" and _current_finished_at is None:
+                if _current_finished_at is None:
                     _finished_now = datetime.now(timezone.utc)
                     _chain_set["finished_at"] = _finished_now
                     _chain_set["finished_at_prague"] = _sched_to_prague_iso(_finished_now)
