@@ -7190,7 +7190,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             # ── Step 3 (includes visibility recompute) ───────────────────────
             s3_result = await run_fundamentals_changes_sync(
                 db, ignore_kill_switch=True, parent_run_id=s2_run_id,
-                cancel_check=_cancelled,
+                cancel_check=_cancelled, chain_run_id=chain_id,
             )
             if s3_result.get("status") == "cancelled":
                 chain_status = "cancelled"
@@ -7246,6 +7246,33 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             }},
         )
         logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
+
+        # Defensive cleanup: finalize any ops_job_runs docs that are still
+        # status="running" for this chain_run_id. Guards against edge-case
+        # cancellation paths (e.g. CancelledError bypassing inner except blocks)
+        # so that the Admin UI never shows stale "running" progress after a chain
+        # ends non-normally.  Uses $set with dot-notation to preserve all existing
+        # progress_* and details fields — only adds the cancellation metadata.
+        if chain_status in ("cancelled", "failed"):
+            _cleanup_at = datetime.now(timezone.utc)
+            _cleanup_result = await db.ops_job_runs.update_many(
+                {
+                    "status": "running",
+                    "details.chain_run_id": chain_id,
+                },
+                {"$set": {
+                    "status": "cancelled",
+                    "finished_at": _cleanup_at,
+                    "finished_at_prague": _sched_to_prague_iso(_cleanup_at),
+                    "details.cancelled_by": "chain_cancel",
+                }},
+            )
+            if _cleanup_result.modified_count:
+                logger.warning(
+                    f"[run-full-now] Chain {chain_id}: finalized "
+                    f"{_cleanup_result.modified_count} stuck-running "
+                    f"ops_job_runs doc(s) to 'cancelled'"
+                )
 
     background_tasks.add_task(_run_chain, chain_run_id)
     return {

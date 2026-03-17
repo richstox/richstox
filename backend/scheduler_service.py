@@ -1961,11 +1961,15 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
     return {"deleted": deleted, "eligible_count": len(eligible)}
 
 
-async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None, cancel_check: Optional[Callable[[], Awaitable[bool]]] = None) -> Dict[str, Any]:
+async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None, cancel_check: Optional[Callable[[], Awaitable[bool]]] = None, chain_run_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
     Processes tickers in parallel (up to 20 concurrent) for speed.
     With batch_size=2000: processes all 6,435 tickers in ~15-20 minutes.
+
+    chain_run_id: chain identifier shared across all steps in the pipeline run.
+    Stored in the sentinel doc's details so the chain orchestrator can find and
+    finalize this doc on cancellation/failure.
     """
     from batch_jobs_service import sync_single_ticker_fundamentals
     from visibility_rules import recompute_visibility_all
@@ -1982,7 +1986,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         "started_at": started_at,
         "source": "scheduler",
         "progress": "Queuing tickers for fundamentals sync…",
-        "details": {"parent_run_id": parent_run_id},
+        "details": {"parent_run_id": parent_run_id, "chain_run_id": chain_run_id},
     })).inserted_id
 
     async def _progress(msg: str) -> None:
