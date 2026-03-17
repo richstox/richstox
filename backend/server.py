@@ -7388,16 +7388,36 @@ async def admin_pipeline_chain_status(chain_run_id: str):
 async def admin_pipeline_chain_cancel(chain_run_id: str):
     """Request cancellation of a running chain. Auth: AdminAuthMiddleware."""
     from fastapi import HTTPException as _HEc
+
     doc = await db.pipeline_chain_runs.find_one({"chain_run_id": chain_run_id}, {"status": 1})
     if not doc:
         raise _HEc(status_code=404, detail=f"chain_run_id not found: {chain_run_id}")
+
     _active = {"running", "step1_done", "step2_done"}
     if doc.get("status") not in _active:
         raise _HEc(status_code=400, detail=f"Chain is not running (status={doc.get('status')})")
+
     await db.pipeline_chain_runs.update_one(
         {"chain_run_id": chain_run_id},
         {"$set": {"cancel_requested": True}},
     )
+
+    # Eagerly finalize the chain on cancel (prevents hanging chains without finished_at)
+    _now = datetime.now(timezone.utc)
+    await db.pipeline_chain_runs.update_one(
+        {
+            "chain_run_id": chain_run_id,
+            "cancel_requested": True,
+            "finished_at": {"$exists": False},
+            "status": {"$ne": "failed"},
+        },
+        {"$set": {
+            "status": "cancelled",
+            "finished_at": _now,
+            "finished_at_prague": _sched_to_prague_iso(_now),
+        }},
+    )
+
     logger.info(f"[chain-cancel] Cancel requested for {chain_run_id}")
 
     # Eagerly finalize any ops_job_runs docs that are still status="running" for
@@ -7427,6 +7447,7 @@ async def admin_pipeline_chain_cancel(chain_run_id: str):
         )
 
     return {"status": "cancel_requested", "chain_run_id": chain_run_id}
+
 
 
 @api_router.get("/admin/pipeline/export/full")
