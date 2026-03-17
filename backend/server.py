@@ -7265,6 +7265,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     "finished_at": _cleanup_at,
                     "finished_at_prague": _sched_to_prague_iso(_cleanup_at),
                     "details.cancelled_by": "chain_cancel",
+                    "details.chain_run_id": chain_id,
                 }},
             )
             if _cleanup_result.modified_count:
@@ -7338,6 +7339,33 @@ async def admin_pipeline_chain_cancel(chain_run_id: str):
         {"$set": {"cancel_requested": True}},
     )
     logger.info(f"[chain-cancel] Cancel requested for {chain_run_id}")
+
+    # Eagerly finalize any ops_job_runs docs that are still status="running" for
+    # this chain.  Guards against the edge case where _run_chain's defensive
+    # cleanup never executes (e.g. background task crash, unhandled BaseException,
+    # or a DB error that occurs after pipeline_chain_runs is already set to
+    # "cancelled").  Uses $set with dot-notation so progress_* and all existing
+    # detail fields are preserved — only cancellation metadata is added.
+    _cancel_at = datetime.now(timezone.utc)
+    _finalized = await db.ops_job_runs.update_many(
+        {
+            "status": "running",
+            "details.chain_run_id": chain_run_id,
+        },
+        {"$set": {
+            "status": "cancelled",
+            "finished_at": _cancel_at,
+            "finished_at_prague": _sched_to_prague_iso(_cancel_at),
+            "details.cancelled_by": "chain_cancel",
+            "details.chain_run_id": chain_run_id,
+        }},
+    )
+    if _finalized.modified_count:
+        logger.warning(
+            f"[chain-cancel] Eagerly finalized {_finalized.modified_count} "
+            f"running ops_job_runs doc(s) for chain {chain_run_id}"
+        )
+
     return {"status": "cancel_requested", "chain_run_id": chain_run_id}
 
 
