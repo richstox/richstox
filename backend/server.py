@@ -7009,6 +7009,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         chain_failed_step: Optional[int] = None
         last_completed_step: int = 0
         _all_steps_done = False  # Set True only when all steps complete; used in finally
+        _s2_run_doc_id = None   # MongoDB _id of the Step 2 sentinel; set when sentinel is created
 
         async def _cancelled() -> bool:
             _d = await db.pipeline_chain_runs.find_one(
@@ -7268,17 +7269,33 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             )
             logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
 
-            # Defensive cleanup: finalize any ops_job_runs docs that are still
-            # status="running" for this chain_run_id. Guards against edge-case
-            # cancellation paths (e.g. CancelledError bypassing inner except blocks)
-            # so that the Admin UI never shows stale "running" progress after a chain
-            # ends non-normally.  Uses $set with dot-notation to preserve all existing
-            # progress_* and details fields — only adds the cancellation metadata.
+            # Targeted Step 2 sentinel finalization: directly finalize the price_sync
+            # sentinel by its MongoDB _id (_s2_run_doc_id), which is always reliable
+            # regardless of whether details.chain_run_id is present in the document
+            # (real observed case: it may be absent after internal details replacement).
+            if chain_status in ("cancelled", "failed") and _s2_run_doc_id is not None:
+                _s2_fin_at = datetime.now(timezone.utc)
+                await db.ops_job_runs.update_one(
+                    {"_id": _s2_run_doc_id, "status": "running"},
+                    {"$set": {
+                        "status": "cancelled",
+                        "finished_at": _s2_fin_at,
+                        "finished_at_prague": _sched_to_prague_iso(_s2_fin_at),
+                        "details.cancelled_by": "chain_cancel",
+                        "details.chain_run_id": chain_id,
+                    }},
+                )
+
+            # Defensive cleanup: finalize any remaining ops_job_runs docs that are still
+            # status="running" for this chain (e.g. Step 1 sentinel caught here).
+            # Scoped to known pipeline job names to avoid accidentally cancelling
+            # unrelated jobs that happen to share details.chain_run_id.
             if chain_status in ("cancelled", "failed"):
                 _cleanup_at = datetime.now(timezone.utc)
                 _cleanup_result = await db.ops_job_runs.update_many(
                     {
                         "status": "running",
+                        "job_name": {"$in": ["universe_seed", "price_sync", "fundamentals_sync"]},
                         "details.chain_run_id": chain_id,
                     },
                     {"$set": {
