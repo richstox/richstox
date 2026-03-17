@@ -7286,10 +7286,11 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 if _s2_run_id:
                     _s2_fin_at = datetime.now(timezone.utc)
                     await db.ops_job_runs.update_one(
-                        {
+                                               {
                             "job_name": "price_sync",
                             "status": "running",
-                            "details.exclusion_report_run_id": _s2_run_id,
+-                            "details.exclusion_report_run_id": _s2_run_id,
++                            "job_id": _s2_run_id,
                         },
                         {"$set": {
                             "status": "cancelled",
