@@ -1269,27 +1269,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 );
               })()}
 
-              {/* Price History completeness — inside Step 2 */}
-              {step.job_name === 'price_sync' && (
-                <View style={{ marginTop: 8, marginHorizontal: 4 }}>
-                  <View style={s.syncRow}>
-                    <View style={s.syncLabelRow}>
-                      <Text style={s.syncLabel}>Price History</Text>
-                      <Text style={s.syncCount}>
-                        {fmt(syncStatus.price_history_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
-                        {(syncStatus.price_history_pct !== undefined) ? `  ${syncStatus.price_history_pct}%` : ''}
-                      </Text>
-                    </View>
-                    <View style={s.syncBarBg}>
-                      <View style={[s.syncBarFill, {
-                        width: `${Math.min(syncStatus.price_history_pct ?? 0, 100)}%` as any,
-                        backgroundColor: (syncStatus.price_history_pct ?? 0) >= 100 ? '#22C55E' : '#10B981',
-                      }]} />
-                    </View>
-                  </View>
-                </View>
-              )}
-
               {step.job_name === 'price_sync' && (
                 <View style={s.substepsCard}>
                   <Text style={s.substepsTitle}>Step 2 Sub-Steps</Text>
