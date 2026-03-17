@@ -7284,6 +7284,21 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 {"chain_run_id": chain_id},
                 {"$set": _chain_set},
             )
+                        # Fallback: pokud je cancel_requested==true a finished_at stále chybí,
+            # doraz nekompletní záznam (ochrana proti race/nomatch v hlavním updatu).
+            if _cancel_requested:
+                _fallback_at = _finished_now or datetime.now(timezone.utc)
+                await db.pipeline_chain_runs.update_one(
+                    {
+                        "chain_run_id": chain_id,
+                        "finished_at": {"$exists": False},
+                    },
+                    {"$set": {
+                        "status": "cancelled" if _current_status != "failed" else "failed",
+                        "finished_at": _fallback_at,
+                        "finished_at_prague": _sched_to_prague_iso(_fallback_at),
+                    }},
+                )
             logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
 
             # Step 2 sentinel deterministic finalization.
