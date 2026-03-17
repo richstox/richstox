@@ -105,6 +105,7 @@ async def get_pipeline_sync_status(db) -> Dict[str, Any]:
     base_query = {
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
         "asset_type": "Common Stock",
+        "is_seeded": True,
         "has_price_data": True,
     }
 
