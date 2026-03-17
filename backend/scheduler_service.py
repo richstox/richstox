@@ -925,8 +925,8 @@ async def run_step2_event_detectors(
                 all_flagged.extend(tickers)
                 # Split and dividend detectors set needs_price_redownload=True.
                 # Collect unique tickers for immediate scoped price re-download.
-                if step in ("2.2", "2.4"):
-                    price_redownload_tickers.extend(tickers)
+                # if step in ("2.2", "2.4"):
+                #    price_redownload_tickers.extend(tickers)
 
     # Deduplicate price_redownload_tickers (split + dividend may overlap).
     price_redownload_tickers = list(dict.fromkeys(price_redownload_tickers))
