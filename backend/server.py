@@ -7008,6 +7008,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         chain_error: Optional[str] = None
         chain_failed_step: Optional[int] = None
         last_completed_step: int = 0
+        _all_steps_done = False  # Set True only when all steps complete; used in finally
 
         async def _cancelled() -> bool:
             _d = await db.pipeline_chain_runs.find_one(
@@ -7215,6 +7216,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             )
             logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, visibility: {s3_vis_run_id}")
             last_completed_step = 3
+            _all_steps_done = True
 
         except Exception as exc:
             if chain_status != "cancelled":
@@ -7235,45 +7237,69 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             else:
                 logger.error(f"[run-full-now] Chain {chain_id} failed: {exc}")
 
-        await db.pipeline_chain_runs.update_one(
-            {"chain_run_id": chain_id},
-            {"$set": {
-                "status":       chain_status,
-                "finished_at":  datetime.now(timezone.utc),
-                "step_run_ids": step_run_ids,
-                "error":        chain_error,
-                "failed_step":  chain_failed_step,
-            }},
-        )
-        logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
+        finally:
+            # Guarantee finalization even if a BaseException (e.g. asyncio.CancelledError)
+            # bypassed the except block, which would leave the chain stuck in a non-terminal
+            # status (e.g. "step1_done") with no finished_at.
+            if not _all_steps_done and chain_status == "completed":
+                # Reached here via BaseException — determine correct terminal status.
+                try:
+                    _fin_doc = await db.pipeline_chain_runs.find_one(
+                        {"chain_run_id": chain_id}, {"cancel_requested": 1}
+                    )
+                    if _fin_doc and _fin_doc.get("cancel_requested"):
+                        chain_status = "cancelled"
+                    else:
+                        chain_status = "failed"
+                except Exception:
+                    chain_status = "failed"
 
-        # Defensive cleanup: finalize any ops_job_runs docs that are still
-        # status="running" for this chain_run_id. Guards against edge-case
-        # cancellation paths (e.g. CancelledError bypassing inner except blocks)
-        # so that the Admin UI never shows stale "running" progress after a chain
-        # ends non-normally.  Uses $set with dot-notation to preserve all existing
-        # progress_* and details fields — only adds the cancellation metadata.
-        if chain_status in ("cancelled", "failed"):
-            _cleanup_at = datetime.now(timezone.utc)
-            _cleanup_result = await db.ops_job_runs.update_many(
-                {
-                    "status": "running",
-                    "details.chain_run_id": chain_id,
-                },
+            _finished_now = datetime.now(timezone.utc)
+            await db.pipeline_chain_runs.update_one(
+                {"chain_run_id": chain_id},
                 {"$set": {
-                    "status": "cancelled",
-                    "finished_at": _cleanup_at,
-                    "finished_at_prague": _sched_to_prague_iso(_cleanup_at),
-                    "details.cancelled_by": "chain_cancel",
-                    "details.chain_run_id": chain_id,
+                    "status":             chain_status,
+                    "finished_at":        _finished_now,
+                    "finished_at_prague": _sched_to_prague_iso(_finished_now),
+                    "step_run_ids":       step_run_ids,
+                    "error":              chain_error,
+                    "failed_step":        chain_failed_step,
                 }},
             )
-            if _cleanup_result.modified_count:
-                logger.warning(
-                    f"[run-full-now] Chain {chain_id}: finalized "
-                    f"{_cleanup_result.modified_count} stuck-running "
-                    f"ops_job_runs doc(s) to 'cancelled'"
+            logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
+
+            # Step 2 sentinel deterministic finalization.
+            # When the chain ends non-normally and step2 completed (step_run_ids.step2
+            # is non-null), the price_sync sentinel must never remain status="running".
+            # We look it up by job_name + details.exclusion_report_run_id (the run-id
+            # string stored in step_run_ids.step2 and written by
+            # save_price_sync_exclusion_report into the sentinel's details).
+            # Using details.chain_run_id is NOT reliable (real observed case: absent).
+            if chain_status in ("cancelled", "failed"):
+                _chain_doc = await db.pipeline_chain_runs.find_one(
+                    {"chain_run_id": chain_id},
+                    {"step_run_ids": 1},
                 )
+                _s2_run_id = (
+                    (_chain_doc or {}).get("step_run_ids") or {}
+                ).get("step2")
+                if _s2_run_id:
+                    _s2_fin_at = datetime.now(timezone.utc)
+                    await db.ops_job_runs.update_one(
+                                               {
+                            "job_name": "price_sync",
+                            "status": "running",
+-                            "details.exclusion_report_run_id": _s2_run_id,
++                            "job_id": _s2_run_id,
+                        },
+                        {"$set": {
+                            "status": "cancelled",
+                            "finished_at": _s2_fin_at,
+                            "finished_at_prague": _sched_to_prague_iso(_s2_fin_at),
+                            "details.cancelled_by": "chain_cancel",
+                            "details.chain_run_id": chain_id,
+                        }},
+                    )
 
     background_tasks.add_task(_run_chain, chain_run_id)
     return {
