@@ -7291,6 +7291,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 await db.pipeline_chain_runs.update_one(
                     {
                         "chain_run_id": chain_id,
+                        "cancel_requested": True,
                         "finished_at": {"$exists": False},
                     },
                     {"$set": {
