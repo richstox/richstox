@@ -49,6 +49,7 @@ interface PipelineSyncStatus {
   fundamentals_pct?: number;
   needs_price_redownload?: number;
   needs_fundamentals_refresh?: number;
+  pending_events_audit?: number;
   credits_today?: number;
   credits_limit?: number;
   credits_pct?: number;
@@ -1455,9 +1456,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     </View>
                     {(syncStatus.needs_fundamentals_refresh ?? 0) > 0 && (
                       <Text style={s.syncQueueText}>
-                        🔄 {fmt(syncStatus.needs_fundamentals_refresh)} pending refresh (events)
+                        🔄 {fmt(syncStatus.needs_fundamentals_refresh)} Pending Refresh
                       </Text>
                     )}
+                    <Text style={s.syncQueueText}>
+                      Pending events (audit only): {fmt(syncStatus.pending_events_audit ?? 0)}
+                    </Text>
                   </View>
                 </View>
               )}
