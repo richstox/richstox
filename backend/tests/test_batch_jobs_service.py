@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 import asyncio
+from datetime import datetime, timezone
 
 import pytest
 
@@ -133,7 +134,8 @@ def test_sync_single_ticker_success_clears_stale_error_fields(monkeypatch):
     assert updated["fundamentals_status"] == "complete"
     assert updated["fundamentals_complete"] is True
     assert updated["needs_fundamentals_refresh"] is False
-    assert updated["fundamentals_updated_at"]
+    assert isinstance(updated["fundamentals_updated_at"], datetime)
+    assert updated["fundamentals_updated_at"].tzinfo == timezone.utc
 
     assert updated["fundamentals_error"] is None
     assert updated["fundamentals_error_code"] is None

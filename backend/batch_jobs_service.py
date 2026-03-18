@@ -332,7 +332,7 @@ async def sync_single_ticker_fundamentals(
                 "fundamentals_status":        "complete",
                 "fundamentals_complete":      True,
                 "needs_fundamentals_refresh": False,
-                "fundamentals_updated_at":    _to_prague_iso(now),
+                "fundamentals_updated_at":    now,
                 "fundamentals_error":         None,
                 "fundamentals_error_code":    None,
                 "fundamentals_error_at":      None,
