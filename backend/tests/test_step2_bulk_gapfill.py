@@ -58,7 +58,6 @@ class _FakeOpsJobRuns:
         return None
 
     async def update_many(self, filt, update):
-        _ = filt, update
         return SimpleNamespace(modified_count=0)
 
     @property
@@ -210,7 +209,6 @@ def test_step2_gapfill_bootstrap_forces_target_end_date_when_missed_dates_empty(
     called_dates = []
 
     async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, bulk_date=None):
-        _ = db, job_name, progress_cb, seeded_tickers_override
         called_dates.append(bulk_date)
         return {
             "status": "success",
@@ -223,7 +221,6 @@ def test_step2_gapfill_bootstrap_forces_target_end_date_when_missed_dates_empty(
         }
 
     async def _fake_missed_dates(db, today_dt):
-        _ = db, today_dt
         return []
 
     monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)

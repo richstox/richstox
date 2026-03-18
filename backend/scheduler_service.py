@@ -1260,7 +1260,6 @@ async def run_daily_price_sync(
             and watermark_before_dt is None
             and not missed_dates
             and target_end_date.weekday() < 5
-            and target_end_date not in missed_dates
         ):
             missed_dates.append(target_end_date)
         missing_dates = sorted(d.strftime("%Y-%m-%d") for d in missed_dates if d <= target_end_date)
