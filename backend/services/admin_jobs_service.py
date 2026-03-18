@@ -34,29 +34,13 @@ async def cancel_latest_running_job(
     await db.ops_job_runs.update_one(
         {"_id": running_doc["_id"], "status": "running"},
         {"$set": {
-            "status": "cancelled",
-            "cancelled_at": now,
-            "finished_at": now,
-            "finished_at_prague": now.astimezone(PRAGUE_TZ).isoformat(),
-            "log_timezone": "Europe/Prague",
-            "details.cancelled_by": "admin_cancel_running_endpoint",
+            "status": "cancel_requested",
+            "updated_at": now,
+            "updated_at_prague": now.astimezone(PRAGUE_TZ).isoformat(),
         }},
-    )
-
-    await db.ops_config.update_one(
-        {"key": f"cancel_job_{job_name}"},
-        {"$set": {
-            "key": f"cancel_job_{job_name}",
-            "value": True,
-            "requested_at": now,
-            "requested_by": "admin_cancel_running_endpoint",
-        }},
-        upsert=True,
     )
 
     return {
-        "job_name": job_name,
         "run_id": str(running_doc["_id"]),
-        "cancel_requested": True,
-        "requested_at": now.isoformat(),
+        "status": "cancel_requested",
     }

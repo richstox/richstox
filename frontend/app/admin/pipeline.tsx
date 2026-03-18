@@ -586,6 +586,24 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     setStep2Progress(prev => prev ? { ...prev, phase: 'stopped' } : null);
   };
 
+  const handleCancelRunningJob = async (jobName: 'price_sync' | 'fundamentals_sync') => {
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/jobs/cancel_running?job_name=${encodeURIComponent(jobName)}`,
+        { method: 'POST' },
+        sessionToken,
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload?.detail || payload?.message || res.statusText);
+      }
+      await fetchData();
+      Alert.alert('Cancel requested', `Job ${jobName} is now marked as cancel_requested.`);
+    } catch (e: any) {
+      Alert.alert('Cancel failed', e?.message || 'Could not request cancellation.');
+    }
+  };
+
   const handleDownloadFullCsv = () => {
     if (!chainRunId || chainStatus !== 'completed') return;
     const url = `${API_URL}/api/admin/pipeline/export/full?chain_run_id=${encodeURIComponent(chainRunId)}`;
@@ -1137,6 +1155,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.runLabel}>Next run:</Text>
                     <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
+                  {(step.job_name === 'price_sync' || step.job_name === 'fundamentals_sync') && run.status === 'running' && (
+                    <TouchableOpacity
+                      style={s.cancelRunningBtn}
+                      onPress={() => handleCancelRunningJob(step.job_name as 'price_sync' | 'fundamentals_sync')}
+                    >
+                      <Text style={s.cancelRunningBtnText}>Cancel running</Text>
+                    </TouchableOpacity>
+                  )}
                   {run.error_message && (
                     <Text style={s.errorText}>⚠️ {run.error_message}</Text>
                   )}
@@ -1818,6 +1844,15 @@ const s = StyleSheet.create({
   runInfoRow: { flexDirection: 'row', gap: 6, marginBottom: 2 },
   runLabel: { fontSize: 11, color: COLORS.textMuted, width: 80 },
   runValue: { fontSize: 11, color: COLORS.text, flex: 1 },
+  cancelRunningBtn: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    backgroundColor: '#EF4444',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  cancelRunningBtnText: { color: '#fff', fontSize: 11, fontWeight: '700' },
   errorText: { fontSize: 11, color: '#EF4444', marginTop: 4 },
   neverRun: { fontSize: 11, color: COLORS.textMuted, marginTop: 8, fontStyle: 'italic' },
   substepsCard: {

@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -28,14 +29,12 @@ def test_cancel_latest_running_job_returns_none_when_not_running():
         find_one=AsyncMock(return_value=None),
         update_one=AsyncMock(),
     )
-    ops_config = SimpleNamespace(update_one=AsyncMock())
-    db = SimpleNamespace(ops_job_runs=ops_job_runs, ops_config=ops_config)
+    db = SimpleNamespace(ops_job_runs=ops_job_runs)
 
     result = asyncio.run(cancel_latest_running_job(db, "price_sync"))
 
     assert result is None
     ops_job_runs.update_one.assert_not_called()
-    ops_config.update_one.assert_not_called()
 
 
 def test_cancel_latest_running_job_updates_latest_running_doc():
@@ -46,16 +45,13 @@ def test_cancel_latest_running_job_updates_latest_running_doc():
         find_one=AsyncMock(return_value={"_id": run_id}),
         update_one=AsyncMock(),
     )
-    ops_config = SimpleNamespace(update_one=AsyncMock())
-    db = SimpleNamespace(ops_job_runs=ops_job_runs, ops_config=ops_config)
+    db = SimpleNamespace(ops_job_runs=ops_job_runs)
 
     result = asyncio.run(cancel_latest_running_job(db, "fundamentals_sync", now=now))
 
     assert result == {
-        "job_name": "fundamentals_sync",
         "run_id": run_id,
-        "cancel_requested": True,
-        "requested_at": now.isoformat(),
+        "status": "cancel_requested",
     }
     ops_job_runs.find_one.assert_awaited_once_with(
         {"job_name": "fundamentals_sync", "status": "running"},
@@ -65,14 +61,7 @@ def test_cancel_latest_running_job_updates_latest_running_doc():
 
     update_filter, update_doc = ops_job_runs.update_one.await_args.args
     assert update_filter == {"_id": run_id, "status": "running"}
-    assert update_doc["$set"]["status"] == "cancelled"
-    assert update_doc["$set"]["cancelled_at"] == now
-    assert update_doc["$set"]["finished_at"] == now
-    assert update_doc["$set"]["details.cancelled_by"] == "admin_cancel_running_endpoint"
-
-    ops_config.update_one.assert_awaited_once()
-    config_filter, config_update = ops_config.update_one.await_args.args
-    assert config_filter == {"key": "cancel_job_fundamentals_sync"}
-    assert config_update["$set"]["value"] is True
-    assert config_update["$set"]["requested_at"] == now
-    assert ops_config.update_one.await_args.kwargs["upsert"] is True
+    assert update_doc["$set"]["status"] == "cancel_requested"
+    assert update_doc["$set"]["updated_at"] == now
+    assert update_doc["$set"]["updated_at_prague"] == now.astimezone(ZoneInfo("Europe/Prague")).isoformat()
+    assert set(update_doc["$set"].keys()) == {"status", "updated_at", "updated_at_prague"}

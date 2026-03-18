@@ -5174,7 +5174,8 @@ async def admin_clear_cancel_flag(job_name: str):
 @api_router.post("/admin/jobs/cancel_running")
 async def admin_cancel_running_job(job_name: str = Query(..., description="fundamentals_sync|price_sync")):
     """
-    Cancel latest running Step 2/3 job and mark run as cancelled immediately.
+    Request cancellation for the latest running Step 2/3 job.
+    Marks the run as cancel_requested (does not finalize timestamps).
     Auth is enforced by AdminAuthMiddleware for /api/admin/* routes.
     """
     from services.admin_jobs_service import (
