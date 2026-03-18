@@ -90,6 +90,17 @@ async def sync_single_ticker_fundamentals(
     Writes to canonical collections (company_financials, company_earnings_history)
     matching the full_sync_service worker. Sets fundamentals_status='complete' only
     after ALL DB writes succeed and post-write row counts confirm data was persisted.
+
+    Run-outcome semantics are explicit:
+    - SUCCESS: sets fundamentals_status='complete', fundamentals_complete=True,
+      needs_fundamentals_refresh=False, fundamentals_updated_at=<UTC datetime>,
+      and clears fundamentals_error / fundamentals_error_code /
+      fundamentals_error_at to None.
+    - FAILURE: sets fundamentals_status='error', fundamentals_complete=False,
+      and writes fundamentals_error (+code/+at) for the current run.
+
+    fundamentals_updated_at is intentionally stored as UTC datetime for type
+    consistency across tracked_tickers writers and freshness queries.
     """
     from pymongo import UpdateOne as _UpdateOne
 
@@ -126,7 +137,7 @@ async def sync_single_ticker_fundamentals(
 
     async def _set_error(code: str, msg: str) -> None:
         """Mark ticker as error state — never leaves limbo."""
-        err_at = _to_prague_iso(datetime.now(timezone.utc))
+        err_at = datetime.now(timezone.utc)
         try:
             await db.tracked_tickers.update_one(
                 {"ticker": ticker_full},
@@ -332,7 +343,7 @@ async def sync_single_ticker_fundamentals(
                 "fundamentals_status":        "complete",
                 "fundamentals_complete":      True,
                 "needs_fundamentals_refresh": False,
-                "fundamentals_updated_at":    _to_prague_iso(now),
+                "fundamentals_updated_at":    now,
                 "fundamentals_error":         None,
                 "fundamentals_error_code":    None,
                 "fundamentals_error_at":      None,
