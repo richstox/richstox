@@ -35,6 +35,32 @@ class _TrackedTickersForStep3:
         if query == {"needs_fundamentals_refresh": True}:
             docs = [{"ticker": d["ticker"]} for d in self._docs if d.get("needs_fundamentals_refresh") is True]
             return _AsyncCursor(docs)
+        if (
+            query.get("is_visible") is True
+            and query.get("exchange", {}).get("$in") == ["NYSE", "NASDAQ"]
+            and query.get("asset_type") == "Common Stock"
+            and query.get("is_seeded") is True
+            and query.get("has_price_data") is True
+        ):
+            docs = []
+            for d in self._docs:
+                if d.get("exchange") not in {"NYSE", "NASDAQ"}:
+                    continue
+                if d.get("asset_type") != "Common Stock":
+                    continue
+                if d.get("is_seeded") is not True:
+                    continue
+                if d.get("has_price_data") is not True:
+                    continue
+                if d.get("is_visible") is not True:
+                    continue
+                if d.get("price_history_complete") is True and d.get("needs_price_redownload") is not True:
+                    continue
+                docs.append({
+                    "ticker": d["ticker"],
+                    "needs_price_redownload": bool(d.get("needs_price_redownload")),
+                })
+            return _AsyncCursor(docs)
         return _AsyncCursor([])
 
     async def distinct(self, _field, _query):
@@ -293,6 +319,94 @@ def test_step3_single_flight_skips_when_lock_owned_by_another_run():
     assert run_doc["error"] == "single_flight_lock_held"
     assert run_doc["finished_at"] is not None
     assert db.ops_locks.docs["fundamentals_sync"]["owner_run_id"] == "other-run-id"
+
+
+def test_step3_phase_c_parallel_counts_failures_per_ticker(monkeypatch):
+    db = _FakeStep3DB([
+        {
+            "ticker": "AAA.US",
+            "needs_fundamentals_refresh": False,
+            "exchange": "NYSE",
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+            "has_price_data": True,
+            "is_visible": True,
+            "price_history_complete": False,
+            "needs_price_redownload": False,
+        },
+        {
+            "ticker": "BBB.US",
+            "needs_fundamentals_refresh": False,
+            "exchange": "NYSE",
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+            "has_price_data": True,
+            "is_visible": True,
+            "price_history_complete": False,
+            "needs_price_redownload": True,
+        },
+        {
+            "ticker": "CCC.US",
+            "needs_fundamentals_refresh": False,
+            "exchange": "NYSE",
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+            "has_price_data": True,
+            "is_visible": True,
+            "price_history_complete": False,
+            "needs_price_redownload": False,
+        },
+    ])
+    phase_c_calls = []
+
+    async def _fake_purge(_db):
+        return None
+
+    async def _fake_dedup(_db, _now):
+        return {"pending_before_dedup": 0, "deduped_event_count": 0}
+
+    async def _fake_skip(_db, _tickers, _now):
+        return {"skipped_tickers": [], "skipped_ticker_count": 0, "skipped_event_count": 0}
+
+    async def _fake_enqueue(*_args, **_kwargs):
+        return {"new_inserts": 0, "skipped_existing": 0}
+
+    async def _fake_step3_report(_db, _now):
+        return {"step3_exclusion_rows": 0, "exclusion_report_run_id": None}
+
+    async def _fake_visibility(_db, parent_run_id=None):
+        return {"job_id": "vis1", "duration_seconds": 0, "stats": {"changed": 0}, "after": {"visible_count": 3}}
+
+    async def _fake_visibility_report(_db, _now):
+        return {"visibility_exclusion_rows": 0, "_debug": {}, "exclusion_report_run_id": None}
+
+    async def _fake_process_price(_db, ticker, job_name=None, needs_redownload=False):
+        phase_c_calls.append((ticker, needs_redownload, job_name))
+        if ticker == "BBB.US":
+            raise RuntimeError("boom")
+        await asyncio.sleep(0)
+        return {"ticker": ticker, "success": True, "records": 2}
+
+    monkeypatch.setattr("scheduler_service.purge_orphaned_fundamentals_events", _fake_purge)
+    monkeypatch.setattr("scheduler_service._deduplicate_pending_events", _fake_dedup)
+    monkeypatch.setattr("scheduler_service._skip_already_complete_tickers", _fake_skip)
+    monkeypatch.setattr("scheduler_service._enqueue_fundamentals_events", _fake_enqueue)
+    monkeypatch.setattr("scheduler_service.save_step3_exclusion_report", _fake_step3_report)
+    monkeypatch.setattr("visibility_rules.recompute_visibility_all", _fake_visibility)
+    monkeypatch.setattr("scheduler_service.save_step3_visibility_exclusion_report", _fake_visibility_report)
+    monkeypatch.setattr("full_sync_service._process_price_ticker", _fake_process_price)
+
+    result = asyncio.run(
+        run_fundamentals_changes_sync(db, batch_size=1, ignore_kill_switch=True)
+    )
+
+    assert result["status"] == "completed"
+    assert result["phase_c_stats"]["tickers_targeted"] == 3
+    assert result["phase_c_stats"]["tickers_succeeded"] == 2
+    assert result["phase_c_stats"]["tickers_failed"] == 1
+    assert result["phase_c_stats"]["total_records"] == 4
+    assert sorted([t for (t, _, _) in phase_c_calls]) == ["AAA.US", "BBB.US", "CCC.US"]
+    assert len(phase_c_calls) == 3
 
 
 def test_acquire_fundamentals_lock_sets_acquired_at():
