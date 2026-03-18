@@ -94,30 +94,30 @@ class _OpsJobRuns:
         return SimpleNamespace(modified_count=1)
 
     async def update_many(self, filt, update):
+        def _matches_clause(doc, clause):
+            heartbeat_clause = clause.get("heartbeat_at")
+            if isinstance(heartbeat_clause, dict) and "$exists" in heartbeat_clause:
+                expected_exists = heartbeat_clause["$exists"]
+                return ("heartbeat_at" in doc) == expected_exists
+            if "heartbeat_at" in clause and clause["heartbeat_at"] is None:
+                return doc.get("heartbeat_at") is None
+            if isinstance(heartbeat_clause, dict) and "$lt" in heartbeat_clause:
+                heartbeat = doc.get("heartbeat_at")
+                return heartbeat is not None and heartbeat < heartbeat_clause["$lt"]
+            return False
+
         modified = 0
         for doc_id, doc in self.docs.items():
             if doc.get("job_name") != filt.get("job_name"):
                 continue
             if doc.get("status") != filt.get("status"):
                 continue
-            for clause in filt.get("$or", []):
-                if "heartbeat_at" in clause and "$exists" in clause["heartbeat_at"]:
-                    if clause["heartbeat_at"]["$exists"] and "heartbeat_at" in doc:
-                        continue
-                elif "heartbeat_at" in clause and clause["heartbeat_at"] is None:
-                    if doc.get("heartbeat_at") is not None:
-                        continue
-                elif "heartbeat_at" in clause and "$lt" in clause["heartbeat_at"]:
-                    heartbeat = doc.get("heartbeat_at")
-                    if heartbeat is None or heartbeat >= clause["heartbeat_at"]["$lt"]:
-                        continue
-                else:
-                    continue
-                for key, value in (update.get("$set", {}) or {}).items():
-                    doc[key] = value
-                self.docs[doc_id] = doc
-                modified += 1
-                break
+            if not any(_matches_clause(doc, clause) for clause in filt.get("$or", [])):
+                continue
+            for key, value in (update.get("$set", {}) or {}).items():
+                doc[key] = value
+            self.docs[doc_id] = doc
+            modified += 1
         return SimpleNamespace(modified_count=modified)
 
 
@@ -133,7 +133,7 @@ class _OpsLocks:
         for clause in filt.get("$or", []):
             if clause.get("owner_run_id") == doc.get("owner_run_id"):
                 allowed = True
-            expires_clause = clause.get("expires_at") if isinstance(clause, dict) else None
+            expires_clause = clause.get("expires_at")
             if isinstance(expires_clause, dict) and "$lte" in expires_clause:
                 expires_at = doc.get("expires_at")
                 if expires_at is not None and expires_at <= expires_clause["$lte"]:

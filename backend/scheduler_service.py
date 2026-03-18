@@ -2037,7 +2037,6 @@ async def _heartbeat_fundamentals_sync_lock(db, owner_run_id: str, now: datetime
     await db.ops_locks.update_one(
         {"_id": FUNDAMENTALS_SYNC_LOCK_ID, "owner_run_id": owner_run_id},
         {"$set": {
-            "owner_run_id": owner_run_id,
             "heartbeat_at": now,
             "expires_at": now + timedelta(seconds=FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS),
         }},
@@ -2150,13 +2149,14 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     async def _heartbeat_worker() -> None:
         while not _heartbeat_stop.is_set():
             await asyncio.sleep(FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS)
-            if _heartbeat_stop.is_set():
-                break
             heartbeat_now = datetime.now(timezone.utc)
-            await db.ops_job_runs.update_one(
+            heartbeat_result = await db.ops_job_runs.update_one(
                 {"_id": _running_doc_id, "status": "running"},
                 {"$set": {"heartbeat_at": heartbeat_now}},
             )
+            if heartbeat_result.modified_count == 0:
+                # Exit if the run is no longer active (externally finalized/status changed).
+                break
             await _heartbeat_fundamentals_sync_lock(db, _lock_owner_run_id, heartbeat_now)
 
     _heartbeat_task = asyncio.create_task(_heartbeat_worker())
