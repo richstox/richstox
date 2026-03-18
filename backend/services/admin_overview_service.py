@@ -26,6 +26,129 @@ from credit_log_service import get_pipeline_sync_status
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 
+def _to_prague_iso(dt) -> Optional[str]:
+    if dt is None:
+        return None
+    if not hasattr(dt, "astimezone"):
+        return str(dt)
+    if getattr(dt, "tzinfo", None) is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(PRAGUE_TZ).isoformat()
+
+
+def _empty_step3_phase(name: str) -> Dict[str, Any]:
+    return {
+        "name": name,
+        "status": "idle",
+        "processed": 0,
+        "total": None,
+        "pct": None,
+        "message": None,
+    }
+
+
+def _default_step3_telemetry_response() -> Dict[str, Any]:
+    return {
+        "job_name": "fundamentals_sync",
+        "run_id": None,
+        "status": "idle",
+        "started_at_prague": None,
+        "updated_at_prague": None,
+        "pending_refresh_flags": 0,
+        "pending_events_audit": 0,
+        "phases": {
+            "A": _empty_step3_phase("Fundamentals"),
+            "B": _empty_step3_phase("Visibility"),
+            "C": _empty_step3_phase("PriceHistory"),
+        },
+    }
+
+
+def _normalize_run_status(raw_status: Optional[str]) -> str:
+    if raw_status == "failed":
+        return "error"
+    allowed = {"idle", "running", "success", "completed", "cancelled", "error"}
+    return raw_status if raw_status in allowed else "idle"
+
+
+def _sanitize_phase_payload(raw: Any, *, fallback_name: str) -> Dict[str, Any]:
+    phase = _empty_step3_phase(fallback_name)
+    if not isinstance(raw, dict):
+        return phase
+    status = raw.get("status")
+    if status in {"idle", "running", "done", "error"}:
+        phase["status"] = status
+    processed = raw.get("processed")
+    if isinstance(processed, (int, float)):
+        phase["processed"] = int(processed)
+    total = raw.get("total")
+    if isinstance(total, (int, float)):
+        phase["total"] = int(total)
+    elif total is None:
+        phase["total"] = None
+    pct = raw.get("pct")
+    if isinstance(pct, (int, float)):
+        phase["pct"] = float(pct)
+    elif pct is None:
+        phase["pct"] = None
+    message = raw.get("message")
+    if isinstance(message, str):
+        phase["message"] = message.splitlines()[0]
+    elif message is None:
+        phase["message"] = None
+    return phase
+
+
+async def get_step3_live_telemetry(db) -> Dict[str, Any]:
+    response = _default_step3_telemetry_response()
+    pending_refresh_flags, pending_events_audit = await asyncio.gather(
+        db.tracked_tickers.count_documents({"needs_fundamentals_refresh": True}),
+        db.fundamentals_events.count_documents({"status": "pending"}),
+    )
+    response["pending_refresh_flags"] = pending_refresh_flags
+    response["pending_events_audit"] = pending_events_audit
+
+    projection = {
+        "_id": 1,
+        "status": 1,
+        "started_at": 1,
+        "finished_at": 1,
+        "started_at_prague": 1,
+        "finished_at_prague": 1,
+        "details.step3_telemetry": 1,
+    }
+    run = await db.ops_job_runs.find_one(
+        {"job_name": "fundamentals_sync", "status": "running"},
+        projection,
+        sort=[("started_at", -1)],
+    )
+    if run is None:
+        run = await db.ops_job_runs.find_one(
+            {"job_name": "fundamentals_sync", "status": {"$in": ["success", "completed", "cancelled", "error", "failed"]}},
+            projection,
+            sort=[("started_at", -1)],
+        )
+    if run is None:
+        return response
+
+    details = run.get("details") or {}
+    telemetry = details.get("step3_telemetry") if isinstance(details, dict) else {}
+    raw_phases = telemetry.get("phases") if isinstance(telemetry, dict) else {}
+
+    response["run_id"] = str(run.get("_id")) if run.get("_id") is not None else None
+    response["status"] = _normalize_run_status(run.get("status"))
+    response["started_at_prague"] = run.get("started_at_prague") or _to_prague_iso(run.get("started_at"))
+    response["updated_at_prague"] = (
+        telemetry.get("updated_at_prague") if isinstance(telemetry, dict) else None
+    ) or run.get("finished_at_prague") or _to_prague_iso(run.get("finished_at")) or response["started_at_prague"]
+    response["phases"] = {
+        "A": _sanitize_phase_payload((raw_phases or {}).get("A"), fallback_name="Fundamentals"),
+        "B": _sanitize_phase_payload((raw_phases or {}).get("B"), fallback_name="Visibility"),
+        "C": _sanitize_phase_payload((raw_phases or {}).get("C"), fallback_name="PriceHistory"),
+    }
+    return response
+
+
 async def get_job_last_runs(db) -> Dict[str, Any]:
     """
     Get last run status for all scheduled jobs from ops_job_runs.

@@ -5327,6 +5327,13 @@ async def admin_job_status(job_name: str):
     }
 
 
+@api_router.get("/admin/step3/telemetry")
+async def admin_step3_telemetry():
+    """Live Step 3 telemetry (fundamentals_sync) for admin monitoring."""
+    from services.admin_overview_service import get_step3_live_telemetry
+    return await get_step3_live_telemetry(db)
+
+
 # =============================================================================
 # P25: PAIN CACHE COMPUTATION
 # =============================================================================
