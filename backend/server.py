@@ -5171,6 +5171,33 @@ async def admin_clear_cancel_flag(job_name: str):
     return {"job_name": job_name, "cancel_cleared": True}
 
 
+@api_router.post("/admin/jobs/cancel_running")
+async def admin_cancel_running_job(job_name: str = Query(..., description="fundamentals_sync|price_sync")):
+    """
+    Cancel latest running Step 2/3 job and mark run as cancelled immediately.
+    Auth is enforced by AdminAuthMiddleware for /api/admin/* routes.
+    """
+    from services.admin_jobs_service import (
+        VALID_CANCEL_RUNNING_JOB_NAMES,
+        cancel_latest_running_job,
+        is_valid_cancel_running_job_name,
+    )
+
+    if not is_valid_cancel_running_job_name(job_name):
+        allowed = "|".join(sorted(VALID_CANCEL_RUNNING_JOB_NAMES))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid job_name '{job_name}'. Expected one of: {allowed}",
+        )
+
+    result = await cancel_latest_running_job(db, job_name)
+    if not result:
+        raise HTTPException(status_code=404, detail=f"No running job found for {job_name}")
+
+    logger.info(f"Cancel-running requested for job: {job_name} run_id={result['run_id']}")
+    return result
+
+
 @api_router.post("/admin/jobs/enqueue-manual-refresh/run")
 async def admin_enqueue_manual_refresh():
     """
