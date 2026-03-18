@@ -55,6 +55,29 @@ interface PipelineSyncStatus {
   credits_pct?: number;
 }
 
+interface Step3TelemetryPhase {
+  name?: string;
+  status?: string;
+  processed?: number;
+  total?: number | null;
+  pct?: number | null;
+  message?: string | null;
+}
+
+interface Step3Telemetry {
+  run_id?: string | null;
+  status?: string;
+  started_at_prague?: string | null;
+  updated_at_prague?: string | null;
+  pending_refresh_flags?: number;
+  pending_events_audit?: number;
+  phases?: {
+    A?: Step3TelemetryPhase;
+    B?: Step3TelemetryPhase;
+    C?: Step3TelemetryPhase;
+  };
+}
+
 interface OverviewData {
   health?: {
     scheduler_active?: boolean;
@@ -274,6 +297,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   // ── Data Freshness ────────────────────────────────────────────────────────
   const [freshness, setFreshness] = useState<Record<string, any> | null>(null);
+  const [step3Telemetry, setStep3Telemetry] = useState<Step3Telemetry | null>(null);
 
   // ── Step 1 universe seed progress ────────────────────────────────────────
   const [step1Progress, setStep1Progress] = useState<{processed: number; total: number; pct: number} | null>(null);
@@ -345,6 +369,26 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   }, [sessionToken]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const pollStep3Telemetry = async () => {
+      try {
+        const res = await authenticatedFetch(`${API_URL}/api/admin/step3/telemetry`, {}, sessionToken);
+        if (!res.ok) return;
+        const payload = await res.json();
+        if (!cancelled) setStep3Telemetry(payload);
+      } catch {
+        // non-fatal; keep polling
+      }
+    };
+    pollStep3Telemetry(); // immediate load
+    const pollId = setInterval(pollStep3Telemetry, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(pollId);
+    };
+  }, [sessionToken]);
 
   const onRefresh = () => { setRefreshing(true); fetchData(); };
 
@@ -784,7 +828,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     <View style={s.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>
   );
 
-  const isRunDisabled = runMode === 'AUTO' || chainRunning;
+  const isStep3Running = step3Telemetry?.status === 'running';
+  const isRunDisabled = runMode === 'AUTO' || chainRunning || isStep3Running;
   const isChainFailed = chainStatus === 'failed' || chainStatus === 'error';
   const isChainCancelled = chainStatus === 'cancelled';
 
@@ -856,7 +901,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       onPress={handleRunFullPipeline}
       disabled={isRunDisabled}
     >
-      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>▶ Run Full Pipeline Now</Text>
+      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>
+        {isStep3Running ? '⏳ Step 3 Running…' : '▶ Run Full Pipeline Now'}
+      </Text>
     </TouchableOpacity>
   )}
 
@@ -943,7 +990,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       {/* Pipeline Steps */}
       {steps.map((step, idx) => {
         const run = jobRuns[step.job_name];
-        const status = run?.status;
+        const status = step.job_name === 'fundamentals_sync'
+          ? (step3Telemetry?.status ?? run?.status)
+          : run?.status;
         const isExpanded = expandedSteps.has(step.step);
 
         // Chain icon override: when a chain run is active, derive icon state from chain progress.
@@ -1082,12 +1131,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {/* Last Run Info */}
               {run ? (() => {
-                const runStart = run.started_at_prague || run.start_time || run.started_at;
-                const runEnd = run.finished_at_prague || run.end_time || run.finished_at;
+                const isStep3 = step.job_name === 'fundamentals_sync';
+                const runStatus = isStep3 ? (step3Telemetry?.status ?? run.status) : run.status;
+                const runStart = isStep3
+                  ? (step3Telemetry?.started_at_prague || run.started_at_prague || run.start_time || run.started_at)
+                  : (run.started_at_prague || run.start_time || run.started_at);
+                const runEnd = isStep3
+                  ? (step3Telemetry?.updated_at_prague || run.finished_at_prague || run.end_time || run.finished_at)
+                  : (run.finished_at_prague || run.end_time || run.finished_at);
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
-                const isLiveRun = run.status === 'running';
+                const isLiveRun = runStatus === 'running';
                 const prevCompleted = run.previous_completed_run;
                 const prevEnd = prevCompleted?.finished_at_prague || prevCompleted?.finished_at;
                 const statusText = isLiveRun
@@ -1104,7 +1159,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     : chainStepRunning
                       ? ` · ${formatElapsed(elapsedSeconds)}`
                       : '')
-                  : run.status === 'cancelled'
+                  : runStatus === 'cancelled'
                     ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
                     : lastDuration !== undefined
                       ? ` (${formatDuration(lastDuration)})`
@@ -1114,7 +1169,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Last run:</Text>
-                    <Text style={[s.runValue, { color: getStatusColor(run.status) }]}>
+                    <Text style={[s.runValue, { color: getStatusColor(runStatus) }]}>
                       {statusText}{durationText}
                     </Text>
                   </View>
@@ -1440,29 +1495,46 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               {/* Fundamentals completeness — inside Step 3 */}
               {step.job_name === 'fundamentals_sync' && (
                 <View style={{ marginTop: 8, marginHorizontal: 4 }}>
-                  <View style={s.syncRow}>
-                    <View style={s.syncLabelRow}>
-                      <Text style={s.syncLabel}>Fundamentals</Text>
-                      <Text style={s.syncCount}>
-                        {fmt(syncStatus.fundamentals_complete ?? 0)} / {fmt(syncStatus.total_visible_tickers ?? 0)}
-                        {(syncStatus.fundamentals_pct !== undefined) ? `  ${syncStatus.fundamentals_pct}%` : ''}
-                      </Text>
-                    </View>
-                    <View style={s.syncBarBg}>
-                      <View style={[s.syncBarFill, {
-                        width: `${Math.min(syncStatus.fundamentals_pct ?? 0, 100)}%` as any,
-                        backgroundColor: (syncStatus.fundamentals_pct ?? 0) >= 100 ? '#22C55E' : '#F59E0B',
-                      }]} />
-                    </View>
-                    {(syncStatus.needs_fundamentals_refresh ?? 0) > 0 && (
-                      <Text style={s.syncQueueText}>
-                        🔄 {fmt(syncStatus.needs_fundamentals_refresh)} Pending Refresh
-                      </Text>
-                    )}
+                  {(['A', 'B', 'C'] as const).map((phaseKey) => {
+                    const phase = step3Telemetry?.phases?.[phaseKey] || {};
+                    const phaseTotal = phase.total;
+                    const computedPct = typeof phase.pct === 'number'
+                      ? phase.pct
+                      : (typeof phaseTotal === 'number' && phaseTotal > 0)
+                        ? ((phase.processed ?? 0) / phaseTotal) * 100
+                        : 0;
+                    const phasePct = Math.min(Math.max(Math.round(computedPct), 0), 100);
+                    const phaseDone = phase.status === 'done';
+                    return (
+                      <View key={phaseKey} style={s.syncRow}>
+                        <View style={s.syncLabelRow}>
+                          <Text style={s.syncLabel}>{phase.name || `Phase ${phaseKey}`}</Text>
+                          <Text style={s.syncCount}>
+                            {fmt(phase.processed ?? 0)}
+                            {typeof phaseTotal === 'number' ? ` / ${fmt(phaseTotal)}` : ''}
+                            {`  ${phasePct}%`}
+                          </Text>
+                        </View>
+                        <View style={s.syncBarBg}>
+                          <View style={[s.syncBarFill, {
+                            width: `${phasePct}%` as any,
+                            backgroundColor: phaseDone ? '#22C55E' : (phase.status === 'running' ? '#F59E0B' : '#6366F1'),
+                          }]} />
+                        </View>
+                        {!!phase.message && (
+                          <Text style={s.syncQueueText}>{phase.message}</Text>
+                        )}
+                      </View>
+                    );
+                  })}
+                  {(step3Telemetry?.pending_refresh_flags ?? 0) > 0 && (
                     <Text style={s.syncQueueText}>
-                      Pending events (audit only): {fmt(syncStatus.pending_events_audit ?? 0)}
+                      🔄 {fmt(step3Telemetry?.pending_refresh_flags ?? 0)} Pending Refresh
                     </Text>
-                  </View>
+                  )}
+                  <Text style={s.syncQueueText}>
+                    Pending events (audit only): {fmt(step3Telemetry?.pending_events_audit ?? 0)}
+                  </Text>
                 </View>
               )}
 
