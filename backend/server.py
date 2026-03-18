@@ -4859,6 +4859,10 @@ async def admin_get_job_status(job_name: str):
     Returns:
         Job config and last run info
     """
+    if job_name in {"price_sync", "fundamentals_sync"}:
+        from scheduler_service import finalize_stuck_admin_job_runs
+        await finalize_stuck_admin_job_runs(db, job_names=[job_name])
+
     config_key = f"job_{job_name}_enabled"
     config = await db.ops_config.find_one({"key": config_key}, {"_id": 0})
     
@@ -5191,6 +5195,9 @@ async def admin_cancel_running_job(job_name: str = Query(..., description="funda
             detail=f"Invalid job_name '{job_name}'. Expected one of: {allowed}",
         )
 
+    from scheduler_service import finalize_stuck_admin_job_runs
+    await finalize_stuck_admin_job_runs(db, job_names=[job_name])
+
     result = await cancel_latest_running_job(db, job_name)
     if not result:
         raise HTTPException(status_code=404, detail=f"No running job found for {job_name}")
@@ -5299,6 +5306,10 @@ async def admin_enqueue_manual_refresh():
 @api_router.get("/admin/jobs/{job_name}/status")
 async def admin_job_status(job_name: str):
     """Get the latest run status for a specific job."""
+    if job_name in {"price_sync", "fundamentals_sync"}:
+        from scheduler_service import finalize_stuck_admin_job_runs
+        await finalize_stuck_admin_job_runs(db, job_names=[job_name])
+
     run = await db.ops_job_runs.find_one(
         {"job_name": job_name},
         {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
@@ -5307,7 +5318,7 @@ async def admin_job_status(job_name: str):
          "phase": 1},
         sort=[("started_at", -1)],
     )
-    cancel_flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
+    cancel_requested = bool(run and run.get("status") == "cancel_requested")
 
     # Real-time DB counts for fundamentals jobs — scoped to the canonical Step 3
     # universe (NYSE+NASDAQ Common Stock with price data) so they match the
@@ -5345,7 +5356,7 @@ async def admin_job_status(job_name: str):
     return {
         "job_name":               job_name,
         "last_run":               run,
-        "cancel_requested":       bool(cancel_flag),
+        "cancel_requested":       cancel_requested,
         "db_complete_count":      db_complete_count,
         "db_pending_count":       db_pending_count,
         "db_total_count":         db_total_count,
@@ -5542,6 +5553,11 @@ async def admin_overview():
     P47: Single aggregated endpoint for Admin Panel v2.
     Returns all data needed in one response for fast page load (<3s).
     """
+    from scheduler_service import finalize_stuck_admin_job_runs
+    await finalize_stuck_admin_job_runs(
+        db,
+        job_names=["price_sync", "fundamentals_sync"],
+    )
     return await get_admin_overview(db)
 
 
