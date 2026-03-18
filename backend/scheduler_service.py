@@ -1056,7 +1056,11 @@ async def run_daily_price_sync(
     cancel_check: optional async callable that returns True if cancellation was
     requested (used by the full pipeline chain orchestrator).
     """
-    from price_ingestion_service import run_daily_bulk_catchup
+    from price_ingestion_service import (
+        run_daily_bulk_catchup,
+        _read_price_bulk_state,
+        _write_price_bulk_state,
+    )
 
     started_at = datetime.now(timezone.utc)
     job_name = "price_sync"
@@ -1205,12 +1209,111 @@ async def run_daily_price_sync(
             SEED_QUERY, {"_id": 0, "ticker": 1}
         ).to_list(None)
         _seeded_set = {d["ticker"] for d in _seeded_docs if d.get("ticker")}
-
-        result = await run_daily_bulk_catchup(
-            db,
-            progress_cb=_bulk_progress,
-            seeded_tickers_override=_seeded_set,
+        min_bulk_rows_ok = 4000
+        target_end_date = datetime.now(PRAGUE_TZ).date()
+        price_bulk_state = await _read_price_bulk_state(db)
+        watermark_before = (
+            (price_bulk_state or {}).get("global_last_bulk_date_processed")
+            if isinstance(price_bulk_state, dict)
+            else None
         )
+
+        watermark_before_dt: Optional[date] = None
+        if watermark_before:
+            try:
+                watermark_before_dt = datetime.fromisoformat(str(watermark_before)).date()
+            except Exception:
+                logger.warning(
+                    f"{job_name}: invalid pipeline_state.price_bulk.global_last_bulk_date_processed={watermark_before!r}; ignoring"
+                )
+                watermark_before = None
+
+        missed_dates = await _get_missed_trading_dates(db, target_end_date)
+        if watermark_before_dt is not None:
+            missed_dates = [d for d in missed_dates if d > watermark_before_dt]
+        missing_dates = sorted(d.strftime("%Y-%m-%d") for d in missed_dates if d <= target_end_date)
+
+        days: List[Dict[str, Any]] = []
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {"details.price_bulk_gapfill": {
+                "watermark_before": watermark_before,
+                "target_end_date": target_end_date.strftime("%Y-%m-%d"),
+                "min_bulk_rows_ok": min_bulk_rows_ok,
+                "days": days,
+            }}},
+        )
+        result_gapfill = {
+            "watermark_before": watermark_before,
+            "target_end_date": target_end_date.strftime("%Y-%m-%d"),
+            "min_bulk_rows_ok": min_bulk_rows_ok,
+            "days": days,
+        }
+
+        result: Dict[str, Any] = {
+            "status": "success",
+            "dates_processed": 0,
+            "records_upserted": 0,
+            "api_calls": 0,
+            "bulk_writes": 0,
+            "tickers_with_price": [],
+            "price_bulk_gapfill": result_gapfill,
+        }
+        _tickers_with_price_set: set = set()
+        for idx, bulk_date in enumerate(missing_dates):
+            await _progress(
+                f"2.1 Bulk gapfill {idx + 1}/{len(missing_dates)} for {bulk_date}…",
+                phase="2.1_bulk_catchup",
+            )
+            day: Dict[str, Any] = {
+                "bulk_date": bulk_date,
+                "status": "error",
+                "rows_written": 0,
+                "advanced_watermark": False,
+                "error": None,
+            }
+            try:
+                day_result = await run_daily_bulk_catchup(
+                    db,
+                    progress_cb=_bulk_progress,
+                    seeded_tickers_override=_seeded_set,
+                    bulk_date=bulk_date,
+                )
+                rows_written = await db.stock_prices.count_documents({"date": bulk_date})
+                day["rows_written"] = rows_written
+                day_ok = rows_written > min_bulk_rows_ok
+                if day_ok:
+                    now_utc = datetime.now(timezone.utc)
+                    await _write_price_bulk_state(db, bulk_date, now_utc)
+                    day["status"] = "success"
+                    day["advanced_watermark"] = True
+                    result["dates_processed"] += day_result.get("dates_processed", 0)
+                    result["records_upserted"] += day_result.get("records_upserted", 0)
+                    result["api_calls"] += day_result.get("api_calls", 0)
+                    result["bulk_writes"] += day_result.get("bulk_writes", 0)
+                    _tickers_with_price_set.update(day_result.get("tickers_with_price", []))
+                else:
+                    day["status"] = "failed_sanity"
+                    day["error"] = (
+                        f"rows_written={rows_written} <= min_bulk_rows_ok={min_bulk_rows_ok}"
+                    )
+            except Exception as exc:
+                day["status"] = "error"
+                day["error"] = str(exc)
+
+            days.append(day)
+            if len(days) > 60:
+                days = days[-60:]
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {"details.price_bulk_gapfill.days": days}},
+            )
+            result_gapfill["days"] = days
+
+            if day["status"] != "success":
+                break
+
+        result["tickers_with_price"] = sorted(_tickers_with_price_set)
 
         await _progress(
             f"2.1 Prices synced: {result.get('records_upserted', 0)} records "
@@ -1268,6 +1371,7 @@ async def run_daily_price_sync(
                         "tickers_seeded_total": seeded_total,
                         "tickers_with_price_data": with_price,
                         "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                        "price_bulk_gapfill": result.get("price_bulk_gapfill", {}),
                         "parent_run_id": parent_run_id,
                         "chain_run_id": chain_run_id,
                         "stop_reason": "cancel_requested_after_phase_a",
@@ -1339,6 +1443,7 @@ async def run_daily_price_sync(
                         "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
                         "fundamentals_events_enqueued_skipped_existing": result.get("fundamentals_events_enqueued_skipped_existing", 0),
                         "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                        "price_bulk_gapfill": result.get("price_bulk_gapfill", {}),
                         "parent_run_id": parent_run_id,
                         "chain_run_id": chain_run_id,
                         "stop_reason": "cancel_requested_during_phase_bc",
@@ -1393,6 +1498,7 @@ async def run_daily_price_sync(
                     "fundamentals_events_enqueued_skipped_existing": result.get("fundamentals_events_enqueued_skipped_existing", 0),
                     "event_detectors": result.get("event_detectors", {}),
                     "exclusion_report_run_id": result.get("exclusion_report_run_id"),
+                    "price_bulk_gapfill": result.get("price_bulk_gapfill", {}),
                     "parent_run_id": parent_run_id,
                     "chain_run_id": chain_run_id,
                 },
