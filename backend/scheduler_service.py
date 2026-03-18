@@ -1253,6 +1253,16 @@ async def run_daily_price_sync(
         missed_dates = await _get_missed_trading_dates(db, target_end_date)
         if watermark_before_dt is not None:
             missed_dates = [d for d in missed_dates if d > watermark_before_dt]
+        # Bootstrap guard: when no bulk watermark exists and Step 2 has seeded
+        # tickers, force processing of target_end_date so bulk fetch always runs.
+        if (
+            progress_total_step2 > 0
+            and watermark_before_dt is None
+            and not missed_dates
+            and target_end_date.weekday() < 5
+            and target_end_date not in missed_dates
+        ):
+            missed_dates.append(target_end_date)
         missing_dates = sorted(d.strftime("%Y-%m-%d") for d in missed_dates if d <= target_end_date)
 
         days: List[Dict[str, Any]] = []
@@ -1336,6 +1346,40 @@ async def run_daily_price_sync(
                 break
 
         result["tickers_with_price"] = sorted(_tickers_with_price_set)
+
+        if progress_total_step2 > 0 and (result.get("api_calls", 0) == 0 or result.get("dates_processed", 0) == 0):
+            _bulk_guard_msg = (
+                "Step 2 bulk guard triggered: no bulk fetch executed "
+                f"(api_calls={result.get('api_calls', 0)}, dates_processed={result.get('dates_processed', 0)}). "
+                "Aborting run to prevent false success."
+            )
+            _bulk_guard_finished_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {
+                    "status": "error",
+                    "finished_at": _bulk_guard_finished_at,
+                    "finished_at_prague": _to_prague_iso(_bulk_guard_finished_at),
+                    "phase": "2.1_bulk_catchup",
+                    "error": _bulk_guard_msg,
+                    "details": {
+                        **result,
+                        "parent_run_id": parent_run_id,
+                        "chain_run_id": chain_run_id,
+                    },
+                }},
+            )
+            logger.error(f"{job_name}: {_bulk_guard_msg}")
+            return {
+                "job_name": job_name,
+                "status": "error",
+                "error": _bulk_guard_msg,
+                "records_upserted": result.get("records_upserted", 0),
+                "dates_processed": result.get("dates_processed", 0),
+                "api_calls": result.get("api_calls", 0),
+                "started_at": started_at.isoformat(),
+                "finished_at": _bulk_guard_finished_at.isoformat(),
+            }
 
         await _progress(
             f"2.1 Prices synced: {result.get('records_upserted', 0)} records "

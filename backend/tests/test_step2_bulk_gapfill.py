@@ -57,6 +57,10 @@ class _FakeOpsJobRuns:
             return deepcopy(self.docs[_id])
         return None
 
+    async def update_many(self, filt, update):
+        _ = filt, update
+        return SimpleNamespace(modified_count=0)
+
     @property
     def latest(self):
         if not self.docs:
@@ -200,6 +204,48 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
     assert persisted["updated_at_prague"]
 
 
+def test_step2_gapfill_bootstrap_forces_target_end_date_when_missed_dates_empty(monkeypatch):
+    _patch_non_gapfill_dependencies(monkeypatch)
+    db = _FakeDB(stock_counts={"2026-03-18": 5001})
+    called_dates = []
+
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, bulk_date=None):
+        _ = db, job_name, progress_cb, seeded_tickers_override
+        called_dates.append(bulk_date)
+        return {
+            "status": "success",
+            "dates_processed": 1,
+            "records_upserted": 5001,
+            "api_calls": 1,
+            "bulk_writes": 1,
+            "tickers_with_price": ["AAPL.US"],
+            "date": bulk_date,
+        }
+
+    async def _fake_missed_dates(db, today_dt):
+        _ = db, today_dt
+        return []
+
+    monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)
+    monkeypatch.setattr(scheduler_service, "_get_missed_trading_dates", _fake_missed_dates)
+    monkeypatch.setattr(scheduler_service, "PRAGUE_TZ", timezone.utc)
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["dates_processed"] == 1
+    assert result["api_calls"] > 0
+    assert len(called_dates) == 1
+    assert called_dates[0] == datetime.now(timezone.utc).date().strftime("%Y-%m-%d")
+
+
 def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
     db = _FakeDB(
@@ -238,6 +284,8 @@ def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
 
     assert called_dates == []
     latest = db.ops_job_runs.latest
+    assert latest["status"] == "error"
+    assert "bulk guard triggered" in latest["error"]
     assert latest["details"]["price_bulk_gapfill"]["days"] == []
 
 
