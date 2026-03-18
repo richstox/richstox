@@ -35,6 +35,7 @@ import asyncio
 from zoneinfo import ZoneInfo
 import httpx
 from pymongo import UpdateOne
+from pymongo.errors import DuplicateKeyError
 
 logger = logging.getLogger("richstox.scheduler")
 
@@ -50,6 +51,10 @@ STEP2_REPORT_STEP = "Step 2 - Price Sync"
 EVENTS_WATERMARK_KEY = "last_events_checked_date"
 REMEDIATION_WATCHDOG_TIMEOUT_SECONDS = 300
 REMEDIATION_HEARTBEAT_SECONDS = 10
+FUNDAMENTALS_SYNC_LOCK_ID = "fundamentals_sync"
+FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS = 10
+FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS = 60
+FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS = 300
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
@@ -1965,6 +1970,87 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
     return {"deleted": deleted, "eligible_count": len(eligible)}
 
 
+async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
+    """Mark stale fundamentals_sync runs as failed so they do not stay running forever."""
+    stale_before = now - timedelta(seconds=FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS)
+    result = await db.ops_job_runs.update_many(
+        {
+            "job_name": "fundamentals_sync",
+            "status": "running",
+            "$or": [
+                {"heartbeat_at": {"$exists": False}},
+                {"heartbeat_at": None},
+                {"heartbeat_at": {"$lt": stale_before}},
+            ],
+        },
+        {"$set": {
+            "status": "failed",
+            "finished_at": now,
+            "finished_at_prague": _to_prague_iso(now),
+            "log_timezone": "Europe/Prague",
+            "error": "zombie_finalized_no_heartbeat",
+        }},
+    )
+    if result.modified_count:
+        logger.warning(
+            f"fundamentals_sync: finalized {result.modified_count} zombie run(s) "
+            f"(heartbeat cutoff={stale_before.isoformat()})"
+        )
+    return result.modified_count
+
+
+async def _acquire_fundamentals_sync_lock(db, owner_run_id: str, now: datetime) -> bool:
+    """Acquire distributed single-flight lock for fundamentals_sync."""
+    lease_expires_at = now + timedelta(seconds=FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS)
+
+    reusable = await db.ops_locks.update_one(
+        {
+            "_id": FUNDAMENTALS_SYNC_LOCK_ID,
+            "$or": [
+                {"owner_run_id": owner_run_id},
+                {"expires_at": {"$lte": now}},
+            ],
+        },
+        {"$set": {
+            "owner_run_id": owner_run_id,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        }},
+    )
+    if reusable.matched_count:
+        return True
+
+    try:
+        await db.ops_locks.insert_one({
+            "_id": FUNDAMENTALS_SYNC_LOCK_ID,
+            "owner_run_id": owner_run_id,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        })
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def _heartbeat_fundamentals_sync_lock(db, owner_run_id: str, now: datetime) -> None:
+    """Refresh lock lease and run heartbeat while fundamentals_sync is running."""
+    await db.ops_locks.update_one(
+        {"_id": FUNDAMENTALS_SYNC_LOCK_ID, "owner_run_id": owner_run_id},
+        {"$set": {
+            "owner_run_id": owner_run_id,
+            "heartbeat_at": now,
+            "expires_at": now + timedelta(seconds=FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS),
+        }},
+    )
+
+
+async def _release_fundamentals_sync_lock(db, owner_run_id: str) -> None:
+    await db.ops_locks.delete_one({
+        "_id": FUNDAMENTALS_SYNC_LOCK_ID,
+        "owner_run_id": owner_run_id,
+    })
+
+
 async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_switch: bool = False, parent_run_id: Optional[str] = None, cancel_check: Optional[Callable[[], Awaitable[bool]]] = None, chain_run_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Run fundamentals sync for tickers with changes/events.
@@ -1982,6 +2068,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     job_name = "fundamentals_sync"
 
     logger.info(f"Starting {job_name}")
+    await _finalize_zombie_fundamentals_runs(db, started_at)
 
     def _build_phase(name: str) -> Dict[str, Any]:
         return {
@@ -2011,6 +2098,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         "job_name": job_name,
         "status": "running",
         "started_at": started_at,
+        "heartbeat_at": started_at,
         "source": "scheduler",
         "progress": "Queuing tickers for fundamentals sync…",
         "details": {
@@ -2019,6 +2107,59 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "step3_telemetry": step3_telemetry,
         },
     })).inserted_id
+    _lock_owner_run_id = str(_running_doc_id)
+    _lock_acquired = await _acquire_fundamentals_sync_lock(db, _lock_owner_run_id, started_at)
+    if not _lock_acquired:
+        finished_at = datetime.now(timezone.utc)
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {
+                "status": "skipped",
+                "finished_at": finished_at,
+                "started_at_prague": _to_prague_iso(started_at),
+                "finished_at_prague": _to_prague_iso(finished_at),
+                "log_timezone": "Europe/Prague",
+                "error": "single_flight_lock_held",
+                "progress": "Skipped: fundamentals_sync already running",
+                "details.lock_id": FUNDAMENTALS_SYNC_LOCK_ID,
+                "details.owner_run_id": _lock_owner_run_id,
+            }},
+        )
+        logger.warning(f"{job_name}: single-flight lock held, skipping run")
+        return {
+            "job_name": job_name,
+            "status": "skipped",
+            "reason": "single_flight_lock_held",
+            "started_at": started_at.isoformat(),
+        }
+
+    _heartbeat_stop = asyncio.Event()
+    _heartbeat_task: Optional[asyncio.Task] = None
+
+    async def _release_single_flight_resources() -> None:
+        nonlocal _heartbeat_task, _lock_acquired
+        _heartbeat_stop.set()
+        if _heartbeat_task is not None:
+            _heartbeat_task.cancel()
+            await asyncio.gather(_heartbeat_task, return_exceptions=True)
+            _heartbeat_task = None
+        if _lock_acquired:
+            await _release_fundamentals_sync_lock(db, _lock_owner_run_id)
+            _lock_acquired = False
+
+    async def _heartbeat_worker() -> None:
+        while not _heartbeat_stop.is_set():
+            await asyncio.sleep(FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS)
+            if _heartbeat_stop.is_set():
+                break
+            heartbeat_now = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id, "status": "running"},
+                {"$set": {"heartbeat_at": heartbeat_now}},
+            )
+            await _heartbeat_fundamentals_sync_lock(db, _lock_owner_run_id, heartbeat_now)
+
+    _heartbeat_task = asyncio.create_task(_heartbeat_worker())
 
     async def _write_step3_telemetry(*, force: bool = False, throttle_processed: Optional[int] = None) -> None:
         nonlocal _telemetry_last_write_monotonic, _telemetry_last_processed
@@ -2045,6 +2186,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "progress_processed": progress_processed,
                 "progress_total": progress_total,
                 "progress_pct": progress_pct,
+                "heartbeat_at": datetime.now(timezone.utc),
             }},
         )
         _telemetry_last_write_monotonic = now_monotonic
@@ -2078,7 +2220,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     async def _progress(msg: str) -> None:
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
-            {"$set": {"progress": msg}},
+            {"$set": {"progress": msg, "heartbeat_at": datetime.now(timezone.utc)}},
         )
 
     # Initialized up front so the exception handler can safely reference them even
@@ -2552,6 +2694,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "progress_processed": done_count if tickers_to_sync else 0,
                 "progress_total":     total_to_sync,
                 "progress_pct":       round(done_count / total_to_sync * 100) if total_to_sync else 0,
+                "heartbeat_at": finished_at,
                 **({"cancelled_at": finished_at} if result["status"] == "cancelled" else {}),
             }}
         )
@@ -2561,6 +2704,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             f"processed={result['processed']}, success={result['success']}"
         )
 
+        await _release_single_flight_resources()
         return result
 
     except Exception as e:
@@ -2594,9 +2738,11 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "progress_processed": progress_done,
                 "progress_total": progress_total,
                 "progress_pct": progress_pct,
+                "heartbeat_at": finished_ts,
             }},
         )
 
+        await _release_single_flight_resources()
         return {
             "job_name": job_name,
             "status": "failed",

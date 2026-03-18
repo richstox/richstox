@@ -1,5 +1,6 @@
 import asyncio
 from types import SimpleNamespace
+from pymongo.errors import DuplicateKeyError
 
 from credit_log_service import get_pipeline_sync_status
 from scheduler_service import run_fundamentals_changes_sync
@@ -75,6 +76,9 @@ class _OpsJobRuns:
 
     async def update_one(self, filt, update):
         doc = self.docs.get(filt["_id"], {})
+        expected_status = filt.get("status")
+        if expected_status is not None and doc.get("status") != expected_status:
+            return SimpleNamespace(modified_count=0)
         for key, value in (update.get("$set", {}) or {}).items():
             if "." not in key:
                 doc[key] = value
@@ -88,6 +92,71 @@ class _OpsJobRuns:
             cursor[parts[-1]] = value
         self.docs[filt["_id"]] = doc
         return SimpleNamespace(modified_count=1)
+
+    async def update_many(self, filt, update):
+        modified = 0
+        for doc_id, doc in self.docs.items():
+            if doc.get("job_name") != filt.get("job_name"):
+                continue
+            if doc.get("status") != filt.get("status"):
+                continue
+            for clause in filt.get("$or", []):
+                if "heartbeat_at" in clause and "$exists" in clause["heartbeat_at"]:
+                    if clause["heartbeat_at"]["$exists"] and "heartbeat_at" in doc:
+                        continue
+                elif "heartbeat_at" in clause and clause["heartbeat_at"] is None:
+                    if doc.get("heartbeat_at") is not None:
+                        continue
+                elif "heartbeat_at" in clause and "$lt" in clause["heartbeat_at"]:
+                    heartbeat = doc.get("heartbeat_at")
+                    if heartbeat is None or heartbeat >= clause["heartbeat_at"]["$lt"]:
+                        continue
+                else:
+                    continue
+                for key, value in (update.get("$set", {}) or {}).items():
+                    doc[key] = value
+                self.docs[doc_id] = doc
+                modified += 1
+                break
+        return SimpleNamespace(modified_count=modified)
+
+
+class _OpsLocks:
+    def __init__(self):
+        self.docs = {}
+
+    async def update_one(self, filt, update):
+        doc = self.docs.get(filt.get("_id"))
+        if doc is None:
+            return SimpleNamespace(matched_count=0, modified_count=0)
+        allowed = False
+        for clause in filt.get("$or", []):
+            if clause.get("owner_run_id") == doc.get("owner_run_id"):
+                allowed = True
+            expires_clause = clause.get("expires_at") if isinstance(clause, dict) else None
+            if isinstance(expires_clause, dict) and "$lte" in expires_clause:
+                expires_at = doc.get("expires_at")
+                if expires_at is not None and expires_at <= expires_clause["$lte"]:
+                    allowed = True
+        if not allowed:
+            return SimpleNamespace(matched_count=0, modified_count=0)
+        for key, value in (update.get("$set", {}) or {}).items():
+            doc[key] = value
+        self.docs[filt["_id"]] = doc
+        return SimpleNamespace(matched_count=1, modified_count=1)
+
+    async def insert_one(self, doc):
+        if doc["_id"] in self.docs:
+            raise DuplicateKeyError("duplicate _id")
+        self.docs[doc["_id"]] = dict(doc)
+        return SimpleNamespace(inserted_id=doc["_id"])
+
+    async def delete_one(self, filt):
+        doc = self.docs.get(filt.get("_id"))
+        if doc and doc.get("owner_run_id") == filt.get("owner_run_id"):
+            del self.docs[filt["_id"]]
+            return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
 
 
 class _OpsConfig:
@@ -103,6 +172,7 @@ class _FakeStep3DB:
         self.tracked_tickers = _TrackedTickersForStep3(tracked_docs)
         self.fundamentals_events = _FundamentalsEventsForStep3()
         self.ops_job_runs = _OpsJobRuns()
+        self.ops_locks = _OpsLocks()
         self.ops_config = _OpsConfig()
 
 
@@ -163,6 +233,8 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
     assert [p[0] for p in processed] == ["AAPL"]
     assert result["_debug"]["queue_stats"]["actionable_count"] == 1
     run_doc = db.ops_job_runs.docs[1]
+    assert "heartbeat_at" in run_doc
+    assert run_doc["heartbeat_at"] is not None
     telemetry = run_doc["details"]["step3_telemetry"]
     assert telemetry["phases"]["A"]["status"] in {"done", "error"}
     assert telemetry["phases"]["A"]["processed"] == 1
@@ -170,6 +242,52 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
     assert telemetry["phases"]["B"]["status"] == "done"
     assert telemetry["phases"]["C"]["name"] == "PriceHistory"
     assert "updated_at_prague" in telemetry
+    assert db.ops_locks.docs == {}
+
+
+def test_step3_single_flight_skips_when_lock_owned_by_another_run():
+    from datetime import datetime, timezone, timedelta
+
+    db = _FakeStep3DB([])
+    now = datetime.now(timezone.utc)
+    db.ops_locks.docs["fundamentals_sync"] = {
+        "_id": "fundamentals_sync",
+        "owner_run_id": "other-run-id",
+        "heartbeat_at": now,
+        "expires_at": now + timedelta(minutes=5),
+    }
+
+    result = asyncio.run(
+        run_fundamentals_changes_sync(db, batch_size=1, ignore_kill_switch=True)
+    )
+
+    assert result["status"] == "skipped"
+    assert result["reason"] == "single_flight_lock_held"
+    run_doc = db.ops_job_runs.docs[1]
+    assert run_doc["status"] == "skipped"
+    assert run_doc["error"] == "single_flight_lock_held"
+    assert run_doc["finished_at"] is not None
+    assert db.ops_locks.docs["fundamentals_sync"]["owner_run_id"] == "other-run-id"
+
+
+def test_finalize_zombie_step3_runs_marks_stale_running_docs_failed():
+    from datetime import datetime, timezone, timedelta
+    from scheduler_service import _finalize_zombie_fundamentals_runs
+
+    db = _FakeStep3DB([])
+    stale_started = datetime.now(timezone.utc) - timedelta(days=1)
+    db.ops_job_runs.docs[1] = {
+        "job_name": "fundamentals_sync",
+        "status": "running",
+        "started_at": stale_started,
+    }
+
+    finalized = asyncio.run(_finalize_zombie_fundamentals_runs(db, datetime.now(timezone.utc)))
+
+    assert finalized == 1
+    assert db.ops_job_runs.docs[1]["status"] == "failed"
+    assert db.ops_job_runs.docs[1]["error"] == "zombie_finalized_no_heartbeat"
+    assert db.ops_job_runs.docs[1]["finished_at"] is not None
 
 
 class _TrackedTickersForSyncStatus:
