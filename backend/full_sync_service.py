@@ -22,7 +22,7 @@ logger = logging.getLogger("richstox.full_sync")
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
-BULK_CHUNK = 5000
+BULK_CHUNK = 10000
 
 
 # ---------------------------------------------------------------------------

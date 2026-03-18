@@ -55,6 +55,8 @@ FUNDAMENTALS_SYNC_LOCK_ID = "fundamentals_sync"
 FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS = 10
 FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS = 60
 FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS = 300
+STEP3_PHASE_C_CONCURRENCY_DEFAULT = 6
+STEP3_PHASE_C_CONCURRENCY_MAX = 12
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
@@ -2762,29 +2764,74 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             else:
                 total_c = len(phase_c_tickers)
                 logger.info(f"{job_name}: Phase C — downloading price history for {total_c} visible tickers")
+                try:
+                    _phase_c_concurrency = int(
+                        os.getenv(
+                            "STEP3_PHASE_C_CONCURRENCY",
+                            str(STEP3_PHASE_C_CONCURRENCY_DEFAULT),
+                        )
+                    )
+                except (TypeError, ValueError):
+                    _phase_c_concurrency = STEP3_PHASE_C_CONCURRENCY_DEFAULT
+                phase_c_concurrency = max(
+                    1,
+                    min(_phase_c_concurrency, STEP3_PHASE_C_CONCURRENCY_MAX),
+                )
+                logger.info(
+                    f"{job_name}: Phase C concurrency={phase_c_concurrency} "
+                    f"(requested={_phase_c_concurrency}, "
+                    f"max={STEP3_PHASE_C_CONCURRENCY_MAX})"
+                )
 
-                for idx, (ticker, needs_redownload) in enumerate(phase_c_tickers):
+                semaphore_c = asyncio.Semaphore(phase_c_concurrency)
+
+                async def _process_price_one(
+                    ticker: str,
+                    needs_redownload: bool,
+                ) -> Dict[str, Any]:
+                    async with semaphore_c:
+                        try:
+                            ph_result = await _process_price_ticker(
+                                db, ticker, job_name=job_name,
+                                needs_redownload=needs_redownload,
+                            )
+                            return {
+                                "ticker": ticker,
+                                "success": bool(ph_result.get("success")),
+                                "records": int(ph_result.get("records", 0)),
+                            }
+                        except Exception as ph_err:
+                            logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
+                            return {
+                                "ticker": ticker,
+                                "success": False,
+                                "records": 0,
+                            }
+
+                tasks_c = [
+                    asyncio.create_task(_process_price_one(ticker, needs_redownload))
+                    for ticker, needs_redownload in phase_c_tickers
+                ]
+                done_c = 0
+                for coro in asyncio.as_completed(tasks_c):
                     if cancel_check and await cancel_check():
                         result["status"] = "cancelled"
                         result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-                        logger.info(f"{job_name}: Phase C cancelled after {idx}/{total_c}")
+                        logger.info(f"{job_name}: Phase C cancelled after {done_c}/{total_c}")
+                        for task in tasks_c:
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(*tasks_c, return_exceptions=True)
                         break
 
-                    try:
-                        ph_result = await _process_price_ticker(
-                            db, ticker, job_name=job_name,
-                            needs_redownload=needs_redownload,
-                        )
-                        if ph_result.get("success"):
-                            phase_c_stats["tickers_succeeded"] += 1
-                            phase_c_stats["total_records"] += ph_result.get("records", 0)
-                        else:
-                            phase_c_stats["tickers_failed"] += 1
-                    except Exception as ph_err:
+                    ticker_result = await coro
+                    if ticker_result.get("success"):
+                        phase_c_stats["tickers_succeeded"] += 1
+                        phase_c_stats["total_records"] += int(ticker_result.get("records") or 0)
+                    else:
                         phase_c_stats["tickers_failed"] += 1
-                        logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
 
-                    done_c = idx + 1
+                    done_c += 1
                     _phase_update(
                         "C",
                         status="running",
@@ -2801,7 +2848,6 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             f"✗{phase_c_stats['tickers_failed']})"
                         )
 
-                    await asyncio.sleep(0.15)
                 if result.get("status") == "cancelled":
                     _phase_update("C", status="error", processed=phase_c_stats["tickers_succeeded"] + phase_c_stats["tickers_failed"], total=total_c, message="Price history sync cancelled", activate=True)
                 else:
