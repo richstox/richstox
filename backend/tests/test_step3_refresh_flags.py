@@ -75,7 +75,17 @@ class _OpsJobRuns:
 
     async def update_one(self, filt, update):
         doc = self.docs.get(filt["_id"], {})
-        doc.update(update.get("$set", {}))
+        for key, value in (update.get("$set", {}) or {}).items():
+            if "." not in key:
+                doc[key] = value
+                continue
+            cursor = doc
+            parts = key.split(".")
+            for part in parts[:-1]:
+                if part not in cursor or not isinstance(cursor[part], dict):
+                    cursor[part] = {}
+                cursor = cursor[part]
+            cursor[parts[-1]] = value
         self.docs[filt["_id"]] = doc
         return SimpleNamespace(modified_count=1)
 
@@ -152,6 +162,14 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
     assert result["success"] == 1
     assert [p[0] for p in processed] == ["AAPL"]
     assert result["_debug"]["queue_stats"]["actionable_count"] == 1
+    run_doc = db.ops_job_runs.docs[1]
+    telemetry = run_doc["details"]["step3_telemetry"]
+    assert telemetry["phases"]["A"]["status"] in {"done", "error"}
+    assert telemetry["phases"]["A"]["processed"] == 1
+    assert telemetry["phases"]["A"]["total"] == 1
+    assert telemetry["phases"]["B"]["status"] == "done"
+    assert telemetry["phases"]["C"]["name"] == "PriceHistory"
+    assert "updated_at_prague" in telemetry
 
 
 class _TrackedTickersForSyncStatus:
@@ -242,3 +260,78 @@ def test_admin_sync_status_pending_refresh_uses_tracked_tickers_flag_count(monke
 
     assert status["needs_fundamentals_refresh"] == 2
     assert status["pending_events_audit"] == 7
+
+
+class _OpsJobRunsForTelemetryRead:
+    def __init__(self, running=None, finished=None):
+        self._running = running
+        self._finished = finished
+
+    async def find_one(self, query, _projection=None, **_kwargs):
+        if query.get("status") == "running":
+            return self._running
+        if query.get("status", {}).get("$in"):
+            return self._finished
+        return None
+
+
+class _CountCollection:
+    def __init__(self, count):
+        self._count = count
+
+    async def count_documents(self, _query):
+        return self._count
+
+
+class _FakeStep3TelemetryReadDB:
+    def __init__(self, running=None, finished=None, pending_refresh=0, pending_events=0):
+        self.ops_job_runs = _OpsJobRunsForTelemetryRead(running=running, finished=finished)
+        self.tracked_tickers = _CountCollection(pending_refresh)
+        self.fundamentals_events = _CountCollection(pending_events)
+
+
+def test_step3_live_telemetry_prefers_running_run_and_maps_status():
+    from services.admin_overview_service import get_step3_live_telemetry
+
+    running = {
+        "_id": "run-1",
+        "status": "running",
+        "started_at_prague": "2026-01-01T10:00:00+01:00",
+        "details": {
+            "step3_telemetry": {
+                "updated_at_prague": "2026-01-01T10:01:00+01:00",
+                "phases": {
+                    "A": {"name": "Fundamentals", "status": "running", "processed": 20, "total": 100, "pct": 20.0, "message": "Syncing fundamentals"},
+                    "B": {"name": "Visibility", "status": "idle", "processed": 0, "total": None, "pct": None, "message": None},
+                    "C": {"name": "PriceHistory", "status": "idle", "processed": 0, "total": None, "pct": None, "message": None},
+                },
+            }
+        },
+    }
+    finished = {
+        "_id": "run-0",
+        "status": "failed",
+        "started_at_prague": "2025-12-31T23:00:00+01:00",
+    }
+    db = _FakeStep3TelemetryReadDB(running=running, finished=finished, pending_refresh=9, pending_events=4)
+
+    resp = asyncio.run(get_step3_live_telemetry(db))
+    assert resp["run_id"] == "run-1"
+    assert resp["status"] == "running"
+    assert resp["pending_refresh_flags"] == 9
+    assert resp["pending_events_audit"] == 4
+    assert resp["phases"]["A"]["processed"] == 20
+    assert resp["phases"]["A"]["total"] == 100
+
+
+def test_step3_live_telemetry_returns_idle_when_no_runs():
+    from services.admin_overview_service import get_step3_live_telemetry
+
+    db = _FakeStep3TelemetryReadDB(running=None, finished=None, pending_refresh=1, pending_events=2)
+    resp = asyncio.run(get_step3_live_telemetry(db))
+    assert resp["status"] == "idle"
+    assert resp["run_id"] is None
+    assert resp["started_at_prague"] is None
+    assert resp["updated_at_prague"] is None
+    assert resp["pending_refresh_flags"] == 1
+    assert resp["pending_events_audit"] == 2

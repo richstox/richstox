@@ -1983,6 +1983,29 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
     logger.info(f"Starting {job_name}")
 
+    def _build_phase(name: str) -> Dict[str, Any]:
+        return {
+            "name": name,
+            "status": "idle",
+            "processed": 0,
+            "total": None,
+            "pct": None,
+            "message": None,
+        }
+
+    step3_telemetry: Dict[str, Any] = {
+        "active_phase": "A",
+        "updated_at_prague": _to_prague_iso(started_at),
+        "phases": {
+            "A": _build_phase("Fundamentals"),
+            "B": _build_phase("Visibility"),
+            "C": _build_phase("PriceHistory"),
+        },
+    }
+
+    _telemetry_last_write_monotonic = 0.0
+    _telemetry_last_processed = 0
+
     # Running sentinel so frontend poll detects job start immediately
     _running_doc_id = (await db.ops_job_runs.insert_one({
         "job_name": job_name,
@@ -1990,12 +2013,72 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         "started_at": started_at,
         "source": "scheduler",
         "progress": "Queuing tickers for fundamentals sync…",
-        "details": {"parent_run_id": parent_run_id, "chain_run_id": chain_run_id},
+        "details": {
+            "parent_run_id": parent_run_id,
+            "chain_run_id": chain_run_id,
+            "step3_telemetry": step3_telemetry,
+        },
     })).inserted_id
+
+    async def _write_step3_telemetry(*, force: bool = False, throttle_processed: Optional[int] = None) -> None:
+        nonlocal _telemetry_last_write_monotonic, _telemetry_last_processed
+        now_monotonic = time.monotonic()
+        if _telemetry_last_write_monotonic > 0 and (now_monotonic - _telemetry_last_write_monotonic) < 1.0:
+            return
+        if not force:
+            processed_now = throttle_processed if throttle_processed is not None else 0
+            if (processed_now - _telemetry_last_processed) < 10:
+                return
+            _telemetry_last_processed = processed_now
+        step3_telemetry["updated_at_prague"] = _to_prague_iso(datetime.now(timezone.utc))
+        active_phase = step3_telemetry.get("active_phase") or "A"
+        active = (step3_telemetry.get("phases") or {}).get(active_phase, {})
+        progress_msg = active.get("message")
+        progress_processed = active.get("processed", 0)
+        progress_total = active.get("total")
+        progress_pct = active.get("pct")
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {
+                "details.step3_telemetry": step3_telemetry,
+                "progress": progress_msg,
+                "progress_processed": progress_processed,
+                "progress_total": progress_total,
+                "progress_pct": progress_pct,
+            }},
+        )
+        _telemetry_last_write_monotonic = now_monotonic
+        _telemetry_last_processed = int(active.get("processed", 0))
+
+    def _phase_update(
+        phase_key: str,
+        *,
+        status: Optional[str] = None,
+        processed: Optional[int] = None,
+        total: Optional[int] = None,
+        message: Optional[str] = None,
+        activate: bool = False,
+    ) -> None:
+        phase = step3_telemetry["phases"][phase_key]
+        if activate:
+            step3_telemetry["active_phase"] = phase_key
+        if status is not None:
+            phase["status"] = status
+        if processed is not None:
+            phase["processed"] = int(processed)
+        if total is not None:
+            phase["total"] = int(total)
+        if message is not None:
+            phase["message"] = message
+        if phase.get("total") is None or phase.get("total", 0) <= 0:
+            phase["pct"] = None
+        else:
+            phase["pct"] = round((phase.get("processed", 0) / phase["total"]) * 100, 2)
 
     async def _progress(msg: str) -> None:
         await db.ops_job_runs.update_one(
-            {"_id": _running_doc_id}, {"$set": {"progress": msg}}
+            {"_id": _running_doc_id},
+            {"$set": {"progress": msg}},
         )
 
     # Initialized up front so the exception handler can safely reference them even
@@ -2033,6 +2116,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         # before any pending-event reads, so subsequent counts are clean.
         # Snapshots pending count internally before mutating — coherent with update.
         # Marks excess pending events as 'deduped' (no deletes — full audit trail).
+        _phase_update("A", status="running", message="Preparing fundamentals queue", activate=True)
+        await _write_step3_telemetry(force=True)
         await _progress("Deduplicating pending fundamentals_events queue…")
         dedup_stats = await _deduplicate_pending_events(db, now_queue)
 
@@ -2179,6 +2264,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             result["message"] = "No tickers marked for fundamentals refresh"
         else:
             total = len(tickers_to_sync)
+            _phase_update("A", status="running", processed=0, total=total, message="Syncing fundamentals", activate=True)
+            await _write_step3_telemetry(force=True)
             await _progress(f"Processing {total} tickers (parallel, 20 concurrent)…")
             logger.info(f"{job_name}: processing {total} tickers in parallel (universe={universe_total})")
 
@@ -2247,6 +2334,15 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         result["failed"] += 1
 
                     # Progress update every 100 tickers
+                    _phase_update(
+                        "A",
+                        status="running",
+                        processed=done_count,
+                        total=total,
+                        message="Syncing fundamentals",
+                        activate=True,
+                    )
+                    await _write_step3_telemetry(throttle_processed=done_count)
                     if done_count % 100 == 0:
                         await _progress(
                             f"Fundamentals sync: {done_count}/{total} done "
@@ -2254,6 +2350,15 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         )
             finally:
                 monitor_task_sched.cancel()
+        _phase_update(
+            "A",
+            status="done" if result.get("status") != "cancelled" else "error",
+            processed=result.get("processed", 0),
+            total=len(tickers_to_sync) if tickers_to_sync else 0,
+            message="Fundamentals sync completed" if result.get("status") != "cancelled" else "Fundamentals sync cancelled",
+            activate=True,
+        )
+        await _write_step3_telemetry(force=True)
 
         # Step 3 exclusion report: tickers still missing sector/industry after sync
         now_step3 = datetime.now(timezone.utc)
@@ -2286,6 +2391,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "status": "skipped",
         }
         if result["status"] == "completed":
+            _phase_update("B", status="running", processed=0, total=1, message="Recomputing visibility", activate=True)
+            await _write_step3_telemetry(force=True)
             try:
                 # Pass Step 3 exclusion_report_run_id as parent for visibility recompute.
                 _s3_excl_run_id = result.get("exclusion_report_run_id")
@@ -2309,6 +2416,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 step3_visibility["_debug"] = vis_report.get("_debug", {})
                 step3_visibility["exclusion_report_run_id"] = vis_report.get("exclusion_report_run_id")
                 result["step3_visibility_exclusion_report_run_id"] = vis_report.get("exclusion_report_run_id")
+                _phase_update("B", status="done", processed=1, total=1, message="Visibility recompute completed", activate=True)
             except Exception as vis_error:
                 step3_visibility = {
                     "triggered": True,
@@ -2316,6 +2424,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     "error": str(vis_error),
                 }
                 logger.error(f"{job_name}: Visibility recompute failed: {vis_error}")
+                _phase_update("B", status="error", processed=1, total=1, message="Visibility recompute failed", activate=True)
+            await _write_step3_telemetry(force=True)
         result["step3_visibility"] = step3_visibility
 
         # ── Phase C: Download complete price history for VISIBLE tickers only ──
@@ -2332,6 +2442,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         }
 
         if result["status"] == "completed":
+            _phase_update("C", status="running", processed=0, total=None, message="Preparing price history queue", activate=True)
+            await _write_step3_telemetry(force=True)
             _phase_c_cursor = db.tracked_tickers.find(
                 {
                     **STEP3_QUERY,
@@ -2348,10 +2460,14 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 async for doc in _phase_c_cursor
             ]
             phase_c_stats["tickers_targeted"] = len(phase_c_tickers)
+            _phase_update("C", status="running", processed=0, total=len(phase_c_tickers), message="Syncing price history", activate=True)
+            await _write_step3_telemetry(force=True)
 
             if not phase_c_tickers:
                 await _progress("Phase C price history: 0 visible tickers to backfill")
                 logger.info(f"{job_name}: Phase C — no visible tickers need price history")
+                _phase_update("C", status="done", processed=0, total=0, message="No visible tickers need price history", activate=True)
+                await _write_step3_telemetry(force=True)
             else:
                 total_c = len(phase_c_tickers)
                 logger.info(f"{job_name}: Phase C — downloading price history for {total_c} visible tickers")
@@ -2378,6 +2494,15 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
 
                     done_c = idx + 1
+                    _phase_update(
+                        "C",
+                        status="running",
+                        processed=done_c,
+                        total=total_c,
+                        message="Syncing price history",
+                        activate=True,
+                    )
+                    await _write_step3_telemetry(throttle_processed=done_c)
                     if done_c % 10 == 0 or done_c == total_c:
                         await _progress(
                             f"Phase C price history: {done_c}/{total_c} "
@@ -2386,8 +2511,14 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         )
 
                     await asyncio.sleep(0.15)
+                if result.get("status") == "cancelled":
+                    _phase_update("C", status="error", processed=phase_c_stats["tickers_succeeded"] + phase_c_stats["tickers_failed"], total=total_c, message="Price history sync cancelled", activate=True)
+                else:
+                    _phase_update("C", status="done", processed=phase_c_stats["tickers_succeeded"] + phase_c_stats["tickers_failed"], total=total_c, message="Price history sync completed", activate=True)
+                await _write_step3_telemetry(force=True)
 
         result["phase_c_stats"] = phase_c_stats
+        result["step3_telemetry"] = step3_telemetry
 
         finished_at = datetime.now(timezone.utc)
         result["finished_at"] = finished_at.isoformat()
@@ -2459,7 +2590,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "finished_at_prague": _to_prague_iso(finished_ts),
                 "log_timezone": "Europe/Prague",
                 "error": error_msg,
-                "details": {"error": error_msg},
+                "details": {"error": error_msg, "step3_telemetry": step3_telemetry},
                 "progress_processed": progress_done,
                 "progress_total": progress_total,
                 "progress_pct": progress_pct,
