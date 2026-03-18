@@ -263,6 +263,10 @@ async def _enqueue_fundamentals_events(
             logger.error(f"_enqueue_fundamentals_events batch {i//ENQUEUE_BATCH_SIZE} failed: {exc}")
 
     skipped_existing = len(normalized) - new_inserts
+    await db.tracked_tickers.update_many(
+        {"ticker": {"$in": normalized}},
+        {"$set": {"needs_fundamentals_refresh": True, "updated_at": now}},
+    )
     return {"new_inserts": new_inserts, "skipped_existing": skipped_existing}
 
 
@@ -1998,8 +2002,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     # if a failure occurs before queue construction. done_count is incremented in
     # the asyncio.as_completed loop when each ticker finishes processing.
     done_count = 0
-    # Populated from the pending fundamentals_events queue before processing
-    # (see tickers_to_sync assignment below the queue hygiene steps).
+    # Populated from tracked_tickers.needs_fundamentals_refresh before processing
+    # (fundamentals_events remains audit-only for Step 3 selection).
     tickers_to_sync: List[str] = []
 
     result: Dict[str, Any] = {}
@@ -2078,8 +2082,24 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         skip_stats = await _skip_already_complete_tickers(db, all_ticker_fulls, now_queue)
         skipped_ticker_set: set = set(skip_stats["skipped_tickers"])
 
-        # Build events_by_ticker from remaining pending events (re-filter in memory —
-        # avoids a second DB round-trip; skip-gate updated status in DB already).
+        # Step 3 execution selection is deterministic from tracked_tickers flags.
+        # fundamentals_events does not drive processing selection.
+        flagged_tickers = await db.tracked_tickers.find(
+            {"needs_fundamentals_refresh": True},
+            {"_id": 0, "ticker": 1},
+        ).to_list(None)
+        flagged_full_tickers = {
+            str(doc.get("ticker"))
+            for doc in flagged_tickers
+            if doc.get("ticker")
+        }
+        tickers_to_sync = sorted({
+            t[:-3] if t.endswith(".US") else t
+            for t in flagged_full_tickers
+        })
+
+        # Build events_by_ticker from remaining pending events (audit-only map for
+        # event completion status updates after each successful ticker sync).
         events_by_ticker: Dict[str, List[dict]] = {}
         for event in pending_events:
             ticker_full = event.get("ticker")
@@ -2088,11 +2108,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             # Exclude tickers that were just marked skipped.
             if ticker_full in skipped_ticker_set:
                 continue
-            if ticker_full not in events_by_ticker and len(events_by_ticker) >= batch_size:
+            # Keep only event rows for tickers selected via flags.
+            if ticker_full not in flagged_full_tickers:
                 continue
             events_by_ticker.setdefault(ticker_full, []).append(event)
-
-        tickers_to_sync = [t.replace(".US", "") for t in events_by_ticker.keys()]
 
         # Full STEP3_QUERY eligible list — used for both tickers_to_sync filter and
         # the requested_event_types aggregation so both are scoped to the same universe.
@@ -2156,8 +2175,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         }
 
         if not tickers_to_sync:
-            logger.info(f"{job_name}: No pending events to process")
-            result["message"] = "No pending events"
+            logger.info(f"{job_name}: No tickers marked for fundamentals refresh")
+            result["message"] = "No tickers marked for fundamentals refresh"
         else:
             total = len(tickers_to_sync)
             await _progress(f"Processing {total} tickers (parallel, 20 concurrent)…")

@@ -5301,11 +5301,9 @@ async def admin_job_status(job_name: str):
         db_complete_count = await db.tracked_tickers.count_documents(
             {**STEP3_QUERY, "fundamentals_status": "complete"}
         )
-        # db_pending_count = tickers in the Step 3 universe that still need
-        # fundamentals fetched (null/missing status or explicit "pending").
-        # These are not integrity failures — they simply haven't been synced yet.
+        # Canonical Step 3 pending work: tracked_tickers flag only.
         db_pending_count = await db.tracked_tickers.count_documents(
-            {**STEP3_QUERY, "fundamentals_status": {"$in": ["pending", None]}}
+            {"needs_fundamentals_refresh": True}
         )
         step3_input_total = db_total_count
         step3_output_total = await db.tracked_tickers.count_documents({

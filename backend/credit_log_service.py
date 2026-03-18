@@ -130,6 +130,10 @@ async def get_pipeline_sync_status(db) -> Dict[str, Any]:
     fundamentals_complete = _n("fundamentals_complete")
 
     credits = await get_daily_credit_usage(db)
+    pending_refresh_count = await db.tracked_tickers.count_documents(
+        {"needs_fundamentals_refresh": True}
+    )
+    pending_events_audit = await db.fundamentals_events.count_documents({"status": "pending"})
 
     return {
         "total_visible_tickers": total,
@@ -138,7 +142,8 @@ async def get_pipeline_sync_status(db) -> Dict[str, Any]:
         "fundamentals_complete": fundamentals_complete,
         "fundamentals_pct": round(fundamentals_complete / total * 100, 1) if total else 0,
         "needs_price_redownload": _n("needs_price_redownload"),
-        "needs_fundamentals_refresh": _n("needs_fundamentals_refresh"),
+        "needs_fundamentals_refresh": pending_refresh_count,
+        "pending_events_audit": pending_events_audit,
         "credits_today": credits["total_credits"],
         "credits_limit": 100_000,
         "credits_pct": round(credits["total_credits"] / 100_000 * 100, 1),
