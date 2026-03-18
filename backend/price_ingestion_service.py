@@ -53,11 +53,36 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Callable, Awaitable, Set, Tuple
 import httpx
 import asyncio
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("richstox.prices")
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
+PRAGUE_TZ = ZoneInfo("Europe/Prague")
+
+
+def _to_prague_iso(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(PRAGUE_TZ).isoformat()
+
+
+async def _read_price_bulk_state(db) -> Optional[Dict[str, Any]]:
+    return await db.pipeline_state.find_one({"_id": "price_bulk"})
+
+
+async def _write_price_bulk_state(db, bulk_date_str: str, now_utc: datetime) -> None:
+    await db.pipeline_state.update_one(
+        {"_id": "price_bulk"},
+        {"$set": {
+            "_id": "price_bulk",
+            "global_last_bulk_date_processed": bulk_date_str,
+            "updated_at": now_utc,
+            "updated_at_prague": _to_prague_iso(now_utc),
+        }},
+        upsert=True,
+    )
 
 
 async def fetch_eod_history(ticker: str, from_date: str = None, to_date: str = None) -> List[Dict[str, Any]]:
@@ -118,7 +143,7 @@ async def fetch_eod_history(ticker: str, from_date: str = None, to_date: str = N
         return []
 
 
-async def fetch_bulk_eod_latest(exchange: str = "US") -> List[Dict[str, Any]]:
+async def fetch_bulk_eod_latest(exchange: str = "US", bulk_date: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Fetch bulk EOD data for latest trading day.
     
@@ -137,6 +162,8 @@ async def fetch_bulk_eod_latest(exchange: str = "US") -> List[Dict[str, Any]]:
         "api_token": EODHD_API_KEY,
         "fmt": "json",
     }
+    if bulk_date:
+        params["date"] = bulk_date
     
     try:
         async with httpx.AsyncClient(timeout=120) as client:
@@ -744,6 +771,7 @@ async def run_daily_bulk_catchup(
     job_name: str = "price_sync",
     progress_cb: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
     seeded_tickers_override: Optional[Set[str]] = None,
+    bulk_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetch the EODHD latest-day bulk file once and upsert into stock_prices.
@@ -755,6 +783,7 @@ async def run_daily_bulk_catchup(
 
     Optional progress_cb receives (processed_tickers, expected_tickers_count, "2.1 bulk price sync")
     after each bulk_write batch to stream Step 2 progress.
+    Optional bulk_date requests a specific trading date from EODHD.
     """
     from pymongo import UpdateOne
 
@@ -769,10 +798,13 @@ async def run_daily_bulk_catchup(
             return True
         return False
 
-    logger.info("[BULK CATCHUP] Fetching latest-day bulk prices from EODHD...")
+    logger.info(
+        "[BULK CATCHUP] Fetching bulk prices from EODHD%s",
+        f" for {bulk_date}" if bulk_date else " (latest-day)",
+    )
 
     # Single API call — no date param = EODHD returns the latest available trading day
-    bulk_data = await fetch_bulk_eod_latest("US")
+    bulk_data = await fetch_bulk_eod_latest("US", bulk_date=bulk_date)
 
     # ── Cancel check 2a: immediately after the API call returns ──────────────
     if await _cancelled():
