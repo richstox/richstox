@@ -140,3 +140,28 @@ def test_sync_single_ticker_success_clears_stale_error_fields(monkeypatch):
     assert updated["fundamentals_error"] is None
     assert updated["fundamentals_error_code"] is None
     assert updated["fundamentals_error_at"] is None
+
+
+def test_sync_single_ticker_failure_sets_error_at_as_utc_datetime(monkeypatch):
+    db = _FakeDB()
+
+    async def _fake_fetch_no_data(_ticker):
+        return None
+
+    monkeypatch.setattr(
+        "batch_jobs_service.fetch_fundamentals_from_eodhd",
+        _fake_fetch_no_data,
+    )
+
+    result = asyncio.run(sync_single_ticker_fundamentals(db, "AAPL"))
+
+    assert result["success"] is False
+    assert result["error_type"] == "no_data"
+
+    updated = db.tracked_tickers.docs["AAPL.US"]
+    assert updated["fundamentals_status"] == "error"
+    assert updated["fundamentals_complete"] is False
+    assert updated["needs_fundamentals_refresh"] is True
+    assert updated["fundamentals_error_code"] == "no_data"
+    assert isinstance(updated["fundamentals_error_at"], datetime)
+    assert updated["fundamentals_error_at"].tzinfo == timezone.utc

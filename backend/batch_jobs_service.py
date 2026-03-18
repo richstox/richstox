@@ -137,7 +137,7 @@ async def sync_single_ticker_fundamentals(
 
     async def _set_error(code: str, msg: str) -> None:
         """Mark ticker as error state — never leaves limbo."""
-        err_at = _to_prague_iso(datetime.now(timezone.utc))
+        err_at = datetime.now(timezone.utc)
         try:
             await db.tracked_tickers.update_one(
                 {"ticker": ticker_full},
