@@ -1111,7 +1111,7 @@ async def run_daily_price_sync(
         })).inserted_id
 
     async def _is_cancelled() -> bool:
-        """Check both chain cancel_check and per-run cancel_requested status."""
+        """Check chain cancel callback and this run doc's cancel_requested status."""
         if cancel_check and await cancel_check():
             return True
         run_doc = await db.ops_job_runs.find_one(
@@ -2641,7 +2641,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             cancel_event = asyncio.Event()
 
             async def _cancel_monitor_sched() -> None:
-                """Poll DB every 2 s; watch run status and set cancel_event."""
+                """Poll run status every 2 s; set cancel_event when status becomes cancel_requested."""
                 while not cancel_event.is_set():
                     await asyncio.sleep(2)
                     run_doc = await db.ops_job_runs.find_one(
