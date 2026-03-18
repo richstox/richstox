@@ -65,6 +65,8 @@ _OPS_LOCKS_TTL_INDEX_LOCK: Optional[asyncio.Lock] = None
 # Delay between detector phases so the frontend (polling every ~2 s) can observe
 # intermediate 2.2 / 2.4 / 2.6 progress updates before the run completes.
 _DETECTOR_PHASE_POLL_DELAY = 0.5
+MIN_BULK_ROWS_SANITY_CHECK = 4000
+MAX_BULK_GAPFILL_DAYS_HISTORY = 60
 
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -1209,7 +1211,7 @@ async def run_daily_price_sync(
             SEED_QUERY, {"_id": 0, "ticker": 1}
         ).to_list(None)
         _seeded_set = {d["ticker"] for d in _seeded_docs if d.get("ticker")}
-        min_bulk_rows_ok = 4000
+        min_bulk_rows_ok = MIN_BULK_ROWS_SANITY_CHECK
         target_end_date = datetime.now(PRAGUE_TZ).date()
         price_bulk_state = await _read_price_bulk_state(db)
         watermark_before = (
@@ -1302,8 +1304,8 @@ async def run_daily_price_sync(
                 day["error"] = str(exc)
 
             days.append(day)
-            if len(days) > 60:
-                days = days[-60:]
+            if len(days) > MAX_BULK_GAPFILL_DAYS_HISTORY:
+                days = days[-MAX_BULK_GAPFILL_DAYS_HISTORY:]
             await db.ops_job_runs.update_one(
                 {"_id": _running_doc_id},
                 {"$set": {"details.price_bulk_gapfill.days": days}},

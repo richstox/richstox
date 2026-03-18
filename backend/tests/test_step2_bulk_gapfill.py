@@ -282,6 +282,8 @@ def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
     )
 
     assert called_dates == ["2026-03-17", "2026-03-18"]
+    assert len(called_dates) == 2
+    assert "2026-03-19" not in called_dates
     assert db.pipeline_state.docs["price_bulk"]["global_last_bulk_date_processed"] == "2026-03-17"
     days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
     assert [d["status"] for d in days] == ["success", "failed_sanity"]
