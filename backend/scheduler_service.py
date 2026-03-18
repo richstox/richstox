@@ -55,6 +55,13 @@ FUNDAMENTALS_SYNC_LOCK_ID = "fundamentals_sync"
 FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS = 10
 FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS = 60
 FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS = 300
+PRICE_SYNC_ACTIVE_PHASES = {
+    "bulk_catchup",
+    "2.1_bulk_catchup",
+    "2.2_split",
+    "2.4_dividend",
+    "2.6_earnings",
+}
 STEP3_PHASE_C_CONCURRENCY_DEFAULT = 6
 STEP3_PHASE_C_CONCURRENCY_MAX = 12
 
@@ -1068,6 +1075,7 @@ async def run_daily_price_sync(
 
     started_at = datetime.now(timezone.utc)
     job_name = "price_sync"
+    await _finalize_stuck_price_sync_runs(db, started_at)
 
     logger.info(f"Starting {job_name} with gap detection and bulk catchup")
 
@@ -1103,12 +1111,14 @@ async def run_daily_price_sync(
         })).inserted_id
 
     async def _is_cancelled() -> bool:
-        """Check both chain cancel_check and per-job cancel flag."""
+        """Check chain cancel callback and this run doc's cancel_requested status."""
         if cancel_check and await cancel_check():
             return True
-        flag = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
-        if flag:
-            await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
+        run_doc = await db.ops_job_runs.find_one(
+            {"_id": _running_doc_id},
+            {"status": 1},
+        )
+        if (run_doc or {}).get("status") == "cancel_requested":
             return True
         return False
 
@@ -1129,14 +1139,22 @@ async def run_daily_price_sync(
         # Check for cancel request before starting
         if await _is_cancelled():
             logger.info(f"{job_name} cancelled before start")
+            _cancelled_at = datetime.now(timezone.utc)
             await db.ops_job_runs.update_one(
-                {"_id": _running_doc_id}, {"$set": {"status": "cancelled"}}
+                {"_id": _running_doc_id}, {"$set": {
+                    "status": "cancelled",
+                    "finished_at": _cancelled_at,
+                    "finished_at_prague": _to_prague_iso(_cancelled_at),
+                    "phase": "stopped",
+                    "cancelled_at": _cancelled_at,
+                }}
             )
             return {
                 "job_name": job_name,
                 "status": "cancelled",
                 "exclusion_report_run_id": None,
                 "started_at": started_at.isoformat(),
+                "finished_at": _cancelled_at.isoformat(),
             }
 
         # Progress helper: update running sentinel so UI poll can show live status.
@@ -1235,6 +1253,15 @@ async def run_daily_price_sync(
         missed_dates = await _get_missed_trading_dates(db, target_end_date)
         if watermark_before_dt is not None:
             missed_dates = [d for d in missed_dates if d > watermark_before_dt]
+        # Bootstrap guard: when no bulk watermark exists and Step 2 has seeded
+        # tickers, force processing of target_end_date so bulk fetch always runs.
+        if (
+            progress_total_step2 > 0
+            and watermark_before_dt is None
+            and not missed_dates
+            and target_end_date.weekday() < 5
+        ):
+            missed_dates.append(target_end_date)
         missing_dates = sorted(d.strftime("%Y-%m-%d") for d in missed_dates if d <= target_end_date)
 
         days: List[Dict[str, Any]] = []
@@ -1318,6 +1345,40 @@ async def run_daily_price_sync(
                 break
 
         result["tickers_with_price"] = sorted(_tickers_with_price_set)
+
+        if progress_total_step2 > 0 and (result.get("api_calls", 0) == 0 or result.get("dates_processed", 0) == 0):
+            _bulk_guard_msg = (
+                "Step 2 bulk guard triggered: no bulk fetch executed "
+                f"(api_calls={result.get('api_calls', 0)}, dates_processed={result.get('dates_processed', 0)}). "
+                "Aborting run to prevent false success."
+            )
+            _bulk_guard_finished_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {
+                    "status": "error",
+                    "finished_at": _bulk_guard_finished_at,
+                    "finished_at_prague": _to_prague_iso(_bulk_guard_finished_at),
+                    "phase": "2.1_bulk_catchup",
+                    "error": _bulk_guard_msg,
+                    "details": {
+                        **result,
+                        "parent_run_id": parent_run_id,
+                        "chain_run_id": chain_run_id,
+                    },
+                }},
+            )
+            logger.error(f"{job_name}: {_bulk_guard_msg}")
+            return {
+                "job_name": job_name,
+                "status": "error",
+                "error": _bulk_guard_msg,
+                "records_upserted": result.get("records_upserted", 0),
+                "dates_processed": result.get("dates_processed", 0),
+                "api_calls": result.get("api_calls", 0),
+                "started_at": started_at.isoformat(),
+                "finished_at": _bulk_guard_finished_at.isoformat(),
+            }
 
         await _progress(
             f"2.1 Prices synced: {result.get('records_upserted', 0)} records "
@@ -2113,6 +2174,59 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
     return result.modified_count
 
 
+async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
+    """
+    Finalize price_sync runs that are still marked running but no active phase exists.
+    These stale docs should not keep the admin UI in "running" state forever.
+    """
+    result = await db.ops_job_runs.update_many(
+        {
+            "job_name": "price_sync",
+            "status": "running",
+            "$or": [
+                {"phase": {"$exists": False}},
+                {"phase": None},
+                {"phase": {"$nin": list(PRICE_SYNC_ACTIVE_PHASES)}},
+            ],
+        },
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_at": now,
+            "finished_at": now,
+            "finished_at_prague": _to_prague_iso(now),
+            "log_timezone": "Europe/Prague",
+            "details.zombie_finalized": True,
+            "details.zombie_reason": "stale_running_no_active_phase",
+        }},
+    )
+    if result.modified_count:
+        logger.warning(
+            f"price_sync: finalized {result.modified_count} stale running run(s) "
+            "(missing or non-active phase)"
+        )
+    return result.modified_count
+
+
+async def finalize_stuck_admin_job_runs(
+    db,
+    *,
+    now: Optional[datetime] = None,
+    job_names: Optional[List[str]] = None,
+) -> Dict[str, int]:
+    """
+    Finalize stale running docs for admin pipeline jobs so UI status stays truthful.
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    targets = set(job_names or ["price_sync", "fundamentals_sync"])
+    finalized = {"price_sync": 0, "fundamentals_sync": 0}
+    if "price_sync" in targets:
+        finalized["price_sync"] = await _finalize_stuck_price_sync_runs(db, now)
+    if "fundamentals_sync" in targets:
+        finalized["fundamentals_sync"] = await _finalize_zombie_fundamentals_runs(db, now)
+    return finalized
+
+
 async def _ensure_ops_locks_ttl_index(db) -> None:
     """Ensure TTL index for ops_locks.expires_at exists."""
     global _OPS_LOCKS_TTL_INDEX_DONE
@@ -2570,13 +2684,15 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             cancel_event = asyncio.Event()
 
             async def _cancel_monitor_sched() -> None:
-                """Poll DB every 2 s; consume flag ONCE and set cancel_event."""
+                """Poll run status every 2 s; set cancel_event when status becomes cancel_requested."""
                 while not cancel_event.is_set():
                     await asyncio.sleep(2)
-                    doc = await db.ops_config.find_one({"key": f"cancel_job_{job_name}"})
-                    if doc:
-                        await db.ops_config.delete_one({"key": f"cancel_job_{job_name}"})
-                        logger.info(f"{job_name}: cancel flag consumed by monitor")
+                    run_doc = await db.ops_job_runs.find_one(
+                        {"_id": _running_doc_id},
+                        {"status": 1},
+                    )
+                    if (run_doc or {}).get("status") == "cancel_requested":
+                        logger.info(f"{job_name}: cancel_requested status detected by monitor")
                         cancel_event.set()
                         return
                     if cancel_check and await cancel_check():
