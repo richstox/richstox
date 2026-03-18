@@ -68,6 +68,7 @@ class _OpsJobRuns:
     def __init__(self):
         self.docs = {}
         self._seq = 0
+        self.update_sets = []
 
     async def insert_one(self, doc):
         self._seq += 1
@@ -79,6 +80,7 @@ class _OpsJobRuns:
         expected_status = filt.get("status")
         if expected_status is not None and doc.get("status") != expected_status:
             return SimpleNamespace(modified_count=0)
+        self.update_sets.append(dict((update.get("$set") or {})))
         for key, value in (update.get("$set", {}) or {}).items():
             if "." not in key:
                 doc[key] = value
@@ -94,7 +96,7 @@ class _OpsJobRuns:
         return SimpleNamespace(modified_count=1)
 
     async def update_many(self, filt, update):
-        def _matches_clause(doc, clause):
+        def _matches_heartbeat_clause(doc, clause):
             heartbeat_clause = clause.get("heartbeat_at")
             if isinstance(heartbeat_clause, dict) and "$exists" in heartbeat_clause:
                 expected_exists = heartbeat_clause["$exists"]
@@ -112,10 +114,19 @@ class _OpsJobRuns:
                 continue
             if doc.get("status") != filt.get("status"):
                 continue
-            if not any(_matches_clause(doc, clause) for clause in filt.get("$or", [])):
+            if not any(_matches_heartbeat_clause(doc, clause) for clause in filt.get("$or", [])):
                 continue
             for key, value in (update.get("$set", {}) or {}).items():
-                doc[key] = value
+                if "." not in key:
+                    doc[key] = value
+                    continue
+                cursor = doc
+                parts = key.split(".")
+                for part in parts[:-1]:
+                    if part not in cursor or not isinstance(cursor[part], dict):
+                        cursor[part] = {}
+                    cursor = cursor[part]
+                cursor[parts[-1]] = value
             self.docs[doc_id] = doc
             modified += 1
         return SimpleNamespace(modified_count=modified)
@@ -124,6 +135,7 @@ class _OpsJobRuns:
 class _OpsLocks:
     def __init__(self):
         self.docs = {}
+        self.index_calls = []
 
     async def update_one(self, filt, update):
         doc = self.docs.get(filt.get("_id"))
@@ -150,6 +162,14 @@ class _OpsLocks:
             raise DuplicateKeyError("duplicate _id")
         self.docs[doc["_id"]] = dict(doc)
         return SimpleNamespace(inserted_id=doc["_id"])
+
+    async def create_index(self, keys, name=None, expireAfterSeconds=None):
+        self.index_calls.append({
+            "keys": list(keys),
+            "name": name,
+            "expireAfterSeconds": expireAfterSeconds,
+        })
+        return name or "index"
 
     async def delete_one(self, filt):
         doc = self.docs.get(filt.get("_id"))
@@ -235,6 +255,8 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
     run_doc = db.ops_job_runs.docs[1]
     assert "heartbeat_at" in run_doc
     assert run_doc["heartbeat_at"] is not None
+    assert any("details.updated_at" in update for update in db.ops_job_runs.update_sets)
+    assert any("details.updated_at_prague" in update for update in db.ops_job_runs.update_sets)
     telemetry = run_doc["details"]["step3_telemetry"]
     assert telemetry["phases"]["A"]["status"] in {"done", "error"}
     assert telemetry["phases"]["A"]["processed"] == 1
@@ -243,6 +265,9 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
     assert telemetry["phases"]["C"]["name"] == "PriceHistory"
     assert "updated_at_prague" in telemetry
     assert db.ops_locks.docs == {}
+    assert db.ops_locks.index_calls
+    assert db.ops_locks.index_calls[0]["keys"] == [("expires_at", 1)]
+    assert db.ops_locks.index_calls[0]["expireAfterSeconds"] == 0
 
 
 def test_step3_single_flight_skips_when_lock_owned_by_another_run():
@@ -270,7 +295,22 @@ def test_step3_single_flight_skips_when_lock_owned_by_another_run():
     assert db.ops_locks.docs["fundamentals_sync"]["owner_run_id"] == "other-run-id"
 
 
-def test_finalize_zombie_step3_runs_marks_stale_running_docs_failed():
+def test_acquire_fundamentals_lock_sets_acquired_at():
+    from datetime import datetime, timezone
+    from scheduler_service import _acquire_fundamentals_sync_lock
+
+    db = _FakeStep3DB([])
+    now = datetime.now(timezone.utc)
+    acquired = asyncio.run(_acquire_fundamentals_sync_lock(db, "run-123", now))
+
+    assert acquired is True
+    lock_doc = db.ops_locks.docs["fundamentals_sync"]
+    assert lock_doc["owner_run_id"] == "run-123"
+    assert lock_doc["acquired_at"] == now
+    assert lock_doc["expires_at"] is not None
+
+
+def test_finalize_zombie_step3_runs_marks_stale_running_docs_cancelled():
     from datetime import datetime, timezone, timedelta
     from scheduler_service import _finalize_zombie_fundamentals_runs
 
@@ -285,9 +325,11 @@ def test_finalize_zombie_step3_runs_marks_stale_running_docs_failed():
     finalized = asyncio.run(_finalize_zombie_fundamentals_runs(db, datetime.now(timezone.utc)))
 
     assert finalized == 1
-    assert db.ops_job_runs.docs[1]["status"] == "failed"
-    assert db.ops_job_runs.docs[1]["error"] == "zombie_finalized_no_heartbeat"
+    assert db.ops_job_runs.docs[1]["status"] == "cancelled"
+    assert db.ops_job_runs.docs[1]["cancelled_at"] is not None
     assert db.ops_job_runs.docs[1]["finished_at"] is not None
+    assert db.ops_job_runs.docs[1]["details"]["zombie_finalized"] is True
+    assert db.ops_job_runs.docs[1]["details"]["zombie_reason"] == "stale_heartbeat_or_missing"
 
 
 class _TrackedTickersForSyncStatus:

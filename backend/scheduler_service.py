@@ -60,6 +60,8 @@ EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 _FUNDAMENTALS_EVENTS_INDEX_DONE = False
 _FUNDAMENTALS_EVENTS_INDEX_LOCK: Optional[asyncio.Lock] = None
+_OPS_LOCKS_TTL_INDEX_DONE = False
+_OPS_LOCKS_TTL_INDEX_LOCK: Optional[asyncio.Lock] = None
 # Delay between detector phases so the frontend (polling every ~2 s) can observe
 # intermediate 2.2 / 2.4 / 2.6 progress updates before the run completes.
 _DETECTOR_PHASE_POLL_DELAY = 0.5
@@ -1971,7 +1973,7 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
 
 
 async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
-    """Mark stale fundamentals_sync runs as failed so they do not stay running forever."""
+    """Finalize stale fundamentals_sync runs so they do not stay running forever."""
     stale_before = now - timedelta(seconds=FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS)
     result = await db.ops_job_runs.update_many(
         {
@@ -1984,11 +1986,13 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
             ],
         },
         {"$set": {
-            "status": "failed",
+            "status": "cancelled",
+            "cancelled_at": now,
             "finished_at": now,
             "finished_at_prague": _to_prague_iso(now),
             "log_timezone": "Europe/Prague",
-            "error": "zombie_finalized_no_heartbeat",
+            "details.zombie_finalized": True,
+            "details.zombie_reason": "stale_heartbeat_or_missing",
         }},
     )
     if result.modified_count:
@@ -1999,8 +2003,26 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
     return result.modified_count
 
 
+async def _ensure_ops_locks_ttl_index(db) -> None:
+    """Ensure TTL index for ops_locks.expires_at exists."""
+    global _OPS_LOCKS_TTL_INDEX_DONE
+    global _OPS_LOCKS_TTL_INDEX_LOCK
+    if _OPS_LOCKS_TTL_INDEX_LOCK is None:
+        _OPS_LOCKS_TTL_INDEX_LOCK = asyncio.Lock()
+    async with _OPS_LOCKS_TTL_INDEX_LOCK:
+        if _OPS_LOCKS_TTL_INDEX_DONE:
+            return
+        await db.ops_locks.create_index(
+            [("expires_at", 1)],
+            name="ops_locks_expires_at_ttl",
+            expireAfterSeconds=0,
+        )
+        _OPS_LOCKS_TTL_INDEX_DONE = True
+
+
 async def _acquire_fundamentals_sync_lock(db, owner_run_id: str, now: datetime) -> bool:
     """Acquire distributed single-flight lock for fundamentals_sync."""
+    await _ensure_ops_locks_ttl_index(db)
     lease_expires_at = now + timedelta(seconds=FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS)
 
     reusable = await db.ops_locks.update_one(
@@ -2013,6 +2035,7 @@ async def _acquire_fundamentals_sync_lock(db, owner_run_id: str, now: datetime) 
         },
         {"$set": {
             "owner_run_id": owner_run_id,
+            "acquired_at": now,
             "heartbeat_at": now,
             "expires_at": lease_expires_at,
         }},
@@ -2024,6 +2047,7 @@ async def _acquire_fundamentals_sync_lock(db, owner_run_id: str, now: datetime) 
         await db.ops_locks.insert_one({
             "_id": FUNDAMENTALS_SYNC_LOCK_ID,
             "owner_run_id": owner_run_id,
+            "acquired_at": now,
             "heartbeat_at": now,
             "expires_at": lease_expires_at,
         })
@@ -2135,6 +2159,12 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     _heartbeat_stop = asyncio.Event()
     _heartbeat_task: Optional[asyncio.Task] = None
 
+    def _details_updated_fields(now_utc: datetime) -> Dict[str, Any]:
+        return {
+            "details.updated_at": now_utc,
+            "details.updated_at_prague": _to_prague_iso(now_utc),
+        }
+
     async def _release_single_flight_resources() -> None:
         nonlocal _heartbeat_task, _lock_acquired
         _heartbeat_stop.set()
@@ -2152,10 +2182,14 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             heartbeat_now = datetime.now(timezone.utc)
             heartbeat_result = await db.ops_job_runs.update_one(
                 {"_id": _running_doc_id, "status": "running"},
-                {"$set": {"heartbeat_at": heartbeat_now}},
+                {"$set": {
+                    "heartbeat_at": heartbeat_now,
+                    **_details_updated_fields(heartbeat_now),
+                }},
             )
             if heartbeat_result.modified_count == 0:
                 # Exit if the run is no longer active (externally finalized/status changed).
+                logger.info(f"{job_name}: heartbeat worker stopped (run no longer active)")
                 break
             await _heartbeat_fundamentals_sync_lock(db, _lock_owner_run_id, heartbeat_now)
 
@@ -2171,7 +2205,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             if (processed_now - _telemetry_last_processed) < 10:
                 return
             _telemetry_last_processed = processed_now
-        step3_telemetry["updated_at_prague"] = _to_prague_iso(datetime.now(timezone.utc))
+        now_utc = datetime.now(timezone.utc)
+        step3_telemetry["updated_at_prague"] = _to_prague_iso(now_utc)
         active_phase = step3_telemetry.get("active_phase") or "A"
         active = (step3_telemetry.get("phases") or {}).get(active_phase, {})
         progress_msg = active.get("message")
@@ -2186,7 +2221,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "progress_processed": progress_processed,
                 "progress_total": progress_total,
                 "progress_pct": progress_pct,
-                "heartbeat_at": datetime.now(timezone.utc),
+                "heartbeat_at": now_utc,
+                **_details_updated_fields(now_utc),
             }},
         )
         _telemetry_last_write_monotonic = now_monotonic
@@ -2218,9 +2254,14 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             phase["pct"] = round((phase.get("processed", 0) / phase["total"]) * 100, 2)
 
     async def _progress(msg: str) -> None:
+        now_utc = datetime.now(timezone.utc)
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
-            {"$set": {"progress": msg, "heartbeat_at": datetime.now(timezone.utc)}},
+            {"$set": {
+                "progress": msg,
+                "heartbeat_at": now_utc,
+                **_details_updated_fields(now_utc),
+            }},
         )
 
     # Initialized up front so the exception handler can safely reference them even
