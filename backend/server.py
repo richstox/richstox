@@ -5303,7 +5303,7 @@ async def admin_job_status(job_name: str):
         )
         # Canonical Step 3 pending work: tracked_tickers flag only.
         db_pending_count = await db.tracked_tickers.count_documents(
-            {"needs_fundamentals_refresh": True}
+            {**STEP3_QUERY, "needs_fundamentals_refresh": True}
         )
         step3_input_total = db_total_count
         step3_output_total = await db.tracked_tickers.count_documents({
