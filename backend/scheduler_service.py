@@ -2889,12 +2889,34 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         {"needs_price_redownload": True},
                     ],
                 },
-                {"_id": 0, "ticker": 1, "needs_price_redownload": 1},
+                {"_id": 0, "ticker": 1, "needs_price_redownload": 1, "price_history_complete": 1},
             )
+            phase_c_docs = [doc async for doc in _phase_c_cursor]
             phase_c_tickers = [
                 (doc["ticker"], bool(doc.get("needs_price_redownload")))
-                async for doc in _phase_c_cursor
+                for doc in phase_c_docs
             ]
+            phase_c_count_incomplete = sum(
+                1 for doc in phase_c_docs
+                if doc.get("price_history_complete") is not True
+            )
+            phase_c_count_redownload = sum(
+                1 for doc in phase_c_docs
+                if bool(doc.get("needs_price_redownload"))
+            )
+            phase_c_selection_sources = []
+            if phase_c_count_incomplete > 0:
+                phase_c_selection_sources.append("price_history_incomplete")
+            if phase_c_count_redownload > 0:
+                phase_c_selection_sources.append("needs_price_redownload")
+            step3_telemetry["phases"]["C"]["selection_audit"] = {
+                "selection_sources": phase_c_selection_sources,
+                "counts_by_source_pre_dedupe": {
+                    "price_history_incomplete": phase_c_count_incomplete,
+                    "needs_price_redownload": phase_c_count_redownload,
+                },
+                "pre_dedupe_total": len(phase_c_docs),
+            }
             phase_c_stats["tickers_targeted"] = len(phase_c_tickers)
             _phase_update("C", status="running", processed=0, total=len(phase_c_tickers), message="Syncing price history", activate=True)
             await _write_step3_telemetry(force=True)
