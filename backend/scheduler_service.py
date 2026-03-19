@@ -1332,9 +1332,7 @@ async def run_daily_price_sync(
                     progress_cb=_bulk_progress,
                     seeded_tickers_override=_seeded_set,
                 )
-                day_bulk_fetch_executed = bool(
-                    day_result.get("bulk_fetch_executed", day_result.get("api_calls", 0) > 0)
-                )
+                day_bulk_fetch_executed = bool(day_result.get("bulk_fetch_executed"))
                 result["bulk_fetch_executed"] = day_bulk_fetch_executed
                 result["api_calls"] = 1 if result["bulk_fetch_executed"] else 0
                 result["raw_row_count"] = day_result.get("raw_row_count", 0)
@@ -1409,8 +1407,6 @@ async def run_daily_price_sync(
                     {"$set": {"details.price_bulk_gapfill.days": days}},
                 )
                 result_gapfill["days"] = days
-            result["price_bulk_gapfill_days_count"] = len(days)
-
             if day["status"] != "success":
                 break
 
