@@ -190,6 +190,12 @@ def _patch_non_gapfill_dependencies(monkeypatch):
     monkeypatch.setattr(scheduler_service, "sync_has_price_data_flags", _fake_flags)
     monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
     monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 1)
+    monkeypatch.setattr(
+        scheduler_service,
+        "STEP2_SANITY_THRESHOLD_USED",
+        "matched_seeded_tickers_count >= 1",
+    )
 
 
 def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(monkeypatch):
@@ -307,6 +313,7 @@ def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(mon
             "api_calls": 1,
             "bulk_fetch_executed": True,
             "bulk_writes": 1,
+            "tickers_with_price": ["AAPL.US", "MSFT.US"],
             "date": "2026-03-17",
             "processed_date": "2026-03-17",
             "unique_dates": ["2026-03-17"],
@@ -339,6 +346,12 @@ def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(mon
 
 def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 4000)
+    monkeypatch.setattr(
+        scheduler_service,
+        "STEP2_SANITY_THRESHOLD_USED",
+        "matched_seeded_tickers_count >= 4000",
+    )
     db = _FakeDB(stock_counts={})
     calls_made = []
 
@@ -615,6 +628,8 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
             "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US", "MSFT.US"],
+            "tickers_with_price_data": 2,
+            "matched_price_tickers_raw": 2,
             "date": "2026-03-18",
             "processed_date": "2026-03-18",
             "unique_dates": ["2026-03-18"],
@@ -676,6 +691,12 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
 def test_step2_gapfill_bulk_matching_normalizes_tickers_and_persists_samples(monkeypatch):
     db = _FakeDB(stock_counts={"2026-03-18": 2}, seeded_tickers=["AAPL.US", "MSFT.US"])
     monkeypatch.setattr(scheduler_service, "MIN_BULK_ROWS_SANITY_CHECK", 0)
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 1)
+    monkeypatch.setattr(
+        scheduler_service,
+        "STEP2_SANITY_THRESHOLD_USED",
+        "matched_seeded_tickers_count >= 1",
+    )
 
     async def _fake_fetch_bulk(_exchange="US", include_meta=False):
         payload = [
@@ -738,11 +759,115 @@ def test_step2_gapfill_bulk_matching_normalizes_tickers_and_persists_samples(mon
     assert result["status"] == "success"
     assert result["matched_price_tickers_raw"] == 2
     assert result["tickers_with_price_data"] == 2
+    assert result["matched_seeded_tickers_count"] == 2
+    assert result["tickers_without_price_data"] == 0
     assert db.ops_job_runs.latest["details"]["rows_written"] > 0
 
     details = db.ops_job_runs.latest["details"]
+    assert details["matched_price_tickers_raw"] == 2
+    assert details["tickers_with_price_data"] == 2
+    assert details["matched_seeded_tickers_count"] == 2
+    assert details["match_ratio"] == 1.0
+    assert details["sanity_threshold_used"] == "matched_seeded_tickers_count >= 1"
     ticker_samples = details["price_bulk_gapfill"]["ticker_samples"]
     assert "bulk_rows_sample" in ticker_samples
     assert "bulk_rows_normalized_sample" in ticker_samples
     assert "seeded_tickers_sample" in ticker_samples
     assert "seeded_tickers_normalized_sample" in ticker_samples
+
+
+def test_step2_gapfill_sanity_uses_seeded_match_not_rows_written(monkeypatch):
+    seeded = ["AAPL.US", "MSFT.US", "NVDA.US"]
+    db = _FakeDB(stock_counts={"2026-03-18": 2}, seeded_tickers=seeded)
+    db.ops_job_runs.seeded_total = len(seeded)
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_ROWS_SANITY_CHECK", 9999)
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 2)
+    monkeypatch.setattr(
+        scheduler_service,
+        "STEP2_SANITY_THRESHOLD_USED",
+        "matched_seeded_tickers_count >= 2",
+    )
+
+    async def _fake_fetch_bulk(_exchange="US", include_meta=False):
+        payload = [
+            {"code": "AAPL", "date": "2026-03-18", "close": 100, "adjusted_close": 100, "open": 99, "high": 101, "low": 98, "volume": 1000},
+            {"code": "MSFT.US", "date": "2026-03-18", "close": 200, "adjusted_close": 200, "open": 199, "high": 201, "low": 198, "volume": 2000},
+        ]
+        for i in range(120):
+            payload.append(
+                {
+                    "code": f"0P000{i}",
+                    "date": "2026-03-18",
+                    "close": 10,
+                    "adjusted_close": 10,
+                    "open": 10,
+                    "high": 10,
+                    "low": 10,
+                    "volume": 1,
+                }
+            )
+        payload.append(
+            {
+                "code": "^TNX",
+                "date": "2026-03-18",
+                "close": 4,
+                "adjusted_close": 4,
+                "open": 4,
+                "high": 4,
+                "low": 4,
+                "volume": 1,
+            }
+        )
+        _ = _exchange
+        if include_meta:
+            return payload, True
+        return payload
+
+    async def _fake_missed_dates(db, today_dt):
+        _ = db, today_dt
+        return [date(2026, 3, 18)]
+
+    async def _fake_save_report(db, rows, now):
+        _ = db, rows, now
+        return {
+            "exclusion_report_rows": 1,
+            "exclusion_report_run_id": "price_sync_test_run",
+            "exclusion_report_date": "2026-03-18",
+        }
+
+    async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
+        _ = db, progress_cb, exclusion_meta, cancel_check, processed_date
+        return {"enqueued_total": 0, "skipped_total": 0, "cancelled": False}
+
+    monkeypatch.setattr(price_ingestion_service, "fetch_bulk_eod_latest", _fake_fetch_bulk)
+    monkeypatch.setattr(scheduler_service, "_get_missed_trading_dates", _fake_missed_dates)
+    monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
+    monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["rows_written"] == 2
+    assert result["matched_price_tickers_raw"] == 2
+    assert result["tickers_with_price_data"] == 2
+    assert result["tickers_without_price_data"] == 1
+    assert result["matched_seeded_tickers_count"] == 2
+    assert abs(result["match_ratio"] - (2 / 3)) < 1e-12
+    assert result["sanity_threshold_used"] == "matched_seeded_tickers_count >= 2"
+
+    details = db.ops_job_runs.latest["details"]
+    day = details["price_bulk_gapfill"]["days"][0]
+    assert day["status"] == "success"
+    assert day["rows_written"] == 2
+    assert day["matched_seeded_tickers_count"] == 2
+    assert abs(day["match_ratio"] - (2 / 3)) < 1e-12
+    assert day["sanity_threshold_used"] == "matched_seeded_tickers_count >= 2"
+    assert details["matched_price_tickers_raw"] == 2
+    assert details["tickers_with_price_data"] == 2
