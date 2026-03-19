@@ -165,19 +165,21 @@ async def fetch_bulk_eod_latest(
         "api_token": EODHD_API_KEY,
         "fmt": "json",
     }
+    response_received = False
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.get(url, params=params)
+            response_received = True
             response.raise_for_status()
             data = response.json()
             
             if not isinstance(data, list):
-                return ([], True) if include_meta else []
+                return ([], response_received) if include_meta else []
 
-            return (data, True) if include_meta else data
+            return (data, response_received) if include_meta else data
     except Exception as e:
         logger.error(f"Failed to fetch bulk EOD: {e}")
-        return ([], bool(EODHD_API_KEY)) if include_meta else []
+        return ([], response_received) if include_meta else []
 
 
 def parse_eod_record(ticker: str, record: Dict) -> Dict[str, Any]:
@@ -800,7 +802,8 @@ async def run_daily_bulk_catchup(
     logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (latest-day)")
 
     # Single API call — no date param = EODHD returns the latest available trading day
-    bulk_data, api_called = await fetch_bulk_eod_latest("US", include_meta=True)
+    bulk_data, bulk_fetch_executed = await fetch_bulk_eod_latest("US", include_meta=True)
+    raw_row_count = len(bulk_data)
 
     # ── Cancel check 2a: immediately after the API call returns ──────────────
     if await _cancelled():
@@ -809,7 +812,9 @@ async def run_daily_bulk_catchup(
             "message": "Cancelled after API fetch, before any writes",
             "dates_processed": 0,
             "records_upserted": 0,
-            "api_calls": 1 if api_called else 0,
+            "api_calls": 1 if bulk_fetch_executed else 0,
+            "bulk_fetch_executed": bulk_fetch_executed,
+            "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
         }
@@ -821,7 +826,9 @@ async def run_daily_bulk_catchup(
             "message": "No data returned from EODHD",
             "dates_processed": 0,
             "records_upserted": 0,
-            "api_calls": 1 if api_called else 0,
+            "api_calls": 1 if bulk_fetch_executed else 0,
+            "bulk_fetch_executed": bulk_fetch_executed,
+            "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
         }
@@ -899,7 +906,9 @@ async def run_daily_bulk_catchup(
             "unique_dates": unique_dates,
             "dates_processed": 0,
             "records_upserted": 0,
-            "api_calls": 1 if api_called else 0,
+            "api_calls": 1 if bulk_fetch_executed else 0,
+            "bulk_fetch_executed": bulk_fetch_executed,
+            "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
@@ -919,7 +928,9 @@ async def run_daily_bulk_catchup(
             "date": date_seen,
             "dates_processed": 0,
             "records_upserted": 0,
-            "api_calls": 1 if api_called else 0,
+            "api_calls": 1 if bulk_fetch_executed else 0,
+            "bulk_fetch_executed": bulk_fetch_executed,
+            "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
@@ -945,7 +956,9 @@ async def run_daily_bulk_catchup(
                 "date": date_seen,
                 "dates_processed": 1 if records_upserted > 0 else 0,
                 "records_upserted": records_upserted,
-                "api_calls": 1 if api_called else 0,
+                "api_calls": 1 if bulk_fetch_executed else 0,
+                "bulk_fetch_executed": bulk_fetch_executed,
+                "raw_row_count": raw_row_count,
                 "bulk_writes": bulk_writes,
                 "bulk_url_used": bulk_url_used,
                 "tickers_with_price": sorted(processed_ticker_set),
@@ -975,7 +988,9 @@ async def run_daily_bulk_catchup(
         "unique_dates": unique_dates,
         "dates_processed": 1,
         "records_upserted": records_upserted,
-        "api_calls": 1 if api_called else 0,
+        "api_calls": 1 if bulk_fetch_executed else 0,
+        "bulk_fetch_executed": bulk_fetch_executed,
+        "raw_row_count": raw_row_count,
         "bulk_writes": bulk_writes,
         "bulk_url_used": bulk_url_used,
         "tickers_with_price": sorted(processed_ticker_set),
