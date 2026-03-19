@@ -75,6 +75,10 @@ _OPS_LOCKS_TTL_INDEX_LOCK: Optional[asyncio.Lock] = None
 # intermediate 2.2 / 2.4 / 2.6 progress updates before the run completes.
 _DETECTOR_PHASE_POLL_DELAY = 0.5
 MIN_BULK_ROWS_SANITY_CHECK = 4000
+MIN_BULK_MATCHED_SEEDED_SANITY_CHECK = 4000
+STEP2_SANITY_THRESHOLD_USED = (
+    f"matched_seeded_tickers_count >= {MIN_BULK_MATCHED_SEEDED_SANITY_CHECK}"
+)
 MAX_BULK_GAPFILL_DAYS_HISTORY = 60
 
 
@@ -1240,6 +1244,8 @@ async def run_daily_price_sync(
         ).to_list(None)
         _seeded_set = {d["ticker"] for d in _seeded_docs if d.get("ticker")}
         min_bulk_rows_ok = MIN_BULK_ROWS_SANITY_CHECK
+        min_matched_seeded_tickers_ok = MIN_BULK_MATCHED_SEEDED_SANITY_CHECK
+        sanity_threshold_used = STEP2_SANITY_THRESHOLD_USED
         target_end_date = datetime.now(PRAGUE_TZ).date()
         price_bulk_state = await _read_price_bulk_state(db)
         watermark_before = (
@@ -1267,6 +1273,8 @@ async def run_daily_price_sync(
                 "watermark_before": watermark_before,
                 "target_end_date": target_end_date.strftime("%Y-%m-%d"),
                 "min_bulk_rows_ok": min_bulk_rows_ok,
+                "min_matched_seeded_tickers_ok": min_matched_seeded_tickers_ok,
+                "sanity_threshold_used": sanity_threshold_used,
                 "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
                 "ticker_samples": {
                     "bulk_rows_sample": [],
@@ -1281,6 +1289,8 @@ async def run_daily_price_sync(
             "watermark_before": watermark_before,
             "target_end_date": target_end_date.strftime("%Y-%m-%d"),
             "min_bulk_rows_ok": min_bulk_rows_ok,
+            "min_matched_seeded_tickers_ok": min_matched_seeded_tickers_ok,
+            "sanity_threshold_used": sanity_threshold_used,
             "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
             "ticker_samples": {
                 "bulk_rows_sample": [],
@@ -1312,6 +1322,9 @@ async def run_daily_price_sync(
             "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
             "tickers_with_price": [],
             "price_bulk_gapfill": result_gapfill,
+            "matched_seeded_tickers_count": 0,
+            "match_ratio": 0.0,
+            "sanity_threshold_used": sanity_threshold_used,
         }
         _tickers_with_price_set: set = set()
         bulk_attempts = [None] if should_attempt_bulk_fetch else []
@@ -1398,7 +1411,25 @@ async def run_daily_price_sync(
                 )
                 day["rows_written"] = rows_written
                 result["rows_written"] = rows_written
-                day_ok = rows_written > min_bulk_rows_ok
+                _day_tickers_with_price_data = day_result.get("tickers_with_price_data")
+                _day_matched_price_tickers_raw = day_result.get("matched_price_tickers_raw")
+                if _day_tickers_with_price_data is not None:
+                    matched_seeded_tickers_count = int(_day_tickers_with_price_data)
+                elif _day_matched_price_tickers_raw is not None:
+                    matched_seeded_tickers_count = int(_day_matched_price_tickers_raw)
+                else:
+                    matched_seeded_tickers_count = len(day_result.get("tickers_with_price") or [])
+                match_ratio = (
+                    (matched_seeded_tickers_count / progress_total_step2)
+                    if progress_total_step2 > 0
+                    else 0.0
+                )
+                day["matched_seeded_tickers_count"] = matched_seeded_tickers_count
+                day["match_ratio"] = match_ratio
+                day["sanity_threshold_used"] = sanity_threshold_used
+                result["matched_seeded_tickers_count"] = matched_seeded_tickers_count
+                result["match_ratio"] = match_ratio
+                day_ok = matched_seeded_tickers_count >= min_matched_seeded_tickers_ok
                 if day_ok:
                     now_utc = datetime.now(timezone.utc)
                     await _write_price_bulk_state(db, processed_date, now_utc)
@@ -1410,7 +1441,10 @@ async def run_daily_price_sync(
                 else:
                     day["status"] = "failed_sanity"
                     day["error"] = (
-                        f"rows_written={rows_written} <= min_bulk_rows_ok={min_bulk_rows_ok} for processed_date={processed_date}"
+                        "bulk match sanity failed: "
+                        f"matched_seeded_tickers_count={matched_seeded_tickers_count} "
+                        f"< min_matched_seeded_tickers_ok={min_matched_seeded_tickers_ok} "
+                        f"(match_ratio={match_ratio:.4f}) for processed_date={processed_date}"
                     )
                     result["status"] = "error"
             except Exception as exc:
@@ -1485,10 +1519,26 @@ async def run_daily_price_sync(
         )
         seeded_total = price_flag_summary["seeded_total"]
         with_price = price_flag_summary["with_price_data"]
+        _result_matched_seeded_tickers_count = result.get("matched_seeded_tickers_count")
+        _result_tickers_with_price = result.get("tickers_with_price")
+        if _result_matched_seeded_tickers_count is not None:
+            matched_seeded_tickers_count = int(_result_matched_seeded_tickers_count)
+        elif _result_tickers_with_price is not None:
+            matched_seeded_tickers_count = len(_result_tickers_with_price)
+        else:
+            matched_seeded_tickers_count = int(price_flag_summary.get("matched_price_tickers_raw", 0))
+        match_ratio = (
+            (matched_seeded_tickers_count / seeded_total)
+            if seeded_total > 0
+            else 0.0
+        )
+        result["matched_seeded_tickers_count"] = matched_seeded_tickers_count
+        result["match_ratio"] = match_ratio
+        result["sanity_threshold_used"] = sanity_threshold_used
         result["tickers_seeded_total"] = seeded_total
-        result["tickers_with_price_data"] = with_price
-        result["tickers_without_price_data"] = price_flag_summary["without_price_data"]
-        result["matched_price_tickers_raw"] = price_flag_summary.get("matched_price_tickers_raw", 0)
+        result["tickers_with_price_data"] = matched_seeded_tickers_count
+        result["tickers_without_price_data"] = max(seeded_total - matched_seeded_tickers_count, 0)
+        result["matched_price_tickers_raw"] = matched_seeded_tickers_count
         result.update(
             await save_price_sync_exclusion_report(
                 db,
@@ -1606,7 +1656,12 @@ async def run_daily_price_sync(
                         "price_bulk_gapfill_days_count": result.get("price_bulk_gapfill_days_count", 0),
                         "bulk_url_used": result.get("bulk_url_used"),
                         "tickers_seeded_total": seeded_total,
-                        "tickers_with_price_data": with_price,
+                        "tickers_with_price_data": result.get("tickers_with_price_data", with_price),
+                        "tickers_without_price_data": result.get("tickers_without_price_data", 0),
+                        "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
+                        "matched_seeded_tickers_count": result.get("matched_seeded_tickers_count", 0),
+                        "match_ratio": result.get("match_ratio", 0.0),
+                        "sanity_threshold_used": result.get("sanity_threshold_used", sanity_threshold_used),
                         "event_detectors": event_detector_summary,
                         "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
                         "fundamentals_events_enqueued_skipped_existing": result.get("fundamentals_events_enqueued_skipped_existing", 0),
@@ -1663,6 +1718,9 @@ async def run_daily_price_sync(
                         "tickers_with_price_data": result.get("tickers_with_price_data", 0),
                     "tickers_without_price_data": result.get("tickers_without_price_data", 0),
                     "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
+                    "matched_seeded_tickers_count": result.get("matched_seeded_tickers_count", 0),
+                    "match_ratio": result.get("match_ratio", 0.0),
+                    "sanity_threshold_used": result.get("sanity_threshold_used", sanity_threshold_used),
                     "exclusion_report_rows": result.get("exclusion_report_rows", 0),
                     "api_calls": result.get("api_calls", 0),
                     "bulk_writes": result.get("bulk_writes", 0),
@@ -1686,10 +1744,15 @@ async def run_daily_price_sync(
             "job_name": job_name,
             "status": result.get("status", "completed"),
             "records_upserted": result.get("records_upserted", 0),
+            "rows_written": result.get("rows_written", 0),
+            "raw_row_count": result.get("raw_row_count", 0),
             "tickers_seeded_total": result.get("tickers_seeded_total", 0),
             "tickers_with_price_data": result.get("tickers_with_price_data", 0),
             "tickers_without_price_data": result.get("tickers_without_price_data", 0),
             "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
+            "matched_seeded_tickers_count": result.get("matched_seeded_tickers_count", 0),
+            "match_ratio": result.get("match_ratio", 0.0),
+            "sanity_threshold_used": result.get("sanity_threshold_used", sanity_threshold_used),
             "exclusion_report_rows": result.get("exclusion_report_rows", 0),
             "exclusion_report_run_id": result.get("exclusion_report_run_id"),
             "dates_processed": result.get("dates_processed", 0),
