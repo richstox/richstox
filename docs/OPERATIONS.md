@@ -86,7 +86,7 @@ The data pipeline runs nightly (cron) and can be triggered manually from the Adm
 - Check the current status via `GET /api/admin/pipeline/status`.
 
 ### Audit export
-- `GET /api/admin/pipeline/export/full` → CSV (`ticker, name, step, reason`) for the latest completed full run.
+- `GET /api/admin/pipeline/export/full` → CSV (`ticker,name,status,failed_step,reason_code,reason_text`) for the latest completed full run.
 - Each row is traceable back to the same `run_id`.
 
 ---

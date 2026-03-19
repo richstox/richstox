@@ -7505,9 +7505,9 @@ async def admin_pipeline_export_full(
 ):
     """
     Download a unified pipeline CSV for a full chain run.
-    Columns: ticker, name, step, reason
+    Columns: ticker, name, status, failed_step, reason_code, reason_text
     One row per Step 1 raw row.
-    step = first pipeline step where the ticker was filtered, or 'OK'.
+    status = OK/FAIL, failed_step = first pipeline step where the ticker was filtered.
     Auth: AdminAuthMiddleware.
     """
     from fastapi.responses import StreamingResponse as _SR2
@@ -7534,11 +7534,28 @@ async def admin_pipeline_export_full(
         "step1": "Step 1 - Universe Seed",
         "step2": "Step 2 - Price Sync",
         "step3": "Step 3 - Fundamentals Sync",
+        "visibility": "Visibility",
     }
 
+    _ALLOWED_FAILED_STEPS = {
+        _STEP_LABELS["step1"],
+        _STEP_LABELS["step2"],
+        _STEP_LABELS["step3"],
+        _STEP_LABELS["visibility"],
+    }
+
+    def _to_reason_code(reason: Optional[str]) -> str:
+        if not reason:
+            return "unknown_failure"
+        _clean = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in reason.lower())
+        parts = [p for p in _clean.split() if p]
+        return "_".join(parts) if parts else "unknown_failure"
+
     # Preload exclusion reasons per step — one query each (O(n) total).
-    _excl: Dict[str, Dict[str, str]] = {"step1": {}, "step2": {}, "step3": {}}
+    _excl: Dict[str, Dict[str, str]] = {"step1": {}, "step2": {}, "step3": {}, "visibility": {}}
     for _sk, _label in _STEP_LABELS.items():
+        if _sk == "visibility":
+            continue
         _rid = sids.get(_sk)
         if not _rid:
             continue
@@ -7548,18 +7565,18 @@ async def admin_pipeline_export_full(
         ):
             _excl[_sk][edoc["ticker"]] = edoc["reason"]
 
-    # Also load step3 visibility exclusion rows (different run_id, same step label)
+    # Also load step3 visibility exclusion rows (different run_id, same source step label)
     _s3_vis_rid = sids.get("step3_visibility")
     if _s3_vis_rid:
         async for edoc in db.pipeline_exclusion_report.find(
             {"run_id": _s3_vis_rid, "step": "Step 3 - Fundamentals Sync"},
             {"_id": 0, "ticker": 1, "reason": 1},
         ):
-            _excl["step3"].setdefault(edoc["ticker"], edoc["reason"])
+            _excl["visibility"].setdefault(edoc["ticker"], edoc["reason"])
 
     output = _io2.StringIO()
     writer = _csv2.writer(output, quoting=_csv2.QUOTE_ALL)
-    writer.writerow(["ticker", "name", "step", "reason"])
+    writer.writerow(["ticker", "name", "status", "failed_step", "reason_code", "reason_text"])
 
     # Stream Step 1 raw rows in global order.
     # One output row per distinct ticker code — cross-exchange duplicates (same
@@ -7583,7 +7600,14 @@ async def admin_pipeline_export_full(
 
         if not code_norm:
             reason = _excl["step1"].get("(empty)", "Empty ticker code")
-            writer.writerow([ticker_us, name, _STEP_LABELS["step1"], reason])
+            writer.writerow([
+                ticker_us,
+                name,
+                "FAIL",
+                _STEP_LABELS["step1"],
+                _to_reason_code(reason),
+                reason,
+            ])
             continue
 
         if code_norm in _seen_codes:
@@ -7599,7 +7623,7 @@ async def admin_pipeline_export_full(
         # occurrences of the code, not the first occurrence we are outputting now.
         _out_step:   Optional[str] = None
         _out_reason: Optional[str] = None
-        for _sk in ("step1", "step2", "step3"):
+        for _sk in ("step1", "step2", "step3", "visibility"):
             _r = _excl[_sk].get(ticker_us)
             if _r is not None:
                 if _sk == "step1" and isinstance(_r, str) and _r.startswith(DUPLICATE_REASON_PREFIX):
@@ -7611,9 +7635,15 @@ async def admin_pipeline_export_full(
                 break
 
         if _out_step:
-            writer.writerow([ticker_us, name, _out_step, _out_reason])
+            _reason_text = (_out_reason or "Excluded by pipeline filter.").strip() or "Excluded by pipeline filter."
+            _reason_code = _to_reason_code(_reason_text)
+            if _reason_code == "ok":
+                _reason_code = "failed_filter"
+            if _out_step not in _ALLOWED_FAILED_STEPS:
+                _out_step = _STEP_LABELS["step3"]
+            writer.writerow([ticker_us, name, "FAIL", _out_step, _reason_code, _reason_text])
         else:
-            writer.writerow([ticker_us, name, "OK", "ok"])
+            writer.writerow([ticker_us, name, "OK", "", "ok", ""])
 
     output.seek(0)
     return _SR2(
