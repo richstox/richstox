@@ -262,11 +262,11 @@ def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
             }
         },
     )
-    called_dates = []
+    calls_made = []
 
     async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
         _ = db, job_name, progress_cb, seeded_tickers_override
-        called_dates.append(True)
+        calls_made.append(True)
         return {
             "status": "success",
             "dates_processed": 1,
@@ -294,7 +294,7 @@ def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
         )
     )
 
-    assert called_dates == []
+    assert calls_made == []
     latest = db.ops_job_runs.latest
     assert latest["status"] == "error"
     assert "bulk guard triggered" in latest["error"]
@@ -304,11 +304,11 @@ def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
 def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
     db = _FakeDB(stock_counts={})
-    called = []
+    calls_made = []
 
     async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
         _ = db, job_name, progress_cb, seeded_tickers_override
-        called.append(True)
+        calls_made.append(True)
         return {
             "status": "success",
             "dates_processed": 1,
@@ -337,7 +337,7 @@ def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
         )
     )
 
-    assert len(called) == 1
+    assert len(calls_made) == 1
     assert "price_bulk" not in db.pipeline_state.docs
     days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
     assert [d["status"] for d in days] == ["failed_sanity"]
