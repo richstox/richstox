@@ -143,7 +143,7 @@ async def fetch_eod_history(ticker: str, from_date: str = None, to_date: str = N
         return []
 
 
-async def fetch_bulk_eod_latest(exchange: str = "US", bulk_date: Optional[str] = None) -> List[Dict[str, Any]]:
+async def fetch_bulk_eod_latest(exchange: str = "US") -> List[Dict[str, Any]]:
     """
     Fetch bulk EOD data for latest trading day.
     
@@ -162,9 +162,6 @@ async def fetch_bulk_eod_latest(exchange: str = "US", bulk_date: Optional[str] =
         "api_token": EODHD_API_KEY,
         "fmt": "json",
     }
-    if bulk_date:
-        params["date"] = bulk_date
-    
     try:
         async with httpx.AsyncClient(timeout=120) as client:
             response = await client.get(url, params=params)
@@ -771,7 +768,6 @@ async def run_daily_bulk_catchup(
     job_name: str = "price_sync",
     progress_cb: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
     seeded_tickers_override: Optional[Set[str]] = None,
-    bulk_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetch the EODHD latest-day bulk file once and upsert into stock_prices.
@@ -783,7 +779,6 @@ async def run_daily_bulk_catchup(
 
     Optional progress_cb receives (processed_tickers, expected_tickers_count, "2.1 bulk price sync")
     after each bulk_write batch to stream Step 2 progress.
-    Optional bulk_date requests a specific trading date from EODHD.
     """
     from pymongo import UpdateOne
 
@@ -798,13 +793,11 @@ async def run_daily_bulk_catchup(
             return True
         return False
 
-    logger.info(
-        "[BULK CATCHUP] Fetching bulk prices from EODHD%s",
-        f" for {bulk_date}" if bulk_date else " (latest-day)",
-    )
+    bulk_url_used = f"{EODHD_BASE_URL}/eod-bulk-last-day/US"
+    logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (latest-day)")
 
     # Single API call — no date param = EODHD returns the latest available trading day
-    bulk_data = await fetch_bulk_eod_latest("US", bulk_date=bulk_date)
+    bulk_data = await fetch_bulk_eod_latest("US")
 
     # ── Cancel check 2a: immediately after the API call returns ──────────────
     if await _cancelled():
@@ -815,6 +808,7 @@ async def run_daily_bulk_catchup(
             "records_upserted": 0,
             "api_calls": 1,
             "bulk_writes": 0,
+            "bulk_url_used": bulk_url_used,
         }
 
     if not bulk_data:
@@ -826,6 +820,7 @@ async def run_daily_bulk_catchup(
             "records_upserted": 0,
             "api_calls": 1,
             "bulk_writes": 0,
+            "bulk_url_used": bulk_url_used,
         }
 
     # Load Step 2 universe tickers for filtering bulk_data rows.
@@ -851,7 +846,7 @@ async def run_daily_bulk_catchup(
     batched_operations_with_tickers: List[Tuple[List[UpdateOne], Set[str]]] = []
     current_batch_ops: List[UpdateOne] = []
     current_batch_tickers: Set[str] = set()
-    date_seen: Optional[str] = None
+    parsed_rows: List[Dict[str, Any]] = []
 
     for record in bulk_data:
         code = record.get("code", "")
@@ -859,8 +854,9 @@ async def run_daily_bulk_catchup(
         if not ticker or ticker not in step2_tickers:
             continue
         date = record.get("date")
-        if date:
-            date_seen = date
+        if not date:
+            continue
+        parsed_rows.append({"ticker": ticker, "date": date})
         current_batch_ops.append(
             UpdateOne(
                 {"ticker": ticker, "date": date},
@@ -886,6 +882,27 @@ async def run_daily_bulk_catchup(
             current_batch_ops = []
             current_batch_tickers = set()
 
+    unique_dates = sorted(set(row["date"] for row in parsed_rows))
+    if len(unique_dates) != 1:
+        logger.error(
+            "[BULK CATCHUP] Expected exactly one payload date, got %s",
+            unique_dates,
+        )
+        return {
+            "status": "error",
+            "message": "Bulk payload contains zero or multiple dates",
+            "date": None,
+            "processed_date": None,
+            "unique_dates": unique_dates,
+            "dates_processed": 0,
+            "records_upserted": 0,
+            "api_calls": 1,
+            "bulk_writes": 0,
+            "bulk_url_used": bulk_url_used,
+            "tickers_with_price": [],
+        }
+    date_seen = unique_dates[0]
+
     if current_batch_ops:
         batched_operations_with_tickers.append(
             (current_batch_ops, current_batch_tickers)
@@ -901,6 +918,7 @@ async def run_daily_bulk_catchup(
             "records_upserted": 0,
             "api_calls": 1,
             "bulk_writes": 0,
+            "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
         }
 
@@ -926,6 +944,7 @@ async def run_daily_bulk_catchup(
                 "records_upserted": records_upserted,
                 "api_calls": 1,
                 "bulk_writes": bulk_writes,
+                "bulk_url_used": bulk_url_used,
                 "tickers_with_price": sorted(processed_ticker_set),
             }
 
@@ -949,9 +968,12 @@ async def run_daily_bulk_catchup(
     return {
         "status": "success",
         "date": date_seen,
+        "processed_date": date_seen,
+        "unique_dates": unique_dates,
         "dates_processed": 1,
         "records_upserted": records_upserted,
         "api_calls": 1,
         "bulk_writes": bulk_writes,
+        "bulk_url_used": bulk_url_used,
         "tickers_with_price": sorted(processed_ticker_set),
     }

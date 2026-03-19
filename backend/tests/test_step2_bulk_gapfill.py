@@ -163,9 +163,9 @@ def _patch_non_gapfill_dependencies(monkeypatch):
 
 def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
-    db = _FakeDB(stock_counts={"2026-03-17": 5001})
+    db = _FakeDB(stock_counts={})
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, bulk_date=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
         _ = db, job_name, progress_cb, seeded_tickers_override
         return {
             "status": "success",
@@ -174,7 +174,9 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
             "api_calls": 1,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US", "MSFT.US"],
-            "date": bulk_date,
+            "date": "2026-03-17",
+            "processed_date": "2026-03-17",
+            "unique_dates": ["2026-03-17"],
         }
 
     async def _fake_missed_dates(db, today_dt):
@@ -203,13 +205,13 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
     assert persisted["updated_at_prague"]
 
 
-def test_step2_gapfill_bootstrap_forces_target_end_date_when_missed_dates_empty(monkeypatch):
+def test_step2_gapfill_bootstrap_fetches_provider_latest_without_bulk_date_kwarg(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
-    db = _FakeDB(stock_counts={"2026-03-18": 5001})
-    called_dates = []
+    db = _FakeDB(stock_counts={})
+    called_kwargs = []
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, bulk_date=None):
-        called_dates.append(bulk_date)
+    async def _fake_bulk(*args, **kwargs):
+        called_kwargs.append(dict(kwargs))
         return {
             "status": "success",
             "dates_processed": 1,
@@ -217,7 +219,10 @@ def test_step2_gapfill_bootstrap_forces_target_end_date_when_missed_dates_empty(
             "api_calls": 1,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US"],
-            "date": bulk_date,
+            "date": "2026-03-18",
+            "processed_date": "2026-03-18",
+            "unique_dates": ["2026-03-18"],
+            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
         }
 
     async def _fake_missed_dates(db, today_dt):
@@ -239,8 +244,9 @@ def test_step2_gapfill_bootstrap_forces_target_end_date_when_missed_dates_empty(
     assert result["status"] == "success"
     assert result["dates_processed"] == 1
     assert result["api_calls"] > 0
-    assert len(called_dates) == 1
-    assert called_dates[0] == datetime.now(timezone.utc).date().strftime("%Y-%m-%d")
+    assert len(called_kwargs) == 1
+    assert "bulk_date" not in called_kwargs[0]
+    assert db.ops_job_runs.latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US"
 
 
 def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
@@ -258,10 +264,19 @@ def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
     )
     called_dates = []
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, bulk_date=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
         _ = db, job_name, progress_cb, seeded_tickers_override
-        called_dates.append(bulk_date)
-        return {"status": "success", "dates_processed": 1, "records_upserted": 5001, "api_calls": 1, "bulk_writes": 1}
+        called_dates.append(True)
+        return {
+            "status": "success",
+            "dates_processed": 1,
+            "records_upserted": 5001,
+            "api_calls": 1,
+            "bulk_writes": 1,
+            "date": "2026-03-17",
+            "processed_date": "2026-03-17",
+            "unique_dates": ["2026-03-17"],
+        }
 
     async def _fake_missed_dates(db, today_dt):
         _ = db, today_dt
@@ -288,26 +303,22 @@ def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
 
 def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
-    db = _FakeDB(
-        stock_counts={
-            "2026-03-17": 5001,
-            "2026-03-18": 3900,
-            "2026-03-19": 7000,
-        }
-    )
-    called_dates = []
+    db = _FakeDB(stock_counts={})
+    called = []
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, bulk_date=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
         _ = db, job_name, progress_cb, seeded_tickers_override
-        called_dates.append(bulk_date)
+        called.append(True)
         return {
             "status": "success",
             "dates_processed": 1,
-            "records_upserted": 4500,
+            "records_upserted": 3900,
             "api_calls": 1,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US"],
-            "date": bulk_date,
+            "date": "2026-03-18",
+            "processed_date": "2026-03-18",
+            "unique_dates": ["2026-03-18"],
         }
 
     async def _fake_missed_dates(db, today_dt):
@@ -326,22 +337,64 @@ def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
         )
     )
 
-    assert called_dates == ["2026-03-17", "2026-03-18"]
-    assert len(called_dates) == 2
-    assert "2026-03-19" not in called_dates
-    assert db.pipeline_state.docs["price_bulk"]["global_last_bulk_date_processed"] == "2026-03-17"
+    assert len(called) == 1
+    assert "price_bulk" not in db.pipeline_state.docs
     days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
-    assert [d["status"] for d in days] == ["success", "failed_sanity"]
+    assert [d["status"] for d in days] == ["failed_sanity"]
+    assert days[0]["processed_date"] == "2026-03-18"
+
+
+def test_step2_gapfill_errors_when_bulk_payload_has_multiple_dates(monkeypatch):
+    _patch_non_gapfill_dependencies(monkeypatch)
+    db = _FakeDB(stock_counts={})
+
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+        _ = db, job_name, progress_cb, seeded_tickers_override
+        return {
+            "status": "error",
+            "dates_processed": 0,
+            "records_upserted": 0,
+            "api_calls": 1,
+            "bulk_writes": 0,
+            "tickers_with_price": [],
+            "date": None,
+            "processed_date": None,
+            "unique_dates": ["2026-03-18", "2026-03-19"],
+            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+        }
+
+    async def _fake_missed_dates(db, today_dt):
+        _ = db, today_dt
+        return [date(2026, 3, 19)]
+
+    monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)
+    monkeypatch.setattr(scheduler_service, "_get_missed_trading_dates", _fake_missed_dates)
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "price_bulk" not in db.pipeline_state.docs
+    latest = db.ops_job_runs.latest
+    day = latest["details"]["price_bulk_gapfill"]["days"][0]
+    assert day["status"] == "error"
+    assert day["unique_dates"] == ["2026-03-18", "2026-03-19"]
+    assert latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US"
 
 
 def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
     start = date(2026, 1, 1)
     all_days = [start + timedelta(days=i) for i in range(65)]
-    stock_counts = {d.strftime("%Y-%m-%d"): 5001 for d in all_days}
-    db = _FakeDB(stock_counts=stock_counts)
+    db = _FakeDB(stock_counts={})
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, bulk_date=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
         _ = db, job_name, progress_cb, seeded_tickers_override
         return {
             "status": "success",
@@ -350,7 +403,9 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
             "api_calls": 1,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US"],
-            "date": bulk_date,
+            "date": "2026-03-19",
+            "processed_date": "2026-03-19",
+            "unique_dates": ["2026-03-19"],
         }
 
     async def _fake_missed_dates(db, today_dt):
@@ -370,6 +425,5 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
     )
 
     days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
-    assert len(days) == 60
-    assert days[0]["bulk_date"] == all_days[5].strftime("%Y-%m-%d")
-    assert days[-1]["bulk_date"] == all_days[-1].strftime("%Y-%m-%d")
+    assert len(days) == 1
+    assert days[0]["bulk_date"] == "2026-03-19"

@@ -1253,16 +1253,8 @@ async def run_daily_price_sync(
         missed_dates = await _get_missed_trading_dates(db, target_end_date)
         if watermark_before_dt is not None:
             missed_dates = [d for d in missed_dates if d > watermark_before_dt]
-        # Bootstrap guard: when no bulk watermark exists and Step 2 has seeded
-        # tickers, force processing of target_end_date so bulk fetch always runs.
-        if (
-            progress_total_step2 > 0
-            and watermark_before_dt is None
-            and not missed_dates
-            and target_end_date.weekday() < 5
-        ):
-            missed_dates.append(target_end_date)
         missing_dates = sorted(d.strftime("%Y-%m-%d") for d in missed_dates if d <= target_end_date)
+        should_attempt_bulk_fetch = progress_total_step2 > 0 and (watermark_before_dt is None or len(missing_dates) > 0)
 
         days: List[Dict[str, Any]] = []
         await db.ops_job_runs.update_one(
@@ -1271,6 +1263,7 @@ async def run_daily_price_sync(
                 "watermark_before": watermark_before,
                 "target_end_date": target_end_date.strftime("%Y-%m-%d"),
                 "min_bulk_rows_ok": min_bulk_rows_ok,
+                "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
                 "days": days,
             }}},
         )
@@ -1278,6 +1271,7 @@ async def run_daily_price_sync(
             "watermark_before": watermark_before,
             "target_end_date": target_end_date.strftime("%Y-%m-%d"),
             "min_bulk_rows_ok": min_bulk_rows_ok,
+            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
             "days": days,
         }
 
@@ -1287,17 +1281,22 @@ async def run_daily_price_sync(
             "records_upserted": 0,
             "api_calls": 0,
             "bulk_writes": 0,
+            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
             "tickers_with_price": [],
             "price_bulk_gapfill": result_gapfill,
         }
         _tickers_with_price_set: set = set()
-        for idx, bulk_date in enumerate(missing_dates):
+        bulk_attempts = [None] if should_attempt_bulk_fetch else []
+        for idx, _ in enumerate(bulk_attempts):
             await _progress(
-                f"2.1 Bulk gapfill {idx + 1}/{len(missing_dates)} for {bulk_date}…",
+                f"2.1 Bulk gapfill {idx + 1}/{len(bulk_attempts)} (provider latest available day)…",
                 phase="2.1_bulk_catchup",
             )
             day: Dict[str, Any] = {
-                "bulk_date": bulk_date,
+                "bulk_date": None,
+                "processed_date": None,
+                "unique_dates": [],
+                "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
                 "status": "error",
                 "rows_written": 0,
                 "advanced_watermark": False,
@@ -1308,29 +1307,54 @@ async def run_daily_price_sync(
                     db,
                     progress_cb=_bulk_progress,
                     seeded_tickers_override=_seeded_set,
-                    bulk_date=bulk_date,
                 )
-                rows_written = await db.stock_prices.count_documents({"date": bulk_date})
+                day["bulk_url_used"] = day_result.get("bulk_url_used", day["bulk_url_used"])
+                day["processed_date"] = day_result.get("processed_date") or day_result.get("date")
+                day["bulk_date"] = day["processed_date"]
+                day["unique_dates"] = day_result.get("unique_dates", [])
+                result["api_calls"] += day_result.get("api_calls", 0)
+                result["bulk_writes"] += day_result.get("bulk_writes", 0)
+
+                if len(day["unique_dates"]) != 1:
+                    day["status"] = "error"
+                    day["error"] = f"bulk payload must contain exactly one date; got {day['unique_dates']}"
+                    result["status"] = "error"
+                    days.append(day)
+                    if len(days) > MAX_BULK_GAPFILL_DAYS_HISTORY:
+                        days = days[-MAX_BULK_GAPFILL_DAYS_HISTORY:]
+                    await db.ops_job_runs.update_one(
+                        {"_id": _running_doc_id},
+                        {"$set": {"details.price_bulk_gapfill.days": days}},
+                    )
+                    result_gapfill["days"] = days
+                    break
+
+                processed_date = day.get("processed_date")
+                rows_written = (
+                    day_result.get("records_upserted", 0)
+                    if processed_date
+                    else 0
+                )
                 day["rows_written"] = rows_written
                 day_ok = rows_written > min_bulk_rows_ok
                 if day_ok:
                     now_utc = datetime.now(timezone.utc)
-                    await _write_price_bulk_state(db, bulk_date, now_utc)
+                    await _write_price_bulk_state(db, processed_date, now_utc)
                     day["status"] = "success"
                     day["advanced_watermark"] = True
                     result["dates_processed"] += day_result.get("dates_processed", 0)
                     result["records_upserted"] += day_result.get("records_upserted", 0)
-                    result["api_calls"] += day_result.get("api_calls", 0)
-                    result["bulk_writes"] += day_result.get("bulk_writes", 0)
                     _tickers_with_price_set.update(day_result.get("tickers_with_price", []))
                 else:
                     day["status"] = "failed_sanity"
                     day["error"] = (
-                        f"rows_written={rows_written} <= min_bulk_rows_ok={min_bulk_rows_ok}"
+                        f"rows_written={rows_written} <= min_bulk_rows_ok={min_bulk_rows_ok} for processed_date={processed_date}"
                     )
+                    result["status"] = "error"
             except Exception as exc:
                 day["status"] = "error"
                 day["error"] = str(exc)
+                result["status"] = "error"
 
             days.append(day)
             if len(days) > MAX_BULK_GAPFILL_DAYS_HISTORY:
@@ -1433,6 +1457,7 @@ async def run_daily_price_sync(
                     "details": {
                         "dates_processed": result.get("dates_processed", 0),
                         "records_upserted": result.get("records_upserted", 0),
+                        "bulk_url_used": result.get("bulk_url_used"),
                         "tickers_seeded_total": seeded_total,
                         "tickers_with_price_data": with_price,
                         "exclusion_report_run_id": result.get("exclusion_report_run_id"),
@@ -1502,6 +1527,7 @@ async def run_daily_price_sync(
                     "details": {
                         "dates_processed": result.get("dates_processed", 0),
                         "records_upserted": result.get("records_upserted", 0),
+                        "bulk_url_used": result.get("bulk_url_used"),
                         "tickers_seeded_total": seeded_total,
                         "tickers_with_price_data": with_price,
                         "event_detectors": event_detector_summary,
@@ -1549,11 +1575,12 @@ async def run_daily_price_sync(
                 "progress_processed": with_price,
                 "progress_total": seeded_total,
                 "progress_pct": min(round(100 * with_price / seeded_total), 100) if seeded_total else 0,
-                "details": {
-                    "dates_processed": result.get("dates_processed", 0),
-                    "records_upserted": result.get("records_upserted", 0),
-                    "tickers_seeded_total": result.get("tickers_seeded_total", 0),
-                    "tickers_with_price_data": result.get("tickers_with_price_data", 0),
+                    "details": {
+                        "dates_processed": result.get("dates_processed", 0),
+                        "records_upserted": result.get("records_upserted", 0),
+                        "bulk_url_used": result.get("bulk_url_used"),
+                        "tickers_seeded_total": result.get("tickers_seeded_total", 0),
+                        "tickers_with_price_data": result.get("tickers_with_price_data", 0),
                     "tickers_without_price_data": result.get("tickers_without_price_data", 0),
                     "matched_price_tickers_raw": result.get("matched_price_tickers_raw", 0),
                     "exclusion_report_rows": result.get("exclusion_report_rows", 0),
