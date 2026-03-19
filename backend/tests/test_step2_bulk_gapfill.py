@@ -198,6 +198,7 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
             "dates_processed": 1,
             "records_upserted": 5001,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US", "MSFT.US"],
             "date": "2026-03-17",
@@ -243,6 +244,7 @@ def test_step2_gapfill_bootstrap_fetches_provider_latest_without_bulk_date_kwarg
             "dates_processed": 1,
             "records_upserted": 5001,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US"],
             "date": "2026-03-18",
@@ -298,6 +300,7 @@ def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(mon
             "dates_processed": 1,
             "records_upserted": 5001,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "date": "2026-03-17",
             "processed_date": "2026-03-17",
@@ -342,6 +345,7 @@ def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
             "dates_processed": 1,
             "records_upserted": 3900,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US"],
             "date": "2026-03-18",
@@ -383,6 +387,7 @@ def test_step2_gapfill_errors_when_bulk_payload_has_multiple_dates(monkeypatch):
             "dates_processed": 0,
             "records_upserted": 0,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 0,
             "tickers_with_price": [],
             "date": None,
@@ -416,6 +421,54 @@ def test_step2_gapfill_errors_when_bulk_payload_has_multiple_dates(monkeypatch):
     assert latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US"
 
 
+def test_step2_bulk_guard_uses_canonical_bulk_fetch_executed_signal(monkeypatch):
+    _patch_non_gapfill_dependencies(monkeypatch)
+    db = _FakeDB(stock_counts={})
+
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+        _ = db, job_name, progress_cb, seeded_tickers_override
+        # Regression case: legacy telemetry could have api_calls=1 but no
+        # actual fetch decision/day output.
+        return {
+            "status": "success",
+            "dates_processed": 0,
+            "records_upserted": 0,
+            "api_calls": 1,
+            "bulk_fetch_executed": False,
+            "raw_row_count": 0,
+            "bulk_writes": 0,
+            "tickers_with_price": [],
+            "date": None,
+            "processed_date": None,
+            "unique_dates": [],
+            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+        }
+
+    async def _fake_missed_dates(db, today_dt):
+        _ = db, today_dt
+        return [date(2026, 3, 19)]
+
+    monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)
+    monkeypatch.setattr(scheduler_service, "_get_missed_trading_dates", _fake_missed_dates)
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "no bulk fetch executed" in result["error"]
+    latest = db.ops_job_runs.latest
+    details = latest["details"]
+    assert details["bulk_fetch_executed"] is False
+    assert details["api_calls"] == 0
+    assert details["price_bulk_gapfill"]["days"] == []
+
+
 def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
     start = date(2026, 1, 1)
@@ -429,6 +482,7 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
             "dates_processed": 1,
             "records_upserted": 5001,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US"],
             "date": "2026-03-19",
@@ -471,6 +525,7 @@ def test_step2_gapfill_days_empty_when_phase_not_entered_seeded_total_zero(monke
             "dates_processed": 1,
             "records_upserted": 5001,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "date": "2026-03-19",
             "processed_date": "2026-03-19",
@@ -552,6 +607,7 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
             "dates_processed": 1,
             "records_upserted": 5001,
             "api_calls": 1,
+            "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US", "MSFT.US"],
             "date": "2026-03-18",

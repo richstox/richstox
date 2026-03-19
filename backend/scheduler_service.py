@@ -1292,6 +1292,10 @@ async def run_daily_price_sync(
             "dates_processed": 0,
             "records_upserted": 0,
             "api_calls": 0,
+            "bulk_fetch_executed": False,
+            "raw_row_count": 0,
+            "rows_written": 0,
+            "price_bulk_gapfill_days_count": 0,
             "bulk_writes": 0,
             "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
             "tickers_with_price": [],
@@ -1311,6 +1315,7 @@ async def run_daily_price_sync(
                 f"2.1 Bulk gapfill {idx + 1}/{len(bulk_attempts)} (provider latest available day)…",
                 phase="2.1_bulk_catchup",
             )
+            should_append_day = True
             day: Dict[str, Any] = {
                 "bulk_date": None,
                 "processed_date": None,
@@ -1327,11 +1332,28 @@ async def run_daily_price_sync(
                     progress_cb=_bulk_progress,
                     seeded_tickers_override=_seeded_set,
                 )
+                day_bulk_fetch_executed = bool(day_result.get("bulk_fetch_executed"))
+                result["bulk_fetch_executed"] = day_bulk_fetch_executed
+                result["api_calls"] = 1 if result["bulk_fetch_executed"] else 0
+                result["raw_row_count"] = day_result.get("raw_row_count", 0)
+                if not day_bulk_fetch_executed:
+                    should_append_day = False
+                    day["status"] = "error"
+                    day["error"] = "bulk fetch not executed"
+                    result["status"] = "error"
+                    break
                 day["bulk_url_used"] = day_result.get("bulk_url_used", day["bulk_url_used"])
-                day["processed_date"] = day_result.get("processed_date") or day_result.get("date")
+                day["processed_date"] = (
+                    day_result.get("processed_date")
+                    or day_result.get("date")
+                    or (
+                        target_end_date.strftime("%Y-%m-%d")
+                        if day_bulk_fetch_executed
+                        else None
+                    )
+                )
                 day["bulk_date"] = day["processed_date"]
                 day["unique_dates"] = day_result.get("unique_dates", [])
-                result["api_calls"] += day_result.get("api_calls", 0)
                 result["bulk_writes"] += day_result.get("bulk_writes", 0)
 
                 if len(day["unique_dates"]) != 1:
@@ -1355,6 +1377,7 @@ async def run_daily_price_sync(
                     else 0
                 )
                 day["rows_written"] = rows_written
+                result["rows_written"] = rows_written
                 day_ok = rows_written > min_bulk_rows_ok
                 if day_ok:
                     now_utc = datetime.now(timezone.utc)
@@ -1375,24 +1398,28 @@ async def run_daily_price_sync(
                 day["error"] = str(exc)
                 result["status"] = "error"
 
-            days.append(day)
-            if len(days) > MAX_BULK_GAPFILL_DAYS_HISTORY:
-                days = days[-MAX_BULK_GAPFILL_DAYS_HISTORY:]
-            await db.ops_job_runs.update_one(
-                {"_id": _running_doc_id},
-                {"$set": {"details.price_bulk_gapfill.days": days}},
-            )
-            result_gapfill["days"] = days
-
+            if should_append_day:
+                days.append(day)
+                if len(days) > MAX_BULK_GAPFILL_DAYS_HISTORY:
+                    days = days[-MAX_BULK_GAPFILL_DAYS_HISTORY:]
+                await db.ops_job_runs.update_one(
+                    {"_id": _running_doc_id},
+                    {"$set": {"details.price_bulk_gapfill.days": days}},
+                )
+                result_gapfill["days"] = days
             if day["status"] != "success":
                 break
 
         result["tickers_with_price"] = sorted(_tickers_with_price_set)
+        result["api_calls"] = 1 if result.get("bulk_fetch_executed") else 0
+        result["price_bulk_gapfill_days_count"] = len(days)
 
-        if should_attempt_bulk_fetch and (result.get("api_calls", 0) == 0 or result.get("dates_processed", 0) == 0):
+        if should_attempt_bulk_fetch and (not result.get("bulk_fetch_executed", False)):
             _bulk_guard_msg = (
                 "Step 2 bulk guard triggered: no bulk fetch executed "
-                f"(api_calls={result.get('api_calls', 0)}, dates_processed={result.get('dates_processed', 0)}). "
+                f"(api_calls={result.get('api_calls', 0)}, "
+                f"bulk_fetch_executed={result.get('bulk_fetch_executed', False)}, "
+                f"days={len(days)}). "
                 "Aborting run to prevent false success."
             )
             _bulk_guard_finished_at = datetime.now(timezone.utc)
@@ -1476,6 +1503,11 @@ async def run_daily_price_sync(
                     "details": {
                         "dates_processed": result.get("dates_processed", 0),
                         "records_upserted": result.get("records_upserted", 0),
+                        "rows_written": result.get("rows_written", 0),
+                        "raw_row_count": result.get("raw_row_count", 0),
+                        "bulk_fetch_executed": result.get("bulk_fetch_executed", False),
+                        "api_calls": result.get("api_calls", 0),
+                        "price_bulk_gapfill_days_count": result.get("price_bulk_gapfill_days_count", 0),
                         "bulk_url_used": result.get("bulk_url_used"),
                         "tickers_seeded_total": seeded_total,
                         "tickers_with_price_data": with_price,
@@ -1547,6 +1579,11 @@ async def run_daily_price_sync(
                     "details": {
                         "dates_processed": result.get("dates_processed", 0),
                         "records_upserted": result.get("records_upserted", 0),
+                        "rows_written": result.get("rows_written", 0),
+                        "raw_row_count": result.get("raw_row_count", 0),
+                        "bulk_fetch_executed": result.get("bulk_fetch_executed", False),
+                        "api_calls": result.get("api_calls", 0),
+                        "price_bulk_gapfill_days_count": result.get("price_bulk_gapfill_days_count", 0),
                         "bulk_url_used": result.get("bulk_url_used"),
                         "tickers_seeded_total": seeded_total,
                         "tickers_with_price_data": with_price,
@@ -1598,6 +1635,9 @@ async def run_daily_price_sync(
                     "details": {
                         "dates_processed": result.get("dates_processed", 0),
                         "records_upserted": result.get("records_upserted", 0),
+                        "rows_written": result.get("rows_written", 0),
+                        "raw_row_count": result.get("raw_row_count", 0),
+                        "bulk_fetch_executed": result.get("bulk_fetch_executed", False),
                         "bulk_url_used": result.get("bulk_url_used"),
                         "tickers_seeded_total": result.get("tickers_seeded_total", 0),
                         "tickers_with_price_data": result.get("tickers_with_price_data", 0),
@@ -1606,6 +1646,7 @@ async def run_daily_price_sync(
                     "exclusion_report_rows": result.get("exclusion_report_rows", 0),
                     "api_calls": result.get("api_calls", 0),
                     "bulk_writes": result.get("bulk_writes", 0),
+                    "price_bulk_gapfill_days_count": result.get("price_bulk_gapfill_days_count", 0),
                     "fundamentals_events_enqueued": result.get("fundamentals_events_enqueued", 0),
                     "fundamentals_events_enqueued_skipped_existing": result.get("fundamentals_events_enqueued_skipped_existing", 0),
                     "event_detectors": result.get("event_detectors", {}),
