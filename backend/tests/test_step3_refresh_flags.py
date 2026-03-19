@@ -59,6 +59,7 @@ class _TrackedTickersForStep3:
                 docs.append({
                     "ticker": d["ticker"],
                     "needs_price_redownload": bool(d.get("needs_price_redownload")),
+                    "price_history_complete": d.get("price_history_complete"),
                 })
             return _AsyncCursor(docs)
         return _AsyncCursor([])
@@ -289,6 +290,25 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
     assert telemetry["phases"]["A"]["total"] == 1
     assert telemetry["phases"]["B"]["status"] == "done"
     assert telemetry["phases"]["C"]["name"] == "PriceHistory"
+    assert telemetry["phases"]["C"]["selection_audit"] == {
+        "selection_sources": [],
+        "counts_by_source_pre_dedupe": {
+            "price_history_incomplete": 0,
+            "needs_price_redownload": 0,
+        },
+        "pre_dedupe_total": 0,
+        "post_dedupe_total": 0,
+        "counts_by_reason": {
+            "price_history_incomplete": 0,
+            "needs_price_redownload": 0,
+        },
+        "sample_tickers_by_reason": {
+            "price_history_incomplete": [],
+            "needs_price_redownload": [],
+        },
+        "selection_criteria": "PhaseC: union(price_history_incomplete, needs_price_redownload) then dedupe by ticker",
+        "overlap_possible": True,
+    }
     assert "updated_at_prague" in telemetry
     assert db.ops_locks.docs == {}
     assert db.ops_locks.index_calls
@@ -407,6 +427,26 @@ def test_step3_phase_c_parallel_counts_failures_per_ticker(monkeypatch):
     assert result["phase_c_stats"]["total_records"] == 4
     assert sorted([t for (t, _, _) in phase_c_calls]) == ["AAA.US", "BBB.US", "CCC.US"]
     assert len(phase_c_calls) == 3
+    telemetry_c = result["step3_telemetry"]["phases"]["C"]
+    selection_audit = telemetry_c["selection_audit"]
+    assert selection_audit["selection_sources"] == ["price_history_incomplete", "needs_price_redownload"]
+    assert selection_audit["counts_by_source_pre_dedupe"] == {
+        "price_history_incomplete": 3,
+        "needs_price_redownload": 1,
+    }
+    assert selection_audit["pre_dedupe_total"] == 3
+    assert selection_audit["post_dedupe_total"] == 3
+    assert selection_audit["counts_by_reason"] == {
+        "price_history_incomplete": 3,
+        "needs_price_redownload": 1,
+    }
+    assert selection_audit["sample_tickers_by_reason"]["price_history_incomplete"] == ["AAA.US", "BBB.US", "CCC.US"]
+    assert selection_audit["sample_tickers_by_reason"]["needs_price_redownload"] == ["BBB.US"]
+    assert selection_audit["selection_criteria"]
+    assert selection_audit["overlap_possible"] is True
+    assert all(len(v) <= 10 for v in selection_audit["sample_tickers_by_reason"].values())
+    assert all(v <= selection_audit["post_dedupe_total"] for v in selection_audit["counts_by_reason"].values())
+    assert telemetry_c["selection_audit"]["post_dedupe_total"] == telemetry_c["total"]
 
 
 def test_acquire_fundamentals_lock_sets_acquired_at():
