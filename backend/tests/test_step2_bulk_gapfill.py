@@ -599,6 +599,12 @@ def test_step2_detectors_use_bulk_processed_date_for_endpoints(monkeypatch):
 
 def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeypatch):
     db = _FakeDB(stock_counts={})
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 2)
+    monkeypatch.setattr(
+        scheduler_service,
+        "STEP2_SANITY_THRESHOLD_USED",
+        "matched_seeded_tickers_count >= 2",
+    )
 
     async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
         _ = db, include_exclusions, tickers_with_price
