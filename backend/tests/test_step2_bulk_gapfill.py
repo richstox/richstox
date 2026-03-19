@@ -675,6 +675,7 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
 
 def test_step2_gapfill_bulk_matching_normalizes_tickers_and_persists_samples(monkeypatch):
     db = _FakeDB(stock_counts={"2026-03-18": 2}, seeded_tickers=["AAPL.US", "MSFT.US"])
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_ROWS_SANITY_CHECK", 0)
 
     async def _fake_fetch_bulk(_exchange="US", include_meta=False):
         payload = [
