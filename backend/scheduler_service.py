@@ -1251,7 +1251,7 @@ async def run_daily_price_sync(
         if watermark_before:
             try:
                 # Validate stored watermark format for telemetry/debugging only.
-                datetime.fromisoformat(str(watermark_before))
+                _ = datetime.fromisoformat(str(watermark_before))
             except Exception:
                 logger.warning(
                     f"{job_name}: invalid pipeline_state.price_bulk.global_last_bulk_date_processed={watermark_before!r}; ignoring"

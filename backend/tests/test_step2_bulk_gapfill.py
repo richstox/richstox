@@ -175,7 +175,11 @@ def _patch_non_gapfill_dependencies(monkeypatch):
         }
 
     async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
-        _ = db, progress_cb, exclusion_meta, cancel_check, processed_date
+        _ = db
+        _ = progress_cb
+        _ = exclusion_meta
+        _ = cancel_check
+        _ = processed_date
         return {"enqueued_total": 0, "skipped_total": 0, "cancelled": False}
 
     monkeypatch.setattr(scheduler_service, "sync_has_price_data_flags", _fake_flags)
@@ -557,7 +561,11 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
         }
 
     async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
-        _ = db, progress_cb, exclusion_meta, cancel_check
+        _ = db
+        _ = progress_cb
+        _ = exclusion_meta
+        _ = cancel_check
+        _ = processed_date
         assert processed_date == "2026-03-18"
         return {
             "step_2_2_split": {
