@@ -182,6 +182,10 @@ function fmt(n?: number): string {
   return n.toLocaleString();
 }
 
+function asFiniteNumber(v: any): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+}
+
 function safeCount(v: any): number {
   if (typeof v === 'number' && Number.isFinite(v)) return v;
   return 0;
@@ -664,8 +668,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     || (jobRuns['price_sync'] as any)?.progress_processed as number | undefined;
   // Prefer canonical 'with_price' field; fall back to legacy alias and run-derived value.
   const withPrice = withPriceFromRun ?? counts.with_price ?? counts.with_price_data;
-  // Prefer canonical 'classified' field; fall back to legacy alias.
-  const withClass = counts.classified ?? counts.with_classification;
+  const visDetails = (jobRuns['fundamentals_sync'] as any)?.details?.visibility;
+  const classified =
+    asFiniteNumber(visDetails?.after?.visible_count)
+    ?? asFiniteNumber(counts.visible ?? counts.visible_tickers);
   // Prefer canonical 'visible' field; fall back to legacy alias.
   const visible = counts.visible ?? counts.visible_tickers;
 
@@ -947,7 +953,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           </View>
           <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
           <View style={s.miniItem}>
-            <Text style={s.miniNum}>{fmt(withClass)}</Text>
+            <Text style={s.miniNum}>{fmt(classified)}</Text>
             <Text style={s.miniLabel}>classified</Text>
           </View>
           <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
