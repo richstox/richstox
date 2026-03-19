@@ -28,6 +28,16 @@ def _set_path(doc, dotted_key, value):
     cur[parts[-1]] = value
 
 
+def _has_path(doc, dotted_key):
+    parts = dotted_key.split(".")
+    cur = doc
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            return False
+        cur = cur[part]
+    return True
+
+
 class _FakeOpsJobRuns:
     def __init__(self, seeded_total=5000):
         self.docs = {}
@@ -94,6 +104,18 @@ class _FakeOpsConfig:
         self.docs.pop(key, None)
         return SimpleNamespace(deleted_count=1)
 
+    async def update_one(self, filt, update, upsert=False):
+        _ = upsert
+        key = filt.get("key")
+        doc = deepcopy(self.docs.get(key, {"key": key}))
+        for k, v in (update.get("$set") or {}).items():
+            _set_path(doc, k, v)
+        for k, v in (update.get("$setOnInsert") or {}).items():
+            if not _has_path(doc, k):
+                _set_path(doc, k, v)
+        self.docs[key] = doc
+        return SimpleNamespace(matched_count=1)
+
 
 class _FakePipelineState:
     def __init__(self, initial=None):
@@ -152,8 +174,12 @@ def _patch_non_gapfill_dependencies(monkeypatch):
             "exclusion_report_date": "2026-03-18",
         }
 
-    async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None):
-        _ = db, progress_cb, exclusion_meta, cancel_check
+    async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
+        _ = db
+        _ = progress_cb
+        _ = exclusion_meta
+        _ = cancel_check
+        _ = processed_date
         return {"enqueued_total": 0, "skipped_total": 0, "cancelled": False}
 
     monkeypatch.setattr(scheduler_service, "sync_has_price_data_flags", _fake_flags)
@@ -249,7 +275,7 @@ def test_step2_gapfill_bootstrap_fetches_provider_latest_without_bulk_date_kwarg
     assert db.ops_job_runs.latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US"
 
 
-def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
+def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
     db = _FakeDB(
         stock_counts={"2026-03-17": 5001},
@@ -294,11 +320,13 @@ def test_step2_gapfill_skips_duplicate_day_at_watermark_boundary(monkeypatch):
         )
     )
 
-    assert calls_made == []
+    assert calls_made == [True]
     latest = db.ops_job_runs.latest
-    assert latest["status"] == "error"
-    assert "bulk guard triggered" in latest["error"]
-    assert latest["details"]["price_bulk_gapfill"]["days"] == []
+    assert latest["status"] == "success"
+    assert latest["details"]["api_calls"] == 1
+    days = latest["details"]["price_bulk_gapfill"]["days"]
+    assert len(days) == 1
+    assert days[0]["processed_date"] == "2026-03-17"
 
 
 def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
@@ -427,3 +455,158 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
     days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
     assert len(days) == 1
     assert days[0]["bulk_date"] == "2026-03-19"
+
+
+def test_step2_gapfill_days_empty_when_phase_not_entered_seeded_total_zero(monkeypatch):
+    _patch_non_gapfill_dependencies(monkeypatch)
+    db = _FakeDB(stock_counts={})
+    db.ops_job_runs.seeded_total = 0
+    calls_made = []
+
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+        _ = db, job_name, progress_cb, seeded_tickers_override
+        calls_made.append(True)
+        return {
+            "status": "success",
+            "dates_processed": 1,
+            "records_upserted": 5001,
+            "api_calls": 1,
+            "bulk_writes": 1,
+            "date": "2026-03-19",
+            "processed_date": "2026-03-19",
+            "unique_dates": ["2026-03-19"],
+        }
+
+    monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert calls_made == []
+    latest = db.ops_job_runs.latest
+    assert latest["status"] == "success"
+    assert latest["details"]["api_calls"] == 0
+    assert latest["details"]["price_bulk_gapfill"]["days"] == []
+    assert "skip_reason" in latest["details"]["price_bulk_gapfill"]
+
+
+def test_step2_detectors_use_bulk_processed_date_for_endpoints(monkeypatch):
+    db = _FakeDB(stock_counts={})
+
+    async def _fake_missed_dates(db, today_dt):
+        _ = db, today_dt
+        return [date(2026, 3, 10), date(2026, 3, 11)]
+
+    monkeypatch.setattr(scheduler_service, "_get_missed_trading_dates", _fake_missed_dates)
+
+    result = asyncio.run(
+        scheduler_service.run_step2_event_detectors(
+            db,
+            processed_date="2026-03-18",
+        )
+    )
+
+    split_endpoint = result["step_2_2_split"]["api_endpoint"]
+    dividend_endpoint = result["step_2_4_dividend"]["api_endpoint"]
+    earnings_endpoint = result["step_2_6_earnings"]["api_endpoint"]
+    assert "date=2026-03-18" in split_endpoint
+    assert "date=2026-03-18" in dividend_endpoint
+    assert "from=2026-03-18&to=2026-03-18" in earnings_endpoint
+    assert result["step_2_2_split"]["dates_checked"] == ["2026-03-18"]
+    assert result["step_2_4_dividend"]["dates_checked"] == ["2026-03-18"]
+    assert result["step_2_6_earnings"]["dates_checked"] == ["2026-03-18"]
+
+
+def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeypatch):
+    db = _FakeDB(stock_counts={})
+
+    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
+        _ = db, include_exclusions, tickers_with_price
+        return {
+            "seeded_total": 2,
+            "with_price_data": 2,
+            "without_price_data": 0,
+            "matched_price_tickers_raw": 2,
+            "exclusions": [],
+        }
+
+    async def _fake_save_report(db, rows, now):
+        _ = db, rows, now
+        return {
+            "exclusion_report_rows": 0,
+            "exclusion_report_run_id": "price_sync_test_run",
+            "exclusion_report_date": "2026-03-18",
+        }
+
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+        _ = db, job_name, progress_cb, seeded_tickers_override
+        return {
+            "status": "success",
+            "dates_processed": 1,
+            "records_upserted": 5001,
+            "api_calls": 1,
+            "bulk_writes": 1,
+            "tickers_with_price": ["AAPL.US", "MSFT.US"],
+            "date": "2026-03-18",
+            "processed_date": "2026-03-18",
+            "unique_dates": ["2026-03-18"],
+            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+        }
+
+    async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
+        _ = db
+        _ = progress_cb
+        _ = exclusion_meta
+        _ = cancel_check
+        _ = processed_date
+        assert processed_date == "2026-03-18"
+        return {
+            "step_2_2_split": {
+                "api_endpoint": f"https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date={processed_date}",
+                "dates_checked": [processed_date],
+            },
+            "step_2_4_dividend": {
+                "api_endpoint": f"https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date={processed_date}",
+                "dates_checked": [processed_date],
+            },
+            "step_2_6_earnings": {
+                "api_endpoint": f"https://eodhd.com/api/calendar/earnings?from={processed_date}&to={processed_date}",
+                "dates_checked": [processed_date],
+            },
+            "enqueued_total": 0,
+            "skipped_total": 0,
+            "cancelled": False,
+        }
+
+    monkeypatch.setattr(scheduler_service, "sync_has_price_data_flags", _fake_flags)
+    monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
+    monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)
+    monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    assert result["status"] == "success"
+    details = db.ops_job_runs.latest["details"]
+    assert details["api_calls"] == 1
+    assert len(details["price_bulk_gapfill"]["days"]) == 1
+    assert details["price_bulk_gapfill"]["days"][0]["processed_date"] == "2026-03-18"
+    assert "date=2026-03-18" in details["event_detectors"]["step_2_2_split"]["api_endpoint"]
+    assert "date=2026-03-18" in details["event_detectors"]["step_2_4_dividend"]["api_endpoint"]
+    assert (
+        "from=2026-03-18&to=2026-03-18"
+        in details["event_detectors"]["step_2_6_earnings"]["api_endpoint"]
+    )
