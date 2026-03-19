@@ -363,6 +363,21 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
         processed += 1
         stats["processed"] += 1
 
+        if processed % 50 == 0:
+            hb_now = datetime.now(timezone.utc)
+            progress_pct = int(processed * 100 / total) if total else 0
+            await db.ops_job_runs.update_one(
+                {"_id": run_doc_id},
+                {"$set": {
+                    "updated_at":         hb_now,
+                    "updated_at_prague":  hb_now.astimezone(PRAGUE).isoformat(),
+                    "progress_processed": processed,
+                    "progress_total":     total,
+                    "progress_pct":       progress_pct,
+                    "progress":           f"Processed {processed:,} / {total:,} ({progress_pct}%)",
+                }},
+            )
+
         if len(batch_ops) >= BATCH_SIZE:
             await db.tracked_tickers.bulk_write(batch_ops, ordered=False)
             batch_ops = []
