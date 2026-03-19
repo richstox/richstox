@@ -782,6 +782,7 @@ async def run_step2_event_detectors(
     progress_cb: Optional[Callable[[str], Awaitable[None]]] = None,
     exclusion_meta: Optional[Dict[str, Any]] = None,
     cancel_check: Optional[Callable[[], Awaitable[bool]]] = None,
+    processed_date: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute Step 2 sub-steps with REAL EODHD API calls.
@@ -808,10 +809,24 @@ async def run_step2_event_detectors(
         if progress_cb:
             await progress_cb(msg)
 
-    # Determine all missed trading dates since last successful run
-    missed_date_objs = await _get_missed_trading_dates(db, today_dt)
-    if today_dt not in missed_date_objs:
-        missed_date_objs.append(today_dt)
+    # When provided by Step 2.1 bulk payload, use the exact processed_date for
+    # all detector windows to stay aligned with provider-latest bulk ingest.
+    if processed_date:
+        try:
+            missed_date_objs = [datetime.fromisoformat(processed_date).date()]
+        except Exception:
+            logger.warning(
+                "Step 2 detectors received invalid processed_date=%r; falling back to watermark catchup",
+                processed_date,
+            )
+            missed_date_objs = await _get_missed_trading_dates(db, today_dt)
+            if today_dt not in missed_date_objs:
+                missed_date_objs.append(today_dt)
+    else:
+        # Determine all missed trading dates since last successful run
+        missed_date_objs = await _get_missed_trading_dates(db, today_dt)
+        if today_dt not in missed_date_objs:
+            missed_date_objs.append(today_dt)
     missed_dates = [d.strftime("%Y-%m-%d") for d in missed_date_objs]
 
     logger.info(f"Step 2 detectors: processing {len(missed_dates)} date(s): {missed_dates}")
@@ -1209,13 +1224,6 @@ async def run_daily_price_sync(
             f"(parent_run_id={parent_run_id}, chain_run_id={chain_run_id})"
         )
 
-        await _progress(
-            "2.1 Fetching latest prices (bulk)…",
-            processed=0,
-            total=progress_total_step2,
-            phase="2.1_bulk_catchup",
-        )
-
         # Run the bulk catchup with gap detection, streaming per-batch progress
         async def _bulk_progress(done: int, total: int, _: str) -> None:
             await _progress(
@@ -1253,8 +1261,7 @@ async def run_daily_price_sync(
         missed_dates = await _get_missed_trading_dates(db, target_end_date)
         if watermark_before_dt is not None:
             missed_dates = [d for d in missed_dates if d > watermark_before_dt]
-        missing_dates = sorted(d.strftime("%Y-%m-%d") for d in missed_dates if d <= target_end_date)
-        should_attempt_bulk_fetch = progress_total_step2 > 0 and (watermark_before_dt is None or len(missing_dates) > 0)
+        should_attempt_bulk_fetch = progress_total_step2 > 0
 
         days: List[Dict[str, Any]] = []
         await db.ops_job_runs.update_one(
@@ -1274,6 +1281,14 @@ async def run_daily_price_sync(
             "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
             "days": days,
         }
+        if not should_attempt_bulk_fetch:
+            result_gapfill["skip_reason"] = (
+                "bulk fetch skipped: no seeded tickers available for Step 2"
+            )
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {"details.price_bulk_gapfill.skip_reason": result_gapfill["skip_reason"]}},
+            )
 
         result: Dict[str, Any] = {
             "status": "success",
@@ -1287,6 +1302,13 @@ async def run_daily_price_sync(
         }
         _tickers_with_price_set: set = set()
         bulk_attempts = [None] if should_attempt_bulk_fetch else []
+        if should_attempt_bulk_fetch:
+            await _progress(
+                "2.1 Fetching latest prices (bulk)…",
+                processed=0,
+                total=progress_total_step2,
+                phase="2.1_bulk_catchup",
+            )
         for idx, _ in enumerate(bulk_attempts):
             await _progress(
                 f"2.1 Bulk gapfill {idx + 1}/{len(bulk_attempts)} (provider latest available day)…",
@@ -1370,7 +1392,7 @@ async def run_daily_price_sync(
 
         result["tickers_with_price"] = sorted(_tickers_with_price_set)
 
-        if progress_total_step2 > 0 and (result.get("api_calls", 0) == 0 or result.get("dates_processed", 0) == 0):
+        if should_attempt_bulk_fetch and (result.get("api_calls", 0) == 0 or result.get("dates_processed", 0) == 0):
             _bulk_guard_msg = (
                 "Step 2 bulk guard triggered: no bulk fetch executed "
                 f"(api_calls={result.get('api_calls', 0)}, dates_processed={result.get('dates_processed', 0)}). "
@@ -1437,7 +1459,7 @@ async def run_daily_price_sync(
             raise RuntimeError(missing_run_id_msg)
 
         await _progress(
-            f"2.2 Running split/dividend/earnings detectors…",
+            "2.2 Running split/dividend/earnings detectors…",
             processed=with_price,
             total=seeded_total,
             phase="2.2_split",
@@ -1480,7 +1502,7 @@ async def run_daily_price_sync(
 
         # ── Phase B+C: event detectors + price history remediation ────────────
         await _progress(
-            f"2.2 Running split/dividend/earnings detectors…",
+            "2.2 Running split/dividend/earnings detectors…",
             processed=with_price,
             total=seeded_total,
             phase="2.2_split",
@@ -1508,6 +1530,7 @@ async def run_daily_price_sync(
                 "report_date": result.get("exclusion_report_date"),
             },
             cancel_check=_is_cancelled,
+            processed_date=(days[0].get("processed_date") if days else None),
         )
         result["event_detectors"] = event_detector_summary
         result["fundamentals_events_enqueued"] = event_detector_summary.get("enqueued_total", 0)
