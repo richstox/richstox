@@ -7585,17 +7585,17 @@ async def admin_pipeline_export_full(
         ):
             _excl["visibility"].setdefault(edoc["ticker"], edoc["reason"])
 
-    _seeded: set = set()
+    _seeded_tickers: set = set()
     for _ticker in await db.universe_seed_seeded_tickers.distinct(
         "ticker", {"run_id": s1_run_id}
     ):
         _norm = _normalize_seeded_ticker(_ticker)
         if _norm:
-            _seeded.add(_norm)
+            _seeded_tickers.add(_norm)
     for _ticker in await db.tracked_tickers.distinct("ticker", {"is_seeded": True}):
         _norm = _normalize_seeded_ticker(_ticker)
         if _norm:
-            _seeded.add(_norm)
+            _seeded_tickers.add(_norm)
 
     output = _io2.StringIO()
     writer = _csv2.writer(output, quoting=_csv2.QUOTE_ALL)
@@ -7667,7 +7667,7 @@ async def admin_pipeline_export_full(
             writer.writerow([ticker_us, name, "FAIL", _out_step, _reason_code, _reason_text])
         else:
             _ticker_norm = _normalize_seeded_ticker(ticker_us)
-            if not _ticker_norm or _ticker_norm not in _seeded:
+            if not _ticker_norm or _ticker_norm not in _seeded_tickers:
                 writer.writerow([
                     ticker_us,
                     name,
