@@ -68,6 +68,24 @@ def _to_prague_iso(dt: datetime) -> str:
     return dt.astimezone(PRAGUE_TZ).isoformat()
 
 
+def _normalize_step2_ticker(value: Any) -> Optional[str]:
+    """
+    Canonical Step 2 ticker normalization used by both bulk rows and seeded universe.
+    Rules:
+    - uppercase
+    - trim whitespace
+    - normalize optional .US suffix to a single canonical form (always include .US)
+    """
+    if value is None:
+        return None
+    text = str(value).strip().upper()
+    if not text:
+        return None
+    if text.endswith(".US"):
+        text = text[:-3]
+    return f"{text}.US"
+
+
 async def _read_price_bulk_state(db) -> Optional[Dict[str, Any]]:
     return await db.pipeline_state.find_one({"_id": "price_bulk"})
 
@@ -851,46 +869,125 @@ async def run_daily_bulk_catchup(
         expected_tickers_count = len(step2_tickers)
     logger.info(f"[BULK CATCHUP] {len(bulk_data)} raw records, {expected_tickers_count} Step 2 universe tickers")
 
-    # Build bulk operations — filter to tracked tickers only
+    # Determine provider ticker field explicitly from parsed payload shape.
+    sample_row = bulk_data[0] if bulk_data else {}
+    bulk_ticker_field: Optional[str] = None
+    if isinstance(sample_row, dict):
+        if "code" in sample_row:
+            bulk_ticker_field = "code"
+        elif "symbol" in sample_row:
+            bulk_ticker_field = "symbol"
+    logger.info(f"[BULK CATCHUP] Using bulk ticker field: {bulk_ticker_field}")
+    if not bulk_ticker_field:
+        return {
+            "status": "error",
+            "message": "Bulk payload is missing ticker field (expected code or symbol)",
+            "date": None,
+            "processed_date": None,
+            "unique_dates": [],
+            "dates_processed": 0,
+            "records_upserted": 0,
+            "rows_written": 0,
+            "matched_price_tickers_raw": 0,
+            "tickers_with_price_data": 0,
+            "api_calls": 1 if bulk_fetch_executed else 0,
+            "bulk_fetch_executed": bulk_fetch_executed,
+            "raw_row_count": raw_row_count,
+            "bulk_writes": 0,
+            "bulk_url_used": bulk_url_used,
+            "tickers_with_price": [],
+            "ticker_samples": {
+                "bulk_rows_sample": [],
+                "bulk_rows_normalized_sample": [],
+                "seeded_tickers_sample": [],
+                "seeded_tickers_normalized_sample": [],
+            },
+        }
+
+    # Canonical seeded ticker map by normalized key.
+    seeded_tickers_sample: List[str] = []
+    seeded_tickers_normalized_sample: List[str] = []
+    normalized_seeded_to_canonical: Dict[str, str] = {}
+    for seeded_ticker in step2_tickers:
+        if not seeded_ticker:
+            continue
+        seeded_text = str(seeded_ticker)
+        if len(seeded_tickers_sample) < 10:
+            seeded_tickers_sample.append(seeded_text)
+        normalized_seeded = _normalize_step2_ticker(seeded_text)
+        if normalized_seeded and len(seeded_tickers_normalized_sample) < 10:
+            seeded_tickers_normalized_sample.append(normalized_seeded)
+        if normalized_seeded and normalized_seeded not in normalized_seeded_to_canonical:
+            normalized_seeded_to_canonical[normalized_seeded] = seeded_text
+
+    # Build normalized bulk lookup (normalized ticker -> rows)
+    bulk_rows_sample: List[str] = []
+    bulk_rows_normalized_sample: List[str] = []
+    normalized_bulk_rows: Dict[str, List[Dict[str, Any]]] = {}
+    for record in bulk_data:
+        raw_bulk_ticker = record.get(bulk_ticker_field)
+        if raw_bulk_ticker is None:
+            continue
+        raw_bulk_text = str(raw_bulk_ticker)
+        if len(bulk_rows_sample) < 10:
+            bulk_rows_sample.append(raw_bulk_text)
+        normalized_bulk_ticker = _normalize_step2_ticker(raw_bulk_text)
+        if not normalized_bulk_ticker:
+            continue
+        if len(bulk_rows_normalized_sample) < 10:
+            bulk_rows_normalized_sample.append(normalized_bulk_ticker)
+        normalized_bulk_rows.setdefault(normalized_bulk_ticker, []).append(record)
+
+    ticker_samples = {
+        "bulk_rows_sample": bulk_rows_sample,
+        "bulk_rows_normalized_sample": bulk_rows_normalized_sample,
+        "seeded_tickers_sample": seeded_tickers_sample,
+        "seeded_tickers_normalized_sample": seeded_tickers_normalized_sample,
+    }
+
+    # Build bulk operations — filter to tracked tickers only after normalization.
     # Group UpdateOne operations with their unique tickers for progress tracking
     batched_operations_with_tickers: List[Tuple[List[UpdateOne], Set[str]]] = []
     current_batch_ops: List[UpdateOne] = []
     current_batch_tickers: Set[str] = set()
     parsed_rows: List[Dict[str, Any]] = []
+    matched_seeded_tickers: Set[str] = set()
 
-    for record in bulk_data:
-        code = record.get("code", "")
-        ticker = f"{code}.US" if code else None
-        if not ticker or ticker not in step2_tickers:
-            continue
-        date = record.get("date")
-        if not date:
-            continue
-        parsed_rows.append({"ticker": ticker, "date": date})
-        current_batch_ops.append(
-            UpdateOne(
-                {"ticker": ticker, "date": date},
-                {"$set": {
-                    "ticker": ticker,
-                    "date": date,
-                    "open": record.get("open"),
-                    "high": record.get("high"),
-                    "low": record.get("low"),
-                    "close": record.get("close"),
-                    "adjusted_close": record.get("adjusted_close"),
-                    "volume": record.get("volume"),
-                }},
-                upsert=True,
+    normalized_overlap = (
+        set(normalized_seeded_to_canonical.keys()) & set(normalized_bulk_rows.keys())
+    )
+    for normalized_ticker in normalized_overlap:
+        canonical_ticker = normalized_seeded_to_canonical[normalized_ticker]
+        for record in normalized_bulk_rows.get(normalized_ticker, []):
+            date = record.get("date")
+            if not date:
+                continue
+            parsed_rows.append({"ticker": canonical_ticker, "date": date})
+            current_batch_ops.append(
+                UpdateOne(
+                    {"ticker": canonical_ticker, "date": date},
+                    {"$set": {
+                        "ticker": canonical_ticker,
+                        "date": date,
+                        "open": record.get("open"),
+                        "high": record.get("high"),
+                        "low": record.get("low"),
+                        "close": record.get("close"),
+                        "adjusted_close": record.get("adjusted_close"),
+                        "volume": record.get("volume"),
+                    }},
+                    upsert=True,
+                )
             )
-        )
-        current_batch_tickers.add(ticker)
+            current_batch_tickers.add(canonical_ticker)
+            matched_seeded_tickers.add(canonical_ticker)
 
-        if len(current_batch_ops) == BULK_WRITE_BATCH_SIZE:
-            batched_operations_with_tickers.append(
-                (current_batch_ops, current_batch_tickers)
-            )
-            current_batch_ops = []
-            current_batch_tickers = set()
+            if len(current_batch_ops) == BULK_WRITE_BATCH_SIZE:
+                batched_operations_with_tickers.append(
+                    (current_batch_ops, current_batch_tickers)
+                )
+                current_batch_ops = []
+                current_batch_tickers = set()
 
     unique_dates = sorted(set(row["date"] for row in parsed_rows))
     if len(unique_dates) != 1:
@@ -906,12 +1003,16 @@ async def run_daily_bulk_catchup(
             "unique_dates": unique_dates,
             "dates_processed": 0,
             "records_upserted": 0,
+            "rows_written": 0,
+            "matched_price_tickers_raw": len(matched_seeded_tickers),
+            "tickers_with_price_data": len(matched_seeded_tickers),
             "api_calls": 1 if bulk_fetch_executed else 0,
             "bulk_fetch_executed": bulk_fetch_executed,
             "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "ticker_samples": ticker_samples,
         }
     date_seen = unique_dates[0]
 
@@ -928,12 +1029,16 @@ async def run_daily_bulk_catchup(
             "date": date_seen,
             "dates_processed": 0,
             "records_upserted": 0,
+            "rows_written": 0,
+            "matched_price_tickers_raw": 0,
+            "tickers_with_price_data": 0,
             "api_calls": 1 if bulk_fetch_executed else 0,
             "bulk_fetch_executed": bulk_fetch_executed,
             "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "ticker_samples": ticker_samples,
         }
 
     # Execute in batches — cancel check before each batch (soft stop)
@@ -956,12 +1061,16 @@ async def run_daily_bulk_catchup(
                 "date": date_seen,
                 "dates_processed": 1 if records_upserted > 0 else 0,
                 "records_upserted": records_upserted,
+                "rows_written": records_upserted,
+                "matched_price_tickers_raw": len(matched_seeded_tickers),
+                "tickers_with_price_data": len(matched_seeded_tickers),
                 "api_calls": 1 if bulk_fetch_executed else 0,
                 "bulk_fetch_executed": bulk_fetch_executed,
                 "raw_row_count": raw_row_count,
                 "bulk_writes": bulk_writes,
                 "bulk_url_used": bulk_url_used,
                 "tickers_with_price": sorted(processed_ticker_set),
+                "ticker_samples": ticker_samples,
             }
 
         write_result = await db.stock_prices.bulk_write(batch, ordered=False)
@@ -988,10 +1097,14 @@ async def run_daily_bulk_catchup(
         "unique_dates": unique_dates,
         "dates_processed": 1,
         "records_upserted": records_upserted,
+        "rows_written": records_upserted,
+        "matched_price_tickers_raw": len(matched_seeded_tickers),
+        "tickers_with_price_data": len(matched_seeded_tickers),
         "api_calls": 1 if bulk_fetch_executed else 0,
         "bulk_fetch_executed": bulk_fetch_executed,
         "raw_row_count": raw_row_count,
         "bulk_writes": bulk_writes,
         "bulk_url_used": bulk_url_used,
         "tickers_with_price": sorted(processed_ticker_set),
+        "ticker_samples": ticker_samples,
     }

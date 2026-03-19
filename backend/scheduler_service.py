@@ -1268,6 +1268,12 @@ async def run_daily_price_sync(
                 "target_end_date": target_end_date.strftime("%Y-%m-%d"),
                 "min_bulk_rows_ok": min_bulk_rows_ok,
                 "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+                "ticker_samples": {
+                    "bulk_rows_sample": [],
+                    "bulk_rows_normalized_sample": [],
+                    "seeded_tickers_sample": [],
+                    "seeded_tickers_normalized_sample": [],
+                },
                 "days": days,
             }}},
         )
@@ -1276,6 +1282,12 @@ async def run_daily_price_sync(
             "target_end_date": target_end_date.strftime("%Y-%m-%d"),
             "min_bulk_rows_ok": min_bulk_rows_ok,
             "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+            "ticker_samples": {
+                "bulk_rows_sample": [],
+                "bulk_rows_normalized_sample": [],
+                "seeded_tickers_sample": [],
+                "seeded_tickers_normalized_sample": [],
+            },
             "days": days,
         }
         if not should_attempt_bulk_fetch:
@@ -1343,6 +1355,14 @@ async def run_daily_price_sync(
                     result["status"] = "error"
                     break
                 day["bulk_url_used"] = day_result.get("bulk_url_used", day["bulk_url_used"])
+                result_gapfill["ticker_samples"] = day_result.get(
+                    "ticker_samples",
+                    result_gapfill.get("ticker_samples", {}),
+                )
+                await db.ops_job_runs.update_one(
+                    {"_id": _running_doc_id},
+                    {"$set": {"details.price_bulk_gapfill.ticker_samples": result_gapfill["ticker_samples"]}},
+                )
                 day["processed_date"] = (
                     day_result.get("processed_date")
                     or day_result.get("date")
@@ -1741,17 +1761,17 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         return base
 
     seeded_set = set(seeded_tickers)
+    from price_ingestion_service import _normalize_step2_ticker
 
     if tickers_with_price is not None:
         # ── Fast path: use the set returned by the bulk feed ─────────────
-        def _normalize(value: str) -> str:
-            if not value:
-                return value
-            return value if value.endswith(".US") else f"{value}.US"
-
-        with_price_set = {_normalize(t) for t in tickers_with_price if t} & seeded_set
+        with_price_set = {
+            _normalize_step2_ticker(t)
+            for t in tickers_with_price
+            if _normalize_step2_ticker(t)
+        } & seeded_set
         any_price_set = with_price_set  # same set when sourced from bulk feed
-        matched_raw = len(tickers_with_price)
+        matched_raw = len(with_price_set)
     else:
         # ── Legacy fallback: query stock_prices collection ───────────────
         seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
@@ -1769,16 +1789,19 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             {"ticker": {"$in": ticker_candidates}}
         )
 
-        def _normalize(value: str) -> str:
-            if not value:
-                return value
-            return value if value.endswith(".US") else f"{value}.US"
-
-        normalized_price_tickers = {_normalize(t) for t in raw_price_tickers if t}
-        normalized_any_price_tickers = {_normalize(t) for t in raw_any_price_tickers if t}
+        normalized_price_tickers = {
+            _normalize_step2_ticker(t)
+            for t in raw_price_tickers
+            if _normalize_step2_ticker(t)
+        }
+        normalized_any_price_tickers = {
+            _normalize_step2_ticker(t)
+            for t in raw_any_price_tickers
+            if _normalize_step2_ticker(t)
+        }
         with_price_set = normalized_price_tickers & seeded_set
         any_price_set = normalized_any_price_tickers & seeded_set
-        matched_raw = len(raw_price_tickers)
+        matched_raw = len(with_price_set)
 
     # Reset all seeded tickers to false, then enable only those with prices.
     await db.tracked_tickers.update_many(
