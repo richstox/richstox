@@ -1411,11 +1411,14 @@ async def run_daily_price_sync(
                 )
                 day["rows_written"] = rows_written
                 result["rows_written"] = rows_written
-                matched_seeded_tickers_count = int(
-                    day_result.get("tickers_with_price_data")
-                    or day_result.get("matched_price_tickers_raw")
-                    or len(day_result.get("tickers_with_price") or [])
-                )
+                _day_tickers_with_price_data = day_result.get("tickers_with_price_data")
+                _day_matched_price_tickers_raw = day_result.get("matched_price_tickers_raw")
+                if _day_tickers_with_price_data is not None:
+                    matched_seeded_tickers_count = int(_day_tickers_with_price_data)
+                elif _day_matched_price_tickers_raw is not None:
+                    matched_seeded_tickers_count = int(_day_matched_price_tickers_raw)
+                else:
+                    matched_seeded_tickers_count = len(day_result.get("tickers_with_price") or [])
                 match_ratio = (
                     (matched_seeded_tickers_count / progress_total_step2)
                     if progress_total_step2 > 0
@@ -1516,11 +1519,14 @@ async def run_daily_price_sync(
         )
         seeded_total = price_flag_summary["seeded_total"]
         with_price = price_flag_summary["with_price_data"]
-        matched_seeded_tickers_count = int(
-            result.get("matched_seeded_tickers_count")
-            or len(result.get("tickers_with_price") or [])
-            or price_flag_summary.get("matched_price_tickers_raw", 0)
-        )
+        _result_matched_seeded_tickers_count = result.get("matched_seeded_tickers_count")
+        _result_tickers_with_price = result.get("tickers_with_price")
+        if _result_matched_seeded_tickers_count is not None:
+            matched_seeded_tickers_count = int(_result_matched_seeded_tickers_count)
+        elif _result_tickers_with_price is not None:
+            matched_seeded_tickers_count = len(_result_tickers_with_price)
+        else:
+            matched_seeded_tickers_count = int(price_flag_summary.get("matched_price_tickers_raw", 0))
         match_ratio = (
             (matched_seeded_tickers_count / seeded_total)
             if seeded_total > 0

@@ -4,6 +4,7 @@ from datetime import date, datetime, timezone, timedelta
 from types import SimpleNamespace
 import os
 import sys
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -865,7 +866,7 @@ def test_step2_gapfill_sanity_uses_seeded_match_not_rows_written(monkeypatch):
     assert result["tickers_with_price_data"] == 2
     assert result["tickers_without_price_data"] == 1
     assert result["matched_seeded_tickers_count"] == 2
-    assert abs(result["match_ratio"] - (2 / 3)) < 1e-12
+    assert result["match_ratio"] == pytest.approx(2 / 3)
     assert result["sanity_threshold_used"] == "matched_seeded_tickers_count >= 2"
 
     details = db.ops_job_runs.latest["details"]
@@ -873,7 +874,7 @@ def test_step2_gapfill_sanity_uses_seeded_match_not_rows_written(monkeypatch):
     assert day["status"] == "success"
     assert day["rows_written"] == 2
     assert day["matched_seeded_tickers_count"] == 2
-    assert abs(day["match_ratio"] - (2 / 3)) < 1e-12
+    assert day["match_ratio"] == pytest.approx(2 / 3)
     assert day["sanity_threshold_used"] == "matched_seeded_tickers_count >= 2"
     assert details["matched_price_tickers_raw"] == 2
     assert details["tickers_with_price_data"] == 2
