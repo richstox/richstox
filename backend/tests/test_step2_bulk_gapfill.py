@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import scheduler_service
+import price_ingestion_service
 
 
 class _FakeCursor:
@@ -144,6 +145,10 @@ class _FakeStockPrices:
 
     async def count_documents(self, filt):
         return int(self.counts_by_date.get(filt.get("date"), 0))
+
+    async def bulk_write(self, batch, ordered=False):
+        _ = ordered
+        return SimpleNamespace(upserted_count=len(batch), modified_count=0)
 
 
 class _FakeDB:
@@ -666,3 +671,78 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
         "from=2026-03-18&to=2026-03-18"
         in details["event_detectors"]["step_2_6_earnings"]["api_endpoint"]
     )
+
+
+def test_step2_gapfill_bulk_matching_normalizes_tickers_and_persists_samples(monkeypatch):
+    db = _FakeDB(stock_counts={"2026-03-18": 2}, seeded_tickers=["AAPL.US", "MSFT.US"])
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_ROWS_SANITY_CHECK", 0)
+
+    async def _fake_fetch_bulk(_exchange="US", include_meta=False):
+        payload = [
+            {
+                "code": " aapl ",
+                "date": "2026-03-18",
+                "open": 100,
+                "high": 101,
+                "low": 99,
+                "close": 100.5,
+                "adjusted_close": 100.4,
+                "volume": 1000,
+            },
+            {
+                "code": "MSFT.US",
+                "date": "2026-03-18",
+                "open": 200,
+                "high": 201,
+                "low": 199,
+                "close": 200.5,
+                "adjusted_close": 200.4,
+                "volume": 2000,
+            },
+        ]
+        _ = _exchange
+        if include_meta:
+            return payload, True
+        return payload
+
+    async def _fake_missed_dates(db, today_dt):
+        _ = db, today_dt
+        return [date(2026, 3, 18)]
+
+    async def _fake_save_report(db, rows, now):
+        _ = db, rows, now
+        return {
+            "exclusion_report_rows": 0,
+            "exclusion_report_run_id": "price_sync_test_run",
+            "exclusion_report_date": "2026-03-18",
+        }
+
+    async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
+        _ = db, progress_cb, exclusion_meta, cancel_check, processed_date
+        return {"enqueued_total": 0, "skipped_total": 0, "cancelled": False}
+
+    monkeypatch.setattr(price_ingestion_service, "fetch_bulk_eod_latest", _fake_fetch_bulk)
+    monkeypatch.setattr(scheduler_service, "_get_missed_trading_dates", _fake_missed_dates)
+    monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
+    monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    assert result["status"] == "success"
+    assert result["matched_price_tickers_raw"] == 2
+    assert result["tickers_with_price_data"] == 2
+    assert db.ops_job_runs.latest["details"]["rows_written"] > 0
+
+    details = db.ops_job_runs.latest["details"]
+    ticker_samples = details["price_bulk_gapfill"]["ticker_samples"]
+    assert "bulk_rows_sample" in ticker_samples
+    assert "bulk_rows_normalized_sample" in ticker_samples
+    assert "seeded_tickers_sample" in ticker_samples
+    assert "seeded_tickers_normalized_sample" in ticker_samples
