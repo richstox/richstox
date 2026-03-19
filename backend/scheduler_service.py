@@ -2896,6 +2896,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 (doc["ticker"], bool(doc.get("needs_price_redownload")))
                 for doc in phase_c_docs
             ]
+            phase_c_post_dedupe_total = len(phase_c_tickers)
             phase_c_count_incomplete = sum(
                 1 for doc in phase_c_docs
                 if doc.get("price_history_complete") is not True
@@ -2916,9 +2917,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     "needs_price_redownload": phase_c_count_redownload,
                 },
                 "pre_dedupe_total": len(phase_c_docs),
+                "post_dedupe_total": phase_c_post_dedupe_total,
             }
-            phase_c_stats["tickers_targeted"] = len(phase_c_tickers)
-            _phase_update("C", status="running", processed=0, total=len(phase_c_tickers), message="Syncing price history", activate=True)
+            phase_c_stats["tickers_targeted"] = phase_c_post_dedupe_total
+            _phase_update("C", status="running", processed=0, total=phase_c_post_dedupe_total, message="Syncing price history", activate=True)
             await _write_step3_telemetry(force=True)
 
             if not phase_c_tickers:
@@ -2927,7 +2929,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 _phase_update("C", status="done", processed=0, total=0, message="No visible tickers need price history", activate=True)
                 await _write_step3_telemetry(force=True)
             else:
-                total_c = len(phase_c_tickers)
+                total_c = phase_c_post_dedupe_total
                 logger.info(f"{job_name}: Phase C — downloading price history for {total_c} visible tickers")
                 try:
                     _phase_c_concurrency = int(

@@ -297,6 +297,7 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
             "needs_price_redownload": 0,
         },
         "pre_dedupe_total": 0,
+        "post_dedupe_total": 0,
     }
     assert "updated_at_prague" in telemetry
     assert db.ops_locks.docs == {}
@@ -424,7 +425,9 @@ def test_step3_phase_c_parallel_counts_failures_per_ticker(monkeypatch):
             "needs_price_redownload": 1,
         },
         "pre_dedupe_total": 3,
+        "post_dedupe_total": 3,
     }
+    assert telemetry_c["selection_audit"]["post_dedupe_total"] == telemetry_c["total"]
 
 
 def test_acquire_fundamentals_lock_sets_acquired_at():
