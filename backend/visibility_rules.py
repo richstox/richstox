@@ -213,11 +213,12 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     job_name = "compute_visible_universe"
     started_at = datetime.now(timezone.utc)
     job_id = f"recompute_visibility_{started_at.strftime('%Y%m%d_%H%M%S')}"
+    now = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
     # 1) Stuck-finalize: mark any running run older than 15 min as failed
     # ------------------------------------------------------------------
-    stale_cutoff = started_at - timedelta(minutes=15)
+    stale_cutoff = now - timedelta(minutes=15)
     stale_query = {
         "job_name": job_name,
         "status":   "running",
@@ -232,11 +233,11 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
             {"$set": {
                 "status":                        "failed",
                 "error":                         "stuck_run_timeout",
-                "finished_at":                   started_at,
-                "end_time":                      started_at,
-                "finished_at_prague":            started_at.astimezone(PRAGUE).isoformat(),
-                "updated_at":                    started_at,
-                "updated_at_prague":             started_at.astimezone(PRAGUE).isoformat(),
+                "finished_at":                   now,
+                "end_time":                      now,
+                "finished_at_prague":            now.astimezone(PRAGUE).isoformat(),
+                "updated_at":                    now,
+                "updated_at_prague":             now.astimezone(PRAGUE).isoformat(),
                 "log_timezone":                  "Europe/Prague",
                 "details.error":                 "stuck_run_timeout",
                 "details.stuck_timeout_minutes": 15,
