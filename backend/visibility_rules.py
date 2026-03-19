@@ -7,7 +7,7 @@
 
 from enum import Enum
 from typing import Tuple, Optional, Dict, Any, List, Set
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 import httpx
 import os
@@ -213,6 +213,81 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     job_name = "compute_visible_universe"
     started_at = datetime.now(timezone.utc)
     job_id = f"recompute_visibility_{started_at.strftime('%Y%m%d_%H%M%S')}"
+
+    # ------------------------------------------------------------------
+    # 1) Stuck-finalize: mark any running run older than 15 min as failed
+    # ------------------------------------------------------------------
+    stale_cutoff = started_at - timedelta(minutes=15)
+    stale_query = {
+        "job_name": job_name,
+        "status":   "running",
+        "$or": [
+            {"updated_at": {"$lt": stale_cutoff}},
+            {"updated_at": {"$exists": False}, "started_at": {"$lt": stale_cutoff}},
+        ],
+    }
+    async for stale_run in db.ops_job_runs.find(stale_query):
+        await db.ops_job_runs.update_one(
+            {"_id": stale_run["_id"], "status": "running"},
+            {"$set": {
+                "status":                        "failed",
+                "error":                         "stuck_run_timeout",
+                "finished_at":                   started_at,
+                "end_time":                      started_at,
+                "finished_at_prague":            started_at.astimezone(PRAGUE).isoformat(),
+                "updated_at":                    started_at,
+                "updated_at_prague":             started_at.astimezone(PRAGUE).isoformat(),
+                "log_timezone":                  "Europe/Prague",
+                "details.error":                 "stuck_run_timeout",
+                "details.stuck_timeout_minutes": 15,
+                "details.last_progress": {
+                    "progress":           stale_run.get("progress"),
+                    "progress_processed": stale_run.get("progress_processed"),
+                    "progress_total":     stale_run.get("progress_total"),
+                    "progress_pct":       stale_run.get("progress_pct"),
+                },
+            }},
+        )
+        logger.warning(
+            f"Finalized stuck run {stale_run['_id']} as failed (stuck_run_timeout)"
+        )
+
+    # ------------------------------------------------------------------
+    # 2) Concurrency guard (best-effort): skip if a fresh run is already active
+    # ------------------------------------------------------------------
+    running_run = await db.ops_job_runs.find_one(
+        {"job_name": job_name, "status": "running"},
+        sort=[("started_at", -1)],
+    )
+    if running_run is not None:
+        freshness_time = running_run.get("updated_at") or running_run.get("started_at")
+        if freshness_time is not None and freshness_time >= stale_cutoff:
+            blocked_by_run_id = str(running_run["_id"])
+            skipped_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.insert_one({
+                "job_name":           job_name,
+                "job_id":             job_id,
+                "status":             "skipped",
+                "started_at":         skipped_at,
+                "started_at_prague":  skipped_at.astimezone(PRAGUE).isoformat(),
+                "finished_at":        skipped_at,
+                "finished_at_prague": skipped_at.astimezone(PRAGUE).isoformat(),
+                "progress":           f"Skipped: {job_name} already running",
+                "details": {
+                    "skip_reason":       "already_running",
+                    "blocked_by_run_id": blocked_by_run_id,
+                },
+            })
+            logger.info(
+                f"Skipping {job_name}: already running (blocked by {blocked_by_run_id})"
+            )
+            return {
+                "job_id":            job_id,
+                "status":            "skipped",
+                "skipped":           True,
+                "reason":            "already_running",
+                "blocked_by_run_id": blocked_by_run_id,
+            }
 
     logger.info(f"Starting visibility recompute job: {job_id}")
 
