@@ -28,6 +28,16 @@ def _set_path(doc, dotted_key, value):
     cur[parts[-1]] = value
 
 
+def _has_path(doc, dotted_key):
+    parts = dotted_key.split(".")
+    cur = doc
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            return False
+        cur = cur[part]
+    return True
+
+
 class _FakeOpsJobRuns:
     def __init__(self, seeded_total=5000):
         self.docs = {}
@@ -101,7 +111,7 @@ class _FakeOpsConfig:
         for k, v in (update.get("$set") or {}).items():
             _set_path(doc, k, v)
         for k, v in (update.get("$setOnInsert") or {}).items():
-            if k not in doc:
+            if not _has_path(doc, k):
                 _set_path(doc, k, v)
         self.docs[key] = doc
         return SimpleNamespace(matched_count=1)

@@ -50,7 +50,7 @@ Collection: stock_prices
 import os
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import List, Dict, Any, Optional, Callable, Awaitable, Set, Tuple
+from typing import List, Dict, Any, Optional, Callable, Awaitable, Set, Tuple, Union
 import httpx
 import asyncio
 from zoneinfo import ZoneInfo
@@ -146,7 +146,7 @@ async def fetch_eod_history(ticker: str, from_date: str = None, to_date: str = N
 async def fetch_bulk_eod_latest(
     exchange: str = "US",
     include_meta: bool = False,
-) -> Any:
+) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], bool]]:
     """
     Fetch bulk EOD data for latest trading day.
     

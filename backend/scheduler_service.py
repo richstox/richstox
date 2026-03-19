@@ -1248,19 +1248,16 @@ async def run_daily_price_sync(
             else None
         )
 
-        watermark_before_dt: Optional[date] = None
         if watermark_before:
             try:
-                watermark_before_dt = datetime.fromisoformat(str(watermark_before)).date()
+                # Validate stored watermark format for telemetry/debugging only.
+                datetime.fromisoformat(str(watermark_before))
             except Exception:
                 logger.warning(
                     f"{job_name}: invalid pipeline_state.price_bulk.global_last_bulk_date_processed={watermark_before!r}; ignoring"
                 )
                 watermark_before = None
 
-        missed_dates = await _get_missed_trading_dates(db, target_end_date)
-        if watermark_before_dt is not None:
-            missed_dates = [d for d in missed_dates if d > watermark_before_dt]
         should_attempt_bulk_fetch = progress_total_step2 > 0
 
         days: List[Dict[str, Any]] = []
