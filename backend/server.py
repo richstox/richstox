@@ -7545,6 +7545,14 @@ async def admin_pipeline_export_full(
         _STEP_LABELS["visibility"],
     }
 
+    def _normalize_seeded_ticker(value: Any) -> Optional[str]:
+        raw = str(value).strip().upper()
+        if not raw:
+            return None
+        if "." in raw:
+            return raw
+        return f"{raw}.US"
+
     def _to_reason_code(reason: Optional[str]) -> str:
         if not reason:
             return "unknown_failure"
@@ -7576,6 +7584,18 @@ async def admin_pipeline_export_full(
             {"_id": 0, "ticker": 1, "reason": 1},
         ):
             _excl["visibility"].setdefault(edoc["ticker"], edoc["reason"])
+
+    _seeded: set = set()
+    for _ticker in await db.universe_seed_seeded_tickers.distinct(
+        "ticker", {"run_id": s1_run_id}
+    ):
+        _norm = _normalize_seeded_ticker(_ticker)
+        if _norm:
+            _seeded.add(_norm)
+    for _ticker in await db.tracked_tickers.distinct("ticker", {"is_seeded": True}):
+        _norm = _normalize_seeded_ticker(_ticker)
+        if _norm:
+            _seeded.add(_norm)
 
     output = _io2.StringIO()
     writer = _csv2.writer(output, quoting=_csv2.QUOTE_ALL)
@@ -7646,6 +7666,17 @@ async def admin_pipeline_export_full(
                 _out_step = _STEP_LABELS["step3"]
             writer.writerow([ticker_us, name, "FAIL", _out_step, _reason_code, _reason_text])
         else:
+            _ticker_norm = _normalize_seeded_ticker(ticker_us)
+            if not _ticker_norm or _ticker_norm not in _seeded:
+                writer.writerow([
+                    ticker_us,
+                    name,
+                    "FAIL",
+                    _STEP_LABELS["step1"],
+                    "not_seeded",
+                    "Ticker is not in seeded set.",
+                ])
+                continue
             # Required schema invariant: OK rows must keep failed_step and reason_text empty.
             writer.writerow([ticker_us, name, "OK", "", "ok", ""])
 
