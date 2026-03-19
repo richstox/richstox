@@ -7551,6 +7551,7 @@ async def admin_pipeline_export_full(
         _clean = re.sub(r"[^a-z0-9\s]+", " ", reason.lower())
         parts = [p for p in _clean.split() if p]
         _code = "_".join(parts) if parts else "unknown_failure"
+        # This helper is used only for FAIL rows; fail reason_code must never be "ok".
         return "unknown_failure" if _code == "ok" else _code
 
     # Preload exclusion reasons per step — one query each (O(n) total).
@@ -7637,7 +7638,9 @@ async def admin_pipeline_export_full(
                 break
 
         if _out_step:
-            _reason_text = (_out_reason or "Excluded by pipeline filter.").strip() or "Excluded by pipeline filter."
+            _reason_text = (_out_reason or "").strip()
+            if not _reason_text:
+                _reason_text = "Excluded by pipeline filter."
             _reason_code = _to_reason_code(_reason_text)
             if _out_step not in _ALLOWED_FAILED_STEPS:
                 _out_step = _STEP_LABELS["step3"]
