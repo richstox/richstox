@@ -668,9 +668,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     || (jobRuns['price_sync'] as any)?.progress_processed as number | undefined;
   // Prefer canonical 'with_price' field; fall back to legacy alias and run-derived value.
   const withPrice = withPriceFromRun ?? counts.with_price ?? counts.with_price_data;
-  const visDetails = (jobRuns['fundamentals_sync'] as any)?.details?.visibility;
+  const latestVisibilityFromJobs = (jobRuns['compute_visible_universe'] as any);
+  const latestVis = normaliseRun(latestVisibilityFromJobs ?? jobRuns['compute_visible_universe']);
+  const visDetails = (latestVis as any)?.details || {};
   const classified =
-    asFiniteNumber(visDetails?.after?.visible_count)
+    asFiniteNumber(visDetails.after?.visible_count)
     ?? asFiniteNumber(counts.visible ?? counts.visible_tickers);
   // Prefer canonical 'visible' field; fall back to legacy alias.
   const visible = counts.visible ?? counts.visible_tickers;
