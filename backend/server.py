@@ -53,6 +53,7 @@ import asyncio
 import httpx
 import json
 import hashlib
+import re
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -7547,9 +7548,10 @@ async def admin_pipeline_export_full(
     def _to_reason_code(reason: Optional[str]) -> str:
         if not reason:
             return "unknown_failure"
-        _clean = "".join(ch if (ch.isalnum() or ch.isspace()) else " " for ch in reason.lower())
+        _clean = re.sub(r"[^a-z0-9\s]+", " ", reason.lower())
         parts = [p for p in _clean.split() if p]
-        return "_".join(parts) if parts else "unknown_failure"
+        _code = "_".join(parts) if parts else "unknown_failure"
+        return "unknown_failure" if _code == "ok" else _code
 
     # Preload exclusion reasons per step — one query each (O(n) total).
     _excl: Dict[str, Dict[str, str]] = {"step1": {}, "step2": {}, "step3": {}, "visibility": {}}
@@ -7637,12 +7639,11 @@ async def admin_pipeline_export_full(
         if _out_step:
             _reason_text = (_out_reason or "Excluded by pipeline filter.").strip() or "Excluded by pipeline filter."
             _reason_code = _to_reason_code(_reason_text)
-            if _reason_code == "ok":
-                _reason_code = "failed_filter"
             if _out_step not in _ALLOWED_FAILED_STEPS:
                 _out_step = _STEP_LABELS["step3"]
             writer.writerow([ticker_us, name, "FAIL", _out_step, _reason_code, _reason_text])
         else:
+            # Required schema invariant: OK rows must keep failed_step and reason_text empty.
             writer.writerow([ticker_us, name, "OK", "", "ok", ""])
 
     output.seek(0)
