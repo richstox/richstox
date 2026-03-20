@@ -59,6 +59,21 @@ interface OverviewData {
   health?: {
     scheduler_active?: boolean;
   };
+  universe_seed?: {
+    result?: {
+      raw_rows_total?: number;
+      seeded_total?: number;
+    };
+    details?: {
+      raw_rows_total?: number;
+      seeded_total?: number;
+    };
+  };
+  fundamentals_sync?: {
+    details?: {
+      processed?: number;
+    };
+  };
   job_last_runs?: Record<string, JobRun>;
   jobs?: {
     registry?: any[];
@@ -78,6 +93,7 @@ interface OverviewData {
       seeded_us_total?: number;
       with_price_data?: number;
       with_classification?: number;
+      visible_universe_count?: number;
       visible_tickers?: number;
     };
   };
@@ -736,6 +752,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   useEffect(() => () => stopChainTimer(), [stopChainTimer]);
 
   const counts = data?.universe_funnel?.counts || {};
+  const universeSeedResult = data?.universe_seed?.result || {};
+  const universeSeedDetails = data?.universe_seed?.details || {};
+  const fundamentalsSyncDetails = data?.fundamentals_sync?.details || {};
   const syncStatus = data?.pipeline_sync_status || {};
   const todayStr = new Date().toISOString().split('T')[0];
 
@@ -744,47 +763,42 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange
     ?? (jobRuns['universe_seed'] as any)?.details?.fetched_raw_per_exchange
     ?? exclusionReport?.step1_counts?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  const seededFromRun = (jobRuns['universe_seed'] as any)?.progress_total as number | undefined
-    || (jobRuns['universe_seed'] as any)?.details?.seeded_total as number | undefined;
-  // Prefer canonical 'seeded' field; fall back to legacy alias and run-derived value.
-  const seeded = seededFromRun ?? counts.seeded ?? counts.seeded_us_total;
-  const withPriceFromRun = (jobRuns['price_sync'] as any)?.details?.tickers_with_price_data as number | undefined
-    || (jobRuns['price_sync'] as any)?.progress_processed as number | undefined;
-  // Prefer canonical 'with_price' field; fall back to legacy alias and run-derived value.
-  const withPrice = withPriceFromRun ?? counts.with_price ?? counts.with_price_data;
-  const latestVisibilityFromJobs = (jobRuns['compute_visible_universe'] as any);
-  const latestVis = normaliseRun(latestVisibilityFromJobs ?? jobRuns['compute_visible_universe']);
-  const visDetails = (latestVis as any)?.details || {};
+  // Admin funnel uses overview.universe_funnel counts; do not mix with job progress/processed.
+  const raw =
+    asFiniteNumber(universeSeedResult.raw_rows_total)
+    ?? asFiniteNumber(universeSeedDetails.raw_rows_total);
+  const seeded =
+    asFiniteNumber(counts.seeded)
+    ?? asFiniteNumber(universeSeedResult.seeded_total)
+    ?? asFiniteNumber(universeSeedDetails.seeded_total)
+    ?? asFiniteNumber(counts.seeded_us_total);
+  const withPrice =
+    asFiniteNumber(counts.with_price)
+    ?? asFiniteNumber(counts.with_price_data);
   const classified =
-    asFiniteNumber(visDetails.after?.visible_count)
-    ?? asFiniteNumber(counts.visible ?? counts.visible_tickers);
-  // Prefer canonical 'visible' field; fall back to legacy alias.
-  const visible = counts.visible ?? counts.visible_tickers;
+    asFiniteNumber(counts.classified)
+    ?? asFiniteNumber(counts.with_classification);
+  const visible =
+    asFiniteNumber(counts.visible)
+    ?? asFiniteNumber(counts.visible_universe_count)
+    ?? asFiniteNumber(counts.visible_tickers);
 
-  // Exclusion-report filtered_out counts — authoritative source for funnel arithmetic.
   const byStep = exclusionReport?.by_step;
-  const step1Filtered = byStep?.['Step 1 - Universe Seed']
-    ?? exclusionReport?.step1_counts?.filtered_out_total_step1;
-  const step2Filtered = byStep?.['Step 2 - Price Sync'];
-  const step3Filtered = byStep?.['Step 3 - Fundamentals Sync'];
+  const step1Filtered =
+    raw !== undefined && seeded !== undefined ? Math.max(raw - seeded, 0)
+    : byStep?.['Step 1 - Universe Seed'] ?? exclusionReport?.step1_counts?.filtered_out_total_step1;
+  const step2Filtered =
+    seeded !== undefined && withPrice !== undefined ? Math.max(seeded - withPrice, 0)
+    : byStep?.['Step 2 - Price Sync'];
+  const step3Filtered =
+    withPrice !== undefined && visible !== undefined ? Math.max(withPrice - visible, 0)
+    : byStep?.['Step 3 - Fundamentals Sync'];
 
-  // s1In: total rows in Step 1 export = seeded + filtered = authoritative raw count.
-  // Computed as seeded_count + step1Filtered so it matches the CSV row count exactly.
-  const _s1Seeded = (exclusionReport?.step1_counts?.seeded_count as number | undefined);
-  const s1In: number | undefined =
-    _s1Seeded !== undefined && step1Filtered !== undefined
-      ? _s1Seeded + step1Filtered
-      : exclusionReport?.step1_counts?.raw_distinct ?? rawSymbols;
-
-  // Arithmetic chain: Output = Input − FilteredOut. Each step chains from previous.
-  const s1Out: number | undefined =
-    s1In !== undefined && step1Filtered !== undefined ? s1In - step1Filtered
-    : (exclusionReport?.step1_counts?.seeded_count as number | undefined) ?? seeded;
-  const s2Out: number | undefined =
-    s1Out !== undefined && step2Filtered !== undefined ? s1Out - step2Filtered : withPrice;
+  const s1In: number | undefined = raw;
+  const s1Out: number | undefined = seeded;
+  const s2Out: number | undefined = withPrice;
   // Step 3 now includes fundamentals + visibility gates (merged old steps 3+4)
-  const s3Out: number | undefined =
-    s2Out !== undefined && step3Filtered !== undefined ? s2Out - step3Filtered : visible;
+  const s3Out: number | undefined = visible;
 
   const JOB_OUTPUT: Record<string, number | undefined> = {
     universe_seed: s1Out,
@@ -1093,8 +1107,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             : (!run || currentRunTs < prevRunTs)
               ? 'Ready now'
               : `After next Step ${step.step - 1} completion`;
-        const processedCount = outCount ?? run?.records_processed;
-        const processedLabel = 'Processed:';
+        const processedCount = step.job_name === 'fundamentals_sync'
+          ? asFiniteNumber(fundamentalsSyncDetails.processed)
+          : outCount ?? run?.records_processed;
+        const processedLabel = step.job_name === 'fundamentals_sync'
+          ? 'Processed events/tickers:'
+          : 'Processed:';
 
       return (
         <View key={step.job_name}>
