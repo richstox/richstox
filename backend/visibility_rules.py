@@ -284,9 +284,15 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
             )
             return {
                 "job_id":            job_id,
+                "duration_seconds":  0,
+                "before":            {},
+                "after":             {},
+                "stats":             {"processed": 0, "now_visible": 0, "now_invisible": 0, "changed": 0, "reasons": {}},
+                "cleanup":           {"stock_prices_deleted": 0, "financials_cache_deleted": 0},
+                "space_freed_mb":    0,
+                "parent_run_id":     parent_run_id,
                 "status":            "skipped",
-                "skipped":           True,
-                "reason":            "already_running",
+                "skip_reason":       "already_running",
                 "blocked_by_run_id": blocked_by_run_id,
             }
 
