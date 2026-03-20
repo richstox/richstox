@@ -206,14 +206,17 @@ function isChainStatusActive(status?: string | null): boolean {
 
 function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRunId: string; startedAt?: string; status?: string } | null {
   if (!jobLastRuns) return null;
-  let latestChainRun: { chainRunId: string; startedAt?: string; startedAtMs: number; status?: string } | null = null;
+  let latestChainRun: { chainRunId: string; startedAt?: string; startedAtMs?: number; status?: string } | null = null;
   for (const jobName of ['universe_seed', 'price_sync', 'fundamentals_sync']) {
     const run = jobLastRuns[jobName];
     const chainRunId = run?.details?.chain_run_id;
     if (!chainRunId) continue;
-    const startedAt = run?.started_at || run?.start_time;
-    const startedAtMs = startedAt ? Date.parse(startedAt) : 0;
-    if (!latestChainRun || startedAtMs > latestChainRun.startedAtMs) {
+    const startedAt = run?.started_at;
+    const startedAtMs = startedAt ? Date.parse(startedAt) : undefined;
+    if (
+      !latestChainRun ||
+      ((startedAtMs ?? Number.NEGATIVE_INFINITY) > (latestChainRun.startedAtMs ?? Number.NEGATIVE_INFINITY))
+    ) {
       latestChainRun = {
         chainRunId,
         startedAt,
@@ -344,17 +347,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   }, []);
 
-  const startChainTimer = useCallback((startedAt?: string | null) => {
+  const startChainTimer = useCallback((startedAtIso?: string | null) => {
     stopChainTimer();
-    const parsedStartedAt = startedAt ? Date.parse(startedAt) : NaN;
+    const parsedStartedAt = startedAtIso ? Date.parse(startedAtIso) : NaN;
     const chainStartedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now();
-    setElapsedSeconds(Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000)));
+    const getElapsed = () => Number.isFinite(parsedStartedAt)
+      ? Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000))
+      : 0;
+    setElapsedSeconds(getElapsed());
     timerRef.current = setInterval(() => {
-      setElapsedSeconds(Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000)));
+      setElapsedSeconds(getElapsed());
     }, 1000);
   }, [stopChainTimer]);
 
-  const pollChainStatus = useCallback(async (cid: string, fallbackStartedAt?: string | null) => {
+  const pollChainStatus = useCallback(async (cid: string) => {
     try {
       const sr = await authenticatedFetch(
         `${API_URL}/api/admin/pipeline/chain-status/${cid}`,
@@ -373,7 +379,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainRunning(nextRunning);
 
       if (nextRunning) {
-        startChainTimer(sd.started_at ?? fallbackStartedAt);
+        startChainTimer(sd.started_at);
       } else {
         stopChainTimer();
         setElapsedSeconds(0);
@@ -457,7 +463,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             (latestChainRun?.chainRunId === currentChainRunId && isChainStatusActive(currentChainStatus))
           );
         if (latestChainRun?.chainRunId && shouldPollLatestChain) {
-          await pollChainStatus(latestChainRun.chainRunId, latestChainRun.startedAt);
+          await pollChainStatus(latestChainRun.chainRunId);
         } else if (!isChainStatusActive(currentChainStatus)) {
           setChainRunning(false);
           stopChainTimer();
