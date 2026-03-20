@@ -198,6 +198,37 @@ function extractDayProgress(message: string | undefined): string | null {
   return `Day ${match[1]}/${match[2]}`;
 }
 
+const CHAIN_STATUS_POLL_MS = 5000;
+
+function isChainStatusActive(status?: string | null): boolean {
+  return status != null && !['completed', 'failed', 'error', 'cancelled'].includes(status);
+}
+
+function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRunId: string; startedAt?: string; status?: string } | null {
+  if (!jobLastRuns) return null;
+  let latestChainRun: { chainRunId: string; startedAt?: string; startedAtMs: number; status?: string } | null = null;
+  for (const jobName of ['universe_seed', 'price_sync', 'fundamentals_sync']) {
+    const run = jobLastRuns[jobName];
+    const chainRunId = run?.details?.chain_run_id;
+    if (!chainRunId) continue;
+    const startedAt = run?.started_at || run?.start_time;
+    const startedAtMs = startedAt ? Date.parse(startedAt) : 0;
+    if (!latestChainRun || startedAtMs > latestChainRun.startedAtMs) {
+      latestChainRun = {
+        chainRunId,
+        startedAt,
+        startedAtMs,
+        status: run?.status,
+      };
+    }
+  }
+  return latestChainRun ? {
+    chainRunId: latestChainRun.chainRunId,
+    startedAt: latestChainRun.startedAt,
+    status: latestChainRun.status,
+  } : null;
+}
+
 function normaliseRun(run: any): any {
   if (!run) return run;
   const start = run.started_at || run.start_time;
@@ -297,11 +328,114 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [chainRunning, setChainRunning] = useState(false);
   const [chainCurrentStep, setChainCurrentStep] = useState<number | null>(null);
   const [chainStepsDone, setChainStepsDone] = useState<number[]>([]);
-  const chainPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const chainStateRef = useRef<{ chainRunId: string | null; chainStatus: string | null }>({
+    chainRunId: null,
+    chainStatus: null,
+  });
 
   // ── Manual / Auto run mode toggle ─────────────────────────────────────────
   const [runMode, setRunMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
   const runModeInitialised = useRef(false);
+
+  const stopChainTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const startChainTimer = useCallback((startedAt?: string | null) => {
+    stopChainTimer();
+    const parsedStartedAt = startedAt ? Date.parse(startedAt) : NaN;
+    const chainStartedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now();
+    setElapsedSeconds(Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000)));
+    timerRef.current = setInterval(() => {
+      setElapsedSeconds(Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000)));
+    }, 1000);
+  }, [stopChainTimer]);
+
+  const pollChainStatus = useCallback(async (cid: string, fallbackStartedAt?: string | null) => {
+    try {
+      const sr = await authenticatedFetch(
+        `${API_URL}/api/admin/pipeline/chain-status/${cid}`,
+        {},
+        sessionToken,
+      );
+      if (!sr.ok) return;
+      const sd = await sr.json();
+      const nextStatus = sd.status ?? null;
+      const nextRunning = isChainStatusActive(nextStatus);
+
+      setChainRunId(cid);
+      setChainStatus(nextStatus);
+      setChainCurrentStep(sd.current_step ?? null);
+      setChainStepsDone(sd.steps_done ?? []);
+      setChainRunning(nextRunning);
+
+      if (nextRunning) {
+        startChainTimer(sd.started_at ?? fallbackStartedAt);
+      } else {
+        stopChainTimer();
+        setElapsedSeconds(0);
+      }
+
+      if (sd.current_step === 1) {
+        try {
+          const jr = await authenticatedFetch(
+            `${API_URL}/api/admin/jobs/universe_seed/status`,
+            {},
+            sessionToken,
+          );
+          if (jr.ok) {
+            const jd = await jr.json();
+            const lr = jd.last_run;
+            if (lr?.progress_total) {
+              setStep1Progress({
+                processed: lr.progress_processed || 0,
+                total:     lr.progress_total,
+                pct:       lr.progress_pct || 0,
+              });
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      if (sd.current_step === 2) {
+        try {
+          const jr = await authenticatedFetch(
+            `${API_URL}/api/admin/jobs/price_sync/status`,
+            {},
+            sessionToken,
+          );
+          if (jr.ok) {
+            const jd = await jr.json();
+            const lr = normaliseRun(jd.last_run);
+            if (lr) {
+              if (jd.previous_completed_run) {
+                lr.previous_completed_run = jd.previous_completed_run;
+              }
+              setLiveLastRuns(prev => ({ ...prev, price_sync: lr }));
+              const progress = deriveProgress(lr);
+              if (progress) setStep2Progress(progress);
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+
+      if (!nextRunning && sd.status === 'completed') {
+        if (sd.steps_done?.includes(1)) {
+          setStep1Progress(prev => prev ? { processed: prev.total, total: prev.total, pct: 100 } : null);
+        }
+        if (sd.steps_done?.includes(2)) {
+          setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
+        }
+      }
+    } catch { /* keep polling */ }
+  }, [sessionToken, startChainTimer, stopChainTimer]);
+
+  useEffect(() => {
+    chainStateRef.current = { chainRunId, chainStatus };
+  }, [chainRunId, chainStatus]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -311,7 +445,25 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         authenticatedFetch(`${API_URL}/api/admin/pipeline/data-freshness`, {}, sessionToken),
       ]);
 
-      if (overviewRes.status === 'fulfilled' && overviewRes.value.ok) setData(await overviewRes.value.json());
+      if (overviewRes.status === 'fulfilled' && overviewRes.value.ok) {
+        const overviewData = await overviewRes.value.json();
+        setData(overviewData);
+        const latestChainRun = getLatestChainRun(overviewData?.job_last_runs);
+        const { chainRunId: currentChainRunId, chainStatus: currentChainStatus } = chainStateRef.current;
+        const shouldPollLatestChain =
+          Boolean(latestChainRun?.chainRunId) && (
+            ['running', 'cancel_requested'].includes(latestChainRun?.status || '') ||
+            latestChainRun?.chainRunId !== currentChainRunId ||
+            (latestChainRun?.chainRunId === currentChainRunId && isChainStatusActive(currentChainStatus))
+          );
+        if (latestChainRun?.chainRunId && shouldPollLatestChain) {
+          await pollChainStatus(latestChainRun.chainRunId, latestChainRun.startedAt);
+        } else if (!isChainStatusActive(currentChainStatus)) {
+          setChainRunning(false);
+          stopChainTimer();
+          setElapsedSeconds(0);
+        }
+      }
       if (freshnessRes.status === 'fulfilled' && freshnessRes.value.ok) setFreshness(await freshnessRes.value.json());
       if (exclusionRes.status === 'fulfilled' && exclusionRes.value.ok) {
         try {
@@ -322,7 +474,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             (excl as any)?.latest_run_id_per_step?.['Step 1 - Universe Seed'];
           if (step1RunId) {
             try {
-                const s1Res = await authenticatedFetch(
+              const s1Res = await authenticatedFetch(
                 `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(step1RunId)}&limit=1`,
                 {},
                 sessionToken,
@@ -346,9 +498,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [sessionToken]);
+  }, [pollChainStatus, sessionToken, stopChainTimer]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
+
+  useEffect(() => {
+    if (!sessionToken) return;
+    const interval = setInterval(() => { fetchData(); }, CHAIN_STATUS_POLL_MS);
+    return () => clearInterval(interval);
+  }, [fetchData, sessionToken]);
 
   const onRefresh = () => { setRefreshing(true); fetchData(); };
 
@@ -451,7 +609,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     3: 'Fundamentals & Visibility',
   };
 
-   const handleRunFullPipeline = async () => {
+  const handleRunFullPipeline = useCallback(async () => {
     if (chainRunning) return;
     setChainRunning(true);
     setChainStatus('starting');
@@ -466,104 +624,35 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         sessionToken,
       );
       const data = await res.json();
-      if (!res.ok) { setChainStatus('error'); setChainRunning(false); return; }
+      if (!res.ok) {
+        const existingChainRunId = data?.detail?.chain_run_id || data?.chain_run_id;
+        if (existingChainRunId) {
+          setChainRunId(existingChainRunId);
+          setChainRunning(true);
+          setChainStatus('running');
+          await pollChainStatus(existingChainRunId);
+          return;
+        }
+        setChainStatus('error');
+        setChainRunning(false);
+        stopChainTimer();
+        setElapsedSeconds(0);
+        return;
+      }
       const cid: string = data.chain_run_id;
       setChainRunId(cid);
       setChainStatus('running');
       setChainCurrentStep(1);
-      // Start elapsed timer for chain run
-      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-      const chainStartedAt = Date.now();
-      timerRef.current = setInterval(() => {
-        setElapsedSeconds(Math.round((Date.now() - chainStartedAt) / 1000));
-      }, 1000);
-      // Poll chain status every 2 s until completed/failed/cancelled.
-      if (chainPollRef.current) clearInterval(chainPollRef.current);
-      chainPollRef.current = setInterval(async () => {
-        try {
-          const sr = await authenticatedFetch(
-            `${API_URL}/api/admin/pipeline/chain-status/${cid}`,
-            {},
-            sessionToken,
-          );
-          const sd = await sr.json();
-          setChainStatus(sd.status);
-          setChainCurrentStep(sd.current_step ?? null);
-          setChainStepsDone(sd.steps_done ?? []);
-          // Refresh overview on every tick so "Last run" / counts stay live.
-          fetchData();
-          // While Step 1 is the active step, poll its progress for the live bar.
-          // Also accept 'completed' status so the final 100% state is picked up
-          // before the chain advances to current_step=2.
-          if (sd.current_step === 1) {
-            try {
-              const jr = await authenticatedFetch(
-                `${API_URL}/api/admin/jobs/universe_seed/status`,
-                {},
-                sessionToken,
-              );
-              if (jr.ok) {
-                const jd = await jr.json();
-                const lr = jd.last_run;
-                if (lr?.progress_total) {
-                  setStep1Progress({
-                    processed: lr.progress_processed || 0,
-                    total:     lr.progress_total,
-                    pct:       lr.progress_pct || 0,
-                  });
-                }
-              }
-            } catch { /* non-fatal */ }
-          }
-          // While Step 2 is the active step, poll its progress for the live bar.
-          if (sd.current_step === 2) {
-            try {
-              const jr = await authenticatedFetch(
-                `${API_URL}/api/admin/job/price_sync/status`,
-                {},
-                sessionToken,
-              );
-              if (jr.ok) {
-                const jd = await jr.json();
-                const lr = normaliseRun(jd.last_run);
-                if (lr) {
-                  if (jd.previous_completed_run) {
-                    lr.previous_completed_run = jd.previous_completed_run;
-                  }
-                  setLiveLastRuns(prev => ({ ...prev, price_sync: lr }));
-                  const progress = deriveProgress(lr);
-                  if (progress) setStep2Progress(progress);
-                }
-              }
-            } catch { /* non-fatal */ }
-          }
-          if (sd.status === 'completed' || sd.status === 'failed' || sd.status === 'cancelled') {
-            clearInterval(chainPollRef.current!);
-            chainPollRef.current = null;
-            if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-            setElapsedSeconds(0);
-            setChainRunning(false);
-            // Freeze final progress bar states
-            if (sd.status === 'completed') {
-              if (sd.steps_done?.includes(1)) {
-                setStep1Progress(prev => prev ? { processed: prev.total, total: prev.total, pct: 100 } : null);
-              }
-              if (sd.steps_done?.includes(2)) {
-                setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
-              }
-            }
-            // Delayed refresh so backend has time to flush final run timestamps
-            setTimeout(() => fetchData(), 3000);
-          }
-        } catch { /* keep polling */ }
-      }, 2000);
-    } catch (e: any) {
+      startChainTimer(new Date().toISOString());
+      await fetchData();
+      await pollChainStatus(cid);
+    } catch {
       setChainStatus('error');
-      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      stopChainTimer();
       setElapsedSeconds(0);
       setChainRunning(false);
     }
-  };
+  }, [chainRunning, fetchData, pollChainStatus, sessionToken, startChainTimer, stopChainTimer]);
 
   const handleStopChain = async () => {
     if (!chainRunId) return;
@@ -574,20 +663,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         sessionToken,
       );
     } catch { /* ignore network error — polling will detect cancellation */ }
-    if (chainPollRef.current) {
-      clearInterval(chainPollRef.current);
-      chainPollRef.current = null;
-    }
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    setElapsedSeconds(0);
-    setChainRunning(false);
-    setChainStatus('cancelled');
-    setChainCurrentStep(null);
-    // Immediately show Stopped for any in-progress step 2 progress
-    setStep2Progress(prev => prev ? { ...prev, phase: 'stopped' } : null);
+    await pollChainStatus(chainRunId);
   };
 
   const handleCancelRunningJob = async (jobName: 'price_sync' | 'fundamentals_sync') => {
@@ -651,6 +727,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setStep1Progress(deriveProgress(s1));
     }
   }, [jobRuns]);
+  useEffect(() => () => stopChainTimer(), [stopChainTimer]);
+
   const counts = data?.universe_funnel?.counts || {};
   const syncStatus = data?.pipeline_sync_status || {};
   const todayStr = new Date().toISOString().split('T')[0];
@@ -874,7 +952,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       style={[s.fullChainBtn, { width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center', backgroundColor: '#EF4444' }]}
       onPress={handleStopChain}
     >
-      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>■ Stop Chain Run</Text>
+      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>STOP chain run</Text>
     </TouchableOpacity>
   ) : (
     <TouchableOpacity
@@ -882,7 +960,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       onPress={handleRunFullPipeline}
       disabled={isRunDisabled}
     >
-      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>▶ Run Full Pipeline Now</Text>
+      <Text style={[s.fullChainBtnText, { fontSize: 14 }]} numberOfLines={1}>RUN FULL PIPELINE NOW</Text>
     </TouchableOpacity>
   )}
 
