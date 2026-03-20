@@ -206,14 +206,17 @@ function isChainStatusActive(status?: string | null): boolean {
 
 function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRunId: string; startedAt?: string; status?: string } | null {
   if (!jobLastRuns) return null;
-  let latestChainRun: { chainRunId: string; startedAt?: string; startedAtMs: number; status?: string } | null = null;
+  let latestChainRun: { chainRunId: string; startedAt?: string; startedAtMs?: number; status?: string } | null = null;
   for (const jobName of ['universe_seed', 'price_sync', 'fundamentals_sync']) {
     const run = jobLastRuns[jobName];
     const chainRunId = run?.details?.chain_run_id;
     if (!chainRunId) continue;
     const startedAt = run?.started_at;
-    const startedAtMs = startedAt ? Date.parse(startedAt) : Number.NEGATIVE_INFINITY;
-    if (!latestChainRun || startedAtMs > latestChainRun.startedAtMs) {
+    const startedAtMs = startedAt ? Date.parse(startedAt) : undefined;
+    if (
+      !latestChainRun ||
+      ((startedAtMs ?? Number.NEGATIVE_INFINITY) > (latestChainRun.startedAtMs ?? Number.NEGATIVE_INFINITY))
+    ) {
       latestChainRun = {
         chainRunId,
         startedAt,
