@@ -593,7 +593,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     3: 'Fundamentals & Visibility',
   };
 
-  const handleRunFullPipeline = async () => {
+  const handleRunFullPipeline = useCallback(async () => {
     if (chainRunning) return;
     setChainRunning(true);
     setChainStatus('starting');
@@ -630,7 +630,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       startChainTimer(new Date().toISOString());
       await fetchData();
       await pollChainStatus(cid);
-    } catch (e: any) {
+    } catch {
       setChainStatus('error');
       stopChainTimer();
       setElapsedSeconds(0);
