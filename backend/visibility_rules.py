@@ -7,7 +7,7 @@
 
 from enum import Enum
 from typing import Tuple, Optional, Dict, Any, List, Set
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 import httpx
 import os
@@ -213,6 +213,88 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     job_name = "compute_visible_universe"
     started_at = datetime.now(timezone.utc)
     job_id = f"recompute_visibility_{started_at.strftime('%Y%m%d_%H%M%S')}"
+    now = datetime.now(timezone.utc)
+
+    # ------------------------------------------------------------------
+    # 1) Stuck-finalize: mark any running run older than 15 min as failed
+    # ------------------------------------------------------------------
+    stale_cutoff = now - timedelta(minutes=15)
+    stale_query = {
+        "job_name": job_name,
+        "status":   "running",
+        "$or": [
+            {"updated_at": {"$lt": stale_cutoff}},
+            {"updated_at": {"$exists": False}, "started_at": {"$lt": stale_cutoff}},
+        ],
+    }
+    async for stale_run in db.ops_job_runs.find(stale_query):
+        await db.ops_job_runs.update_one(
+            {"_id": stale_run["_id"], "status": "running"},
+            {"$set": {
+                "status":                        "failed",
+                "error":                         "stuck_run_timeout",
+                "finished_at":                   now,
+                "end_time":                      now,
+                "finished_at_prague":            now.astimezone(PRAGUE).isoformat(),
+                "updated_at":                    now,
+                "updated_at_prague":             now.astimezone(PRAGUE).isoformat(),
+                "log_timezone":                  "Europe/Prague",
+                "details.error":                 "stuck_run_timeout",
+                "details.stuck_timeout_minutes": 15,
+                "details.last_progress": {
+                    "progress":           stale_run.get("progress"),
+                    "progress_processed": stale_run.get("progress_processed"),
+                    "progress_total":     stale_run.get("progress_total"),
+                    "progress_pct":       stale_run.get("progress_pct"),
+                },
+            }},
+        )
+        logger.warning(
+            f"Finalized stuck run {stale_run['_id']} as failed (stuck_run_timeout)"
+        )
+
+    # ------------------------------------------------------------------
+    # 2) Concurrency guard (best-effort): skip if a fresh run is already active
+    # ------------------------------------------------------------------
+    running_run = await db.ops_job_runs.find_one(
+        {"job_name": job_name, "status": "running"},
+        sort=[("started_at", -1)],
+    )
+    if running_run is not None:
+        freshness_time = running_run.get("updated_at") or running_run.get("started_at")
+        if freshness_time is not None and freshness_time >= stale_cutoff:
+            blocked_by_run_id = str(running_run["_id"])
+            skipped_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.insert_one({
+                "job_name":           job_name,
+                "job_id":             job_id,
+                "status":             "skipped",
+                "started_at":         skipped_at,
+                "started_at_prague":  skipped_at.astimezone(PRAGUE).isoformat(),
+                "finished_at":        skipped_at,
+                "finished_at_prague": skipped_at.astimezone(PRAGUE).isoformat(),
+                "progress":           f"Skipped: {job_name} already running",
+                "details": {
+                    "skip_reason":       "already_running",
+                    "blocked_by_run_id": blocked_by_run_id,
+                },
+            })
+            logger.info(
+                f"Skipping {job_name}: already running (blocked by {blocked_by_run_id})"
+            )
+            return {
+                "job_id":            job_id,
+                "duration_seconds":  0,
+                "before":            {},
+                "after":             {},
+                "stats":             {"processed": 0, "now_visible": 0, "now_invisible": 0, "changed": 0, "reasons": {}},
+                "cleanup":           {"stock_prices_deleted": 0, "financials_cache_deleted": 0},
+                "space_freed_mb":    0,
+                "parent_run_id":     parent_run_id,
+                "status":            "skipped",
+                "skip_reason":       "already_running",
+                "blocked_by_run_id": blocked_by_run_id,
+            }
 
     logger.info(f"Starting visibility recompute job: {job_id}")
 
@@ -286,6 +368,21 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
         batch_ops.append(_UpdateOne({"ticker": ticker}, {"$set": update_fields}))
         processed += 1
         stats["processed"] += 1
+
+        if processed % 50 == 0:
+            hb_now = datetime.now(timezone.utc)
+            progress_pct = int(processed * 100 / total) if total else 0
+            await db.ops_job_runs.update_one(
+                {"_id": run_doc_id},
+                {"$set": {
+                    "updated_at":         hb_now,
+                    "updated_at_prague":  hb_now.astimezone(PRAGUE).isoformat(),
+                    "progress_processed": processed,
+                    "progress_total":     total,
+                    "progress_pct":       progress_pct,
+                    "progress":           f"Processed {processed:,} / {total:,} ({progress_pct}%)",
+                }},
+            )
 
         if len(batch_ops) >= BATCH_SIZE:
             await db.tracked_tickers.bulk_write(batch_ops, ordered=False)
