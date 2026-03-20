@@ -212,7 +212,7 @@ function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRun
     const chainRunId = run?.details?.chain_run_id;
     if (!chainRunId) continue;
     const startedAt = run?.started_at;
-    const startedAtMs = startedAt ? Date.parse(startedAt) : 0;
+    const startedAtMs = startedAt ? Date.parse(startedAt) : Number.NEGATIVE_INFINITY;
     if (!latestChainRun || startedAtMs > latestChainRun.startedAtMs) {
       latestChainRun = {
         chainRunId,
@@ -348,9 +348,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     stopChainTimer();
     const parsedStartedAt = startedAtIso ? Date.parse(startedAtIso) : NaN;
     const chainStartedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now();
-    setElapsedSeconds(Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000)));
+    const getElapsed = () => Number.isFinite(parsedStartedAt)
+      ? Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000))
+      : 0;
+    setElapsedSeconds(getElapsed());
     timerRef.current = setInterval(() => {
-      setElapsedSeconds(Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000)));
+      setElapsedSeconds(getElapsed());
     }, 1000);
   }, [stopChainTimer]);
 
