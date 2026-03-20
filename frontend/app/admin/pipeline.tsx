@@ -211,7 +211,7 @@ function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRun
     const run = jobLastRuns[jobName];
     const chainRunId = run?.details?.chain_run_id;
     if (!chainRunId) continue;
-    const startedAt = run?.started_at || run?.start_time;
+    const startedAt = run?.started_at;
     const startedAtMs = startedAt ? Date.parse(startedAt) : 0;
     if (!latestChainRun || startedAtMs > latestChainRun.startedAtMs) {
       latestChainRun = {
@@ -344,9 +344,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   }, []);
 
-  const startChainTimer = useCallback((startedAt?: string | null) => {
+  const startChainTimer = useCallback((startedAtIso?: string | null) => {
     stopChainTimer();
-    const parsedStartedAt = startedAt ? Date.parse(startedAt) : NaN;
+    const parsedStartedAt = startedAtIso ? Date.parse(startedAtIso) : NaN;
     const chainStartedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now();
     setElapsedSeconds(Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000)));
     timerRef.current = setInterval(() => {
@@ -354,7 +354,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }, 1000);
   }, [stopChainTimer]);
 
-  const pollChainStatus = useCallback(async (cid: string, fallbackStartedAt?: string | null) => {
+  const pollChainStatus = useCallback(async (cid: string) => {
     try {
       const sr = await authenticatedFetch(
         `${API_URL}/api/admin/pipeline/chain-status/${cid}`,
@@ -373,7 +373,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainRunning(nextRunning);
 
       if (nextRunning) {
-        startChainTimer(sd.started_at ?? fallbackStartedAt);
+        startChainTimer(sd.started_at);
       } else {
         stopChainTimer();
         setElapsedSeconds(0);
@@ -457,7 +457,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             (latestChainRun?.chainRunId === currentChainRunId && isChainStatusActive(currentChainStatus))
           );
         if (latestChainRun?.chainRunId && shouldPollLatestChain) {
-          await pollChainStatus(latestChainRun.chainRunId, latestChainRun.startedAt);
+          await pollChainStatus(latestChainRun.chainRunId);
         } else if (!isChainStatusActive(currentChainStatus)) {
           setChainRunning(false);
           stopChainTimer();
