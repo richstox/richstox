@@ -139,8 +139,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (failedCount > 0) alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${failedCount} pipeline job${failedCount > 1 ? 's' : ''} failed` });
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
-  if ((pi?.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi!.missing_expected_dates} date(s) with incomplete price coverage` });
-  if ((pi?.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi!.needs_price_redownload} ticker(s) need price re-download` });
+  if (pi && (pi.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi.missing_expected_dates} date(s) with incomplete price coverage` });
+  if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
   // Coverage checkpoint helper
   const renderCheckpoint = (label: string, key: string) => {
@@ -149,13 +149,13 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     const have = c.have_price_count ?? 0;
     const total = c.today_visible ?? 0;
     const pct = total > 0 ? Math.round((have / total) * 100) : 0;
-    const isGap = total > 0 && have < total;
+    const isCoverageGap = total > 0 && have < total;
     return (
       <View key={key} style={d.cpRow}>
-        <View style={[d.cpDot, { backgroundColor: isGap ? '#F59E0B' : '#22C55E' }]} />
+        <View style={[d.cpDot, { backgroundColor: isCoverageGap ? '#F59E0B' : '#22C55E' }]} />
         <Text style={d.cpLabel}>{label}</Text>
         <Text style={d.cpDate}>{c.date ?? '—'}</Text>
-        <Text style={[d.cpValue, isGap && { color: '#F59E0B' }]}>{have}/{total} ({pct}%)</Text>
+        <Text style={[d.cpValue, isCoverageGap && { color: '#F59E0B' }]}>{have}/{total} ({pct}%)</Text>
       </View>
     );
   };

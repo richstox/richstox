@@ -453,6 +453,10 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
     TODAY_VISIBLE = visible tickers (is_visible == True).
     Expected dates = dates we have in stock_prices (proxy for bulk-ingested dates).
     A gap = an expected date D where have_price_count(D, TODAY_VISIBLE) < TODAY_VISIBLE.
+
+    Coverage checkpoints resolve the nearest available trading date at or before
+    the target calendar date (latest bulk date, 1 week, 1 month, 1 year ago)
+    and report how many of TODAY_VISIBLE tickers have a price record on that date.
     """
     try:
         today_str = date.today().isoformat()
@@ -541,7 +545,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                 "today_visible": today_visible,
             }
 
-        # ── 5. Missing expected dates (last ~30 trading days) ───────────────
+        # ── 5. Missing expected dates (~30 trading days / 45 calendar day lookback)
         recent_cutoff = (date.today() - timedelta(days=45)).isoformat()
         gap_pipeline = [
             {"$match": {
