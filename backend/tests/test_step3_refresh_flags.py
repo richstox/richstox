@@ -102,6 +102,12 @@ class _OpsJobRuns:
         self.docs[self._seq] = dict(doc)
         return SimpleNamespace(inserted_id=self._seq)
 
+    async def find_one(self, filt, projection=None, sort=None):
+        doc_id = filt.get("_id")
+        if doc_id is not None and doc_id in self.docs:
+            return dict(self.docs[doc_id])
+        return None
+
     async def update_one(self, filt, update):
         doc = self.docs.get(filt["_id"], {})
         expected_status = filt.get("status")
@@ -649,3 +655,251 @@ def test_step3_live_telemetry_returns_idle_when_no_runs():
     assert resp["updated_at_prague"] is None
     assert resp["pending_refresh_flags"] == 1
     assert resp["pending_events_audit"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Phase C finalization with zero workload
+# ---------------------------------------------------------------------------
+
+def test_step3_empty_phase_c_finalizes_parent_run(monkeypatch):
+    """When Phase C has no eligible tickers, the parent run must
+    still be finalized as completed with Phase C status='done',
+    progress_pct=100, and finished_at set."""
+    db = _FakeStep3DB([
+        {
+            "ticker": "AAPL.US",
+            "needs_fundamentals_refresh": True,
+            "exchange": "NASDAQ",
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+            "has_price_data": True,
+        }
+    ])
+
+    async def _fake_purge(_db):
+        return None
+
+    async def _fake_dedup(_db, _now):
+        return {"pending_before_dedup": 0, "deduped_event_count": 0}
+
+    async def _fake_skip(_db, _tickers, _now):
+        return {"skipped_tickers": [], "skipped_ticker_count": 0, "skipped_event_count": 0}
+
+    async def _fake_enqueue(*_args, **_kwargs):
+        return {"new_inserts": 0, "skipped_existing": 0}
+
+    async def _fake_sync_single(_db, ticker, source_job=None):
+        return {"ticker": ticker, "success": True}
+
+    async def _fake_step3_report(_db, _now):
+        return {"step3_exclusion_rows": 0, "exclusion_report_run_id": None}
+
+    async def _fake_visibility(_db, parent_run_id=None):
+        return {"job_id": "vis1", "duration_seconds": 0, "stats": {"changed": 0}, "after": {"visible_count": 0}}
+
+    async def _fake_visibility_report(_db, _now):
+        return {"visibility_exclusion_rows": 0, "_debug": {}, "exclusion_report_run_id": None}
+
+    monkeypatch.setattr("scheduler_service.purge_orphaned_fundamentals_events", _fake_purge)
+    monkeypatch.setattr("scheduler_service._deduplicate_pending_events", _fake_dedup)
+    monkeypatch.setattr("scheduler_service._skip_already_complete_tickers", _fake_skip)
+    monkeypatch.setattr("scheduler_service._enqueue_fundamentals_events", _fake_enqueue)
+    monkeypatch.setattr("batch_jobs_service.sync_single_ticker_fundamentals", _fake_sync_single)
+    monkeypatch.setattr("scheduler_service.save_step3_exclusion_report", _fake_step3_report)
+    monkeypatch.setattr("visibility_rules.recompute_visibility_all", _fake_visibility)
+    monkeypatch.setattr("scheduler_service.save_step3_visibility_exclusion_report", _fake_visibility_report)
+
+    result = asyncio.run(
+        run_fundamentals_changes_sync(db, batch_size=1, ignore_kill_switch=True)
+    )
+
+    assert result["status"] == "completed"
+    # Phase C should be terminal even with zero workload.
+    telemetry = result["step3_telemetry"]
+    assert telemetry["phases"]["C"]["status"] == "done"
+    # ops_job_runs sentinel must be finalized.
+    run_doc = db.ops_job_runs.docs[1]
+    assert run_doc["status"] == "completed"
+    assert run_doc["finished_at"] is not None
+    assert "finished_at_prague" in run_doc
+    # progress_pct should be 100 for a completed run.
+    assert run_doc["progress_pct"] == 100
+
+
+def test_step3_zero_tickers_progress_pct_is_100(monkeypatch):
+    """When Phase A has 0 tickers to sync and Phase C has 0 tickers,
+    progress_pct must be 100 (not 0) because all work is done."""
+    db = _FakeStep3DB([])  # No tickers at all
+
+    async def _fake_purge(_db):
+        return None
+
+    async def _fake_dedup(_db, _now):
+        return {"pending_before_dedup": 0, "deduped_event_count": 0}
+
+    async def _fake_skip(_db, _tickers, _now):
+        return {"skipped_tickers": [], "skipped_ticker_count": 0, "skipped_event_count": 0}
+
+    async def _fake_enqueue(*_args, **_kwargs):
+        return {"new_inserts": 0, "skipped_existing": 0}
+
+    async def _fake_step3_report(_db, _now):
+        return {"step3_exclusion_rows": 0, "exclusion_report_run_id": None}
+
+    async def _fake_visibility(_db, parent_run_id=None):
+        return {"job_id": "vis1", "duration_seconds": 0, "stats": {"changed": 0}, "after": {"visible_count": 0}}
+
+    async def _fake_visibility_report(_db, _now):
+        return {"visibility_exclusion_rows": 0, "_debug": {}, "exclusion_report_run_id": None}
+
+    monkeypatch.setattr("scheduler_service.purge_orphaned_fundamentals_events", _fake_purge)
+    monkeypatch.setattr("scheduler_service._deduplicate_pending_events", _fake_dedup)
+    monkeypatch.setattr("scheduler_service._skip_already_complete_tickers", _fake_skip)
+    monkeypatch.setattr("scheduler_service._enqueue_fundamentals_events", _fake_enqueue)
+    monkeypatch.setattr("scheduler_service.save_step3_exclusion_report", _fake_step3_report)
+    monkeypatch.setattr("visibility_rules.recompute_visibility_all", _fake_visibility)
+    monkeypatch.setattr("scheduler_service.save_step3_visibility_exclusion_report", _fake_visibility_report)
+
+    result = asyncio.run(
+        run_fundamentals_changes_sync(db, batch_size=1, ignore_kill_switch=True)
+    )
+
+    assert result["status"] == "completed"
+    run_doc = db.ops_job_runs.docs[1]
+    assert run_doc["status"] == "completed"
+    assert run_doc["progress_pct"] == 100
+    assert run_doc["finished_at"] is not None
+    # Phase C telemetry should be 'done' even though never entered with work.
+    telemetry = result["step3_telemetry"]
+    assert telemetry["phases"]["C"]["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# Classification-missing idempotency
+# ---------------------------------------------------------------------------
+
+class _TrackedTickersWithClassificationFilter(_TrackedTickersForStep3):
+    """Extended mock that supports the classification_missing query
+    and respects the fundamentals_status filter."""
+
+    def __init__(self, docs):
+        super().__init__(docs)
+        self._class_query_tickers = None  # captured by find()
+
+    def find(self, query, projection=None):
+        # Detect the classification_missing query by its $or structure.
+        or_clause = query.get("$or")
+        if (
+            or_clause
+            and any(c.get("has_classification") == {"$ne": True} for c in or_clause)
+            and query.get("has_price_data") is True
+        ):
+            # Apply fundamentals_status filter if present.
+            fs_filter = query.get("fundamentals_status")
+            docs = []
+            for d in self._docs:
+                if d.get("exchange") not in {"NYSE", "NASDAQ"}:
+                    continue
+                if d.get("asset_type") != "Common Stock":
+                    continue
+                if d.get("is_seeded") is not True:
+                    continue
+                if d.get("has_price_data") is not True:
+                    continue
+                # Apply fundamentals_status filter.
+                if fs_filter and isinstance(fs_filter, dict):
+                    ne_val = fs_filter.get("$ne")
+                    if ne_val is not None and d.get("fundamentals_status") == ne_val:
+                        continue
+                # Check classification criteria.
+                sector = (d.get("sector") or "").strip()
+                industry = (d.get("industry") or "").strip()
+                has_class = d.get("has_classification")
+                if sector and industry and has_class is True:
+                    continue  # Not a candidate
+                docs.append({"ticker": d["ticker"]})
+            self._class_query_tickers = [d["ticker"] for d in docs]
+            return _AsyncCursor(docs)
+        return super().find(query, projection)
+
+
+def test_step3_classification_missing_excludes_complete_tickers(monkeypatch):
+    """Tickers with fundamentals_status='complete' and missing classification
+    must NOT be re-enqueued.  This prevents the infinite re-processing loop
+    that makes repeated same-day runs non-idempotent."""
+    tracked_docs = [
+        {
+            # Already complete — should be EXCLUDED from classification enqueue.
+            "ticker": "NOCLASS.US",
+            "exchange": "NASDAQ",
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+            "has_price_data": True,
+            "fundamentals_status": "complete",
+            "needs_fundamentals_refresh": False,
+            "sector": None,
+            "industry": None,
+            "has_classification": False,
+        },
+        {
+            # Not complete — should be INCLUDED in classification enqueue.
+            "ticker": "NEW.US",
+            "exchange": "NYSE",
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+            "has_price_data": True,
+            "fundamentals_status": None,
+            "needs_fundamentals_refresh": False,
+            "sector": None,
+            "industry": None,
+            "has_classification": False,
+        },
+    ]
+    tt = _TrackedTickersWithClassificationFilter(tracked_docs)
+    db = _FakeStep3DB([])
+    db.tracked_tickers = tt
+
+    enqueued_tickers = []
+
+    async def _fake_purge(_db):
+        return None
+
+    async def _fake_dedup(_db, _now):
+        return {"pending_before_dedup": 0, "deduped_event_count": 0}
+
+    async def _fake_skip(_db, _tickers, _now):
+        return {"skipped_tickers": [], "skipped_ticker_count": 0, "skipped_event_count": 0}
+
+    async def _capturing_enqueue(_db, event_type=None, tickers=None, **_kw):
+        if event_type == "classification_missing" and tickers:
+            enqueued_tickers.extend(tickers)
+        return {"new_inserts": 0, "skipped_existing": 0}
+
+    async def _fake_step3_report(_db, _now):
+        return {"step3_exclusion_rows": 0, "exclusion_report_run_id": None}
+
+    async def _fake_visibility(_db, parent_run_id=None):
+        return {"job_id": "vis1", "duration_seconds": 0, "stats": {"changed": 0}, "after": {"visible_count": 0}}
+
+    async def _fake_visibility_report(_db, _now):
+        return {"visibility_exclusion_rows": 0, "_debug": {}, "exclusion_report_run_id": None}
+
+    monkeypatch.setattr("scheduler_service.purge_orphaned_fundamentals_events", _fake_purge)
+    monkeypatch.setattr("scheduler_service._deduplicate_pending_events", _fake_dedup)
+    monkeypatch.setattr("scheduler_service._skip_already_complete_tickers", _fake_skip)
+    monkeypatch.setattr("scheduler_service._enqueue_fundamentals_events", _capturing_enqueue)
+    monkeypatch.setattr("scheduler_service.save_step3_exclusion_report", _fake_step3_report)
+    monkeypatch.setattr("visibility_rules.recompute_visibility_all", _fake_visibility)
+    monkeypatch.setattr("scheduler_service.save_step3_visibility_exclusion_report", _fake_visibility_report)
+
+    result = asyncio.run(
+        run_fundamentals_changes_sync(db, batch_size=1, ignore_kill_switch=True)
+    )
+
+    assert result["status"] == "completed"
+    # NOCLASS.US (fundamentals_status='complete') must be excluded.
+    assert "NOCLASS.US" not in enqueued_tickers
+    # NEW.US (fundamentals_status=None) should be included.
+    assert "NEW.US" in enqueued_tickers
+    # Only the non-complete ticker was captured.
+    assert tt._class_query_tickers == ["NEW.US"]
