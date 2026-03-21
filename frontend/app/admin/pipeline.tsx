@@ -217,7 +217,7 @@ function extractDayProgress(message: string | undefined): string | null {
 const CHAIN_STATUS_POLL_MS = 5000;
 
 function isChainStatusActive(status?: string | null): boolean {
-  return status != null && !['completed', 'failed', 'error', 'cancelled'].includes(status);
+  return status != null && !['completed', 'success', 'failed', 'error', 'cancelled'].includes(status);
 }
 
 function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRunId: string; startedAt?: string; status?: string } | null {
@@ -244,7 +244,7 @@ function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRun
   return latestChainRun ? {
     chainRunId: latestChainRun.chainRunId,
     startedAt: latestChainRun.startedAt,
-    status: latestChainRun.status,
+    status: latestChainRun.status === 'success' ? 'completed' : latestChainRun.status,
   } : null;
 }
 
