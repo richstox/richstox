@@ -2292,11 +2292,41 @@ async def admin_fundamentals_audit(
     # verdict: FAIL only on data integrity problems
     verdict = "FAIL" if (integrity_failures or mismatch) else "PASS"
 
+    # ── Visibility badge and primary funnel reason ────────────────────────────
+    is_visible = bool(tracked and tracked.get("is_visible"))
+    is_seeded = bool(tracked and tracked.get("exchange") in ("NYSE", "NASDAQ")
+                     and tracked.get("asset_type") == "Common Stock")
+    has_price = bool(tracked and tracked.get("has_price_data"))
+    fund_complete = tracked.get("fundamentals_status") == "complete" if tracked else False
+
+    # Determine primary funnel reason — exactly one label per ticker
+    if not tracked:
+        funnel_step = "Step 1 Excluded"
+        primary_reason = "Ticker not found in tracked_tickers"
+    elif not is_seeded:
+        funnel_step = "Step 1 Excluded"
+        primary_reason = f"exchange={tracked.get('exchange')}, asset_type={tracked.get('asset_type')}"
+    elif not has_price:
+        funnel_step = "Step 2 No Price"
+        primary_reason = "has_price_data is false or missing"
+    elif not fund_complete:
+        funnel_step = "Step 3 Fundamentals Blocker"
+        primary_reason = "fundamentals_status != complete"
+    elif not is_visible:
+        funnel_step = "Step 3 Visibility Rule"
+        primary_reason = "is_visible is false (visibility gate)"
+    else:
+        funnel_step = "Passed All Steps"
+        primary_reason = "Visible ticker — all pipeline gates passed"
+
     return {
         "ticker":              ticker_full,
         "audit_at":            datetime.now(timezone.utc).isoformat(),
         "live_mode":           live == 1,
         "credits_used":        credits_used,
+        "is_visible":          is_visible,
+        "funnel_step":         funnel_step,
+        "primary_reason":      primary_reason,
         "fetched":             fetched,
         "persisted":           persisted,
         "cache_snapshot":      cache_snapshot,
@@ -7272,6 +7302,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     "step_run_ids.step3": s3_run_id,
                     "step_run_ids.step3_visibility": s3_vis_run_id,
                     "steps_done": [1, 2, 3],
+                    "current_step": None,
                 }},
             )
             logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, visibility: {s3_vis_run_id}")
@@ -7515,6 +7546,135 @@ async def admin_pipeline_chain_cancel(chain_run_id: str):
     return {"status": "cancel_requested", "chain_run_id": chain_run_id}
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Canonical Pipeline Report — single source of truth for both UI and CSV
+# ─────────────────────────────────────────────────────────────────────────────
+async def build_canonical_pipeline_report(db_ref, chain_run_id: str) -> Dict[str, Any]:
+    """
+    Build the canonical funnel report for a given chain_run_id.
+    Both the admin UI cards and the CSV export MUST use this exact payload.
+
+    Funnel semantics (strict sequential, 3-step main pipeline):
+      raw_symbols → Step 1 (seeded) → Step 2 (with_price) → Step 3 (visible)
+
+    Reconciliation rule:
+      raw_symbols == step1_filtered_out + step2_filtered_out + step3_filtered_out + visible
+    """
+    from zoneinfo import ZoneInfo as _ZI
+    _PRAGUE = _ZI("Europe/Prague")
+
+    chain_doc = await db_ref.pipeline_chain_runs.find_one(
+        {"chain_run_id": chain_run_id}, {"_id": 0}
+    )
+    if not chain_doc:
+        return {"error": f"chain_run_id not found: {chain_run_id}"}
+
+    sids = chain_doc.get("step_run_ids") or {}
+    s1_run_id = sids.get("step1")
+
+    # ── Raw symbols count (from Step 1 run) ─────────────────────────────────
+    raw_symbols = 0
+    if s1_run_id:
+        # Count distinct codes from universe_seed_raw_rows
+        raw_codes: set = set()
+        async for raw_row in db_ref.universe_seed_raw_rows.find(
+            {"run_id": s1_run_id},
+            {"_id": 0, "raw_symbol.Code": 1},
+        ):
+            code = (raw_row.get("raw_symbol") or {}).get("Code", "")
+            code_norm = code.strip().upper()
+            if code_norm:
+                raw_codes.add(code_norm)
+        raw_symbols = len(raw_codes)
+
+    # ── Seeded tickers count ────────────────────────────────────────────────
+    seeded_tickers = 0
+    if s1_run_id:
+        seeded_tickers = await db_ref.universe_seed_seeded_tickers.count_documents(
+            {"run_id": s1_run_id}
+        )
+    # Fallback to tracked_tickers count if seed run data is absent
+    if seeded_tickers == 0:
+        seeded_tickers = await db_ref.tracked_tickers.count_documents({
+            "exchange": {"$in": ["NYSE", "NASDAQ"]},
+            "asset_type": "Common Stock",
+        })
+
+    # ── With price (Step 2 output) ──────────────────────────────────────────
+    with_price = await db_ref.tracked_tickers.count_documents({
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "has_price_data": True,
+    })
+
+    # ── Visible (Step 3 output) ─────────────────────────────────────────────
+    visible = await db_ref.tracked_tickers.count_documents({
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "has_price_data": True,
+        "fundamentals_status": "complete",
+        "is_visible": True,
+    })
+
+    # ── Filtered-out counts (strict 3-step funnel) ──────────────────────────
+    step1_filtered_out = max(raw_symbols - seeded_tickers, 0)
+    step2_filtered_out = max(seeded_tickers - with_price, 0)
+    step3_filtered_out = max(with_price - visible, 0)
+
+    # ── Step 3 sub-breakdown ────────────────────────────────────────────────
+    # Each non-visible ticker gets exactly one primary reason category.
+    # fundamentals_blocker: with_price but fundamentals_status != "complete"
+    # visibility_rule: fundamentals_status == "complete" but is_visible != true
+    fundamentals_blocker = await db_ref.tracked_tickers.count_documents({
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "has_price_data": True,
+        "$or": [
+            {"fundamentals_status": {"$ne": "complete"}},
+            {"fundamentals_status": {"$exists": False}},
+        ],
+    })
+    visibility_rule = max(step3_filtered_out - fundamentals_blocker, 0)
+
+    now_prague = datetime.now(_PRAGUE)
+
+    return {
+        "chain_run_id": chain_run_id,
+        "last_generated_at_prague": now_prague.isoformat(),
+        "raw_symbols": raw_symbols,
+        "seeded_tickers": seeded_tickers,
+        "with_price": with_price,
+        "visible": visible,
+        "step1_filtered_out": step1_filtered_out,
+        "step2_filtered_out": step2_filtered_out,
+        "step3_filtered_out": step3_filtered_out,
+        "step3_sub_breakdown": {
+            "fundamentals_blocker": fundamentals_blocker,
+            "visibility_rule": visibility_rule,
+        },
+        "reconciliation_check": (
+            raw_symbols == step1_filtered_out + step2_filtered_out
+            + step3_filtered_out + visible
+        ),
+        "steps_done": chain_doc.get("steps_done", []),
+        "status": chain_doc.get("status"),
+    }
+
+
+@api_router.get("/admin/pipeline/report")
+async def admin_pipeline_report(
+    chain_run_id: str = Query(..., description="chain_run_id from pipeline chain run"),
+):
+    """
+    Canonical pipeline report for a given chain_run_id.
+    Both Admin UI funnel cards and CSV export read from this same payload.
+    Auth: AdminAuthMiddleware.
+    """
+    report = await build_canonical_pipeline_report(db, chain_run_id)
+    if report.get("error"):
+        from fastapi import HTTPException as _HEr
+        raise _HEr(status_code=404, detail=report["error"])
+    return report
 
 @api_router.get("/admin/pipeline/export/full")
 async def admin_pipeline_export_full(
@@ -7613,8 +7773,26 @@ async def admin_pipeline_export_full(
         if _norm:
             _seeded_tickers.add(_norm)
 
+    # Build canonical report to embed summary counts in CSV
+    _canonical = await build_canonical_pipeline_report(db, chain_run_id)
+
     output = _io2.StringIO()
     writer = _csv2.writer(output, quoting=_csv2.QUOTE_ALL)
+
+    # Metadata header rows
+    writer.writerow(["# chain_run_id", chain_run_id])
+    writer.writerow(["# last_generated_at_prague", _canonical.get("last_generated_at_prague", "")])
+    writer.writerow(["# raw_symbols", _canonical.get("raw_symbols", "")])
+    writer.writerow(["# seeded_tickers", _canonical.get("seeded_tickers", "")])
+    writer.writerow(["# with_price", _canonical.get("with_price", "")])
+    writer.writerow(["# visible", _canonical.get("visible", "")])
+    writer.writerow(["# step1_filtered_out", _canonical.get("step1_filtered_out", "")])
+    writer.writerow(["# step2_filtered_out", _canonical.get("step2_filtered_out", "")])
+    writer.writerow(["# step3_filtered_out", _canonical.get("step3_filtered_out", "")])
+    _sub = _canonical.get("step3_sub_breakdown", {})
+    writer.writerow(["# step3_fundamentals_blocker", _sub.get("fundamentals_blocker", "")])
+    writer.writerow(["# step3_visibility_rule", _sub.get("visibility_rule", "")])
+    writer.writerow([])  # blank separator
     writer.writerow(["ticker", "name", "status", "failed_step", "reason_code", "reason_text"])
 
     # Stream Step 1 raw rows in global order.

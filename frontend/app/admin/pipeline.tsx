@@ -897,14 +897,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     universe_seed: s1Out,
     price_sync: s2Out,
     fundamentals_sync: s3Out,
-    peer_medians: visible,
   };
-  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'peer_medians'].filter(j => {
+  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync'].filter(j => {
     const r = jobRuns[j];
     const ok = r?.status === 'success' || r?.status === 'completed';
     return ok && (JOB_OUTPUT[j] === undefined || (JOB_OUTPUT[j] ?? 0) > 0);
   }).length;
-  const healthPct = Math.round((completedCount / 4) * 100);
+  const healthPct = Math.round((completedCount / 3) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
   const steps = [
@@ -979,8 +978,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     {
       step: 4,
       job_name: 'peer_medians',
-      title: 'Peer Medians',
-      schedule: 'After Step 3 completion',
+      title: 'Peer Medians (independent)',
+      schedule: 'Daily 05:30 Prague (separate from pipeline)',
       scheduledHour: 5,
       scheduledMinute: 30,
       icon: 'stats-chart-outline' as const,
@@ -1032,7 +1031,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         <View style={s.progressBg}>
           <View style={[s.progressFill, { width: `${healthPct}%` as any, backgroundColor: healthColor }]} />
         </View>
-        <Text style={s.healthSub}>{completedCount}/5 steps completed today</Text>
+        <Text style={s.healthSub}>{completedCount}/3 steps completed today</Text>
 
         {/* Full Pipeline Audit — above scheduler control */}
         <View style={s.fullChainInlineSection}>
@@ -1746,7 +1745,35 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
                   {auditResult && !auditResult.error && (
                     <>
-                      {/* Verdict badge */}
+                      {/* Visibility badge + Funnel step */}
+                      <View style={s.auditVerdictRow}>
+                        <View style={[
+                          s.auditVerdictBadge,
+                          { backgroundColor: auditResult.is_visible ? '#22C55E22' : '#EF444422' },
+                        ]}>
+                          <Text style={[
+                            s.auditVerdictText,
+                            { color: auditResult.is_visible ? '#22C55E' : '#EF4444' },
+                          ]}>
+                            {auditResult.is_visible ? 'VISIBLE' : 'NOT VISIBLE'}
+                          </Text>
+                        </View>
+                        <Text style={s.auditTickerLabel}>{auditResult.ticker}</Text>
+                      </View>
+
+                      {/* Primary funnel reason */}
+                      {auditResult.funnel_step && (
+                        <View style={s.auditSection}>
+                          <Text style={[s.auditSectionTitleMuted, { fontWeight: '700' }]}>
+                            Funnel: {auditResult.funnel_step}
+                          </Text>
+                          {auditResult.primary_reason ? (
+                            <Text style={s.auditItemMuted}>↳ {auditResult.primary_reason}</Text>
+                          ) : null}
+                        </View>
+                      )}
+
+                      {/* Audit verdict */}
                       <View style={s.auditVerdictRow}>
                         <View style={[
                           s.auditVerdictBadge,
@@ -1760,7 +1787,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                             {auditResult.credits_used > 0 ? `  ·  ${auditResult.credits_used} credits` : ''}
                           </Text>
                         </View>
-                        <Text style={s.auditTickerLabel}>{auditResult.ticker}</Text>
                       </View>
 
                       {/* Integrity failures — emphasized */}

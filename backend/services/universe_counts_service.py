@@ -84,8 +84,19 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     classified_total = _n("classified")
     visible_total    = _n("visible")
 
+    # ── Peer medians (informational only — not part of main 3-step funnel) ──
+    industries_with_benchmarks = await db.peer_benchmarks.distinct("industry")
+    _ind_set = set(industries_with_benchmarks) if industries_with_benchmarks else set()
+    if _ind_set:
+        with_peer_medians_total = await db.tracked_tickers.count_documents({
+            **visible_query,
+            "industry": {"$in": list(_ind_set)},
+        })
+    else:
+        with_peer_medians_total = 0
+
     # =========================================================================
-    # BUILD FUNNEL STEPS
+    # BUILD FUNNEL STEPS (main 3-step pipeline only)
     # =========================================================================
     funnel_steps = [
         {
@@ -152,6 +163,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "with_price": with_price_total,  # seeded AND has_price_data
             "classified": classified_total,  # with_price AND fundamentals_status=="complete"
             "visible":    visible_total,     # classified AND is_visible==true
+            "with_peer_medians": with_peer_medians_total,  # visible AND industry in peer_benchmarks
 
             # Exchange breakdown (audit; scoped to seeded)
             "nyse":   nyse_count,

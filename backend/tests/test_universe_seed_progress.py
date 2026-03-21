@@ -31,6 +31,7 @@ def _make_mock_db(
     with_price: int = 7000,
     classified: int = 6000,
     visible: int = 4000,
+    with_peer_medians: int = 3800,
 ):
     """Build a mock db.tracked_tickers that returns fixed facet counts."""
     facet_data = [{
@@ -47,9 +48,14 @@ def _make_mock_db(
 
     mock_tt = MagicMock()
     mock_tt.aggregate = MagicMock(return_value=mock_cursor)
+    mock_tt.count_documents = AsyncMock(return_value=with_peer_medians)
+
+    mock_pb = MagicMock()
+    mock_pb.distinct = AsyncMock(return_value=["Technology", "Finance"])
 
     mock_db = MagicMock()
     mock_db.tracked_tickers = mock_tt
+    mock_db.peer_benchmarks = mock_pb
     return mock_db
 
 
@@ -67,7 +73,7 @@ class TestUniverseCountsFieldNames:
         result = await get_universe_counts(db)
 
         counts = result["counts"]
-        for field in ("seeded", "with_price", "classified", "visible"):
+        for field in ("seeded", "with_price", "classified", "visible", "with_peer_medians"):
             assert field in counts, f"Missing canonical field: {field}"
 
     @pytest.mark.asyncio
@@ -152,16 +158,16 @@ class TestUniverseCountsMonotonicGuard:
         )
 
     @pytest.mark.asyncio
-    async def test_inconsistency_when_visible_exceeds_classified(self):
+    async def test_inconsistency_when_visible_exceeds_with_price(self):
         from services.universe_counts_service import get_universe_counts
 
-        # visible (5000) > classified (4000) — impossible, should flag
-        db = _make_mock_db(classified=4000, visible=5000)
+        # visible (9000) > with_price (7000) — impossible, should flag
+        db = _make_mock_db(with_price=7000, visible=9000)
         result = await get_universe_counts(db)
 
         assert result["has_inconsistency"]
         msgs = [i["message"] for i in result["inconsistencies"]]
-        assert any("5000" in m for m in msgs), f"Expected count mismatch in messages: {msgs}"
+        assert any("9000" in m for m in msgs), f"Expected count mismatch in messages: {msgs}"
 
 
 # ---------------------------------------------------------------------------
@@ -210,14 +216,15 @@ class TestUniverseCountsClassifiedSubsetOfWithPrice:
         """
         classified > with_price must be flagged as an inconsistency because
         classified_query includes has_price_data == true.
+        When visible > with_price the monotonic funnel guard should fire.
         """
         from services.universe_counts_service import get_universe_counts
 
-        db = _make_mock_db(with_price=5000, classified=6000, visible=4000)
+        db = _make_mock_db(with_price=5000, classified=6000, visible=7000)
         result = await get_universe_counts(db)
 
         assert result["has_inconsistency"], (
-            "classified > with_price must be flagged as inconsistency"
+            "visible > with_price must be flagged as inconsistency"
         )
 
     @pytest.mark.asyncio
