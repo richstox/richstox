@@ -1157,13 +1157,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const chainStepRunning = chainRunning && chainStepNum !== undefined && chainCurrentStep === chainStepNum;
         const chainStepPending = chainRunning && chainStepNum !== undefined && !chainStepDone && !chainStepRunning;
 
-        // Per-step elapsed: derived from this step's own started_at, not the chain timer.
-        const stepStartIso = run?.started_at_prague || run?.started_at;
-        const stepStartMs = stepStartIso ? parseUtcIso(stepStartIso) : NaN;
-        const stepElapsed = chainStepRunning && Number.isFinite(stepStartMs)
-          ? Math.max(0, Math.round((Date.now() - stepStartMs) / 1000))
-          : 0;
-
         const inCount = step.inputCount;
         const outCount = step.outputCount;
         const droppedCount = step.droppedCount !== undefined
@@ -1216,12 +1209,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.stepNum}>STEP {step.step}</Text>
                     <Text style={s.stepTitle}>{step.title}</Text>
                     {chainStepRunning ? (
-                      <>
-                        <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
-                        <Text style={{ marginLeft: 4, color: '#F59E0B', fontSize: 12 }}>
-                          {formatElapsed(stepElapsed)}
-                        </Text>
-                      </>
+                      <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
                     ) : chainStepDone ? (
                       <Ionicons name="checkmark-circle" size={14} color="#22C55E" style={{ marginLeft: 4 }} />
                     ) : chainStepPending ? (
@@ -1317,9 +1305,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const durationText = isLiveRun
                   ? (prevEnd && prevDuration !== undefined && prevDuration !== null
                     ? ` (${formatDuration(prevDuration)})`
-                    : chainStepRunning
-                      ? ` · ${formatElapsed(stepElapsed)}`
-                      : '')
+                    : '')
                   : run.status === 'cancelled'
                     ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
                     : lastDuration !== undefined
