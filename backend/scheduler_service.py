@@ -240,6 +240,10 @@ async def _enqueue_fundamentals_events(
     """
     Enqueue fundamentals events idempotently.
     Creates one pending event per (ticker, event_type) while pending exists.
+
+    On repeated same-day runs, tickers whose events for the same
+    (event_type, detected_date) are already completed/skipped are excluded
+    to prevent re-enqueue and unnecessary Step 3 reprocessing.
     """
     await _ensure_fundamentals_events_index(db)
 
@@ -247,8 +251,26 @@ async def _enqueue_fundamentals_events(
     if not normalized:
         return {"new_inserts": 0, "skipped_existing": 0}
 
+    # Skip tickers whose events for this detected_date were already processed
+    # by Step 3 (completed/skipped).  Prevents re-enqueue on same-day reruns.
+    already_processed: set = set()
+    if detected_date:
+        cursor = db.fundamentals_events.find(
+            {
+                "ticker": {"$in": normalized},
+                "event_type": event_type,
+                "status": {"$in": ["completed", "skipped"]},
+                "detected_date": detected_date,
+            },
+            {"ticker": 1},
+        )
+        async for doc in cursor:
+            already_processed.add(doc["ticker"])
+
+    to_enqueue = [t for t in normalized if t not in already_processed]
+
     ops: List[UpdateOne] = []
-    for ticker in normalized:
+    for ticker in to_enqueue:
         ops.append(
             UpdateOne(
                 {
@@ -287,12 +309,32 @@ async def _enqueue_fundamentals_events(
         except Exception as exc:
             logger.error(f"_enqueue_fundamentals_events batch {i//ENQUEUE_BATCH_SIZE} failed: {exc}")
 
-    skipped_existing = len(normalized) - new_inserts
-    await db.tracked_tickers.update_many(
-        {"ticker": {"$in": normalized}},
-        {"$set": {"needs_fundamentals_refresh": True, "updated_at": now}},
-    )
-    return {"new_inserts": new_inserts, "skipped_existing": skipped_existing}
+    # pending_matched: tickers already in 'pending' state (upsert matched, no insert).
+    pending_matched = len(to_enqueue) - new_inserts
+    if to_enqueue:
+        await db.tracked_tickers.update_many(
+            {"ticker": {"$in": to_enqueue}},
+            {"$set": {"needs_fundamentals_refresh": True, "updated_at": now}},
+        )
+
+    # Undo the detector's needs_fundamentals_refresh=True for tickers already
+    # processed today.  The detector functions set the flag before this call;
+    # resetting it here prevents Step 3 from re-processing completed work.
+    # Guard with fundamentals_status='complete' so we only reset tickers that
+    # were fully synced — never tickers still awaiting first classification.
+    if already_processed:
+        await db.tracked_tickers.update_many(
+            {
+                "ticker": {"$in": list(already_processed)},
+                "fundamentals_status": "complete",
+            },
+            {"$set": {"needs_fundamentals_refresh": False, "updated_at": now}},
+        )
+
+    return {
+        "new_inserts": new_inserts,
+        "skipped_existing": pending_matched + len(already_processed),
+    }
 
 
 async def _fetch_eodhd_bulk(
