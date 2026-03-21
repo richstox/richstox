@@ -721,8 +721,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       }
       const cid: string = data.chain_run_id;
       setChainRunId(cid);
-      setChainStatus('running');
-      setChainCurrentStep(1);
       await pollChainStatus(cid);
       const latestStatus = chainStateRef.current.chainStatus;
       if (isChainStatusActive(latestStatus)) {
