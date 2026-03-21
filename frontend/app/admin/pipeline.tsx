@@ -845,8 +845,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   useEffect(() => () => stopChainTimer(), [stopChainTimer]);
 
   const counts = data?.universe_funnel?.counts || {};
-  const universeSeedResult = data?.universe_seed?.result || {};
-  const universeSeedDetails = data?.universe_seed?.details || {};
   const fundamentalsSyncDetails = data?.fundamentals_sync?.details || {};
   const syncStatus = data?.pipeline_sync_status || {};
   const todayStr = new Date().toISOString().split('T')[0];
@@ -856,25 +854,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange
     ?? (jobRuns['universe_seed'] as any)?.details?.fetched_raw_per_exchange
     ?? exclusionReport?.step1_counts?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  // Admin funnel uses overview.universe_funnel counts; do not mix with job progress/processed.
+  // Admin funnel: backend is the single source of truth for these 4 numbers.
   const raw =
-    asFiniteNumber(universeSeedResult.raw_rows_total)
-    ?? asFiniteNumber(universeSeedDetails.raw_rows_total);
-  const seeded =
-    asFiniteNumber(counts.seeded)
-    ?? asFiniteNumber(universeSeedResult.seeded_total)
-    ?? asFiniteNumber(universeSeedDetails.seeded_total)
-    ?? asFiniteNumber(counts.seeded_us_total);
-  const withPrice =
-    asFiniteNumber(counts.with_price)
-    ?? asFiniteNumber(counts.with_price_data);
-  const classified =
-    asFiniteNumber(counts.classified)
-    ?? asFiniteNumber(counts.with_classification);
-  const visible =
-    asFiniteNumber(counts.visible)
-    ?? asFiniteNumber(counts.visible_universe_count)
-    ?? asFiniteNumber(counts.visible_tickers);
+    asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_rows_total)
+    ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.details?.raw_rows_total)
+    ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_symbols_fetched);
+  const seeded = asFiniteNumber(counts.seeded);
+  const withPrice = asFiniteNumber(counts.with_price);
+  const visible = asFiniteNumber(counts.visible);
 
   const byStep = exclusionReport?.by_step;
   const step1Filtered =
@@ -1142,12 +1129,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
           <View style={s.miniItem}>
             <Text style={s.miniNum}>{fmt(withPrice)}</Text>
-            <Text style={s.miniLabel}>prices</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
-          <View style={s.miniItem}>
-            <Text style={s.miniNum}>{fmt(classified)}</Text>
-            <Text style={s.miniLabel}>classified</Text>
+            <Text style={s.miniLabel}>with price</Text>
           </View>
           <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
           <View style={s.miniItem}>
