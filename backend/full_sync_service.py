@@ -12,7 +12,7 @@ import os
 import time
 import logging
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 import httpx
 from pymongo import UpdateOne
@@ -107,14 +107,24 @@ async def cleanup_invisible_ticker_data(db) -> Dict[str, Any]:
 # Job A: Full Price History
 # ---------------------------------------------------------------------------
 
-async def _process_price_ticker(db, ticker: str, job_name: str,
-                                 needs_redownload: bool) -> Dict[str, Any]:
+async def _process_price_ticker(
+    db,
+    ticker: str,
+    job_name: str,
+    needs_redownload: bool,
+    cancel_check: Optional[Callable[[], Awaitable[bool]]] = None,
+) -> Dict[str, Any]:
     """Fetch + store complete EOD history for one ticker."""
     ticker_us = ticker if ticker.endswith(".US") else f"{ticker}.US"
     ticker_api = ticker_us  # EODHD accepts AAPL.US format
 
+    async def _should_cancel() -> bool:
+        return bool(cancel_check and await cancel_check())
+
     # If split: delete old prices first (atomic re-download)
     if needs_redownload:
+        if await _should_cancel():
+            return {"ticker": ticker_us, "success": False, "records": 0, "cancelled": True}
         await db.stock_prices.delete_many({"ticker": {"$in": [ticker_us, ticker_us.replace(".US", "")]}})
 
     url = f"{EODHD_BASE_URL}/eod/{ticker_api}"
@@ -153,8 +163,19 @@ async def _process_price_ticker(db, ticker: str, job_name: str,
             upsert=True,
         ))
 
+    processed_ops = 0
     for i in range(0, len(ops), BULK_CHUNK):
-        await db.stock_prices.bulk_write(ops[i:i + BULK_CHUNK], ordered=False)
+        if await _should_cancel():
+            return {
+                "ticker": ticker_us,
+                "success": False,
+                "records": processed_ops,
+                "cancelled": True,
+                "rate_limited": False,
+            }
+        chunk = ops[i:i + BULK_CHUNK]
+        await db.stock_prices.bulk_write(chunk, ordered=False)
+        processed_ops += len(chunk)
 
     # Compute max date actually in DB for this ticker
     latest = await db.stock_prices.find_one(
@@ -163,6 +184,15 @@ async def _process_price_ticker(db, ticker: str, job_name: str,
         sort=[("date", -1)],
     )
     complete_as_of = latest["date"] if latest else None
+
+    if await _should_cancel():
+        return {
+            "ticker": ticker_us,
+            "success": False,
+            "records": processed_ops,
+            "cancelled": True,
+            "rate_limited": False,
+        }
 
     await db.tracked_tickers.update_one(
         {"ticker": ticker_us},
