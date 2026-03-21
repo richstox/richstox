@@ -415,10 +415,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (nextRunning) {
         startChainTimer(sd.started_at);
       } else {
+        userStartedRunRef.current = false;
         stopChainTimer();
         setElapsedSeconds(0);
         stopPolling();
-        userStartedRunRef.current = false;
       }
 
       if (sd.current_step === 1) {
@@ -665,7 +665,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunFullPipeline = useCallback(async () => {
     if (chainRunning) return;
-    userStartedRunRef.current = true;
     setChainRunning(true);
     setChainStatus('starting');
     setChainRunId(null);
@@ -685,6 +684,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           setChainRunId(existingChainRunId);
           setChainRunning(true);
           setChainStatus('running');
+          userStartedRunRef.current = true;
           startPolling(existingChainRunId);
           return;
         }
@@ -699,6 +699,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainStatus('running');
       setChainCurrentStep(1);
       startChainTimer(new Date().toISOString());
+      userStartedRunRef.current = true;
       startPolling(cid);
     } catch {
       setChainStatus('error');
