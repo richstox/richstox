@@ -373,10 +373,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const startChainTimer = useCallback((startedAtIso?: string | null) => {
     stopChainTimer();
     const parsedStartedAt = startedAtIso ? Date.parse(startedAtIso) : NaN;
-    const chainStartedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now();
-    const getElapsed = () => Number.isFinite(parsedStartedAt)
-      ? Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000))
-      : 0;
+    if (!Number.isFinite(parsedStartedAt)) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const chainStartedAt = parsedStartedAt;
+    const getElapsed = () => Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000));
     setElapsedSeconds(getElapsed());
     timerRef.current = setInterval(() => {
       setElapsedSeconds(getElapsed());
