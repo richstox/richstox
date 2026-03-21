@@ -615,13 +615,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         return;
       }
 
-      const [freshnessRes] = await Promise.allSettled([
-        authenticatedFetch(`${API_URL}/api/admin/pipeline/data-freshness`, {}, sessionToken),
-        fetchExclusionReport(),
-      ]);
-      if (freshnessRes.status === 'fulfilled' && freshnessRes.value.ok) {
-        setFreshness(await freshnessRes.value.json());
+      const exclusionReportPromise = fetchExclusionReport();
+      const freshnessRes = await authenticatedFetch(`${API_URL}/api/admin/pipeline/data-freshness`, {}, sessionToken);
+      if (freshnessRes.ok) {
+        setFreshness(await freshnessRes.json());
       }
+      await exclusionReportPromise;
 
       if (!pollingControllerRef.current.active) return;
       if (pollingControllerRef.current.timeout) clearTimeout(pollingControllerRef.current.timeout);
@@ -856,17 +855,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   };
 
   const toggleExpand = (step: number) => {
-    const shouldExpand = !expandedSteps.has(step);
+    let shouldFetchExclusionReport = false;
     setExpandedSteps(prev => {
       const next = new Set(prev);
       if (next.has(step)) {
         next.delete(step);
       } else {
         next.add(step);
+        shouldFetchExclusionReport = !exclusionReport && !chainRunning && !hasRunningStepJob(data?.job_last_runs);
       }
       return next;
     });
-    if (shouldExpand && !exclusionReport && !(chainRunning || hasRunningStepJob(data?.job_last_runs))) {
+    if (shouldFetchExclusionReport) {
       void fetchExclusionReport();
     }
   };
