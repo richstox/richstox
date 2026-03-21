@@ -2804,10 +2804,16 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         dedup_stats = await _deduplicate_pending_events(db, now_queue)
 
         # Ensure Step 3 includes priced tickers missing classification.
+        # Exclude tickers already fundamentals_status='complete': if a prior run
+        # succeeded but the provider returned no sector/industry, re-processing
+        # will not fix the gap.  Without this guard every subsequent run
+        # re-enqueues the same ~400+ tickers, sets needs_fundamentals_refresh=True,
+        # defeats the skip-gate, and prevents Step 3 from converging.
         class_candidates = await db.tracked_tickers.find(
             {
                 **SEED_QUERY,
                 "has_price_data": True,
+                "fundamentals_status": {"$ne": "complete"},
                 "$or": [
                     {"sector": {"$in": [None, ""]}},
                     {"industry": {"$in": [None, ""]}},
@@ -3353,6 +3359,22 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     _phase_update("C", status="done", processed=phase_c_stats["tickers_succeeded"] + phase_c_stats["tickers_failed"], total=total_c, message="Price history sync completed", activate=True)
                 await _write_step3_telemetry(force=True)
 
+        # ── Defensive: ensure Phase C telemetry is terminal before finalization ──
+        # If Phase C was entered but empty, or never entered at all, its status
+        # may still be "idle" or "running".  Normalise to "done" so the parent
+        # run's telemetry is always consistent when we write the final document.
+        _phase_c_status = step3_telemetry["phases"]["C"].get("status")
+        if _phase_c_status not in ("done", "error"):
+            _phase_update(
+                "C",
+                status="done",
+                processed=0,
+                total=0,
+                message="No Phase C workload",
+                activate=False,
+            )
+            await _write_step3_telemetry(force=True)
+
         result["phase_c_stats"] = phase_c_stats
         result["step3_telemetry"] = step3_telemetry
 
@@ -3375,6 +3397,12 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 f"✓{phase_c_stats['tickers_succeeded']}/{phase_c_stats['tickers_targeted']}"
             )
 
+        # progress_pct: 100 when the job completed all work (even if total was 0).
+        if total_to_sync > 0:
+            _final_pct = round(done_count / total_to_sync * 100)
+        else:
+            _final_pct = 100 if result["status"] == "completed" else 0
+
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
             {"$set": {
@@ -3387,7 +3415,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "progress": _done_msg,
                 "progress_processed": done_count if tickers_to_sync else 0,
                 "progress_total":     total_to_sync,
-                "progress_pct":       round(done_count / total_to_sync * 100) if total_to_sync else 0,
+                "progress_pct":       _final_pct,
                 "heartbeat_at": finished_at,
                 **({"cancelled_at": finished_at} if result["status"] == "cancelled" else {}),
             }}
