@@ -351,6 +351,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     chainRunId: null,
     chainStatus: null,
   });
+  const pollingControllerRef = useRef<{
+    active: boolean;
+    timeout: ReturnType<typeof setTimeout> | null;
+    chainRunId: string | null;
+  }>({ active: false, timeout: null, chainRunId: null });
+  const stepRunFetchRef = useRef<Set<string>>(new Set());
 
   // ── Manual / Auto run mode toggle ─────────────────────────────────────────
   const [runMode, setRunMode] = useState<'MANUAL' | 'AUTO'>('MANUAL');
@@ -376,6 +382,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }, 1000);
   }, [stopChainTimer]);
 
+  const stopPolling = useCallback(() => {
+    const ctrl = pollingControllerRef.current;
+    ctrl.active = false;
+    ctrl.chainRunId = null;
+    if (ctrl.timeout) {
+      clearTimeout(ctrl.timeout);
+      ctrl.timeout = null;
+    }
+  }, []);
+
   const pollChainStatus = useCallback(async (cid: string) => {
     try {
       const sr = await authenticatedFetch(
@@ -390,6 +406,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
       setChainRunId(cid);
       setChainStatus(nextStatus);
+      chainStateRef.current = { chainRunId: cid, chainStatus: nextStatus };
       setChainCurrentStep(sd.current_step ?? null);
       setChainStepsDone(sd.steps_done ?? []);
       setChainRunning(nextRunning);
@@ -399,6 +416,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       } else {
         stopChainTimer();
         setElapsedSeconds(0);
+        stopPolling();
       }
 
       if (sd.current_step === 1) {
@@ -453,13 +471,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         }
       }
     } catch { /* keep polling */ }
-  }, [sessionToken, startChainTimer, stopChainTimer]);
+  }, [sessionToken, startChainTimer, stopChainTimer, stopPolling]);
 
   useEffect(() => {
     chainStateRef.current = { chainRunId, chainStatus };
   }, [chainRunId, chainStatus]);
 
-  const fetchData = useCallback(async () => {
+  const fetchSnapshotOnce = useCallback(async () => {
+    if (!sessionToken) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
     try {
       const [overviewRes, exclusionRes, freshnessRes] = await Promise.allSettled([
         authenticatedFetch(`${API_URL}/api/admin/overview`, {}, sessionToken),
@@ -471,46 +494,23 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const overviewData = await overviewRes.value.json();
         setData(overviewData);
         const latestChainRun = getLatestChainRun(overviewData?.job_last_runs);
-        const { chainRunId: currentChainRunId, chainStatus: currentChainStatus } = chainStateRef.current;
-        const shouldPollLatestChain =
-          Boolean(latestChainRun?.chainRunId) && (
-            ['running', 'cancel_requested'].includes(latestChainRun?.status || '') ||
-            latestChainRun?.chainRunId !== currentChainRunId ||
-            (latestChainRun?.chainRunId === currentChainRunId && isChainStatusActive(currentChainStatus))
-          );
-        if (latestChainRun?.chainRunId && shouldPollLatestChain) {
-          await pollChainStatus(latestChainRun.chainRunId);
-        } else if (!isChainStatusActive(currentChainStatus)) {
-          setChainRunning(false);
-          stopChainTimer();
-          setElapsedSeconds(0);
+        if (latestChainRun?.chainRunId) {
+          setChainRunId(latestChainRun.chainRunId);
+          setChainStatus(latestChainRun.status ?? null);
+          chainStateRef.current = { chainRunId: latestChainRun.chainRunId, chainStatus: latestChainRun.status ?? null };
+          const active = isChainStatusActive(latestChainRun.status);
+          setChainRunning(active);
+          if (!active) {
+            stopChainTimer();
+            setElapsedSeconds(0);
+          }
         }
       }
       if (freshnessRes.status === 'fulfilled' && freshnessRes.value.ok) setFreshness(await freshnessRes.value.json());
       if (exclusionRes.status === 'fulfilled' && exclusionRes.value.ok) {
         try {
           const excl = await exclusionRes.value.json();
-          // Fetch step1_counts by re-querying with the latest Step 1 run_id so
-          // seededFromRun is available without backend changes to the default path.
-          const step1RunId: string | undefined =
-            (excl as any)?.latest_run_id_per_step?.['Step 1 - Universe Seed'];
-          if (step1RunId) {
-            try {
-              const s1Res = await authenticatedFetch(
-                `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(step1RunId)}&limit=1`,
-                {},
-                sessionToken,
-              );
-              if (s1Res.ok) {
-                const s1Data = await s1Res.json();
-                excl.step1_counts = s1Data.step1_counts ?? null;
-                // Merge Step 1 by_step counts so step1Filtered is available.
-                if (s1Data.by_step) {
-                  excl.by_step = { ...(excl.by_step || {}), ...s1Data.by_step };
-                }
-              }
-            } catch (_) { /* non-fatal */ }
-          }
+          stepRunFetchRef.current.clear();
           setExclusionReport(excl);
         } catch (e) { console.error('exclusion processing error', e); }
       }
@@ -520,17 +520,43 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [pollChainStatus, sessionToken, stopChainTimer]);
+  }, [sessionToken, stopChainTimer]);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  const pollingTick = useCallback(async () => {
+    const ctrl = pollingControllerRef.current;
+    if (!ctrl.active || !ctrl.chainRunId || !sessionToken) return;
+    await pollChainStatus(ctrl.chainRunId);
+    const { chainStatus: latestStatus } = chainStateRef.current;
+    if (!isChainStatusActive(latestStatus)) {
+      stopPolling();
+      await fetchSnapshotOnce();
+      return;
+    }
+    ctrl.timeout = setTimeout(pollingTick, CHAIN_STATUS_POLL_MS);
+  }, [fetchSnapshotOnce, pollChainStatus, sessionToken, stopPolling]);
+
+  const startPolling = useCallback((cid: string | null) => {
+    if (!cid || !sessionToken) return;
+    const ctrl = pollingControllerRef.current;
+    if (ctrl.active && ctrl.chainRunId === cid) return;
+    stopPolling();
+    ctrl.active = true;
+    ctrl.chainRunId = cid;
+    pollingTick();
+  }, [pollingTick, sessionToken, stopPolling]);
+
+  useEffect(() => { fetchSnapshotOnce(); }, [fetchSnapshotOnce]);
+
+  // Cleanup polling loop on unmount.
+  useEffect(() => () => stopPolling(), []);
 
   useEffect(() => {
-    if (!sessionToken) return;
-    const interval = setInterval(() => { fetchData(); }, CHAIN_STATUS_POLL_MS);
-    return () => clearInterval(interval);
-  }, [fetchData, sessionToken]);
+    if (!sessionToken) {
+      stopPolling();
+    }
+  }, [sessionToken, stopPolling]);
 
-  const onRefresh = () => { setRefreshing(true); fetchData(); };
+  const onRefresh = () => { setRefreshing(true); fetchSnapshotOnce(); };
 
   const handleDownloadExclusionReport = async () => {
     if (!exclusionReport?.report_date || downloadingReport) return;
@@ -591,7 +617,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (!res.ok) {
         throw new Error(payload?.detail || payload?.message || res.statusText);
       }
-      await fetchData();
+      await fetchSnapshotOnce();
       Alert.alert('Scheduler updated', targetEnabled ? 'Scheduler resumed.' : 'Scheduler paused.');
     } catch (e: any) {
       Alert.alert('Update failed', e?.message || 'Could not update scheduler state');
@@ -652,7 +678,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           setChainRunId(existingChainRunId);
           setChainRunning(true);
           setChainStatus('running');
-          await pollChainStatus(existingChainRunId);
+          startPolling(existingChainRunId);
           return;
         }
         setChainStatus('error');
@@ -666,15 +692,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainStatus('running');
       setChainCurrentStep(1);
       startChainTimer(new Date().toISOString());
-      await fetchData();
-      await pollChainStatus(cid);
+      startPolling(cid);
     } catch {
       setChainStatus('error');
       stopChainTimer();
       setElapsedSeconds(0);
       setChainRunning(false);
     }
-  }, [chainRunning, fetchData, pollChainStatus, sessionToken, startChainTimer, stopChainTimer]);
+  }, [chainRunning, sessionToken, startChainTimer, startPolling, stopChainTimer]);
 
   const handleStopChain = async () => {
     if (!chainRunId) return;
@@ -685,7 +710,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         sessionToken,
       );
     } catch { /* ignore network error — polling will detect cancellation */ }
-    await pollChainStatus(chainRunId);
+    startPolling(chainRunId);
   };
 
   const handleCancelRunningJob = async (jobName: 'price_sync' | 'fundamentals_sync') => {
@@ -699,7 +724,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (!res.ok) {
         throw new Error(payload?.detail || payload?.message || res.statusText);
       }
-      await fetchData();
+      await fetchSnapshotOnce();
       Alert.alert('Cancel requested', `Job ${jobName} is now marked as cancel_requested.`);
     } catch (e: any) {
       Alert.alert('Cancel failed', e?.message || 'Could not request cancellation.');
@@ -719,6 +744,31 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
+  const fetchExclusionByRunId = useCallback(async (runId: string) => {
+    if (!sessionToken || !runId) return;
+    if (stepRunFetchRef.current.has(runId)) return;
+    stepRunFetchRef.current.add(runId);
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/pipeline/exclusion-report?run_id=${encodeURIComponent(runId)}&limit=1`,
+        {},
+        sessionToken,
+      );
+      if (!res.ok) return;
+      const data = await res.json();
+      setExclusionReport(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          step1_counts: ('step1_counts' in data) ? data.step1_counts : prev.step1_counts,
+          by_step: ('by_step' in data) && data.by_step
+            ? { ...(prev.by_step || {}), ...data.by_step }
+            : ('by_step' in data ? data.by_step : prev.by_step),
+        };
+      });
+    } catch { /* non-fatal */ }
+  }, [sessionToken]);
+
   const toggleExpand = (step: number) => {
     setExpandedSteps(prev => {
       const next = new Set(prev);
@@ -726,6 +776,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         next.delete(step);
       } else {
         next.add(step);
+        if (step === 1) {
+          const runId = exclusionReport?.latest_run_id_per_step?.['Step 1 - Universe Seed'];
+          if (runId) fetchExclusionByRunId(runId);
+        }
       }
       return next;
     });
