@@ -7807,6 +7807,8 @@ async def admin_pipeline_export_full(
     writer.writerow(["# step2_filtered_out", _canonical.get("step2_filtered_out", "")])
     writer.writerow(["# step3_filtered_out", _canonical.get("step3_filtered_out", "")])
     _sub = _canonical.get("step3_sub_breakdown", {})
+    # "step3_sub:" prefix distinguishes sub-breakdown metadata from the main
+    # step3_filtered_out total, so CSV parsers can separate them cleanly.
     writer.writerow(["# step3_sub: fundamentals_blocker", _sub.get("fundamentals_blocker", "")])
     writer.writerow(["# step3_sub: visibility_rule", _sub.get("visibility_rule", "")])
     writer.writerow([])  # blank separator
