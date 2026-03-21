@@ -525,19 +525,26 @@ class _TrackedTickersForSyncStatus:
 
 
 class _FundamentalsEventsForSyncStatus:
-    def __init__(self, pending_count):
+    def __init__(self, pending_count, pending_by_type=None):
         self._pending_count = pending_count
+        self._pending_by_type = pending_by_type or {}
 
     async def count_documents(self, query):
         if query == {"status": "pending"}:
             return self._pending_count
         return 0
 
+    def aggregate(self, pipeline):
+        results = [{"_id": k, "count": v} for k, v in self._pending_by_type.items()]
+        return _AsyncCursor(results)
+
 
 class _FakeSyncStatusDB:
-    def __init__(self, tracked_docs, pending_events):
+    def __init__(self, tracked_docs, pending_events, pending_by_type=None):
         self.tracked_tickers = _TrackedTickersForSyncStatus(tracked_docs)
-        self.fundamentals_events = _FundamentalsEventsForSyncStatus(pending_events)
+        self.fundamentals_events = _FundamentalsEventsForSyncStatus(
+            pending_events, pending_by_type=pending_by_type,
+        )
 
 
 def test_admin_sync_status_pending_refresh_uses_tracked_tickers_flag_count(monkeypatch):
@@ -580,6 +587,60 @@ def test_admin_sync_status_pending_refresh_uses_tracked_tickers_flag_count(monke
 
     assert status["needs_fundamentals_refresh"] == 2
     assert status["pending_events_audit"] == 7
+
+
+def test_pipeline_sync_status_returns_pending_event_counts_by_type(monkeypatch):
+    """pending_event_counts must report per-event-type pending queue counts."""
+    db = _FakeSyncStatusDB(
+        tracked_docs=[
+            {
+                "ticker": "AAPL.US",
+                "exchange": "NASDAQ",
+                "asset_type": "Common Stock",
+                "is_seeded": True,
+                "has_price_data": True,
+                "needs_fundamentals_refresh": False,
+            },
+        ],
+        pending_events=5,
+        pending_by_type={"split": 2, "dividend": 1, "earnings": 2},
+    )
+
+    async def _fake_credits(_db):
+        return {"total_credits": 0}
+
+    monkeypatch.setattr("credit_log_service.get_daily_credit_usage", _fake_credits)
+
+    status = asyncio.run(get_pipeline_sync_status(db))
+
+    assert status["pending_event_counts"] == {"split": 2, "dividend": 1, "earnings": 2}
+
+
+def test_pipeline_sync_status_pending_event_counts_defaults_to_zero(monkeypatch):
+    """When no pending events exist, all type counts must be zero."""
+    db = _FakeSyncStatusDB(
+        tracked_docs=[
+            {
+                "ticker": "MSFT.US",
+                "exchange": "NYSE",
+                "asset_type": "Common Stock",
+                "is_seeded": True,
+                "has_price_data": True,
+                "needs_fundamentals_refresh": False,
+            },
+        ],
+        pending_events=0,
+        pending_by_type={},
+    )
+
+    async def _fake_credits(_db):
+        return {"total_credits": 0}
+
+    monkeypatch.setattr("credit_log_service.get_daily_credit_usage", _fake_credits)
+
+    status = asyncio.run(get_pipeline_sync_status(db))
+
+    assert status["pending_event_counts"] == {"split": 0, "dividend": 0, "earnings": 0}
 
 
 class _OpsJobRunsForTelemetryRead:
