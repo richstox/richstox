@@ -373,10 +373,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const startChainTimer = useCallback((startedAtIso?: string | null) => {
     stopChainTimer();
     const parsedStartedAt = startedAtIso ? Date.parse(startedAtIso) : NaN;
-    const chainStartedAt = Number.isFinite(parsedStartedAt) ? parsedStartedAt : Date.now();
-    const getElapsed = () => Number.isFinite(parsedStartedAt)
-      ? Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000))
-      : 0;
+    if (!Number.isFinite(parsedStartedAt)) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const chainStartedAt = parsedStartedAt;
+    const getElapsed = () => Math.max(0, Math.round((Date.now() - chainStartedAt) / 1000));
     setElapsedSeconds(getElapsed());
     timerRef.current = setInterval(() => {
       setElapsedSeconds(getElapsed());
@@ -497,15 +499,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         setData(overviewData);
         const latestChainRun = getLatestChainRun(overviewData?.job_last_runs);
         if (latestChainRun?.chainRunId) {
+          const latestStatus = latestChainRun.status ?? null;
           setChainRunId(latestChainRun.chainRunId);
-          setChainStatus(latestChainRun.status ?? null);
-          chainStateRef.current = { chainRunId: latestChainRun.chainRunId, chainStatus: latestChainRun.status ?? null };
-          const active = isChainStatusActive(latestChainRun.status);
+          setChainStatus(latestStatus);
+          chainStateRef.current = { chainRunId: latestChainRun.chainRunId, chainStatus: latestStatus };
+          const active = isChainStatusActive(latestStatus);
           setChainRunning(active);
-          if (!active) {
+          if (active) {
+            startChainTimer(latestChainRun.startedAt);
+            startPolling(latestChainRun.chainRunId, latestStatus);
+          } else {
+            userStartedRunRef.current = false;
             stopChainTimer();
             setElapsedSeconds(0);
+            stopPolling();
           }
+        } else {
+          setChainRunId(null);
+          setChainStatus(null);
+          chainStateRef.current = { chainRunId: null, chainStatus: null };
+          setChainCurrentStep(null);
+          setChainStepsDone([]);
+          setChainRunning(false);
+          userStartedRunRef.current = false;
+          stopChainTimer();
+          setElapsedSeconds(0);
+          stopPolling();
         }
       }
       if (freshnessRes.status === 'fulfilled' && freshnessRes.value.ok) setFreshness(await freshnessRes.value.json());
@@ -537,9 +556,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     ctrl.timeout = setTimeout(pollingTick, CHAIN_STATUS_POLL_MS);
   }, [fetchSnapshotOnce, pollChainStatus, sessionToken, stopPolling]);
 
-  const startPolling = useCallback((cid: string) => {
+  const startPolling = useCallback((cid: string, status?: string | null) => {
     if (!sessionToken) return;
-    if (!userStartedRunRef.current) return;
+    const latestStatus = status ?? chainStateRef.current.chainStatus;
+    if (!isChainStatusActive(latestStatus)) {
+      stopPolling();
+      return;
+    }
     const ctrl = pollingControllerRef.current;
     if (ctrl.active && ctrl.chainRunId === cid) return;
     stopPolling();
@@ -667,8 +690,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunFullPipeline = useCallback(async () => {
     if (chainRunning) return;
-    setChainRunning(true);
-    setChainStatus('starting');
+    const startingStatus = 'starting';
+    setChainStatus(startingStatus);
+    setChainRunning(false);
     setChainRunId(null);
     setChainCurrentStep(null);
     setChainStepsDone([]);
@@ -684,10 +708,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const existingChainRunId = data?.detail?.chain_run_id || data?.chain_run_id;
         if (existingChainRunId) {
           setChainRunId(existingChainRunId);
-          setChainRunning(true);
-          setChainStatus('running');
-          userStartedRunRef.current = true;
-          startPolling(existingChainRunId);
+          await pollChainStatus(existingChainRunId);
+          const latestStatus = chainStateRef.current.chainStatus;
+          if (isChainStatusActive(latestStatus)) {
+            startPolling(existingChainRunId, latestStatus);
+          }
           return;
         }
         setChainStatus('error');
@@ -698,11 +723,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       }
       const cid: string = data.chain_run_id;
       setChainRunId(cid);
-      setChainStatus('running');
-      setChainCurrentStep(1);
-      startChainTimer(new Date().toISOString());
-      userStartedRunRef.current = true;
-      startPolling(cid);
+      await pollChainStatus(cid);
+      const latestStatus = chainStateRef.current.chainStatus;
+      if (isChainStatusActive(latestStatus)) {
+        startPolling(cid, latestStatus);
+      }
     } catch {
       setChainStatus('error');
       stopChainTimer();
@@ -721,7 +746,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         sessionToken,
       );
     } catch { /* ignore network error — polling will detect cancellation */ }
-    startPolling(chainRunId);
+    startPolling(chainRunId, chainStatus);
   };
 
   const handleCancelRunningJob = async (jobName: 'price_sync' | 'fundamentals_sync') => {
