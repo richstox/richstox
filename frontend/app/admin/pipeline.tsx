@@ -551,9 +551,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   useEffect(() => { fetchSnapshotOnce(); }, [fetchSnapshotOnce]);
 
   // Cleanup polling loop on unmount.
-  useEffect(() => () => {
-    userStartedRunRef.current = false;
-    stopPolling();
+  useEffect(() => {
+    return () => {
+      userStartedRunRef.current = false;
+      stopPolling();
+    };
   }, [stopPolling]);
 
   useEffect(() => {
