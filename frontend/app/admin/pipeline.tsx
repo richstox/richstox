@@ -537,7 +537,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     ctrl.timeout = setTimeout(pollingTick, CHAIN_STATUS_POLL_MS);
   }, [fetchSnapshotOnce, pollChainStatus, sessionToken, stopPolling]);
 
-  const startPolling = useCallback((cid: string | null) => {
+  const startPolling = useCallback((cid: string) => {
     if (!cid || !sessionToken) return;
     if (!userStartedRunRef.current) return;
     const ctrl = pollingControllerRef.current;
