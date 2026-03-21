@@ -497,15 +497,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         setData(overviewData);
         const latestChainRun = getLatestChainRun(overviewData?.job_last_runs);
         if (latestChainRun?.chainRunId) {
+          const latestStatus = latestChainRun.status ?? null;
           setChainRunId(latestChainRun.chainRunId);
-          setChainStatus(latestChainRun.status ?? null);
-          chainStateRef.current = { chainRunId: latestChainRun.chainRunId, chainStatus: latestChainRun.status ?? null };
-          const active = isChainStatusActive(latestChainRun.status);
+          setChainStatus(latestStatus);
+          chainStateRef.current = { chainRunId: latestChainRun.chainRunId, chainStatus: latestStatus };
+          const active = isChainStatusActive(latestStatus);
           setChainRunning(active);
-          if (!active) {
+          if (active) {
+            startChainTimer(latestChainRun.startedAt);
+            startPolling(latestChainRun.chainRunId, latestStatus);
+          } else {
+            userStartedRunRef.current = false;
             stopChainTimer();
             setElapsedSeconds(0);
+            stopPolling();
           }
+        } else {
+          setChainRunId(null);
+          setChainStatus(null);
+          chainStateRef.current = { chainRunId: null, chainStatus: null };
+          setChainCurrentStep(null);
+          setChainStepsDone([]);
+          setChainRunning(false);
+          userStartedRunRef.current = false;
+          stopChainTimer();
+          setElapsedSeconds(0);
+          stopPolling();
         }
       }
       if (freshnessRes.status === 'fulfilled' && freshnessRes.value.ok) setFreshness(await freshnessRes.value.json());
@@ -537,9 +554,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     ctrl.timeout = setTimeout(pollingTick, CHAIN_STATUS_POLL_MS);
   }, [fetchSnapshotOnce, pollChainStatus, sessionToken, stopPolling]);
 
-  const startPolling = useCallback((cid: string) => {
+  const startPolling = useCallback((cid: string, status?: string | null) => {
     if (!sessionToken) return;
-    if (!userStartedRunRef.current) return;
+    const latestStatus = status ?? chainStateRef.current.chainStatus;
+    if (!isChainStatusActive(latestStatus)) {
+      stopPolling();
+      return;
+    }
     const ctrl = pollingControllerRef.current;
     if (ctrl.active && ctrl.chainRunId === cid) return;
     stopPolling();
@@ -667,8 +688,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunFullPipeline = useCallback(async () => {
     if (chainRunning) return;
-    setChainRunning(true);
-    setChainStatus('starting');
+    const startingStatus: string = 'starting';
+    setChainStatus(startingStatus);
+    setChainRunning(isChainStatusActive(startingStatus));
     setChainRunId(null);
     setChainCurrentStep(null);
     setChainStepsDone([]);
@@ -683,11 +705,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (!res.ok) {
         const existingChainRunId = data?.detail?.chain_run_id || data?.chain_run_id;
         if (existingChainRunId) {
+          const runningStatus: string = 'running';
           setChainRunId(existingChainRunId);
-          setChainRunning(true);
-          setChainStatus('running');
+          setChainStatus(runningStatus);
+          setChainRunning(isChainStatusActive(runningStatus));
           userStartedRunRef.current = true;
-          startPolling(existingChainRunId);
+          startPolling(existingChainRunId, runningStatus);
           return;
         }
         setChainStatus('error');
@@ -702,7 +725,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainCurrentStep(1);
       startChainTimer(new Date().toISOString());
       userStartedRunRef.current = true;
-      startPolling(cid);
+      startPolling(cid, 'running');
     } catch {
       setChainStatus('error');
       stopChainTimer();
@@ -721,7 +744,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         sessionToken,
       );
     } catch { /* ignore network error — polling will detect cancellation */ }
-    startPolling(chainRunId);
+    startPolling(chainRunId, chainStatus);
   };
 
   const handleCancelRunningJob = async (jobName: 'price_sync' | 'fundamentals_sync') => {
