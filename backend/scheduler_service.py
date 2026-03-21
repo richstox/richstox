@@ -309,7 +309,8 @@ async def _enqueue_fundamentals_events(
         except Exception as exc:
             logger.error(f"_enqueue_fundamentals_events batch {i//ENQUEUE_BATCH_SIZE} failed: {exc}")
 
-    skipped_existing = len(to_enqueue) - new_inserts
+    # pending_matched: tickers already in 'pending' state (upsert matched, no insert).
+    pending_matched = len(to_enqueue) - new_inserts
     if to_enqueue:
         await db.tracked_tickers.update_many(
             {"ticker": {"$in": to_enqueue}},
@@ -332,7 +333,7 @@ async def _enqueue_fundamentals_events(
 
     return {
         "new_inserts": new_inserts,
-        "skipped_existing": skipped_existing + len(already_processed),
+        "skipped_existing": pending_matched + len(already_processed),
     }
 
 
