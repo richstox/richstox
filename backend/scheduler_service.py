@@ -2658,7 +2658,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     ) -> Dict[str, Any]:
         _heartbeat_stop.set()
         cancelled_at = datetime.now(timezone.utc)
-        pct = round(processed / total * 100) if total > 0 else 0
+        pct = 0
+        if total > 0:
+            pct = min(100, round(processed / total * 100))
         details_payload: Dict[str, Any] = {
             "parent_run_id": parent_run_id,
             "chain_run_id": chain_run_id,
@@ -2995,9 +2997,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
             async def _process_one(ticker: str) -> dict:
                 # Fast in-memory check — no DB round-trip
-                if cancel_event.is_set():
-                    return {"ticker": ticker, "success": False, "cancelled": True}
-                if await _is_cancelled():
+                if cancel_event.is_set() or await _is_cancelled():
                     cancel_event.set()
                     return {"ticker": ticker, "success": False, "cancelled": True}
                 async with semaphore:
