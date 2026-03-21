@@ -688,7 +688,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunFullPipeline = useCallback(async () => {
     if (chainRunning) return;
-    const startingStatus: string = 'starting';
+    const startingStatus = 'starting';
     setChainStatus(startingStatus);
     setChainRunning(isChainStatusActive(startingStatus));
     setChainRunId(null);
@@ -705,7 +705,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (!res.ok) {
         const existingChainRunId = data?.detail?.chain_run_id || data?.chain_run_id;
         if (existingChainRunId) {
-          const runningStatus: string = 'running';
+          const runningStatus = 'running';
           setChainRunId(existingChainRunId);
           setChainStatus(runningStatus);
           setChainRunning(isChainStatusActive(runningStatus));
