@@ -1159,8 +1159,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
         // Per-step elapsed: derived from this step's own started_at, not the chain timer.
         const stepStartIso = run?.started_at_prague || run?.started_at;
-        const stepElapsed = chainStepRunning && stepStartIso
-          ? Math.max(0, Math.round((Date.now() - parseUtcIso(stepStartIso)) / 1000))
+        const stepStartMs = stepStartIso ? parseUtcIso(stepStartIso) : NaN;
+        const stepElapsed = chainStepRunning && Number.isFinite(stepStartMs)
+          ? Math.max(0, Math.round((Date.now() - stepStartMs) / 1000))
           : 0;
 
         const inCount = step.inputCount;
