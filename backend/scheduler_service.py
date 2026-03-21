@@ -37,6 +37,8 @@ import httpx
 from pymongo import UpdateOne
 from pymongo.errors import DuplicateKeyError
 
+from services.admin_jobs_service import is_cancel_requested
+
 logger = logging.getLogger("richstox.scheduler")
 
 # Constants
@@ -55,6 +57,7 @@ FUNDAMENTALS_SYNC_LOCK_ID = "fundamentals_sync"
 FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS = 10
 FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS = 60
 FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS = 300
+CANCEL_REQUESTED_STUCK_SECONDS = 600
 PRICE_SYNC_ACTIVE_PHASES = {
     "bulk_catchup",
     "2.1_bulk_catchup",
@@ -1133,13 +1136,7 @@ async def run_daily_price_sync(
         """Check chain cancel callback and this run doc's cancel_requested status."""
         if cancel_check and await cancel_check():
             return True
-        run_doc = await db.ops_job_runs.find_one(
-            {"_id": _running_doc_id},
-            {"status": 1},
-        )
-        if (run_doc or {}).get("status") == "cancel_requested":
-            return True
-        return False
+        return await is_cancel_requested(db, _running_doc_id)
 
     try:
         # Check kill switch (manual endpoints can explicitly bypass)
@@ -2320,7 +2317,7 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
 async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
     """Finalize stale fundamentals_sync runs so they do not stay running forever."""
     stale_before = now - timedelta(seconds=FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS)
-    result = await db.ops_job_runs.update_many(
+    running_zombie_result = await db.ops_job_runs.update_many(
         {
             "job_name": "fundamentals_sync",
             "status": "running",
@@ -2340,12 +2337,38 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
             "details.zombie_reason": "stale_heartbeat_or_missing",
         }},
     )
-    if result.modified_count:
+    cancel_stale_before = now - timedelta(seconds=CANCEL_REQUESTED_STUCK_SECONDS)
+    cancel_zombie_result = await db.ops_job_runs.update_many(
+        {
+            "job_name": "fundamentals_sync",
+            "status": "cancel_requested",
+            "$or": [
+                {"heartbeat_at": {"$exists": False}},
+                {"heartbeat_at": None},
+                {"heartbeat_at": {"$lt": cancel_stale_before}},
+            ],
+        },
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_at": now,
+            "finished_at": now,
+            "finished_at_prague": _to_prague_iso(now),
+            "log_timezone": "Europe/Prague",
+            "details.zombie_finalized": True,
+            "details.zombie_reason": "cancel_requested_stale_heartbeat",
+        }},
+    )
+    if running_zombie_result.modified_count:
         logger.warning(
-            f"fundamentals_sync: finalized {result.modified_count} zombie run(s) "
+            f"fundamentals_sync: finalized {running_zombie_result.modified_count} zombie run(s) "
             f"(heartbeat cutoff={stale_before.isoformat()})"
         )
-    return result.modified_count
+    if cancel_zombie_result.modified_count:
+        logger.warning(
+            f"fundamentals_sync: finalized {cancel_zombie_result.modified_count} cancel_requested run(s) "
+            f"(heartbeat cutoff={cancel_stale_before.isoformat()})"
+        )
+    return running_zombie_result.modified_count + cancel_zombie_result.modified_count
 
 
 async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
@@ -2353,7 +2376,7 @@ async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
     Finalize price_sync runs that are still marked running but no active phase exists.
     These stale docs should not keep the admin UI in "running" state forever.
     """
-    result = await db.ops_job_runs.update_many(
+    running_zombie_result = await db.ops_job_runs.update_many(
         {
             "job_name": "price_sync",
             "status": "running",
@@ -2373,12 +2396,38 @@ async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
             "details.zombie_reason": "stale_running_no_active_phase",
         }},
     )
-    if result.modified_count:
+    cancel_stale_before = now - timedelta(seconds=CANCEL_REQUESTED_STUCK_SECONDS)
+    cancel_zombie_result = await db.ops_job_runs.update_many(
+        {
+            "job_name": "price_sync",
+            "status": "cancel_requested",
+            "$or": [
+                {"heartbeat_at": {"$exists": False}},
+                {"heartbeat_at": None},
+                {"heartbeat_at": {"$lt": cancel_stale_before}},
+            ],
+        },
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_at": now,
+            "finished_at": now,
+            "finished_at_prague": _to_prague_iso(now),
+            "log_timezone": "Europe/Prague",
+            "details.zombie_finalized": True,
+            "details.zombie_reason": "cancel_requested_stale_heartbeat",
+        }},
+    )
+    if running_zombie_result.modified_count:
         logger.warning(
-            f"price_sync: finalized {result.modified_count} stale running run(s) "
+            f"price_sync: finalized {running_zombie_result.modified_count} stale running run(s) "
             "(missing or non-active phase)"
         )
-    return result.modified_count
+    if cancel_zombie_result.modified_count:
+        logger.warning(
+            f"price_sync: finalized {cancel_zombie_result.modified_count} cancel_requested run(s) "
+            f"(heartbeat cutoff={cancel_stale_before.isoformat()})"
+        )
+    return running_zombie_result.modified_count + cancel_zombie_result.modified_count
 
 
 async def finalize_stuck_admin_job_runs(
@@ -2592,6 +2641,58 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             await _heartbeat_fundamentals_sync_lock(db, _lock_owner_run_id, heartbeat_now)
 
     _heartbeat_task = asyncio.create_task(_heartbeat_worker())
+
+    async def _is_cancelled() -> bool:
+        """Check optional chain cancel callback and ops_job_runs cancel_requested flag."""
+        if cancel_check and await cancel_check():
+            return True
+        return await is_cancel_requested(db, _running_doc_id)
+
+    async def _finalize_cancelled(
+        *,
+        stop_reason: str,
+        progress_msg: str = "Cancelled by admin",
+        processed: int = 0,
+        total: int = 0,
+        extra_details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        _heartbeat_stop.set()
+        cancelled_at = datetime.now(timezone.utc)
+        pct = 0
+        if total > 0:
+            pct = min(100, round(processed / total * 100))
+        details_payload: Dict[str, Any] = {
+            "parent_run_id": parent_run_id,
+            "chain_run_id": chain_run_id,
+            "step3_telemetry": step3_telemetry,
+            "stop_reason": stop_reason,
+        }
+        if extra_details:
+            details_payload.update(extra_details)
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {
+                "status": "cancelled",
+                "finished_at": cancelled_at,
+                "finished_at_prague": _to_prague_iso(cancelled_at),
+                "log_timezone": "Europe/Prague",
+                "progress": progress_msg,
+                "progress_processed": processed,
+                "progress_total": total,
+                "progress_pct": pct,
+                "heartbeat_at": cancelled_at,
+                "cancelled_at": cancelled_at,
+                "details": details_payload,
+                **_details_updated_fields(cancelled_at),
+            }},
+        )
+        await _release_single_flight_resources()
+        return {
+            "job_name": job_name,
+            "status": "cancelled",
+            "started_at": started_at.isoformat(),
+            "finished_at": cancelled_at.isoformat(),
+        }
 
     async def _write_step3_telemetry(*, force: bool = False, throttle_processed: Optional[int] = None) -> None:
         nonlocal _telemetry_last_write_monotonic, _telemetry_last_processed
@@ -2823,6 +2924,16 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             f"{job_name} queue_stats: {queue_stats}"
         )
 
+        total_to_sync = len(tickers_to_sync) if tickers_to_sync else 0
+
+        if await _is_cancelled():
+            return await _finalize_cancelled(
+                stop_reason="cancel_requested_before_fundamentals",
+                progress_msg="Cancelled before fundamentals processing",
+                processed=0,
+                total=total_to_sync,
+            )
+
         # Process tickers
         result = {
             "job_name": job_name,
@@ -2856,46 +2967,60 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
             # Shared cancel event — set once by the monitor when the DB flag is found.
             cancel_event = asyncio.Event()
+            tasks: List[asyncio.Task] = []
+            cancel_monitor_task: Optional[asyncio.Task] = None
+
+            async def _cancel_phase_a(stop_reason: str, progress_msg: str) -> Dict[str, Any]:
+                cancel_event.set()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                if cancel_monitor_task:
+                    cancel_monitor_task.cancel()
+                    await asyncio.gather(cancel_monitor_task, return_exceptions=True)
+                return await _finalize_cancelled(
+                    stop_reason=stop_reason,
+                    progress_msg=progress_msg,
+                    processed=done_count,
+                    total=total,
+                )
 
             async def _cancel_monitor_sched() -> None:
                 """Poll run status every 2 s; set cancel_event when status becomes cancel_requested."""
                 while not cancel_event.is_set():
                     await asyncio.sleep(2)
-                    run_doc = await db.ops_job_runs.find_one(
-                        {"_id": _running_doc_id},
-                        {"status": 1},
-                    )
-                    if (run_doc or {}).get("status") == "cancel_requested":
+                    if await _is_cancelled():
                         logger.info(f"{job_name}: cancel_requested status detected by monitor")
-                        cancel_event.set()
-                        return
-                    if cancel_check and await cancel_check():
-                        logger.info(f"{job_name}: chain cancel detected by monitor")
                         cancel_event.set()
                         return
 
             async def _process_one(ticker: str) -> dict:
                 # Fast in-memory check — no DB round-trip
-                if cancel_event.is_set():
+                if cancel_event.is_set() or await _is_cancelled():
+                    cancel_event.set()
                     return {"ticker": ticker, "success": False, "cancelled": True}
                 async with semaphore:
                     return await sync_single_ticker_fundamentals(db, ticker, source_job=job_name)
 
-            monitor_task_sched = asyncio.create_task(_cancel_monitor_sched())
+            cancel_monitor_task = asyncio.create_task(_cancel_monitor_sched())
             tasks = [asyncio.create_task(_process_one(t)) for t in tickers_to_sync]
             done_count = 0
 
             try:
                 for coro in asyncio.as_completed(tasks):
+                    if cancel_event.is_set() or await _is_cancelled():
+                        return await _cancel_phase_a(
+                            "cancel_requested_phase_a",
+                            "Cancelled during fundamentals processing",
+                        )
                     ticker_result = await coro
 
                     if ticker_result.get("cancelled"):
-                        result["status"] = "cancelled"
-                        result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-                        logger.info(f"{job_name}: cancelled after {done_count} tickers")
-                        # Do NOT call t.cancel() — in-flight tasks finish naturally;
-                        # cancel_event prevents any new ones from starting.
-                        break
+                        return await _cancel_phase_a(
+                            "cancel_requested_phase_a",
+                            "Cancelled during fundamentals processing",
+                        )
 
                     result["processed"] += 1
                     done_count += 1
@@ -2932,7 +3057,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             f"(✓{result['success']} ✗{result['failed']})"
                         )
             finally:
-                monitor_task_sched.cancel()
+                if cancel_monitor_task:
+                    cancel_monitor_task.cancel()
+                    await asyncio.gather(cancel_monitor_task, return_exceptions=True)
         _phase_update(
             "A",
             status="done" if result.get("status") != "cancelled" else "error",
@@ -2974,6 +3101,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "status": "skipped",
         }
         if result["status"] == "completed":
+            if await _is_cancelled():
+                return await _finalize_cancelled(
+                    stop_reason="cancel_requested_before_visibility",
+                    progress_msg="Cancelled before visibility recompute",
+                    processed=done_count,
+                    total=total_to_sync,
+                )
             _phase_update("B", status="running", processed=0, total=1, message="Recomputing visibility", activate=True)
             await _write_step3_telemetry(force=True)
             try:
@@ -3104,6 +3238,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             else:
                 total_c = phase_c_post_dedupe_total
                 logger.info(f"{job_name}: Phase C — downloading price history for {total_c} visible tickers")
+                if await _is_cancelled():
+                    return await _finalize_cancelled(
+                        stop_reason="cancel_requested_before_phase_c",
+                        progress_msg="Cancelled before Phase C price history",
+                        processed=0,
+                        total=total_c,
+                    )
                 try:
                     _phase_c_concurrency = int(
                         os.getenv(
@@ -3129,16 +3270,20 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     ticker: str,
                     needs_redownload: bool,
                 ) -> Dict[str, Any]:
+                    if await _is_cancelled():
+                        return {"ticker": ticker, "success": False, "cancelled": True, "records": 0}
                     async with semaphore_c:
                         try:
                             ph_result = await _process_price_ticker(
                                 db, ticker, job_name=job_name,
                                 needs_redownload=needs_redownload,
+                                cancel_check=_is_cancelled,
                             )
                             return {
                                 "ticker": ticker,
                                 "success": bool(ph_result.get("success")),
                                 "records": int(ph_result.get("records", 0)),
+                                "cancelled": bool(ph_result.get("cancelled")),
                             }
                         except Exception as ph_err:
                             logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
@@ -3152,19 +3297,33 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     asyncio.create_task(_process_price_one(ticker, needs_redownload))
                     for ticker, needs_redownload in phase_c_tickers
                 ]
+
                 done_c = 0
+                async def _cancel_phase_c(stop_reason: str, progress_msg: str) -> Dict[str, Any]:
+                    for task in tasks_c:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks_c, return_exceptions=True)
+                    return await _finalize_cancelled(
+                        stop_reason=stop_reason,
+                        progress_msg=progress_msg,
+                        processed=done_c,
+                        total=total_c,
+                    )
+
                 for coro in asyncio.as_completed(tasks_c):
-                    if cancel_check and await cancel_check():
-                        result["status"] = "cancelled"
-                        result["cancelled_at"] = datetime.now(timezone.utc).isoformat()
-                        logger.info(f"{job_name}: Phase C cancelled after {done_c}/{total_c}")
-                        for task in tasks_c:
-                            if not task.done():
-                                task.cancel()
-                        await asyncio.gather(*tasks_c, return_exceptions=True)
-                        break
+                    if await _is_cancelled():
+                        return await _cancel_phase_c(
+                            "cancel_requested_phase_c",
+                            "Cancelled during Phase C price history",
+                        )
 
                     ticker_result = await coro
+                    if ticker_result.get("cancelled"):
+                        return await _cancel_phase_c(
+                            "cancel_requested_phase_c",
+                            "Cancelled during Phase C price history",
+                        )
                     if ticker_result.get("success"):
                         phase_c_stats["tickers_succeeded"] += 1
                         phase_c_stats["total_records"] += int(ticker_result.get("records") or 0)

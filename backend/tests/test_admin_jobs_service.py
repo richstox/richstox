@@ -8,6 +8,7 @@ import pytest
 
 from services.admin_jobs_service import (
     cancel_latest_running_job,
+    is_cancel_requested,
     is_valid_cancel_running_job_name,
 )
 
@@ -65,3 +66,23 @@ def test_cancel_latest_running_job_updates_latest_running_doc():
     assert update_doc["$set"]["updated_at"] == now
     assert update_doc["$set"]["updated_at_prague"] == now.astimezone(ZoneInfo("Europe/Prague")).isoformat()
     assert set(update_doc["$set"].keys()) == {"status", "updated_at", "updated_at_prague"}
+
+
+def test_is_cancel_requested_true():
+    run_id = "abc"
+    ops_job_runs = SimpleNamespace(
+        find_one=AsyncMock(return_value={"_id": run_id, "status": "cancel_requested"})
+    )
+    db = SimpleNamespace(ops_job_runs=ops_job_runs)
+
+    assert asyncio.run(is_cancel_requested(db, run_id)) is True
+    ops_job_runs.find_one.assert_awaited_once_with({"_id": run_id}, {"status": 1})
+
+
+def test_is_cancel_requested_false_when_missing():
+    run_id = "abc"
+    ops_job_runs = SimpleNamespace(find_one=AsyncMock(return_value=None))
+    db = SimpleNamespace(ops_job_runs=ops_job_runs)
+
+    assert asyncio.run(is_cancel_requested(db, run_id)) is False
+    ops_job_runs.find_one.assert_awaited_once_with({"_id": run_id}, {"status": 1})

@@ -11,6 +11,12 @@ def is_valid_cancel_running_job_name(job_name: str) -> bool:
     return job_name in VALID_CANCEL_RUNNING_JOB_NAMES
 
 
+async def is_cancel_requested(db: Any, run_id: Any) -> bool:
+    """Return True when the given run is marked cancel_requested."""
+    run = await db.ops_job_runs.find_one({"_id": run_id}, {"status": 1})
+    return bool(run and run.get("status") == "cancel_requested")
+
+
 async def cancel_latest_running_job(
     db: Any,
     job_name: str,
