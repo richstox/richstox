@@ -2317,7 +2317,7 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
 async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
     """Finalize stale fundamentals_sync runs so they do not stay running forever."""
     stale_before = now - timedelta(seconds=FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS)
-    result_running = await db.ops_job_runs.update_many(
+    running_zombie_result = await db.ops_job_runs.update_many(
         {
             "job_name": "fundamentals_sync",
             "status": "running",
@@ -2338,7 +2338,7 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
         }},
     )
     cancel_stale_before = now - timedelta(seconds=CANCEL_REQUESTED_STUCK_SECONDS)
-    result_cancel = await db.ops_job_runs.update_many(
+    cancel_zombie_result = await db.ops_job_runs.update_many(
         {
             "job_name": "fundamentals_sync",
             "status": "cancel_requested",
@@ -2358,17 +2358,17 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
             "details.zombie_reason": "cancel_requested_stale_heartbeat",
         }},
     )
-    if result_running.modified_count:
+    if running_zombie_result.modified_count:
         logger.warning(
-            f"fundamentals_sync: finalized {result_running.modified_count} zombie run(s) "
+            f"fundamentals_sync: finalized {running_zombie_result.modified_count} zombie run(s) "
             f"(heartbeat cutoff={stale_before.isoformat()})"
         )
-    if result_cancel.modified_count:
+    if cancel_zombie_result.modified_count:
         logger.warning(
-            f"fundamentals_sync: finalized {result_cancel.modified_count} cancel_requested run(s) "
+            f"fundamentals_sync: finalized {cancel_zombie_result.modified_count} cancel_requested run(s) "
             f"(heartbeat cutoff={cancel_stale_before.isoformat()})"
         )
-    return result_running.modified_count + result_cancel.modified_count
+    return running_zombie_result.modified_count + cancel_zombie_result.modified_count
 
 
 async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
@@ -2376,7 +2376,7 @@ async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
     Finalize price_sync runs that are still marked running but no active phase exists.
     These stale docs should not keep the admin UI in "running" state forever.
     """
-    result_running = await db.ops_job_runs.update_many(
+    running_zombie_result = await db.ops_job_runs.update_many(
         {
             "job_name": "price_sync",
             "status": "running",
@@ -2397,7 +2397,7 @@ async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
         }},
     )
     cancel_stale_before = now - timedelta(seconds=CANCEL_REQUESTED_STUCK_SECONDS)
-    result_cancel = await db.ops_job_runs.update_many(
+    cancel_zombie_result = await db.ops_job_runs.update_many(
         {
             "job_name": "price_sync",
             "status": "cancel_requested",
@@ -2417,17 +2417,17 @@ async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
             "details.zombie_reason": "cancel_requested_stale_heartbeat",
         }},
     )
-    if result_running.modified_count:
+    if running_zombie_result.modified_count:
         logger.warning(
-            f"price_sync: finalized {result_running.modified_count} stale running run(s) "
+            f"price_sync: finalized {running_zombie_result.modified_count} stale running run(s) "
             "(missing or non-active phase)"
         )
-    if result_cancel.modified_count:
+    if cancel_zombie_result.modified_count:
         logger.warning(
-            f"price_sync: finalized {result_cancel.modified_count} cancel_requested run(s) "
+            f"price_sync: finalized {cancel_zombie_result.modified_count} cancel_requested run(s) "
             f"(heartbeat cutoff={cancel_stale_before.isoformat()})"
         )
-    return result_running.modified_count + result_cancel.modified_count
+    return running_zombie_result.modified_count + cancel_zombie_result.modified_count
 
 
 async def finalize_stuck_admin_job_runs(
@@ -2968,7 +2968,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             # Shared cancel event — set once by the monitor when the DB flag is found.
             cancel_event = asyncio.Event()
             tasks: List[asyncio.Task] = []
-            monitor_task_sched: Optional[asyncio.Task] = None
+            cancel_monitor_task: Optional[asyncio.Task] = None
 
             async def _cancel_phase_a(stop_reason: str, progress_msg: str) -> Dict[str, Any]:
                 cancel_event.set()
@@ -2976,9 +2976,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     if not task.done():
                         task.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
-                if monitor_task_sched:
-                    monitor_task_sched.cancel()
-                    await asyncio.gather(monitor_task_sched, return_exceptions=True)
+                if cancel_monitor_task:
+                    cancel_monitor_task.cancel()
+                    await asyncio.gather(cancel_monitor_task, return_exceptions=True)
                 return await _finalize_cancelled(
                     stop_reason=stop_reason,
                     progress_msg=progress_msg,
@@ -3003,7 +3003,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 async with semaphore:
                     return await sync_single_ticker_fundamentals(db, ticker, source_job=job_name)
 
-            monitor_task_sched = asyncio.create_task(_cancel_monitor_sched())
+            cancel_monitor_task = asyncio.create_task(_cancel_monitor_sched())
             tasks = [asyncio.create_task(_process_one(t)) for t in tickers_to_sync]
             done_count = 0
 
@@ -3057,7 +3057,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             f"(✓{result['success']} ✗{result['failed']})"
                         )
             finally:
-                monitor_task_sched.cancel()
+                if cancel_monitor_task:
+                    cancel_monitor_task.cancel()
+                    await asyncio.gather(cancel_monitor_task, return_exceptions=True)
         _phase_update(
             "A",
             status="done" if result.get("status") != "cancelled" else "error",
