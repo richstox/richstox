@@ -690,7 +690,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     if (chainRunning) return;
     const startingStatus = 'starting';
     setChainStatus(startingStatus);
-    setChainRunning(isChainStatusActive(startingStatus));
+    setChainRunning(false);
     setChainRunId(null);
     setChainCurrentStep(null);
     setChainStepsDone([]);
@@ -705,12 +705,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (!res.ok) {
         const existingChainRunId = data?.detail?.chain_run_id || data?.chain_run_id;
         if (existingChainRunId) {
-          const runningStatus = 'running';
           setChainRunId(existingChainRunId);
-          setChainStatus(runningStatus);
-          setChainRunning(isChainStatusActive(runningStatus));
-          userStartedRunRef.current = true;
-          startPolling(existingChainRunId, runningStatus);
+          await pollChainStatus(existingChainRunId);
+          const latestStatus = chainStateRef.current.chainStatus;
+          if (isChainStatusActive(latestStatus)) {
+            startPolling(existingChainRunId, latestStatus);
+          }
           return;
         }
         setChainStatus('error');
@@ -723,9 +723,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainRunId(cid);
       setChainStatus('running');
       setChainCurrentStep(1);
-      startChainTimer(new Date().toISOString());
-      userStartedRunRef.current = true;
-      startPolling(cid, 'running');
+      await pollChainStatus(cid);
+      const latestStatus = chainStateRef.current.chainStatus;
+      if (isChainStatusActive(latestStatus)) {
+        startPolling(cid, latestStatus);
+      }
     } catch {
       setChainStatus('error');
       stopChainTimer();
