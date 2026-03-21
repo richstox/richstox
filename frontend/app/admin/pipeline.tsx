@@ -303,12 +303,14 @@ function normaliseRun(run: any): any {
 function deriveProgress(run: any) {
   if (!run) return null;
   const normalized = normaliseRun(run);
+  const isTerminalStatus = normalized.status === 'success' || normalized.status === 'completed';
   const total = normalized.progress_total;
   const processed = normalized.progress_processed ?? 0;
-  const pct = total ? Math.min(Math.round((processed / total) * 100), 100) : (processed ? 100 : 0);
+  const pct = isTerminalStatus ? 100 : (total ? Math.min(Math.round((processed / total) * 100), 100) : (processed ? 100 : 0));
   // Auto-advance past 2.1@100%: when bulk sync is done the backend transitions
   // to 2.2 but the frontend poll may not catch it before completion.
-  const effectivePhase = (normalized.phase === '2.1_bulk_catchup' && pct >= 100)
+  const effectivePhase = isTerminalStatus ? 'completed'
+    : (normalized.phase === '2.1_bulk_catchup' && pct >= 100)
     ? '2.2_split'
     : normalized.phase;
   return {
@@ -316,7 +318,7 @@ function deriveProgress(run: any) {
     total,
     pct,
     phase: effectivePhase,
-    message: normalized.progress,
+    message: isTerminalStatus ? undefined : normalized.progress,
   };
 }
 
@@ -472,12 +474,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         } catch { /* non-fatal */ }
       }
 
+      if (sd.steps_done?.includes(2)) {
+        setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed', message: undefined } : null);
+      }
       if (!nextRunning && sd.status === 'completed') {
         if (sd.steps_done?.includes(1)) {
           setStep1Progress(prev => prev ? { processed: prev.total, total: prev.total, pct: 100 } : null);
-        }
-        if (sd.steps_done?.includes(2)) {
-          setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed' } : null);
         }
       }
     } catch { /* keep polling */ }
@@ -1291,7 +1293,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
-                const isLiveRun = run.status === 'running';
+                const isLiveRun = run.status === 'running' && !chainStepDone;
                 const prevCompleted = run.previous_completed_run;
                 const prevEnd = prevCompleted?.finished_at_prague || prevCompleted?.finished_at;
                 const statusText = isLiveRun
@@ -1335,10 +1337,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       </Text>
                     </View>
                   )}
+                  {step.job_name !== 'price_sync' && (
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Next run:</Text>
                     <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
+                  )}
                   {(step.job_name === 'price_sync' || step.job_name === 'fundamentals_sync') && run.status === 'running' && (
                     <TouchableOpacity
                       style={s.cancelRunningBtn}
@@ -1352,14 +1356,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   )}
                 </View>
                 );
-              })() : (
+              })() : step.job_name !== 'price_sync' ? (
                 <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Next run:</Text>
                     <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
                 </View>
-              )}
+              ) : null}
 
               {step.job_name === 'universe_seed' && (s1In !== undefined || rawPerExchange) && (
                 <View style={s.substepsCard}>
