@@ -351,6 +351,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     chainRunId: null,
     chainStatus: null,
   });
+  const userStartedRunRef = useRef(false);
   const pollingControllerRef = useRef<{
     active: boolean;
     timeout: ReturnType<typeof setTimeout> | null;
@@ -417,6 +418,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         stopChainTimer();
         setElapsedSeconds(0);
         stopPolling();
+        userStartedRunRef.current = false;
       }
 
       if (sd.current_step === 1) {
@@ -537,6 +539,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const startPolling = useCallback((cid: string | null) => {
     if (!cid || !sessionToken) return;
+    if (!userStartedRunRef.current) return;
     const ctrl = pollingControllerRef.current;
     if (ctrl.active && ctrl.chainRunId === cid) return;
     stopPolling();
@@ -548,7 +551,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   useEffect(() => { fetchSnapshotOnce(); }, [fetchSnapshotOnce]);
 
   // Cleanup polling loop on unmount.
-  useEffect(() => () => stopPolling(), []);
+  useEffect(() => () => stopPolling(), [stopPolling]);
 
   useEffect(() => {
     if (!sessionToken) {
@@ -659,6 +662,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunFullPipeline = useCallback(async () => {
     if (chainRunning) return;
+    userStartedRunRef.current = true;
     setChainRunning(true);
     setChainStatus('starting');
     setChainRunId(null);
@@ -698,6 +702,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       stopChainTimer();
       setElapsedSeconds(0);
       setChainRunning(false);
+      userStartedRunRef.current = false;
     }
   }, [chainRunning, sessionToken, startChainTimer, startPolling, stopChainTimer]);
 
@@ -767,6 +772,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         };
       });
     } catch { /* non-fatal */ }
+    finally {
+      if (stepRunFetchRef.current.has(runId)) {
+        stepRunFetchRef.current.delete(runId);
+      }
+    }
   }, [sessionToken]);
 
   const toggleExpand = (step: number) => {
