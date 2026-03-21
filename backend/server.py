@@ -7751,6 +7751,8 @@ async def admin_pipeline_report(
         from fastapi import HTTPException as _HEr
         raise _HEr(status_code=404, detail=report["error"])
     return report
+
+@api_router.get("/admin/pipeline/export/full")
 async def admin_pipeline_export_full(
     chain_run_id: str = Query(..., description="chain_run_id from POST /run-full-now"),
 ):
