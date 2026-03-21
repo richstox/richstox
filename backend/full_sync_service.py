@@ -119,12 +119,23 @@ async def _process_price_ticker(
     ticker_api = ticker_us  # EODHD accepts AAPL.US format
 
     async def _should_cancel() -> bool:
-        return bool(cancel_check and await cancel_check())
+        if cancel_check is None:
+            return False
+        return bool(await cancel_check())
+
+    async def _cancel_result(records: int = 0) -> Dict[str, Any]:
+        return {
+            "ticker": ticker_us,
+            "success": False,
+            "records": records,
+            "cancelled": True,
+            "rate_limited": False,
+        }
 
     # If split: delete old prices first (atomic re-download)
     if needs_redownload:
         if await _should_cancel():
-            return {"ticker": ticker_us, "success": False, "records": 0, "cancelled": True}
+            return await _cancel_result()
         await db.stock_prices.delete_many({"ticker": {"$in": [ticker_us, ticker_us.replace(".US", "")]}})
 
     url = f"{EODHD_BASE_URL}/eod/{ticker_api}"
@@ -166,13 +177,7 @@ async def _process_price_ticker(
     processed_ops = 0
     for i in range(0, len(ops), BULK_CHUNK):
         if await _should_cancel():
-            return {
-                "ticker": ticker_us,
-                "success": False,
-                "records": processed_ops,
-                "cancelled": True,
-                "rate_limited": False,
-            }
+            return await _cancel_result(records=processed_ops)
         chunk = ops[i:i + BULK_CHUNK]
         await db.stock_prices.bulk_write(chunk, ordered=False)
         processed_ops += len(chunk)
@@ -186,13 +191,7 @@ async def _process_price_ticker(
     complete_as_of = latest["date"] if latest else None
 
     if await _should_cancel():
-        return {
-            "ticker": ticker_us,
-            "success": False,
-            "records": processed_ops,
-            "cancelled": True,
-            "rate_limited": False,
-        }
+        return await _cancel_result(records=processed_ops)
 
     await db.tracked_tickers.update_one(
         {"ticker": ticker_us},

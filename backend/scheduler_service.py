@@ -2643,7 +2643,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     _heartbeat_task = asyncio.create_task(_heartbeat_worker())
 
     async def _is_cancelled() -> bool:
-        """Check chain cancel callback and ops_job_runs cancel_requested flag."""
+        """Check optional chain cancel callback and ops_job_runs cancel_requested flag."""
         if cancel_check and await cancel_check():
             return True
         return await is_cancel_requested(db, _running_doc_id)
@@ -2658,7 +2658,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
     ) -> Dict[str, Any]:
         _heartbeat_stop.set()
         cancelled_at = datetime.now(timezone.utc)
-        pct = round(processed / total * 100) if total else 0
+        pct = round(processed / total * 100) if total > 0 else 0
         details_payload: Dict[str, Any] = {
             "parent_run_id": parent_run_id,
             "chain_run_id": chain_run_id,
@@ -3291,12 +3291,12 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                                 "records": 0,
                             }
 
-                done_c = 0
                 tasks_c = [
                     asyncio.create_task(_process_price_one(ticker, needs_redownload))
                     for ticker, needs_redownload in phase_c_tickers
                 ]
 
+                done_c = 0
                 async def _cancel_phase_c(stop_reason: str, progress_msg: str) -> Dict[str, Any]:
                     for task in tasks_c:
                         if not task.done():
