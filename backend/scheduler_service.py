@@ -441,7 +441,16 @@ async def _detect_split_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
     if in_universe:
         tickers_us = [f"{t}.US" for t in in_universe]
         result = await db.tracked_tickers.update_many(
-            {"ticker": {"$in": tickers_us}},
+            {
+                "ticker": {"$in": tickers_us},
+                # Idempotency: skip tickers already remediated for today's split.
+                # A ticker with last_split_detected==today AND price_history_complete==True
+                # has already been fully re-downloaded and should not be re-flagged.
+                "$or": [
+                    {"last_split_detected": {"$ne": today_str}},
+                    {"price_history_complete": {"$ne": True}},
+                ],
+            },
             {"$set": {
                 "needs_price_redownload": True,
                 "needs_fundamentals_refresh": True,
@@ -528,7 +537,16 @@ async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any
     if in_universe:
         tickers_us = [f"{t}.US" for t in in_universe]
         result = await db.tracked_tickers.update_many(
-            {"ticker": {"$in": tickers_us}},
+            {
+                "ticker": {"$in": tickers_us},
+                # Idempotency: skip tickers already remediated for today's dividend.
+                # A ticker with last_dividend_detected==today AND price_history_complete==True
+                # has already been fully re-downloaded and should not be re-flagged.
+                "$or": [
+                    {"last_dividend_detected": {"$ne": today_str}},
+                    {"price_history_complete": {"$ne": True}},
+                ],
+            },
             {"$set": {
                 "needs_fundamentals_refresh": True,
                 "needs_price_redownload": True,
