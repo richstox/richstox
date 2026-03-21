@@ -3073,14 +3073,19 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     result["processed"] += 1
                     done_count += 1
 
+                    # Resolve the canonical .US ticker key used in events_by_ticker.
+                    # sync_single_ticker_fundamentals already returns ticker with .US suffix;
+                    # do NOT append .US again.
+                    raw_ticker = ticker_result.get("ticker", "")
+                    ticker_us = raw_ticker if raw_ticker.endswith(".US") else f"{raw_ticker}.US"
+                    event_ids = [
+                        e.get("_id")
+                        for e in events_by_ticker.get(ticker_us, [])
+                        if e.get("_id")
+                    ]
+
                     if ticker_result.get("success"):
                         result["success"] += 1
-                        ticker_us = f"{ticker_result.get('ticker', '')}.US"
-                        event_ids = [
-                            e.get("_id")
-                            for e in events_by_ticker.get(ticker_us, [])
-                            if e.get("_id")
-                        ]
                         if event_ids:
                             await db.fundamentals_events.update_many(
                                 {"_id": {"$in": event_ids}},
@@ -3088,6 +3093,15 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             )
                     else:
                         result["failed"] += 1
+                        if event_ids:
+                            await db.fundamentals_events.update_many(
+                                {"_id": {"$in": event_ids}},
+                                {"$set": {
+                                    "status": "skipped",
+                                    "skipped_reason": "sync_failed",
+                                    "skipped_at": datetime.now(timezone.utc),
+                                }}
+                            )
 
                     # Progress update every 100 tickers
                     _phase_update(
@@ -3108,6 +3122,32 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 if cancel_monitor_task:
                     cancel_monitor_task.cancel()
                     await asyncio.gather(cancel_monitor_task, return_exceptions=True)
+        # Post-loop safety sweep: mark any remaining pending events from the batch
+        # as 'skipped' so they do not stay pending across runs.  This catches events
+        # for flagged tickers that were filtered out by the eligible-set gate or any
+        # other edge case that left events in events_by_ticker unprocessed.
+        if events_by_ticker and result.get("status") != "cancelled":
+            remaining_ids = [
+                e.get("_id")
+                for evts in events_by_ticker.values()
+                for e in evts
+                if e.get("_id")
+            ]
+            if remaining_ids:
+                sweep_result = await db.fundamentals_events.update_many(
+                    {"_id": {"$in": remaining_ids}, "status": "pending"},
+                    {"$set": {
+                        "status": "skipped",
+                        "skipped_reason": "post_step3_sweep",
+                        "skipped_at": datetime.now(timezone.utc),
+                    }},
+                )
+                if sweep_result.modified_count:
+                    logger.info(
+                        f"{job_name}: post-loop sweep marked {sweep_result.modified_count} "
+                        f"remaining pending events as skipped"
+                    )
+
         _phase_update(
             "A",
             status="done" if result.get("status") != "cancelled" else "error",
