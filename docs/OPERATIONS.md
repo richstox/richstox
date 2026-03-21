@@ -60,6 +60,7 @@ cd frontend && yarn lint
 - Dashboard: <https://railway.app> → project **richstox**
 - Manual redeploy: **Deployments** → **Redeploy** on latest build, or push any commit to `main`.
 - Required env vars (set in Railway service settings): `MONGO_URL`, `DB_NAME=richstox_prod`, `ENV=production`, `EODHD_API_KEY`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `JWT_SECRET`.
+- Python runtime pinned to **3.12.7** via `backend/.python-version` (prevents Railpack from defaulting to 3.13.x, which currently fails to install).
 
 ### Netlify (Frontend)
 - Dashboard: <https://app.netlify.com> → site **richstox**
