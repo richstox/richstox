@@ -84,6 +84,17 @@ async def get_universe_counts(db) -> Dict[str, Any]:
     classified_total = _n("classified")
     visible_total    = _n("visible")
 
+    # ── Step 4: with_peer_medians — visible tickers whose industry has benchmarks
+    industries_with_benchmarks = await db.peer_benchmarks.distinct("industry")
+    _ind_set = set(industries_with_benchmarks) if industries_with_benchmarks else set()
+    if _ind_set:
+        with_peer_medians_total = await db.tracked_tickers.count_documents({
+            **visible_query,
+            "industry": {"$in": list(_ind_set)},
+        })
+    else:
+        with_peer_medians_total = 0
+
     # =========================================================================
     # BUILD FUNNEL STEPS
     # =========================================================================
@@ -110,6 +121,14 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "query": "classified AND is_visible == true",
             "source_job": "fundamentals_sync",
             "note": "Fundamentals + visibility gates (delisted, shares, currency)",
+        },
+        {
+            "step": 4,
+            "name": "With Peer Medians",
+            "count": with_peer_medians_total,
+            "query": "visible AND industry in peer_benchmarks.industry",
+            "source_job": "peer_medians",
+            "note": "Visible tickers whose industry has computed peer benchmarks",
         },
     ]
 
@@ -152,6 +171,7 @@ async def get_universe_counts(db) -> Dict[str, Any]:
             "with_price": with_price_total,  # seeded AND has_price_data
             "classified": classified_total,  # with_price AND fundamentals_status=="complete"
             "visible":    visible_total,     # classified AND is_visible==true
+            "with_peer_medians": with_peer_medians_total,  # visible AND industry in peer_benchmarks
 
             # Exchange breakdown (audit; scoped to seeded)
             "nyse":   nyse_count,
