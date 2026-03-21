@@ -7711,14 +7711,13 @@ async def admin_pipeline_export_full(
         "step1": "Step 1 - Universe Seed",
         "step2": "Step 2 - Price Sync",
         "step3": "Step 3 - Fundamentals Sync",
-        "visibility": "Visibility",
+        "visibility": "Step 3 - Fundamentals Sync",  # visibility is a Step 3 sub-reason
     }
 
     _ALLOWED_FAILED_STEPS = {
         _STEP_LABELS["step1"],
         _STEP_LABELS["step2"],
         _STEP_LABELS["step3"],
-        _STEP_LABELS["visibility"],
     }
 
     def _normalize_seeded_ticker(value: Any) -> Optional[str]:
@@ -7773,6 +7772,24 @@ async def admin_pipeline_export_full(
         if _norm:
             _seeded_tickers.add(_norm)
 
+    # Pre-load with_price and visible ticker sets for deterministic per-row
+    # classification that matches the canonical report funnel math.
+    _with_price_tickers: set = set()
+    async for _tdoc in db.tracked_tickers.find(
+        {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock",
+         "has_price_data": True},
+        {"_id": 0, "ticker": 1},
+    ):
+        _with_price_tickers.add(_tdoc["ticker"])
+
+    _visible_tickers: set = set()
+    async for _tdoc in db.tracked_tickers.find(
+        {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock",
+         "has_price_data": True, "fundamentals_status": "complete", "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    ):
+        _visible_tickers.add(_tdoc["ticker"])
+
     # Build canonical report to embed summary counts in CSV
     _canonical = await build_canonical_pipeline_report(db, chain_run_id)
 
@@ -7790,9 +7807,18 @@ async def admin_pipeline_export_full(
     writer.writerow(["# step2_filtered_out", _canonical.get("step2_filtered_out", "")])
     writer.writerow(["# step3_filtered_out", _canonical.get("step3_filtered_out", "")])
     _sub = _canonical.get("step3_sub_breakdown", {})
-    writer.writerow(["# step3_fundamentals_blocker", _sub.get("fundamentals_blocker", "")])
-    writer.writerow(["# step3_visibility_rule", _sub.get("visibility_rule", "")])
+    writer.writerow(["# step3_sub: fundamentals_blocker", _sub.get("fundamentals_blocker", "")])
+    writer.writerow(["# step3_sub: visibility_rule", _sub.get("visibility_rule", "")])
     writer.writerow([])  # blank separator
+
+    # Canonical funnel summary rows — always present so a pivot never loses a step
+    writer.writerow(["# --- Canonical Funnel Summary ---"])
+    writer.writerow(["# Step 1 filtered out", _canonical.get("step1_filtered_out", "")])
+    writer.writerow(["# Step 2 filtered out", _canonical.get("step2_filtered_out", "")])
+    writer.writerow(["# Step 3 filtered out", _canonical.get("step3_filtered_out", "")])
+    writer.writerow(["# Visible", _canonical.get("visible", "")])
+    writer.writerow([])  # blank separator
+
     writer.writerow(["ticker", "name", "status", "failed_step", "reason_code", "reason_text"])
 
     # Stream Step 1 raw rows in global order.
@@ -7870,6 +7896,16 @@ async def admin_pipeline_export_full(
                     "not_seeded",
                     "Ticker is not in seeded set.",
                 ])
+                continue
+            # Seeded but no price data → Step 2 failure
+            if _ticker_norm not in _with_price_tickers:
+                writer.writerow([ticker_us, name, "FAIL", _STEP_LABELS["step2"],
+                                 "no_price_data", "Seeded ticker has no price data."])
+                continue
+            # Has price but not visible → Step 3 failure
+            if _ticker_norm not in _visible_tickers:
+                writer.writerow([ticker_us, name, "FAIL", _STEP_LABELS["step3"],
+                                 "not_visible", "Ticker has price data but is not visible."])
                 continue
             # Required schema invariant: OK rows must keep failed_step and reason_text empty.
             writer.writerow([ticker_us, name, "OK", "", "ok", ""])

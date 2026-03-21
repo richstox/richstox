@@ -360,6 +360,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [chainRunning, setChainRunning] = useState(false);
   const [chainCurrentStep, setChainCurrentStep] = useState<number | null>(null);
   const [chainStepsDone, setChainStepsDone] = useState<number[]>([]);
+  const [canonicalReport, setCanonicalReport] = useState<Record<string, any> | null>(null);
   const chainStateRef = useRef<{ chainRunId: string | null; chainStatus: string | null }>({
     chainRunId: null,
     chainStatus: null,
@@ -493,6 +494,28 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   useEffect(() => {
     chainStateRef.current = { chainRunId, chainStatus };
   }, [chainRunId, chainStatus]);
+
+  // ── Fetch canonical report when chain is completed ─────────────────────────
+  useEffect(() => {
+    if (!chainRunId || chainStatus !== 'completed' || !sessionToken) {
+      setCanonicalReport(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/pipeline/report?chain_run_id=${encodeURIComponent(chainRunId)}`,
+          {},
+          sessionToken,
+        );
+        if (res.ok && !cancelled) {
+          setCanonicalReport(await res.json());
+        }
+      } catch { /* non-fatal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [chainRunId, chainStatus, sessionToken]);
 
   const fetchSnapshotOnce = useCallback(async () => {
     if (!sessionToken) {
@@ -867,25 +890,36 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange
     ?? (jobRuns['universe_seed'] as any)?.details?.fetched_raw_per_exchange
     ?? exclusionReport?.step1_counts?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  // Admin funnel: backend is the single source of truth for these 4 numbers.
-  const raw =
-    asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_rows_total)
-    ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.details?.raw_rows_total)
-    ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_symbols_fetched);
-  const seeded = asFiniteNumber(counts.seeded);
-  const withPrice = asFiniteNumber(counts.with_price);
-  const visible = asFiniteNumber(counts.visible);
+  // Admin funnel: when a completed chain report is available, use it as the
+  // single source of truth so UI and CSV always agree for the same chain_run_id.
+  const raw = canonicalReport
+    ? asFiniteNumber(canonicalReport.raw_symbols)
+    : (asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_rows_total)
+      ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.details?.raw_rows_total)
+      ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_symbols_fetched));
+  const seeded = canonicalReport
+    ? asFiniteNumber(canonicalReport.seeded_tickers)
+    : asFiniteNumber(counts.seeded);
+  const withPrice = canonicalReport
+    ? asFiniteNumber(canonicalReport.with_price)
+    : asFiniteNumber(counts.with_price);
+  const visible = canonicalReport
+    ? asFiniteNumber(canonicalReport.visible)
+    : asFiniteNumber(counts.visible);
 
   const byStep = exclusionReport?.by_step;
-  const step1Filtered =
-    raw !== undefined && seeded !== undefined ? Math.max(raw - seeded, 0)
-    : byStep?.['Step 1 - Universe Seed'] ?? exclusionReport?.step1_counts?.filtered_out_total_step1;
-  const step2Filtered =
-    seeded !== undefined && withPrice !== undefined ? Math.max(seeded - withPrice, 0)
-    : byStep?.['Step 2 - Price Sync'];
-  const step3Filtered =
-    withPrice !== undefined && visible !== undefined ? Math.max(withPrice - visible, 0)
-    : byStep?.['Step 3 - Fundamentals Sync'];
+  const step1Filtered = canonicalReport
+    ? asFiniteNumber(canonicalReport.step1_filtered_out)
+    : (raw !== undefined && seeded !== undefined ? Math.max(raw - seeded, 0)
+      : byStep?.['Step 1 - Universe Seed'] ?? exclusionReport?.step1_counts?.filtered_out_total_step1);
+  const step2Filtered = canonicalReport
+    ? asFiniteNumber(canonicalReport.step2_filtered_out)
+    : (seeded !== undefined && withPrice !== undefined ? Math.max(seeded - withPrice, 0)
+      : byStep?.['Step 2 - Price Sync']);
+  const step3Filtered = canonicalReport
+    ? asFiniteNumber(canonicalReport.step3_filtered_out)
+    : (withPrice !== undefined && visible !== undefined ? Math.max(withPrice - visible, 0)
+      : byStep?.['Step 3 - Fundamentals Sync']);
 
   const s1In: number | undefined = raw;
   const s1Out: number | undefined = seeded;
@@ -898,11 +932,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     price_sync: s2Out,
     fundamentals_sync: s3Out,
   };
-  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync'].filter(j => {
-    const r = jobRuns[j];
-    const ok = r?.status === 'success' || r?.status === 'completed';
-    return ok && (JOB_OUTPUT[j] === undefined || (JOB_OUTPUT[j] ?? 0) > 0);
-  }).length;
+  const completedCount = (chainStatus === 'completed' && chainStepsDone.length > 0)
+    ? chainStepsDone.length
+    : ['universe_seed', 'price_sync', 'fundamentals_sync'].filter(j => {
+        const r = jobRuns[j];
+        const ok = r?.status === 'success' || r?.status === 'completed';
+        return ok && (JOB_OUTPUT[j] === undefined || (JOB_OUTPUT[j] ?? 0) > 0);
+      }).length;
   const healthPct = Math.round((completedCount / 3) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
@@ -1039,7 +1075,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             <View style={{ flex: 1 }}>
               <Text style={s.fullChainInlineTitle}>Full Pipeline Audit</Text>
               <Text style={s.fullChainInlineDesc} numberOfLines={1}>
-                {runMode === 'AUTO' ? 'Scheduler controls automatic runs.' : 'Runs Step 1→4 now, generates unified CSV.'}
+                {runMode === 'AUTO' ? 'Scheduler controls automatic runs.' : 'Runs Step 1\u21923 now, generates unified CSV.'}
               </Text>
             </View>
             {/* MANUAL / AUTO toggle — aligned top-right */}
@@ -1096,6 +1132,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   </Text>
 
   {chainRunId && chainStatus === 'completed' && (
+    <>
     <TouchableOpacity
       style={[s.fullChainDownloadBtn, { marginTop: 12, width: '100%', minHeight: 48, borderRadius: 8, justifyContent: 'center' }]}
       onPress={handleDownloadFullCsv}
@@ -1103,6 +1140,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       <Ionicons name="download-outline" size={13} color="#fff" />
       <Text style={s.fullChainDownloadBtnText}>Download Unified CSV</Text>
     </TouchableOpacity>
+    {canonicalReport?.last_generated_at_prague && (
+      <Text style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 4, textAlign: 'center' }}>
+        Generated: {canonicalReport.last_generated_at_prague}
+      </Text>
+    )}
+    </>
   )}
 
   {chainStatus && chainStatus !== 'starting' && (
