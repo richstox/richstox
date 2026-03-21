@@ -538,7 +538,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   }, [fetchSnapshotOnce, pollChainStatus, sessionToken, stopPolling]);
 
   const startPolling = useCallback((cid: string) => {
-    if (!cid || !sessionToken) return;
+    if (!sessionToken) return;
     if (!userStartedRunRef.current) return;
     const ctrl = pollingControllerRef.current;
     if (ctrl.active && ctrl.chainRunId === cid) return;
@@ -779,9 +779,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       });
     } catch { /* non-fatal */ }
     finally {
-      if (stepRunFetchRef.current.has(runId)) {
-        stepRunFetchRef.current.delete(runId);
-      }
+      stepRunFetchRef.current.delete(runId);
     }
   }, [sessionToken]);
 
