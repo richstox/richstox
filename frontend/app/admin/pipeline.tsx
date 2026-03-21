@@ -162,14 +162,20 @@ function formatDuration(sec?: number): string {
   return `${seconds}s`;
 }
 
+/** Parse an ISO timestamp, treating naive (no-offset) strings as UTC. */
+function parseUtcIso(iso?: string | null): number {
+  if (!iso) return NaN;
+  let s: string = iso;
+  if (!s.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(s) && !/[+-]\d{4}$/.test(s)) {
+    s += 'Z';
+  }
+  return Date.parse(s);
+}
+
 function formatTime(iso?: string): string {
   if (!iso) return 'Never';
   try {
-    let s = iso;
-    if (s && !s.endsWith('Z') && !/[+-]\d{2}:\d{2}$/.test(s) && !/[+-]\d{4}$/.test(s)) {
-      s = s + 'Z';
-    }
-    const d = new Date(s);
+    const d = new Date(parseUtcIso(iso));
     return `${d.toLocaleString('en-GB', {
       timeZone: 'Europe/Prague',
       month: 'short',
@@ -372,7 +378,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const startChainTimer = useCallback((startedAtIso?: string | null) => {
     stopChainTimer();
-    const parsedStartedAt = startedAtIso ? Date.parse(startedAtIso) : NaN;
+    const parsedStartedAt = parseUtcIso(startedAtIso);
     if (!Number.isFinite(parsedStartedAt)) {
       setElapsedSeconds(0);
       return;
@@ -1151,6 +1157,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const chainStepRunning = chainRunning && chainStepNum !== undefined && chainCurrentStep === chainStepNum;
         const chainStepPending = chainRunning && chainStepNum !== undefined && !chainStepDone && !chainStepRunning;
 
+        // Per-step elapsed: derived from this step's own started_at, not the chain timer.
+        const stepStartIso = run?.started_at_prague || run?.started_at;
+        const stepElapsed = chainStepRunning && stepStartIso
+          ? Math.max(0, Math.round((Date.now() - parseUtcIso(stepStartIso)) / 1000))
+          : 0;
+
         const inCount = step.inputCount;
         const outCount = step.outputCount;
         const droppedCount = step.droppedCount !== undefined
@@ -1206,7 +1218,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <>
                         <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
                         <Text style={{ marginLeft: 4, color: '#F59E0B', fontSize: 12 }}>
-                          {formatElapsed(elapsedSeconds)}
+                          {formatElapsed(stepElapsed)}
                         </Text>
                       </>
                     ) : chainStepDone ? (
@@ -1305,7 +1317,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   ? (prevEnd && prevDuration !== undefined && prevDuration !== null
                     ? ` (${formatDuration(prevDuration)})`
                     : chainStepRunning
-                      ? ` · ${formatElapsed(elapsedSeconds)}`
+                      ? ` · ${formatElapsed(stepElapsed)}`
                       : '')
                   : run.status === 'cancelled'
                     ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
@@ -1384,9 +1396,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const seedStatus = seedRun?.status;
                 const isStep1Running = seedStatus === 'running';
                 const seedRawFetched = rawSymbols;
-                const seedProcessed = seedRun?.records_processed as number | undefined;
+                const seedSeeded = seeded ?? step1Progress?.total;
                 if (isStep1Running && step1Progress !== null) {
                   // Live progress while running
+                  const liveSeeded = seedSeeded ?? step1Progress.total;
                   return (
                     <View style={s.step4ProgressWrap}>
                       <View style={s.step4ProgressBarBg}>
@@ -1398,14 +1411,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <View style={s.step4ProgressRow}>
                         <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
                         <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
-                          {fmt(step1Progress.processed)} / {fmt(step1Progress.total)} · {step1Progress.pct}%
+                          {seedRawFetched ? `${fmt(seedRawFetched)} fetched → ` : ''}{fmt(liveSeeded)} seeded → {fmt(step1Progress.processed)} written
                         </Text>
                       </View>
                     </View>
                   );
                 }
-                if (!isStep1Running && (seedRawFetched || seedProcessed)) {
-                  // Final summary after completion
+                if (!isStep1Running && (seedRawFetched || seedSeeded)) {
+                  // Final summary after completion: written == seeded
                   return (
                     <View style={s.step4ProgressWrap}>
                       <View style={s.step4ProgressBarBg}>
@@ -1418,8 +1431,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         <Text style={s.step4ProgressLabel}>Seeding tickers</Text>
                         <Text style={[s.step4ProgressValue, { color: '#6366F1' }]}>
                           {seedRawFetched ? `${fmt(seedRawFetched)} fetched` : ''}
-                          {seedRawFetched && seedProcessed ? ' → ' : ''}
-                          {seedProcessed ? `${fmt(seedProcessed)} Common Stock → ${fmt(seedProcessed)} written` : ''}
+                          {seedRawFetched && seedSeeded ? ' → ' : ''}
+                          {seedSeeded ? `${fmt(seedSeeded)} seeded → ${fmt(seedSeeded)} written` : ''}
                         </Text>
                       </View>
                     </View>
