@@ -126,8 +126,8 @@ class TestUniverseCountsFieldNames:
         db = _make_mock_db()
         result = await get_universe_counts(db)
 
-        assert len(result["funnel_steps"]) == 4, (
-            f"Expected 4 funnel steps, got {len(result['funnel_steps'])}"
+        assert len(result["funnel_steps"]) == 3, (
+            f"Expected 3 funnel steps, got {len(result['funnel_steps'])}"
         )
 
     @pytest.mark.asyncio
@@ -212,31 +212,32 @@ class TestUniverseCountsStep3Funnel:
 class TestUniverseCountsClassifiedSubsetOfWithPrice:
 
     @pytest.mark.asyncio
-    async def test_with_peer_medians_le_visible_flagged_when_exceeded(self):
+    async def test_classified_le_with_price_flagged_when_exceeded(self):
         """
-        with_peer_medians > visible must be flagged as an inconsistency because
-        Step 4 count cannot exceed Step 3 count.
+        classified > with_price must be flagged as an inconsistency because
+        classified_query includes has_price_data == true.
+        When visible > with_price the monotonic funnel guard should fire.
         """
         from services.universe_counts_service import get_universe_counts
 
-        db = _make_mock_db(with_price=7000, visible=4000, with_peer_medians=5000)
+        db = _make_mock_db(with_price=5000, classified=6000, visible=7000)
         result = await get_universe_counts(db)
 
         assert result["has_inconsistency"], (
-            "with_peer_medians > visible must be flagged as inconsistency"
+            "visible > with_price must be flagged as inconsistency"
         )
 
     @pytest.mark.asyncio
-    async def test_with_peer_medians_le_visible_for_valid_funnel(self):
-        """with_peer_medians <= visible must hold for a valid funnel."""
+    async def test_classified_le_with_price_for_valid_funnel(self):
+        """classified <= with_price must hold for a valid funnel."""
         from services.universe_counts_service import get_universe_counts
 
-        db = _make_mock_db(seeded=8000, with_price=7000, classified=6500, visible=4000, with_peer_medians=3800)
+        db = _make_mock_db(seeded=8000, with_price=7000, classified=6500, visible=4000)
         result = await get_universe_counts(db)
 
         counts = result["counts"]
-        assert counts["with_peer_medians"] <= counts["visible"], (
-            "with_peer_medians must always be <= visible"
+        assert counts["classified"] <= counts["with_price"], (
+            "classified must always be <= with_price"
         )
         assert not result["has_inconsistency"], (
             f"Valid funnel should have no inconsistencies: {result['inconsistencies']}"

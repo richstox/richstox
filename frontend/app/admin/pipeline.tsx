@@ -699,7 +699,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     1: 'Universe Seed',
     2: 'Price Sync',
     3: 'Fundamentals & Visibility',
-    4: 'Peer Medians',
   };
 
   const handleRunFullPipeline = useCallback(async () => {
@@ -868,7 +867,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange
     ?? (jobRuns['universe_seed'] as any)?.details?.fetched_raw_per_exchange
     ?? exclusionReport?.step1_counts?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  // Admin funnel: backend is the single source of truth for these 5 numbers.
+  // Admin funnel: backend is the single source of truth for these 4 numbers.
   const raw =
     asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_rows_total)
     ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.details?.raw_rows_total)
@@ -876,7 +875,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const seeded = asFiniteNumber(counts.seeded);
   const withPrice = asFiniteNumber(counts.with_price);
   const visible = asFiniteNumber(counts.visible);
-  const withPeerMedians = asFiniteNumber(counts.with_peer_medians);
 
   const byStep = exclusionReport?.by_step;
   const step1Filtered =
@@ -888,9 +886,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const step3Filtered =
     withPrice !== undefined && visible !== undefined ? Math.max(withPrice - visible, 0)
     : byStep?.['Step 3 - Fundamentals Sync'];
-  const step4Filtered =
-    visible !== undefined && withPeerMedians !== undefined ? Math.max(visible - withPeerMedians, 0)
-    : undefined;
 
   const s1In: number | undefined = raw;
   const s1Out: number | undefined = seeded;
@@ -902,14 +897,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     universe_seed: s1Out,
     price_sync: s2Out,
     fundamentals_sync: s3Out,
-    peer_medians: withPeerMedians,
   };
-  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync', 'peer_medians'].filter(j => {
+  const completedCount = ['universe_seed', 'price_sync', 'fundamentals_sync'].filter(j => {
     const r = jobRuns[j];
     const ok = r?.status === 'success' || r?.status === 'completed';
     return ok && (JOB_OUTPUT[j] === undefined || (JOB_OUTPUT[j] ?? 0) > 0);
   }).length;
-  const healthPct = Math.round((completedCount / 4) * 100);
+  const healthPct = Math.round((completedCount / 3) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
   const steps = [
@@ -984,8 +978,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     {
       step: 4,
       job_name: 'peer_medians',
-      title: 'Peer Medians',
-      schedule: 'After Step 3 completion',
+      title: 'Peer Medians (independent)',
+      schedule: 'Daily 05:30 Prague (separate from pipeline)',
       scheduledHour: 5,
       scheduledMinute: 30,
       icon: 'stats-chart-outline' as const,
@@ -993,11 +987,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       apiUrl: 'Local DB only — no external API',
       inputLabel: 'Visible tickers',
       inputCount: visible,
-      outputCount: withPeerMedians,
-      droppedCount: step4Filtered,
+      outputCount: visible,
       outputLabel: 'with medians',
       filters: [
-        'No peer benchmarks for industry',
         'Winsorize outliers (1–99%)',
         'Exclude self from own peer group',
       ],
@@ -1017,7 +1009,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     universe_seed: 1,
     price_sync: 2,
     fundamentals_sync: 3,
-    peer_medians: 4,
   };
   // Chain icon override is active when a chain is running or just finished.
   const chainIconActive = chainRunning || chainStatus === 'completed' || isChainFailed || isChainCancelled;
@@ -1040,7 +1031,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         <View style={s.progressBg}>
           <View style={[s.progressFill, { width: `${healthPct}%` as any, backgroundColor: healthColor }]} />
         </View>
-        <Text style={s.healthSub}>{completedCount}/4 steps completed today</Text>
+        <Text style={s.healthSub}>{completedCount}/3 steps completed today</Text>
 
         {/* Full Pipeline Audit — above scheduler control */}
         <View style={s.fullChainInlineSection}>
@@ -1130,7 +1121,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         : isChainCancelled
         ? 'Cancelled'
         : chainCurrentStep !== null
-        ? `Running — Step ${chainCurrentStep}/4 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${formatElapsed(elapsedSeconds)}`
+        ? `Running — Step ${chainCurrentStep}/3 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${formatElapsed(elapsedSeconds)}`
         : 'Running…'}
     </Text>
   )}
@@ -1156,11 +1147,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           <View style={s.miniItem}>
             <Text style={[s.miniNum, { color: '#22C55E' }]}>{fmt(visible)}</Text>
             <Text style={[s.miniLabel, { color: '#22C55E' }]}>visible</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={10} color={COLORS.textMuted} />
-          <View style={s.miniItem}>
-            <Text style={[s.miniNum, { color: '#EC4899' }]}>{fmt(withPeerMedians)}</Text>
-            <Text style={[s.miniLabel, { color: '#EC4899' }]}>w/ medians</Text>
           </View>
         </View>
       </View>

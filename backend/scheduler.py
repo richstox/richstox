@@ -728,9 +728,12 @@ async def scheduler_loop():
                         await db.pipeline_chain_runs.update_one(
                             {"chain_run_id": _s2_chain_run_id},
                             {"$set": {
+                                "status": "completed",
                                 "step_run_ids.step3": _s3_excl_run_id,
                                 "steps_done": [1, 2, 3],
-                                "current_step": 4,
+                                "current_step": None,
+                                "finished_at": _s3_fin,
+                                "finished_at_prague": to_prague_iso(_s3_fin),
                             }},
                         )
             
@@ -759,23 +762,6 @@ async def scheduler_loop():
                 await run_job_with_retry("peer_medians", compute_peer_benchmarks_v3, db)
                 last_run["peer_medians"] = today_str
                 await set_last_run_state(last_run)
-                # Finalize any running chain at step 4
-                _s4_chain = await db.pipeline_chain_runs.find_one(
-                    {"status": "running", "current_step": 4},
-                    {"chain_run_id": 1},
-                )
-                if _s4_chain:
-                    _s4_fin = datetime.now(timezone.utc)
-                    await db.pipeline_chain_runs.update_one(
-                        {"chain_run_id": _s4_chain["chain_run_id"]},
-                        {"$set": {
-                            "status": "completed",
-                            "steps_done": [1, 2, 3, 4],
-                            "current_step": None,
-                            "finished_at": _s4_fin,
-                            "finished_at_prague": to_prague_iso(_s4_fin),
-                        }},
-                    )
             
             # PAIN CACHE at 05:00 (catch-up enabled)
             if should_run("pain_cache", PAIN_CACHE_HOUR, PAIN_CACHE_MINUTE, last_run, today_str, current_hour, current_minute):
