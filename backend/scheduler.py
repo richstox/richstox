@@ -336,6 +336,18 @@ async def _run_universe_seed_scheduled(db):
     started_at = datetime.now(timezone.utc)
     logger.info(f"[scheduler] Universe Seed started (job_id={job_id})")
 
+    # Create pipeline_chain_runs document so the canonical chain registry
+    # tracks this scheduled pipeline execution from the very start.
+    await db.pipeline_chain_runs.insert_one({
+        "chain_run_id": chain_run_id,
+        "status": "running",
+        "current_step": 1,
+        "steps_done": [],
+        "started_at": started_at,
+        "source": "scheduled",
+        "step_run_ids": {},
+    })
+
     # Insert running sentinel so Admin UI shows "running" immediately.
     _sentinel = await db.ops_job_runs.insert_one({
         "job_id": job_id,
@@ -392,6 +404,7 @@ async def _run_universe_seed_scheduled(db):
     duration = (finished_at - started_at).total_seconds()
 
     if status == "completed":
+        _s1_run_id = result.get("raw_run_id") or job_id
         await db.ops_job_runs.update_one(
             {"_id": _doc_id},
             {"$set": {
@@ -413,6 +426,15 @@ async def _run_universe_seed_scheduled(db):
                 "progress_pct": 100,
             }},
         )
+        # Update pipeline_chain_runs: Step 1 done, advance to Step 2.
+        await db.pipeline_chain_runs.update_one(
+            {"chain_run_id": chain_run_id},
+            {"$set": {
+                "step_run_ids.step1": _s1_run_id,
+                "current_step": 2,
+                "steps_done": [1],
+            }},
+        )
     else:
         await db.ops_job_runs.update_one(
             {"_id": _doc_id},
@@ -423,6 +445,17 @@ async def _run_universe_seed_scheduled(db):
                 "duration_seconds": duration,
                 "error": result.get("error", "unknown error"),
                 "progress": "Failed",
+            }},
+        )
+        # Mark pipeline_chain_runs as failed since Step 1 failed.
+        await db.pipeline_chain_runs.update_one(
+            {"chain_run_id": chain_run_id},
+            {"$set": {
+                "status": "failed",
+                "failed_step": 1,
+                "error": result.get("error", "unknown error"),
+                "finished_at": finished_at,
+                "finished_at_prague": to_prague_iso(finished_at),
             }},
         )
 
@@ -609,7 +642,7 @@ async def scheduler_loop():
                 )
                 _s1_excl_run_id = (_s1_doc or {}).get("details", {}).get("exclusion_report_run_id")
                 _s1_chain_run_id = (_s1_doc or {}).get("details", {}).get("chain_run_id")
-                await run_job_with_retry(
+                _s2_result = await run_job_with_retry(
                     "price_sync",
                     lambda _db, _pid=_s1_excl_run_id, _cid=_s1_chain_run_id: run_daily_price_sync(
                         _db, parent_run_id=_pid, chain_run_id=_cid
@@ -618,6 +651,31 @@ async def scheduler_loop():
                 )
                 last_run["price_sync"] = today_str
                 await set_last_run_state(last_run)
+                # Update pipeline_chain_runs: Step 2 done, advance to Step 3.
+                if _s1_chain_run_id:
+                    _s2_excl_run_id = (_s2_result or {}).get("exclusion_report_run_id") if isinstance(_s2_result, dict) else None
+                    _s2_status = (_s2_result or {}).get("status", "") if isinstance(_s2_result, dict) else ""
+                    if _s2_status == "failed":
+                        _s2_fin = datetime.now(timezone.utc)
+                        await db.pipeline_chain_runs.update_one(
+                            {"chain_run_id": _s1_chain_run_id},
+                            {"$set": {
+                                "status": "failed",
+                                "failed_step": 2,
+                                "error": (_s2_result or {}).get("error", "step 2 failed"),
+                                "finished_at": _s2_fin,
+                                "finished_at_prague": to_prague_iso(_s2_fin),
+                            }},
+                        )
+                    else:
+                        await db.pipeline_chain_runs.update_one(
+                            {"chain_run_id": _s1_chain_run_id},
+                            {"$set": {
+                                "step_run_ids.step2": _s2_excl_run_id,
+                                "current_step": 3,
+                                "steps_done": [1, 2],
+                            }},
+                        )
             
             # SP500TR benchmark at 04:15 (catch-up enabled)
             if should_run("sp500tr_update", SP500TR_UPDATE_HOUR, SP500TR_UPDATE_MINUTE, last_run, today_str, current_hour, current_minute):
@@ -634,19 +692,50 @@ async def scheduler_loop():
                 _s2_doc = await db.ops_job_runs.find_one(
                     {"job_name": "price_sync",
                      "details.exclusion_report_run_id": {"$exists": True, "$ne": None}},
-                    {"details.exclusion_report_run_id": 1},
+                    {"details.exclusion_report_run_id": 1, "details.chain_run_id": 1},
                     sort=[("started_at", -1)],
                 )
                 _s2_run_id_for_s3 = (
                     (_s2_doc or {}).get("details", {}).get("exclusion_report_run_id")
                 )
-                await run_job_with_retry(
+                _s2_chain_run_id = (_s2_doc or {}).get("details", {}).get("chain_run_id")
+                _s3_result = await run_job_with_retry(
                     "fundamentals_sync",
-                    lambda _db, _pid=_s2_run_id_for_s3: run_fundamentals_changes_sync(_db, parent_run_id=_pid),
+                    lambda _db, _pid=_s2_run_id_for_s3, _cid=_s2_chain_run_id: run_fundamentals_changes_sync(
+                        _db, parent_run_id=_pid, chain_run_id=_cid
+                    ),
                     db,
                 )
                 last_run["fundamentals_sync"] = today_str
                 await set_last_run_state(last_run)
+                # Update pipeline_chain_runs: terminal status.
+                if _s2_chain_run_id:
+                    _s3_status = (_s3_result or {}).get("status", "") if isinstance(_s3_result, dict) else ""
+                    _s3_fin = datetime.now(timezone.utc)
+                    _s3_excl_run_id = (_s3_result or {}).get("exclusion_report_run_id") if isinstance(_s3_result, dict) else None
+                    if _s3_status == "failed":
+                        await db.pipeline_chain_runs.update_one(
+                            {"chain_run_id": _s2_chain_run_id},
+                            {"$set": {
+                                "status": "failed",
+                                "failed_step": 3,
+                                "error": (_s3_result or {}).get("error", "step 3 failed"),
+                                "finished_at": _s3_fin,
+                                "finished_at_prague": to_prague_iso(_s3_fin),
+                            }},
+                        )
+                    else:
+                        await db.pipeline_chain_runs.update_one(
+                            {"chain_run_id": _s2_chain_run_id},
+                            {"$set": {
+                                "status": "completed",
+                                "step_run_ids.step3": _s3_excl_run_id,
+                                "steps_done": [1, 2, 3],
+                                "current_step": None,
+                                "finished_at": _s3_fin,
+                                "finished_at_prague": to_prague_iso(_s3_fin),
+                            }},
+                        )
             
             # BACKFILL_ALL: MANUAL ONLY by default
             backfill_all_enabled = await db.ops_config.find_one({"key": "job_backfill_all_enabled"})

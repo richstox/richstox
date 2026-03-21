@@ -7047,6 +7047,8 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         await db.pipeline_chain_runs.insert_one({
             "chain_run_id": chain_id,
             "status":       "running",
+            "current_step": 1,
+            "steps_done":   [],
             "started_at":   datetime.now(timezone.utc),
             "step_run_ids": {},
         })
@@ -7153,7 +7155,11 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             step_run_ids["step1"] = s1_run_id
             await db.pipeline_chain_runs.update_one(
                 {"chain_run_id": chain_id},
-                {"$set": {"step_run_ids.step1": s1_run_id, "status": "step1_done"}},
+                {"$set": {
+                    "step_run_ids.step1": s1_run_id,
+                    "current_step": 2,
+                    "steps_done": [1],
+                }},
             )
             logger.info(f"[run-full-now] Step 1 done: {s1_run_id}")
             last_completed_step = 1
@@ -7229,7 +7235,11 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             step_run_ids["step2"] = s2_run_id
             await db.pipeline_chain_runs.update_one(
                 {"chain_run_id": chain_id},
-                {"$set": {"step_run_ids.step2": s2_run_id, "status": "step2_done"}},
+                {"$set": {
+                    "step_run_ids.step2": s2_run_id,
+                    "current_step": 3,
+                    "steps_done": [1, 2],
+                }},
             )
             logger.info(f"[run-full-now] Step 2 done: {s2_run_id}")
             last_completed_step = 2
@@ -7261,7 +7271,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 {"$set": {
                     "step_run_ids.step3": s3_run_id,
                     "step_run_ids.step3_visibility": s3_vis_run_id,
-                    "status": "step3_done",
+                    "steps_done": [1, 2, 3],
                 }},
             )
             logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, visibility: {s3_vis_run_id}")
@@ -7370,11 +7380,10 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 if _s2_run_id:
                     _s2_fin_at = datetime.now(timezone.utc)
                     await db.ops_job_runs.update_one(
-                                               {
+                        {
                             "job_name": "price_sync",
                             "status": "running",
--                            "details.exclusion_report_run_id": _s2_run_id,
-+                            "job_id": _s2_run_id,
+                            "details.exclusion_report_run_id": _s2_run_id,
                         },
                         {"$set": {
                             "status": "cancelled",
@@ -7410,20 +7419,27 @@ async def admin_pipeline_chain_status(chain_run_id: str):
         if isinstance(doc.get(k), datetime):
             doc[k] = doc[k].isoformat()
     # Derive current_step, steps_done, failed_step for UI live progress.
+    # Prefer stored fields (new behaviour); fall back to legacy status derivation
+    # for backward-compat with chain docs created before this fix.
     _status = doc.get("status")
     _srids = doc.get("step_run_ids", {})
-    _steps_done = [i for i, k in enumerate(("step1", "step2", "step3"), 1) if _srids.get(k)]
-    _current_step: Optional[int] = None
+    _steps_done = doc.get("steps_done")
+    _current_step = doc.get("current_step")
     _failed_step: Optional[int] = None
-    if _status == "running":
-        _current_step = 1
-    elif _status == "step1_done":
-        _current_step = 2
-    elif _status == "step2_done":
-        _current_step = 3
-    elif _status == "step3_done":
-        _current_step = None  # Step 3 is the last step; chain is effectively complete
-    elif _status == "failed":
+
+    # Legacy fallback: derive from status string if stored fields are absent
+    if _steps_done is None:
+        _steps_done = [i for i, k in enumerate(("step1", "step2", "step3"), 1) if _srids.get(k)]
+    if _current_step is None and _status in ("running", "step1_done", "step2_done", "step3_done"):
+        if _status == "running":
+            _current_step = 1
+        elif _status == "step1_done":
+            _current_step = 2
+        elif _status == "step2_done":
+            _current_step = 3
+        elif _status == "step3_done":
+            _current_step = None
+    if _status == "failed":
         _failed_step = next(
             (i for i, k in enumerate(("step1", "step2", "step3"), 1) if not _srids.get(k)),
             3,
