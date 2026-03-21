@@ -50,6 +50,11 @@ interface PipelineSyncStatus {
   needs_price_redownload?: number;
   needs_fundamentals_refresh?: number;
   pending_events_audit?: number;
+  pending_event_counts?: {
+    split?: number;
+    dividend?: number;
+    earnings?: number;
+  };
   credits_today?: number;
   credits_limit?: number;
   credits_pct?: number;
@@ -1183,6 +1188,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const dividendDetector: Step2SubStep = eventDetectors?.step_2_4_dividend || {};
         const earningsDetector: Step2SubStep = eventDetectors?.step_2_6_earnings || {};
         const hasStep2DetectorPayload = Object.keys(eventDetectors || {}).length > 0;
+        const pendingEventCounts = data?.pipeline_sync_status?.pending_event_counts || {};
         const nextRunLabel = step.step === 1
           ? getNextRun(step.scheduledHour, step.scheduledMinute, true)
           : (!prevRunOk || inCount === 0)
@@ -1548,6 +1554,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         <Text style={s.substepStatLabel}>flagged</Text>
                       </View>
                     </View>
+                    <View style={s.substepAuditPendingRow}>
+                      <Text style={s.substepAuditLabel}>Detected (audit): {fmt(safeCount(splitDetector.flagged_count))}</Text>
+                      <Text style={s.substepPendingLabel}>Pending (queue): {fmt(safeCount(pendingEventCounts.split))}</Text>
+                    </View>
                     {(splitDetector.tickers_sample?.length ?? 0) > 0 && (
                       <Text style={s.substepTickers} numberOfLines={1}>
                         {splitDetector.tickers_sample?.slice(0, 8).join(', ')}
@@ -1595,6 +1605,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         <Text style={s.substepStatLabel}>flagged</Text>
                       </View>
                     </View>
+                    <View style={s.substepAuditPendingRow}>
+                      <Text style={s.substepAuditLabel}>Detected (audit): {fmt(safeCount(dividendDetector.flagged_count))}</Text>
+                      <Text style={s.substepPendingLabel}>Pending (queue): {fmt(safeCount(pendingEventCounts.dividend))}</Text>
+                    </View>
                     {(dividendDetector.tickers_sample?.length ?? 0) > 0 && (
                       <Text style={s.substepTickers} numberOfLines={1}>
                         {dividendDetector.tickers_sample?.slice(0, 8).join(', ')}
@@ -1638,6 +1652,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         </Text>
                         <Text style={s.substepStatLabel}>flagged</Text>
                       </View>
+                    </View>
+                    <View style={s.substepAuditPendingRow}>
+                      <Text style={s.substepAuditLabel}>Detected (audit): {fmt(safeCount(earningsDetector.flagged_count))}</Text>
+                      <Text style={s.substepPendingLabel}>Pending (queue): {fmt(safeCount(pendingEventCounts.earnings))}</Text>
                     </View>
                     {(earningsDetector.tickers_sample?.length ?? 0) > 0 && (
                       <Text style={s.substepTickers} numberOfLines={1}>
@@ -2082,6 +2100,9 @@ const s = StyleSheet.create({
   substepStatLabel: { fontSize: 8, color: COLORS.textMuted, marginTop: 1 },
   substepStatSep: { fontSize: 11, color: COLORS.textMuted },
   substepTickers: { fontSize: 9, color: COLORS.textMuted, marginTop: 4, fontFamily: 'monospace' },
+  substepAuditPendingRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 6, paddingHorizontal: 2 },
+  substepAuditLabel: { fontSize: 9, color: COLORS.textMuted },
+  substepPendingLabel: { fontSize: 9, fontWeight: '600', color: '#6366F1' },
   substepRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 6, marginBottom: 2 },
   substepValue: { fontSize: 10, color: COLORS.textMuted },
   mockBadge: { backgroundColor: '#F59E0B33', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4 },

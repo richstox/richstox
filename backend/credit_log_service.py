@@ -135,6 +135,18 @@ async def get_pipeline_sync_status(db) -> Dict[str, Any]:
     )
     pending_events_audit = await db.fundamentals_events.count_documents({"status": "pending"})
 
+    # Per-event-type pending counts for Step 2 detector cards
+    pending_by_type_cursor = db.fundamentals_events.aggregate([
+        {"$match": {"status": "pending"}},
+        {"$group": {"_id": "$event_type", "count": {"$sum": 1}}},
+    ])
+    pending_by_type_raw = {doc["_id"]: doc["count"] async for doc in pending_by_type_cursor}
+    pending_event_counts = {
+        "split": pending_by_type_raw.get("split", 0),
+        "dividend": pending_by_type_raw.get("dividend", 0),
+        "earnings": pending_by_type_raw.get("earnings", 0),
+    }
+
     return {
         "total_visible_tickers": total,
         "price_history_complete": price_complete,
@@ -144,6 +156,7 @@ async def get_pipeline_sync_status(db) -> Dict[str, Any]:
         "needs_price_redownload": _n("needs_price_redownload"),
         "needs_fundamentals_refresh": pending_refresh_count,
         "pending_events_audit": pending_events_audit,
+        "pending_event_counts": pending_event_counts,
         "credits_today": credits["total_credits"],
         "credits_limit": 100_000,
         "credits_pct": round(credits["total_credits"] / 100_000 * 100, 1),
