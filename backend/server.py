@@ -7079,6 +7079,9 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             },
         )
     # Guard: refuse if another full chain is already running.
+    # First, auto-cleanup orphaned chains whose child jobs are all terminal.
+    from scheduler_service import _finalize_orphaned_chain_runs
+    await _finalize_orphaned_chain_runs(db, datetime.now(timezone.utc))
     _chain_running = await db.pipeline_chain_runs.find_one({"status": "running"})
     if _chain_running:
         raise HTTPException(
