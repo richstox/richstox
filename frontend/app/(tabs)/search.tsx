@@ -169,6 +169,16 @@ export default function Search() {
     router.push(`/stock/${ticker}`);
   };
 
+  const clearResults = () => {
+    setSearchQuery('');
+    setResults([]);
+    setWatchlistState({});
+    setSearch('', []);
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 100);
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* P37+ Part 1 (D): Header with Done button */}
@@ -246,6 +256,15 @@ export default function Search() {
           contentContainerStyle={styles.list}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          ListHeaderComponent={
+            <View style={styles.resultsHeader}>
+              <Text style={styles.resultsCount}>{results.length} result{results.length !== 1 ? 's' : ''}</Text>
+              <TouchableOpacity onPress={clearResults} style={styles.clearResultsButton}>
+                <Ionicons name="close-circle-outline" size={16} color={COLORS.textMuted} />
+                <Text style={styles.clearResultsText}>Clear</Text>
+              </TouchableOpacity>
+            </View>
+          }
           renderItem={({ item }) => {
             const isFollowed = watchlistState[item.ticker] || false;
             const isToggling = toggleLoading[item.ticker] || false;
@@ -411,7 +430,30 @@ const styles = StyleSheet.create({
   emptyTitle: { fontSize: 18, fontWeight: '600', color: COLORS.text, marginTop: 16 },
   emptyText: { fontSize: 14, color: COLORS.textMuted, marginTop: 8 },
 
-  list: { padding: 16 },
+  list: { padding: 16, paddingTop: 0 },
+  
+  resultsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: 12,
+    paddingTop: 4,
+  },
+  resultsCount: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+  },
+  clearResultsButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  clearResultsText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+  },
   
   // P34 Fix 3: Row container with star + item
   itemRow: {
