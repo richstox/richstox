@@ -21,12 +21,16 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 from zoneinfo import ZoneInfo
 
+import httpx
+
 from services.universe_counts_service import get_universe_counts
 from credit_log_service import get_pipeline_sync_status
 
 logger = logging.getLogger(__name__)
 
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
+EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
+EODHD_DAILY_LIMIT = 100_000
 
 
 def _to_prague_iso(dt) -> Optional[str]:
@@ -993,10 +997,45 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
     }
 
 
+async def get_eodhd_api_usage() -> Dict[str, Any]:
+    """
+    Fetch today's API call count from the EODHD provider account endpoint.
+    Canonical source: GET https://eodhd.com/api/user?api_token=XXX&fmt=json
+    Returns {apiRequests: int, dailyRateLimit: int} from the provider.
+
+    This is a read-only call; no write/update behaviour.
+    If the key is missing or the call fails, returns None for the count.
+    """
+    if not EODHD_API_KEY:
+        return {"eodhd_api_calls_today": None, "eodhd_daily_limit": EODHD_DAILY_LIMIT}
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://eodhd.com/api/user",
+                params={"api_token": EODHD_API_KEY, "fmt": "json"},
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            return {
+                "eodhd_api_calls_today": data.get("apiRequests"),
+                "eodhd_daily_limit": data.get("dailyRateLimit", EODHD_DAILY_LIMIT),
+            }
+        logger.warning("EODHD user endpoint returned %s", resp.status_code)
+        return {"eodhd_api_calls_today": None, "eodhd_daily_limit": EODHD_DAILY_LIMIT}
+    except Exception as exc:
+        logger.warning("get_eodhd_api_usage failed: %s", exc)
+        return {"eodhd_api_calls_today": None, "eodhd_daily_limit": EODHD_DAILY_LIMIT}
+
+
 async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
     """
     Return hours since last successful full pipeline run (Step 3 = fundamentals_sync)
-    and last successful price_sync, for Ops Health thresholds.
+    and last successful *standalone* morning refresh (price_sync WITHOUT a chain_run_id).
+
+    Morning Refresh semantics: only standalone price_sync runs count.
+    Chain runs (details.chain_run_id exists and is not null) are excluded.
+    If no standalone run exists, morning_refresh_hours_since_success = None → UI shows "—".
     """
     try:
         now_utc = datetime.now(timezone.utc)
@@ -1006,8 +1045,17 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
             {"finished_at": 1, "_id": 0},
             sort=[("finished_at", -1)],
         )
-        price_run = await db.ops_job_runs.find_one(
-            {"job_name": "price_sync", "status": {"$in": ["success", "completed"]}},
+        # Morning Refresh = standalone price_sync only (no chain_run_id).
+        # Filter: details.chain_run_id must be absent or null.
+        morning_refresh_run = await db.ops_job_runs.find_one(
+            {
+                "job_name": "price_sync",
+                "status": {"$in": ["success", "completed"]},
+                "$or": [
+                    {"details.chain_run_id": {"$exists": False}},
+                    {"details.chain_run_id": None},
+                ],
+            },
             {"finished_at": 1, "_id": 0},
             sort=[("finished_at", -1)],
         )
@@ -1021,7 +1069,7 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
             return round((now_utc - finished).total_seconds() / 3600, 1)
 
         pipeline_hours = _hours_since(pipeline_run)
-        price_hours = _hours_since(price_run)
+        mr_hours = _hours_since(morning_refresh_run)
 
         def _status(hours):
             if hours is None:
@@ -1035,8 +1083,8 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
         return {
             "pipeline_hours_since_success": pipeline_hours,
             "pipeline_status": _status(pipeline_hours),
-            "morning_refresh_hours_since_success": price_hours,
-            "morning_refresh_status": _status(price_hours),
+            "morning_refresh_hours_since_success": mr_hours,
+            "morning_refresh_status": _status(mr_hours),
         }
     except Exception as exc:
         logger.warning("get_pipeline_last_success_age failed: %s", exc)
@@ -1111,13 +1159,17 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     # Pipeline / morning refresh last-success age for Ops Health thresholds
     pipeline_age_task = get_pipeline_last_success_age(db)
 
+    # EODHD provider-reported API usage (read-only, no DB writes)
+    eodhd_usage_task = get_eodhd_api_usage()
+
     results = await asyncio.gather(
         universe_counts_task, scheduler_config_task, latest_price_task,
         job_runs_task, last_universe_seed_task, api_guard_task, job_last_runs_task,
-        system_health_task, pipeline_sync_task, price_integrity_task, pipeline_age_task
+        system_health_task, pipeline_sync_task, price_integrity_task, pipeline_age_task,
+        eodhd_usage_task
     )
 
-    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age = results
+    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age, eodhd_usage = results
     
     scheduler_enabled = scheduler_config.get("value", True) if scheduler_config else True
     latest_date = latest_price.get("date") if latest_price else None
@@ -1376,6 +1428,9 @@ async def get_admin_overview(db) -> Dict[str, Any]:
 
         # Pipeline & morning-refresh last-success age (hours) for Ops Health
         "pipeline_age": pipeline_age,
+
+        # EODHD provider-reported API usage (canonical source)
+        "eodhd_api_usage": eodhd_usage,
 
         # For Talk compatibility
         "visible_universe_count": universe_data["visible_universe_count"],
