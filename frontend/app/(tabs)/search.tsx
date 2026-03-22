@@ -21,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { useAuth } from '../../contexts/AuthContext';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -40,6 +41,7 @@ export default function Search() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const inputRef = useRef<TextInput>(null);
+  const { sessionToken } = useAuth();
   
   const [searchQuery, setSearchQuery] = useState('');
   const [results, setResults] = useState<any[]>([]);
@@ -52,14 +54,12 @@ export default function Search() {
   // P36 Item 5: Track tickers added this session
   const [addedThisSession, setAddedThisSession] = useState<string[]>([]);
 
-  // P34 Fix 2: Auto-focus when opened via "+" button
+  // P34 Fix 2: Auto-focus search input on mount/navigation
   useEffect(() => {
-    if (params.autofocus === 'true') {
-      setTimeout(() => {
-        inputRef.current?.focus();
-      }, 100);
-    }
-  }, [params.autofocus]);
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 100);
+  }, []);
 
   useEffect(() => {
     if (searchQuery.length >= 1) {
@@ -80,10 +80,13 @@ export default function Search() {
       
       // Load watchlist status in background (non-blocking)
       const watchlistChecks: Record<string, boolean> = {};
+      const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
       await Promise.all(
         searchResults.slice(0, 20).map(async (item: any) => {
           try {
-            const checkRes = await axios.get(`${API_URL}/api/v1/watchlist/check/${item.ticker}`);
+            const checkRes = await axios.get(`${API_URL}/api/v1/watchlist/check/${item.ticker}`, {
+              headers: authHeaders,
+            });
             watchlistChecks[item.ticker] = checkRes.data.is_followed || false;
           } catch {
             watchlistChecks[item.ticker] = false;
@@ -103,15 +106,20 @@ export default function Search() {
     
     setToggleLoading(prev => ({ ...prev, [ticker]: true }));
     const isCurrentlyFollowed = watchlistState[ticker];
+    const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
     
     try {
       if (isCurrentlyFollowed) {
-        await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`);
+        await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`, {
+          headers: authHeaders,
+        });
         setWatchlistState(prev => ({ ...prev, [ticker]: false }));
         // P36 Item 5: Remove from added this session
         setAddedThisSession(prev => prev.filter(t => t !== ticker));
       } else {
-        await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`);
+        await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`, {}, {
+          headers: authHeaders,
+        });
         setWatchlistState(prev => ({ ...prev, [ticker]: true }));
         
         // P36 Item 5: Add to "added this session" list
@@ -136,8 +144,11 @@ export default function Search() {
   
   // P36 Item 5: Remove from added this session (undo)
   const removeFromSession = async (ticker: string) => {
+    const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
     try {
-      await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`);
+      await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`, {
+        headers: authHeaders,
+      });
       setAddedThisSession(prev => prev.filter(t => t !== ticker));
       setWatchlistState(prev => ({ ...prev, [ticker]: false }));
     } catch (error) {
