@@ -1891,6 +1891,27 @@ async def admin_backfill_asset_type():
         "message": f"Backfilled asset_type for {result.modified_count} tickers"
     }
 
+
+@api_router.post("/admin/backfill-full-price-history")
+async def admin_backfill_full_price_history():
+    """
+    Recompute process-truth price completeness fields for all visible tickers.
+
+    Canonical truth model (strict proof regime):
+      history_download_completed  = history_download_proven_at IS NOT NULL
+                                    AND history_download_proven_anchor IS NOT NULL
+      history_download_completed_at = history_download_proven_anchor (date string)
+      history_download_min_date   = min(stock_prices.date)
+      missing_bulk_dates_since_history_download = gaps after anchor
+      gap_free_since_history_download = no gaps since anchor
+
+    Also preserves legacy heuristic fields (full_price_history*).
+    Idempotent: safe to re-run at any time.
+    """
+    from services.admin_overview_service import backfill_full_price_history
+    return await backfill_full_price_history(db)
+
+
 @api_router.post("/admin/whitelist/sync")
 async def admin_whitelist_sync(dry_run: bool = Query(True)):
     """

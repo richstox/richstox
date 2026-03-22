@@ -301,18 +301,21 @@ def test_step3_processes_ticker_with_refresh_flag_even_without_pending_event(mon
         "counts_by_source_pre_dedupe": {
             "price_history_incomplete": 0,
             "needs_price_redownload": 0,
+            "missing_strict_proof": 0,
         },
         "pre_dedupe_total": 0,
         "post_dedupe_total": 0,
         "counts_by_reason": {
             "price_history_incomplete": 0,
             "needs_price_redownload": 0,
+            "missing_strict_proof": 0,
         },
         "sample_tickers_by_reason": {
             "price_history_incomplete": [],
             "needs_price_redownload": [],
+            "missing_strict_proof": [],
         },
-        "selection_criteria": "PhaseC: union(price_history_incomplete, needs_price_redownload) then dedupe by ticker",
+        "selection_criteria": "PhaseC: union(price_history_incomplete, needs_price_redownload, missing_strict_proof) then dedupe by ticker",
         "overlap_possible": True,
     }
     assert "updated_at_prague" in telemetry
@@ -406,7 +409,7 @@ def test_step3_phase_c_parallel_counts_failures_per_ticker(monkeypatch):
     async def _fake_visibility_report(_db, _now):
         return {"visibility_exclusion_rows": 0, "_debug": {}, "exclusion_report_run_id": None}
 
-    async def _fake_process_price(_db, ticker, job_name=None, needs_redownload=False):
+    async def _fake_process_price(_db, ticker, job_name=None, needs_redownload=False, **kwargs):
         phase_c_calls.append((ticker, needs_redownload, job_name))
         if ticker == "BBB.US":
             raise RuntimeError("boom")
@@ -435,16 +438,18 @@ def test_step3_phase_c_parallel_counts_failures_per_ticker(monkeypatch):
     assert len(phase_c_calls) == 3
     telemetry_c = result["step3_telemetry"]["phases"]["C"]
     selection_audit = telemetry_c["selection_audit"]
-    assert selection_audit["selection_sources"] == ["price_history_incomplete", "needs_price_redownload"]
+    assert selection_audit["selection_sources"] == ["price_history_incomplete", "needs_price_redownload", "missing_strict_proof"]
     assert selection_audit["counts_by_source_pre_dedupe"] == {
         "price_history_incomplete": 3,
         "needs_price_redownload": 1,
+        "missing_strict_proof": 3,
     }
     assert selection_audit["pre_dedupe_total"] == 3
     assert selection_audit["post_dedupe_total"] == 3
     assert selection_audit["counts_by_reason"] == {
         "price_history_incomplete": 3,
         "needs_price_redownload": 1,
+        "missing_strict_proof": 3,
     }
     assert selection_audit["sample_tickers_by_reason"]["price_history_incomplete"] == ["AAA.US", "BBB.US", "CCC.US"]
     assert selection_audit["sample_tickers_by_reason"]["needs_price_redownload"] == ["BBB.US"]

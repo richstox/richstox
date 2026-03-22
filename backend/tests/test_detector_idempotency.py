@@ -60,6 +60,9 @@ class _FakeTrackedTickers:
             # Apply the $set so subsequent calls see updated state
             for k, v in update.get("$set", {}).items():
                 doc[k] = v
+            # Apply the $unset so subsequent calls see removed fields
+            for k in update.get("$unset", {}):
+                doc.pop(k, None)
 
         return SimpleNamespace(modified_count=matched)
 

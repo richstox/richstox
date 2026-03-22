@@ -200,6 +200,9 @@ async def _process_price_ticker(
             "price_history_complete_as_of": complete_as_of,
             "price_history_status": "complete",
             "needs_price_redownload": False,
+            # Strict proof marker — canonical source for history_download_completed
+            "history_download_proven_at": datetime.now(timezone.utc),
+            "history_download_proven_anchor": complete_as_of,
         }},
     )
 

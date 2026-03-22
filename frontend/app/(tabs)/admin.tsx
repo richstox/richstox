@@ -26,6 +26,7 @@ interface CoverageCheckpoint {
   date?: string | null;
   have_price_count?: number;
   today_visible?: number;
+  kind?: 'recent' | 'historical';
 }
 
 interface PriceIntegrity {
@@ -37,6 +38,9 @@ interface PriceIntegrity {
   last_bulk_trading_date?: string | null;
   needs_price_redownload?: number;
   price_history_incomplete?: number;
+  full_price_history_count?: number;
+  history_download_completed_count?: number;
+  gap_free_since_history_download_count?: number;
   missing_expected_dates?: number;
   coverage_checkpoints?: Record<string, CoverageCheckpoint>;
 }
@@ -146,6 +150,20 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (pi && (pi.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi.missing_expected_dates} date(s) with incomplete price coverage` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
+  // Format count/total with percentage
+  const fmtRatio = (count: number, total: number) => {
+    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+    return total > 0 ? `${count}/${total} (${pct}%)` : `${count}/${total}`;
+  };
+
+  // Process-truth metrics for Historical Depth / Price Integrity section
+  const tvTotal = pi?.today_visible ?? 0;
+  const hdcValue = fmtRatio(pi?.history_download_completed_count ?? 0, tvTotal);
+  const gfValue = fmtRatio(pi?.gap_free_since_history_download_count ?? 0, tvTotal);
+
+  // Legacy heuristic depth (secondary informational)
+  const fphValue = fmtRatio(pi?.full_price_history_count ?? 0, tvTotal);
+
   // Coverage checkpoint helper
   const renderCheckpoint = (label: string, key: string) => {
     const c = cp[key];
@@ -153,13 +171,17 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     const have = c.have_price_count ?? 0;
     const total = c.today_visible ?? 0;
     const pct = total > 0 ? Math.round((have / total) * 100) : 0;
+    const isHistorical = c.kind === 'historical';
     const isCoverageGap = total > 0 && have < total;
+    // Historical checkpoints: use neutral blue for incomplete depth (not amber warning)
+    const dotColor = !isCoverageGap ? '#22C55E' : isHistorical ? '#60A5FA' : '#F59E0B';
+    const textColor = !isCoverageGap ? undefined : isHistorical ? { color: '#60A5FA' } : { color: '#F59E0B' };
     return (
       <View key={key} style={d.cpRow}>
-        <View style={[d.cpDot, { backgroundColor: isCoverageGap ? '#F59E0B' : '#22C55E' }]} />
+        <View style={[d.cpDot, { backgroundColor: dotColor }]} />
         <Text style={d.cpLabel}>{label}</Text>
         <Text style={d.cpDate}>{c.date ?? '—'}</Text>
-        <Text style={[d.cpValue, isCoverageGap && { color: '#F59E0B' }]}>{have}/{total} ({pct}%)</Text>
+        <Text style={[d.cpValue, textColor]}>{have}/{total} ({pct}%)</Text>
       </View>
     );
   };
@@ -230,7 +252,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             warn={!pi?.last_bulk_trading_date}
           />
           <IntegrityMetric
-            label="Missing Dates"
+            label="Missing Bulk Dates"
             value={String(pi?.missing_expected_dates ?? 0)}
             warn={(pi?.missing_expected_dates ?? 0) > 0}
           />
@@ -240,19 +262,47 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             warn={(pi?.needs_price_redownload ?? 0) > 0}
           />
           <IntegrityMetric
-            label="Incomplete History"
+            label="Incomplete History (remediation)"
             value={String(pi?.price_history_incomplete ?? 0)}
             warn={(pi?.price_history_incomplete ?? 0) > 0}
           />
         </View>
 
-        {/* Coverage checkpoints */}
+        {/* Recent bulk coverage */}
         <Text style={d.subSection}>
-          Coverage Checkpoints ({pi?.today_visible ?? 0} visible
+          Recent Bulk Coverage ({pi?.today_visible ?? 0} visible
           {pi?.today_visible_source?.chain_run_id ? ` · run ${pi.today_visible_source.chain_run_id.slice(-8)}` : ''})
         </Text>
+        <Text style={d.cpHint}>Tickers with price data on recently ingested trading dates</Text>
         {renderCheckpoint('Latest trading day', 'latest_trading_day')}
         {renderCheckpoint('1 week ago', '1_week_ago')}
+
+        {/* Historical / Price Integrity truth */}
+        <Text style={[d.subSection, { marginTop: 12 }]}>Price Completeness (process truth)</Text>
+        <Text style={d.cpHint}>
+          Proven historical download + no missing bulk dates since download
+        </Text>
+        <IntegrityMetric
+          label="History Download Completed"
+          value={hdcValue}
+          warn={false}
+        />
+        <IntegrityMetric
+          label="Gap-Free Since Download"
+          value={gfValue}
+          warn={false}
+        />
+
+        {/* Historical coverage depth (secondary informational) */}
+        <Text style={[d.subSection, { marginTop: 12 }]}>Historical Depth (heuristic)</Text>
+        <Text style={d.cpHint}>
+          Heuristic depth indicator (≥252 rows, min date ≥1yr ago) — not the canonical truth
+        </Text>
+        <IntegrityMetric
+          label="Full Price History (heuristic)"
+          value={fphValue}
+          warn={false}
+        />
         {renderCheckpoint('1 month ago', '1_month_ago')}
         {renderCheckpoint('1 year ago', '1_year_ago')}
       </View>
@@ -320,7 +370,8 @@ const d = StyleSheet.create({
   intValue: { fontSize: 16, fontWeight: '800', color: COLORS.text },
   intLabel: { fontSize: 9, color: COLORS.textMuted, textAlign: 'center', marginTop: 2 },
 
-  subSection: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, marginBottom: 8 },
+  subSection: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, marginBottom: 4 },
+  cpHint: { fontSize: 9, color: COLORS.textMuted, marginBottom: 8, fontStyle: 'italic' },
 
   // Coverage checkpoints
   cpRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: COLORS.border + '55' },
