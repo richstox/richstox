@@ -169,15 +169,9 @@ export default function Search() {
     router.push(`/stock/${ticker}`);
   };
 
-  const clearResults = () => {
-    setSearchQuery('');
-    setResults([]);
-    setWatchlistState({});
-    setSearch('', []);
-    // Brief delay to allow state flush before focusing input
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 100);
+  const handleDonePress = () => {
+    setAddedThisSession([]);
+    router.push('/(tabs)/dashboard');
   };
 
   return (
@@ -188,7 +182,7 @@ export default function Search() {
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Add Stocks</Text>
-        <TouchableOpacity style={styles.doneButton} onPress={() => router.push('/(tabs)/dashboard')}>
+        <TouchableOpacity style={styles.doneButton} onPress={handleDonePress}>
           <Text style={styles.doneButtonText}>Done</Text>
         </TouchableOpacity>
       </View>
@@ -260,10 +254,6 @@ export default function Search() {
           ListHeaderComponent={
             <View style={styles.resultsHeader}>
               <Text style={styles.resultsCount}>{results.length} result{results.length !== 1 ? 's' : ''}</Text>
-              <TouchableOpacity onPress={clearResults} style={styles.clearResultsButton}>
-                <Ionicons name="close-circle-outline" size={16} color={COLORS.textMuted} />
-                <Text style={styles.clearResultsText}>Clear</Text>
-              </TouchableOpacity>
             </View>
           }
           renderItem={({ item }) => {
@@ -441,17 +431,6 @@ const styles = StyleSheet.create({
     paddingTop: 4,
   },
   resultsCount: {
-    fontSize: 13,
-    color: COLORS.textMuted,
-  },
-  clearResultsButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
-  clearResultsText: {
     fontSize: 13,
     color: COLORS.textMuted,
   },
