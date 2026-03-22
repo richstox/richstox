@@ -227,6 +227,17 @@ function extractDayProgress(message: string | undefined): string | null {
 
 const CHAIN_STATUS_POLL_MS = 5000;
 
+// ── Step 3 phase telemetry constants ────────────────────────────────────────
+const S3_PHASE_LABELS: Record<string, string> = { A: 'Phase A — Fundamentals', B: 'Phase B — Visibility', C: 'Phase C — Price History' };
+const S3_PHASE_COLORS: Record<string, string> = { A: '#6366F1', B: '#F59E0B', C: '#10B981' };
+const S3_STATUS_ICONS: Record<string, { icon: string; color: string }> = {
+  idle: { icon: 'time-outline', color: '#888' },
+  running: { icon: 'sync-outline', color: '#3B82F6' },
+  done: { icon: 'checkmark-circle', color: '#22C55E' },
+  error: { icon: 'close-circle', color: '#EF4444' },
+};
+const S3_TERMINAL_STATUSES = ['cancelled', 'failed', 'error', 'completed', 'success'];
+
 function isChainStatusActive(status?: string | null): boolean {
   return status != null && !['completed', 'success', 'failed', 'error', 'cancelled'].includes(status);
 }
@@ -1761,15 +1772,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const tel = step3Telemetry;
                 const phases = tel.phases || {};
                 const activePhase: string | null = tel.active_phase ?? null;
-                const isTerminal = ['cancelled', 'failed', 'error', 'completed', 'success'].includes(tel.status);
-                const PHASE_LABELS: Record<string, string> = { A: 'Phase A — Fundamentals', B: 'Phase B — Visibility', C: 'Phase C — Price History' };
-                const PHASE_COLORS: Record<string, string> = { A: '#6366F1', B: '#F59E0B', C: '#10B981' };
-                const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
-                  idle: { icon: 'time-outline', color: COLORS.textMuted },
-                  running: { icon: 'sync-outline', color: '#3B82F6' },
-                  done: { icon: 'checkmark-circle', color: '#22C55E' },
-                  error: { icon: 'close-circle', color: '#EF4444' },
-                };
+                const isTerminal = S3_TERMINAL_STATUSES.includes(tel.status);
 
                 return (
                   <View style={s.substepsCard}>
@@ -1801,7 +1804,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       const phase = phases[pk];
                       if (!phase) return null;
                       const isActive = activePhase === pk && !isTerminal;
-                      const si = STATUS_ICONS[phase.status] || STATUS_ICONS.idle;
+                      const si = S3_STATUS_ICONS[phase.status] || S3_STATUS_ICONS.idle;
                       const hasCounts = phase.total != null && phase.total > 0;
                       const phasePct = phase.pct != null ? Math.min(phase.pct, 100) : 0;
 
@@ -1813,16 +1816,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                             paddingVertical: 6,
                             paddingHorizontal: 8,
                             borderRadius: 6,
-                            backgroundColor: isActive ? PHASE_COLORS[pk] + '11' : 'transparent',
+                            backgroundColor: isActive ? S3_PHASE_COLORS[pk] + '11' : 'transparent',
                             borderWidth: isActive ? 1 : 0,
-                            borderColor: isActive ? PHASE_COLORS[pk] + '44' : 'transparent',
+                            borderColor: isActive ? S3_PHASE_COLORS[pk] + '44' : 'transparent',
                           }}
                         >
                           {/* Phase header */}
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
                             <Ionicons name={si.icon as any} size={13} color={si.color} />
                             <Text style={{ fontSize: 11, fontWeight: '600', color: COLORS.text, flex: 1 }}>
-                              {PHASE_LABELS[pk]}
+                              {S3_PHASE_LABELS[pk]}
                             </Text>
                             <Text style={{ fontSize: 9, fontWeight: '600', color: si.color }}>
                               {phase.status.toUpperCase()}
@@ -1833,13 +1836,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                           {hasCounts && (
                             <View style={{ marginTop: 2 }}>
                               <View style={{ height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden', marginBottom: 3 }}>
-                                <View style={{ height: 4, borderRadius: 2, width: `${phasePct}%` as any, backgroundColor: PHASE_COLORS[pk] }} />
+                                <View style={{ height: 4, borderRadius: 2, width: `${phasePct}%` as any, backgroundColor: S3_PHASE_COLORS[pk] }} />
                               </View>
                               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
                                 <Text style={{ fontSize: 10, color: COLORS.textMuted }}>
                                   {fmt(phase.processed)} / {fmt(phase.total)}
                                 </Text>
-                                <Text style={{ fontSize: 10, fontWeight: '600', color: PHASE_COLORS[pk] }}>
+                                <Text style={{ fontSize: 10, fontWeight: '600', color: S3_PHASE_COLORS[pk] }}>
                                   {phase.pct != null ? `${Math.round(phase.pct * 10) / 10}%` : '—'}
                                 </Text>
                               </View>
@@ -1869,7 +1872,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                                   <View key={reason} style={{ marginBottom: 4 }}>
                                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
                                       <Text style={{ fontSize: 10, color: COLORS.text }}>{reason.replace(/_/g, ' ')}</Text>
-                                      <Text style={{ fontSize: 10, fontWeight: '700', color: PHASE_COLORS.C }}>{fmt(counts[reason])}</Text>
+                                      <Text style={{ fontSize: 10, fontWeight: '700', color: S3_PHASE_COLORS.C }}>{fmt(counts[reason])}</Text>
                                     </View>
                                     {samples[reason] && samples[reason].length > 0 && (
                                       <Text style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'monospace', marginTop: 1 }} numberOfLines={1}>
