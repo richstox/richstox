@@ -653,7 +653,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         # history_download_completed: derive from strict proof markers
         # directly, not from the pre-computed field (which requires the
         # manual backfill job to have been run).
-        flag_facet_task = db.tracked_tickers.aggregate([
+        flag_facet_coro = db.tracked_tickers.aggregate([
             {"$match": {"is_visible": True}},
             {"$facet": {
                 "needs_redownload": [
@@ -683,7 +683,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         ]).to_list(1)
 
         # Fetch proven tickers with anchors for inline gap-free computation
-        proven_docs_task = db.tracked_tickers.find(
+        proven_docs_coro = db.tracked_tickers.find(
             {
                 "is_visible": True,
                 "history_download_proven_at": {"$exists": True, "$type": "date"},
@@ -693,7 +693,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         ).to_list(None)
 
         flag_facet, proven_docs = await asyncio.gather(
-            flag_facet_task, proven_docs_task,
+            flag_facet_coro, proven_docs_coro,
         )
 
         ff = flag_facet[0] if flag_facet else {}
