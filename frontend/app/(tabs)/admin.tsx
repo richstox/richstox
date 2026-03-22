@@ -163,8 +163,29 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
   // Process-truth metrics for Price Integrity section
   const tvTotal = pi?.today_visible ?? 0;
-  const hdcValue = fmtRatio(pi?.history_download_completed_count ?? 0, tvTotal);
-  const gfValue = fmtRatio(pi?.gap_free_since_history_download_count ?? 0, tvTotal);
+  const hdcCount = pi?.history_download_completed_count ?? 0;
+  const gfCount = pi?.gap_free_since_history_download_count ?? 0;
+  const hdcValue = fmtRatio(hdcCount, tvTotal);
+  const gfValue = fmtRatio(gfCount, tvTotal);
+
+  // ── Tristate status logic for Price Integrity cards ──
+  // GREEN = confirmed OK, YELLOW = unknown/pending, RED = confirmed problem
+  const lastBulkStatus: 'green' | 'yellow' = pi?.last_bulk_trading_date ? 'green' : 'yellow';
+
+  const missingBulk = pi?.missing_expected_dates;
+  const missingBulkDisplay = missingBulk != null ? String(missingBulk) : '—';
+  const missingBulkStatus: 'green' | 'yellow' | 'red' =
+    missingBulk != null ? (missingBulk === 0 ? 'green' : 'red') : 'yellow';
+
+  const needRedl = pi?.needs_price_redownload;
+  const needRedlDisplay = needRedl != null ? String(needRedl) : '—';
+  const needRedlStatus: 'green' | 'yellow' | 'red' =
+    needRedl != null ? (needRedl === 0 ? 'green' : 'red') : 'yellow';
+
+  const hdcStatus: 'green' | 'yellow' =
+    pi && tvTotal > 0 && hdcCount === tvTotal ? 'green' : 'yellow';
+  const gfStatus: 'green' | 'yellow' =
+    pi && tvTotal > 0 && gfCount === tvTotal ? 'green' : 'yellow';
 
   // EODHD API usage from provider endpoint
   const eodhCallsToday = eodhd?.eodhd_api_calls_today;
@@ -261,22 +282,22 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           <IntegrityMetric
             label="Last Bulk Date"
             value={pi?.last_bulk_trading_date ?? '—'}
-            warn={!pi?.last_bulk_trading_date}
+            status={lastBulkStatus}
           />
           <IntegrityMetric
             label="Missing Bulk Dates"
-            value={String(pi?.missing_expected_dates ?? 0)}
-            warn={(pi?.missing_expected_dates ?? 0) > 0}
+            value={missingBulkDisplay}
+            status={missingBulkStatus}
           />
           <IntegrityMetric
             label="Need Re-download"
-            value={String(pi?.needs_price_redownload ?? 0)}
-            warn={(pi?.needs_price_redownload ?? 0) > 0}
+            value={needRedlDisplay}
+            status={needRedlStatus}
           />
           <IntegrityMetric
             label="Complete Fundamentals"
             value="—"
-            warn={false}
+            status="yellow"
           />
         </View>
 
@@ -297,12 +318,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         <IntegrityMetric
           label="Complete Prices (strict proof)"
           value={hdcValue}
-          warn={false}
+          status={hdcStatus}
         />
         <IntegrityMetric
           label="Gap-Free Since Download"
           value={gfValue}
-          warn={false}
+          status={gfStatus}
         />
       </View>
 
@@ -331,10 +352,13 @@ function OpsItem({ label, value, status }: { label: string; value: string; statu
   );
 }
 
-function IntegrityMetric({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+function IntegrityMetric({ label, value, status }: { label: string; value: string; status?: 'green' | 'yellow' | 'red' }) {
+  const bg = status === 'green' ? '#22C55E18' : status === 'yellow' ? '#F59E0B18' : status === 'red' ? '#EF444418' : undefined;
+  const border = status === 'green' ? '#22C55E44' : status === 'yellow' ? '#F59E0B44' : status === 'red' ? '#EF444444' : COLORS.border;
+  const fg = status === 'green' ? '#16A34A' : status === 'yellow' ? '#D97706' : status === 'red' ? '#DC2626' : COLORS.text;
   return (
-    <View style={d.intMetric}>
-      <Text style={[d.intValue, warn && { color: '#F59E0B' }]}>{value}</Text>
+    <View style={[d.intMetric, bg != null && { backgroundColor: bg }, { borderColor: border }]}>
+      <Text style={[d.intValue, { color: fg }]}>{value}</Text>
       <Text style={d.intLabel}>{label}</Text>
     </View>
   );
