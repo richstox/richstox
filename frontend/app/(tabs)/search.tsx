@@ -374,7 +374,7 @@ const styles = StyleSheet.create({
   // P36 Item 5: Added this session chips
   addedSessionContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: 16,
     paddingBottom: 8,
     gap: 8,
@@ -383,8 +383,10 @@ const styles = StyleSheet.create({
   addedSessionLabel: {
     fontSize: 12,
     color: COLORS.textMuted,
+    paddingTop: 4,
   },
   addedSessionChips: {
+    flex: 1,
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
