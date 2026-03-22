@@ -30,6 +30,10 @@ interface CoverageCheckpoint {
 
 interface PriceIntegrity {
   today_visible?: number;
+  today_visible_source?: {
+    chain_run_id?: string | null;
+    generated_at_prague?: string | null;
+  } | null;
   last_bulk_trading_date?: string | null;
   needs_price_redownload?: number;
   price_history_incomplete?: number;
@@ -244,7 +248,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
         {/* Coverage checkpoints */}
         <Text style={d.subSection}>
-          Coverage Checkpoints ({pi?.today_visible ?? 0} visible)
+          Coverage Checkpoints ({pi?.today_visible ?? 0} visible
+          {pi?.today_visible_source?.chain_run_id ? ` · run ${pi.today_visible_source.chain_run_id.slice(-8)}` : ''})
         </Text>
         {renderCheckpoint('Latest trading day', 'latest_trading_day')}
         {renderCheckpoint('1 week ago', '1_week_ago')}

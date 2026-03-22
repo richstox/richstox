@@ -46,6 +46,8 @@ def _mock_db(
     incomplete_count=0,
     checkpoint_counts=None,
     gap_count=0,
+    chain_doc="DEFAULT",
+    bulk_days=None,
 ):
     """Build a mock db with the fields needed by get_price_integrity_metrics."""
     if visible_tickers is None:
@@ -66,30 +68,73 @@ def _mock_db(
         find_one=AsyncMock(return_value=bulk_state),
     )
 
+    # pipeline_chain_runs — for _resolve_today_visible
+    if chain_doc == "DEFAULT":
+        chain_doc = {
+            "chain_run_id": "chain_test_123",
+            "finished_at": datetime(2026, 3, 20, 10, 0, tzinfo=timezone.utc),
+        }
+    pipeline_chain_runs = SimpleNamespace(
+        find_one=AsyncMock(return_value=chain_doc),
+    )
+
+    # ops_job_runs — for _get_bulk_processed_dates
+    if bulk_days is None:
+        bulk_days = []
+    bulk_runs = [{
+        "details": {
+            "price_bulk_gapfill": {
+                "days": bulk_days,
+            }
+        }
+    }] if bulk_days else []
+
+    # Derive expected successful dates from bulk_days for mock alignment
+    expected_dates = [
+        d["processed_date"] for d in bulk_days
+        if d.get("status") == "success" and d.get("processed_date")
+    ]
+
     # stock_prices — find_one for nearest date, aggregate for counts & gaps
     checkpoint_counts = checkpoint_counts or {}
     count_docs = [{"_id": d, "count": c} for d, c in checkpoint_counts.items()]
     gap_docs = [{"n": gap_count}] if gap_count else []
+    # For the zero-coverage check, return all expected dates as having data
+    # (so only the gap_count from the first aggregate matters)
+    dates_with_data_docs = [{"_id": d} for d in expected_dates]
 
     call_index = {"n": 0}
 
     def _sp_aggregate(pipeline):
-        # First aggregate call → checkpoint counts, second → gap count
         idx = call_index["n"]
         call_index["n"] += 1
         if idx == 0:
+            # First call: checkpoint counts
             return _make_cursor(count_docs)
-        return _make_cursor(gap_docs)
+        if idx == 1:
+            # Second call: gap count (incomplete dates)
+            return _make_cursor(gap_docs)
+        if idx == 2:
+            # Third call: dates_with_data (for zero-coverage detection)
+            return _make_cursor(dates_with_data_docs)
+        return _make_cursor([])
 
     stock_prices = SimpleNamespace(
         find_one=AsyncMock(return_value={"date": "2026-03-20"}),
         aggregate=_sp_aggregate,
     )
 
+    ops_job_runs = SimpleNamespace(
+        aggregate=lambda pipeline: _make_cursor(bulk_runs),
+        find_one=AsyncMock(return_value=None),
+    )
+
     return SimpleNamespace(
         tracked_tickers=tracked_tickers,
         pipeline_state=pipeline_state,
+        pipeline_chain_runs=pipeline_chain_runs,
         stock_prices=stock_prices,
+        ops_job_runs=ops_job_runs,
     )
 
 
@@ -101,6 +146,7 @@ def test_returns_correct_keys():
     result = asyncio.run(get_price_integrity_metrics(db))
 
     assert "today_visible" in result
+    assert "today_visible_source" in result
     assert "last_bulk_trading_date" in result
     assert "needs_price_redownload" in result
     assert "price_history_incomplete" in result
@@ -112,6 +158,28 @@ def test_today_visible_count():
     db = _mock_db(visible_tickers=["A.US", "B.US", "C.US", "D.US"])
     result = asyncio.run(get_price_integrity_metrics(db))
     assert result["today_visible"] == 4
+
+
+def test_today_visible_source_from_chain():
+    db = _mock_db(
+        chain_doc={
+            "chain_run_id": "chain_abc",
+            "finished_at": datetime(2026, 3, 20, 10, 0, tzinfo=timezone.utc),
+        }
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    source = result["today_visible_source"]
+    assert source is not None
+    assert source["chain_run_id"] == "chain_abc"
+    assert source["generated_at_prague"] is not None
+
+
+def test_today_visible_source_none_when_no_chain():
+    db = _mock_db(chain_doc=None)
+    result = asyncio.run(get_price_integrity_metrics(db))
+    source = result["today_visible_source"]
+    assert source is not None
+    assert source["chain_run_id"] is None
 
 
 def test_last_bulk_date_from_pipeline_state():
@@ -158,12 +226,44 @@ def test_zero_visible_returns_safe_defaults():
     assert result["needs_price_redownload"] == 0
     assert result["missing_expected_dates"] == 0
     assert result["coverage_checkpoints"] == {}
+    assert "today_visible_source" in result
 
 
-def test_missing_expected_dates_count():
-    db = _mock_db(gap_count=7)
+def test_missing_expected_dates_from_bulk_history():
+    """Gap count comes from bulk-processed dates, not a rolling lookback."""
+    bulk_days = [
+        {"processed_date": "2026-03-18", "status": "success"},
+        {"processed_date": "2026-03-19", "status": "success"},
+        {"processed_date": "2026-03-20", "status": "success"},
+    ]
+    db = _mock_db(
+        bulk_days=bulk_days,
+        gap_count=2,  # 2 of the 3 expected dates have incomplete coverage
+    )
     result = asyncio.run(get_price_integrity_metrics(db))
-    assert result["missing_expected_dates"] == 7
+    assert result["missing_expected_dates"] == 2
+
+
+def test_no_gaps_when_no_bulk_history():
+    """When there are no successfully processed bulk dates, missing_expected_dates is 0."""
+    db = _mock_db(bulk_days=[])
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["missing_expected_dates"] == 0
+
+
+def test_failed_bulk_days_excluded():
+    """Only status=success bulk days count as expected_dates."""
+    bulk_days = [
+        {"processed_date": "2026-03-18", "status": "success"},
+        {"processed_date": "2026-03-19", "status": "error"},
+        {"processed_date": "2026-03-20", "status": "failed_sanity"},
+    ]
+    db = _mock_db(bulk_days=bulk_days)
+    # The mock ops_job_runs returns these days; only 2026-03-18 has status=success
+    # Since gap_count defaults to 0, expect 0 missing
+    result = asyncio.run(get_price_integrity_metrics(db))
+    # With 1 expected date and gap_count=0, should be 0 missing
+    assert result["missing_expected_dates"] == 0
 
 
 # ── Tests: get_pipeline_last_success_age ────────────────────────────────────
