@@ -148,6 +148,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (pi && (pi.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi.missing_expected_dates} date(s) with incomplete price coverage` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
+  // Full price history summary for Historical Depth section
+  const fphCount = pi?.full_price_history_count ?? 0;
+  const fphTotal = pi?.today_visible ?? 0;
+  const fphPct = fphTotal > 0 ? Math.round((fphCount / fphTotal) * 100) : 0;
+  const fphValue = fphTotal > 0 ? `${fphCount}/${fphTotal} (${fphPct}%)` : `${fphCount}/${fphTotal}`;
+
   // Coverage checkpoint helper
   const renderCheckpoint = (label: string, key: string) => {
     const c = cp[key];
@@ -268,7 +274,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         </Text>
         <IntegrityMetric
           label="Full Price History"
-          value={`${pi?.full_price_history_count ?? 0}/${pi?.today_visible ?? 0}${(pi?.today_visible ?? 0) > 0 ? ` (${Math.round(((pi?.full_price_history_count ?? 0) / (pi?.today_visible ?? 1)) * 100)}%)` : ''}`}
+          value={fphValue}
           warn={false}
         />
         {renderCheckpoint('1 month ago', '1_month_ago')}
