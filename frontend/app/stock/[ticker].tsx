@@ -1293,24 +1293,25 @@ export default function StockDetail() {
             {prevTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{prevTicker}</Text>}
           </TouchableOpacity>
 
-          <Text style={styles.searchNavCounter}>
-            {searchIndex + 1} of {searchResults.length}
-          </Text>
+          <View style={styles.searchNavCenter}>
+            <TouchableOpacity
+              style={styles.searchNavClose}
+              onPress={clearSearch}
+            >
+              <Ionicons name="close" size={16} color={COLORS.textMuted} />
+            </TouchableOpacity>
+            <Text style={styles.searchNavCounter}>
+              {searchIndex + 1} of {searchResults.length}
+            </Text>
+          </View>
 
           <TouchableOpacity
-            style={[styles.searchNavButton, !nextTicker && styles.searchNavButtonDisabled]}
+            style={[styles.searchNavButton, styles.searchNavButtonRight, !nextTicker && styles.searchNavButtonDisabled]}
             onPress={() => nextTicker && navigateToTicker(nextTicker)}
             disabled={!nextTicker}
           >
             {nextTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{nextTicker}</Text>}
             <Ionicons name="chevron-forward" size={16} color={nextTicker ? COLORS.primary : COLORS.textMuted} />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.searchNavClose}
-            onPress={clearSearch}
-          >
-            <Ionicons name="close" size={16} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
       )}
@@ -4143,6 +4144,9 @@ const styles = StyleSheet.create({
     gap: 4,
     minWidth: 60,
   },
+  searchNavButtonRight: {
+    justifyContent: 'flex-end',
+  },
   searchNavButtonDisabled: {
     opacity: 0.3,
   },
@@ -4151,12 +4155,16 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#1E3A5F',
   },
+  searchNavCenter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
   searchNavCounter: {
     fontSize: 12,
     color: '#9CA3AF',
   },
   searchNavClose: {
     padding: 4,
-    marginLeft: 4,
   },
 });

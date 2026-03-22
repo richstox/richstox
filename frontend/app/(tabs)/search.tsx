@@ -183,7 +183,7 @@ export default function Search() {
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Add Stocks</Text>
+        <Text style={styles.headerTitle}>Search Stocks</Text>
         <TouchableOpacity style={styles.doneButton} onPress={handleDonePress}>
           <Text style={styles.doneButtonText}>Done</Text>
         </TouchableOpacity>
