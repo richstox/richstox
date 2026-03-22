@@ -174,6 +174,7 @@ export default function Search() {
     setResults([]);
     setWatchlistState({});
     setSearch('', []);
+    // Brief delay to allow state flush before focusing input
     setTimeout(() => {
       inputRef.current?.focus();
     }, 100);

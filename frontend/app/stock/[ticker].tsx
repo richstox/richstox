@@ -535,11 +535,14 @@ export default function StockDetail() {
 
   // P34 Fix 5: Check if ticker is in watchlist
   const checkIfFollowed = useCallback(async () => {
+    if (!sessionToken) {
+      setIsFollowed(false);
+      return;
+    }
     try {
       // P33/P34: Use watchlist endpoint - source of truth
-      const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
       const response = await axios.get(`${API_URL}/api/v1/watchlist/check/${ticker}`, {
-        headers: authHeaders,
+        headers: { Authorization: `Bearer ${sessionToken}` },
       });
       setIsFollowed(response.data.is_followed || false);
     } catch (err) {
@@ -553,7 +556,11 @@ export default function StockDetail() {
     if (followLoading) return;
     
     setFollowLoading(true);
-    const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+    if (!sessionToken) {
+      setFollowLoading(false);
+      return;
+    }
+    const authHeaders = { Authorization: `Bearer ${sessionToken}` };
     try {
       if (isFollowed) {
         // Unfollow - remove from watchlist
