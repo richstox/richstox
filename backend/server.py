@@ -1897,9 +1897,10 @@ async def admin_backfill_full_price_history():
     """
     Recompute process-truth price completeness fields for all visible tickers.
 
-    Canonical truth model:
-      history_download_completed  = price_history_complete (proven download)
-      history_download_completed_at = price_history_complete_as_of (anchor date)
+    Canonical truth model (strict proof regime):
+      history_download_completed  = history_download_proven_at IS NOT NULL
+                                    AND history_download_proven_anchor IS NOT NULL
+      history_download_completed_at = history_download_proven_anchor (date string)
       history_download_min_date   = min(stock_prices.date)
       missing_bulk_dates_since_history_download = gaps after anchor
       gap_free_since_history_download = no gaps since anchor
