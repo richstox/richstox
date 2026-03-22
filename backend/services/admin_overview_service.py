@@ -149,6 +149,18 @@ async def get_step3_live_telemetry(db) -> Dict[str, Any]:
         "B": _sanitize_phase_payload((raw_phases or {}).get("B"), fallback_name="Visibility"),
         "C": _sanitize_phase_payload((raw_phases or {}).get("C"), fallback_name="PriceHistory"),
     }
+
+    # ── Defensive: normalise stale "running" phases for terminal runs ──
+    # If the process died mid-Phase (OOM / restart), the zombie finalizer
+    # marks the run as cancelled but phase telemetry may still say "running".
+    # Correct that here so the dashboard never shows a ghost running phase.
+    run_status = run.get("status")
+    if run_status in ("cancelled", "failed", "error", "completed", "success"):
+        for pk in ("A", "B", "C"):
+            if response["phases"][pk].get("status") == "running":
+                response["phases"][pk]["status"] = "error"
+                response["phases"][pk]["message"] = "Run terminated"
+
     return response
 
 

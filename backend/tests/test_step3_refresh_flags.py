@@ -108,6 +108,21 @@ class _OpsJobRuns:
             return dict(self.docs[doc_id])
         return None
 
+    def find(self, filt):
+        """Minimal find() returning an async cursor over matching docs."""
+        matched = []
+        for doc_id, doc in self.docs.items():
+            if filt.get("job_name") and doc.get("job_name") != filt["job_name"]:
+                continue
+            if filt.get("status") and doc.get("status") != filt["status"]:
+                continue
+            details = doc.get("details") or {}
+            if filt.get("details.zombie_finalized") and not details.get("zombie_finalized"):
+                continue
+            # Simplified: always include if basic filters pass
+            matched.append({**doc, "_id": doc_id})
+        return _AsyncCursor(matched)
+
     async def update_one(self, filt, update):
         doc = self.docs.get(filt["_id"], {})
         expected_status = filt.get("status")
@@ -497,6 +512,42 @@ def test_finalize_zombie_step3_runs_marks_stale_running_docs_cancelled():
     assert db.ops_job_runs.docs[1]["details"]["zombie_reason"] == "stale_heartbeat_or_missing"
 
 
+def test_finalize_zombie_step3_runs_patches_running_phase_telemetry():
+    """When a zombie run has Phase C status='running', the zombie finalizer
+    must patch it to 'error' so the dashboard never shows a ghost phase."""
+    from datetime import datetime, timezone, timedelta
+    from scheduler_service import _finalize_zombie_fundamentals_runs
+
+    db = _FakeStep3DB([])
+    stale_started = datetime.now(timezone.utc) - timedelta(days=1)
+    db.ops_job_runs.docs[1] = {
+        "job_name": "fundamentals_sync",
+        "status": "running",
+        "started_at": stale_started,
+        "details": {
+            "step3_telemetry": {
+                "phases": {
+                    "A": {"status": "done", "message": "Fundamentals completed"},
+                    "B": {"status": "done", "message": "Visibility completed"},
+                    "C": {"status": "running", "message": "Syncing price history"},
+                },
+            },
+        },
+    }
+
+    finalized = asyncio.run(_finalize_zombie_fundamentals_runs(db, datetime.now(timezone.utc)))
+
+    assert finalized == 1
+    assert db.ops_job_runs.docs[1]["status"] == "cancelled"
+    assert db.ops_job_runs.docs[1]["details"]["zombie_finalized"] is True
+    # Phase A/B should remain "done" (completed before process died)
+    assert db.ops_job_runs.docs[1]["details"]["step3_telemetry"]["phases"]["A"]["status"] == "done"
+    assert db.ops_job_runs.docs[1]["details"]["step3_telemetry"]["phases"]["B"]["status"] == "done"
+    # Phase C must be patched from "running" to "error"
+    assert db.ops_job_runs.docs[1]["details"]["step3_telemetry"]["phases"]["C"]["status"] == "error"
+    assert "zombie" in db.ops_job_runs.docs[1]["details"]["step3_telemetry"]["phases"]["C"]["message"].lower()
+
+
 class _TrackedTickersForSyncStatus:
     def __init__(self, docs):
         self._docs = list(docs)
@@ -721,6 +772,42 @@ def test_step3_live_telemetry_returns_idle_when_no_runs():
     assert resp["updated_at_prague"] is None
     assert resp["pending_refresh_flags"] == 1
     assert resp["pending_events_audit"] == 2
+
+
+def test_step3_live_telemetry_normalizes_running_phase_on_cancelled_run():
+    """If a run is cancelled (e.g. zombie-finalized) but Phase C telemetry
+    still shows 'running', the reader must normalise it to 'error'."""
+    from services.admin_overview_service import get_step3_live_telemetry
+
+    finished = {
+        "_id": "run-zombie",
+        "status": "cancelled",
+        "started_at_prague": "2026-03-22T14:00:00+01:00",
+        "finished_at_prague": "2026-03-22T15:05:59+01:00",
+        "details": {
+            "step3_telemetry": {
+                "updated_at_prague": "2026-03-22T14:41:22+01:00",
+                "phases": {
+                    "A": {"name": "Fundamentals", "status": "done", "processed": 50, "total": 50, "pct": 100, "message": "Done"},
+                    "B": {"name": "Visibility", "status": "done", "processed": 10, "total": 10, "pct": 100, "message": "Done"},
+                    "C": {"name": "PriceHistory", "status": "running", "processed": 401, "total": 5226, "pct": 7.67, "message": "Syncing price history"},
+                },
+            },
+            "zombie_finalized": True,
+            "zombie_reason": "stale_heartbeat_or_missing",
+        },
+    }
+    db = _FakeStep3TelemetryReadDB(running=None, finished=finished)
+
+    resp = asyncio.run(get_step3_live_telemetry(db))
+    assert resp["run_id"] == "run-zombie"
+    assert resp["status"] == "cancelled"
+    # Phase A and B should remain "done"
+    assert resp["phases"]["A"]["status"] == "done"
+    assert resp["phases"]["B"]["status"] == "done"
+    # Phase C must be normalised from "running" to "error"
+    assert resp["phases"]["C"]["status"] == "error"
+    assert resp["phases"]["C"]["message"] == "Run terminated"
 
 
 # ---------------------------------------------------------------------------
