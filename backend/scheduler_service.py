@@ -65,8 +65,9 @@ PRICE_SYNC_ACTIVE_PHASES = {
     "2.4_dividend",
     "2.6_earnings",
 }
-STEP3_PHASE_C_CONCURRENCY_DEFAULT = 6
+STEP3_PHASE_C_CONCURRENCY_DEFAULT = 3
 STEP3_PHASE_C_CONCURRENCY_MAX = 12
+STEP3_PHASE_C_BATCH_SIZE_DEFAULT = 50
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
@@ -2444,7 +2445,36 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
             f"fundamentals_sync: finalized {cancel_zombie_result.modified_count} cancel_requested run(s) "
             f"(heartbeat cutoff={cancel_stale_before.isoformat()})"
         )
-    return running_zombie_result.modified_count + cancel_zombie_result.modified_count
+
+    # ── Fix stale telemetry: any phase still "running" is incorrect for a
+    #    zombie-finalized run (process died).  Patch them to "error" so the
+    #    dashboard does not show a ghost "running" phase on a cancelled run.
+    total_zombified = running_zombie_result.modified_count + cancel_zombie_result.modified_count
+    if total_zombified:
+        async for doc in db.ops_job_runs.find({
+            "job_name": "fundamentals_sync",
+            "details.zombie_finalized": True,
+            "status": "cancelled",
+            "$or": [
+                {"details.step3_telemetry.phases.A.status": "running"},
+                {"details.step3_telemetry.phases.B.status": "running"},
+                {"details.step3_telemetry.phases.C.status": "running"},
+            ],
+        }):
+            fix_fields: Dict[str, Any] = {}
+            phases = (doc.get("details") or {}).get("step3_telemetry", {}).get("phases", {})
+            for pk in ("A", "B", "C"):
+                if (phases.get(pk) or {}).get("status") == "running":
+                    fix_fields[f"details.step3_telemetry.phases.{pk}.status"] = "error"
+                    fix_fields[f"details.step3_telemetry.phases.{pk}.message"] = "Process terminated (zombie finalized)"
+            if fix_fields:
+                await db.ops_job_runs.update_one({"_id": doc["_id"]}, {"$set": fix_fields})
+                logger.info(
+                    f"fundamentals_sync: patched zombie telemetry for run {doc['_id']} "
+                    f"(phases fixed: {list(fix_fields.keys())})"
+                )
+
+    return total_zombified
 
 
 async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
@@ -3470,59 +3500,82 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                                 "records": 0,
                             }
 
-                tasks_c = [
-                    asyncio.create_task(_process_price_one(ticker, needs_redownload))
-                    for ticker, needs_redownload in phase_c_tickers
-                ]
-
                 done_c = 0
-                async def _cancel_phase_c(stop_reason: str, progress_msg: str) -> Dict[str, Any]:
-                    for task in tasks_c:
-                        if not task.done():
-                            task.cancel()
-                    await asyncio.gather(*tasks_c, return_exceptions=True)
-                    return await _finalize_cancelled(
-                        stop_reason=stop_reason,
-                        progress_msg=progress_msg,
-                        processed=done_c,
-                        total=total_c,
+                try:
+                    _phase_c_batch_size = int(
+                        os.getenv(
+                            "STEP3_PHASE_C_BATCH_SIZE",
+                            str(STEP3_PHASE_C_BATCH_SIZE_DEFAULT),
+                        )
                     )
+                except (TypeError, ValueError):
+                    _phase_c_batch_size = STEP3_PHASE_C_BATCH_SIZE_DEFAULT
+                phase_c_batch_size = max(1, _phase_c_batch_size)
+                logger.info(
+                    f"{job_name}: Phase C batch_size={phase_c_batch_size}"
+                )
 
-                for coro in asyncio.as_completed(tasks_c):
+                _phase_c_cancelled = False
+                for batch_start in range(0, total_c, phase_c_batch_size):
                     if await _is_cancelled():
-                        return await _cancel_phase_c(
-                            "cancel_requested_phase_c",
-                            "Cancelled during Phase C price history",
-                        )
+                        _phase_c_cancelled = True
+                        break
+                    batch = phase_c_tickers[batch_start:batch_start + phase_c_batch_size]
+                    tasks_c = [
+                        asyncio.create_task(_process_price_one(ticker, needs_redownload))
+                        for ticker, needs_redownload in batch
+                    ]
 
-                    ticker_result = await coro
-                    if ticker_result.get("cancelled"):
-                        return await _cancel_phase_c(
-                            "cancel_requested_phase_c",
-                            "Cancelled during Phase C price history",
-                        )
-                    if ticker_result.get("success"):
-                        phase_c_stats["tickers_succeeded"] += 1
-                        phase_c_stats["total_records"] += int(ticker_result.get("records") or 0)
-                    else:
-                        phase_c_stats["tickers_failed"] += 1
+                    for coro in asyncio.as_completed(tasks_c):
+                        if await _is_cancelled():
+                            for task in tasks_c:
+                                if not task.done():
+                                    task.cancel()
+                            await asyncio.gather(*tasks_c, return_exceptions=True)
+                            _phase_c_cancelled = True
+                            break
 
-                    done_c += 1
-                    _phase_update(
-                        "C",
-                        status="running",
+                        ticker_result = await coro
+                        if ticker_result.get("cancelled"):
+                            for task in tasks_c:
+                                if not task.done():
+                                    task.cancel()
+                            await asyncio.gather(*tasks_c, return_exceptions=True)
+                            _phase_c_cancelled = True
+                            break
+                        if ticker_result.get("success"):
+                            phase_c_stats["tickers_succeeded"] += 1
+                            phase_c_stats["total_records"] += int(ticker_result.get("records") or 0)
+                        else:
+                            phase_c_stats["tickers_failed"] += 1
+
+                        done_c += 1
+                        _phase_update(
+                            "C",
+                            status="running",
+                            processed=done_c,
+                            total=total_c,
+                            message="Syncing price history",
+                            activate=True,
+                        )
+                        await _write_step3_telemetry(throttle_processed=done_c)
+                        if done_c % 10 == 0 or done_c == total_c:
+                            await _progress(
+                                f"Phase C price history: {done_c}/{total_c} "
+                                f"(✓{phase_c_stats['tickers_succeeded']} "
+                                f"✗{phase_c_stats['tickers_failed']})"
+                            )
+
+                    if _phase_c_cancelled:
+                        break
+
+                if _phase_c_cancelled:
+                    return await _finalize_cancelled(
+                        stop_reason="cancel_requested_phase_c",
+                        progress_msg="Cancelled during Phase C price history",
                         processed=done_c,
                         total=total_c,
-                        message="Syncing price history",
-                        activate=True,
                     )
-                    await _write_step3_telemetry(throttle_processed=done_c)
-                    if done_c % 10 == 0 or done_c == total_c:
-                        await _progress(
-                            f"Phase C price history: {done_c}/{total_c} "
-                            f"(✓{phase_c_stats['tickers_succeeded']} "
-                            f"✗{phase_c_stats['tickers_failed']})"
-                        )
 
                 if result.get("status") == "cancelled":
                     _phase_update("C", status="error", processed=phase_c_stats["tickers_succeeded"] + phase_c_stats["tickers_failed"], total=total_c, message="Price history sync cancelled", activate=True)
