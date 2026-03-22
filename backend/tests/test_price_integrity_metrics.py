@@ -46,11 +46,13 @@ def _mock_db(
     incomplete_count=0,
     full_price_history_count=0,
     history_download_completed_count=0,
-    gap_free_count=0,
+    fundamentals_complete_count=0,
     checkpoint_counts=None,
     gap_count=0,
     chain_doc="DEFAULT",
     bulk_days=None,
+    proven_ticker_docs=None,
+    gap_free_coverage_docs=None,
 ):
     """Build a mock db with the fields needed by get_price_integrity_metrics."""
     if visible_tickers is None:
@@ -62,11 +64,18 @@ def _mock_db(
         "incomplete_history": [{"n": incomplete_count}] if incomplete_count else [],
         "full_price_history": [{"n": full_price_history_count}] if full_price_history_count else [],
         "history_download_completed": [{"n": history_download_completed_count}] if history_download_completed_count else [],
-        "gap_free_since_history_download": [{"n": gap_free_count}] if gap_free_count else [],
+        "fundamentals_complete": [{"n": fundamentals_complete_count}] if fundamentals_complete_count else [],
     }]
+
+    if proven_ticker_docs is None:
+        proven_ticker_docs = []
+    if gap_free_coverage_docs is None:
+        gap_free_coverage_docs = []
+
     tracked_tickers = SimpleNamespace(
         distinct=AsyncMock(return_value=visible_tickers),
         aggregate=lambda pipeline: _make_cursor(facet_data),
+        find=lambda query, projection: _make_cursor(proven_ticker_docs),
     )
 
     # pipeline_state
@@ -123,6 +132,9 @@ def _mock_db(
         if idx == 2:
             # Third call: dates_with_data (for zero-coverage detection)
             return _make_cursor(dates_with_data_docs)
+        if idx == 3:
+            # Fourth call: gap_free coverage per proven ticker
+            return _make_cursor(gap_free_coverage_docs)
         return _make_cursor([])
 
     stock_prices = SimpleNamespace(
@@ -159,6 +171,7 @@ def test_returns_correct_keys():
     assert "full_price_history_count" in result
     assert "history_download_completed_count" in result
     assert "gap_free_since_history_download_count" in result
+    assert "fundamentals_complete_count" in result
     assert "missing_expected_dates" in result
     assert "coverage_checkpoints" in result
 
@@ -234,9 +247,24 @@ def test_history_download_completed_count():
 
 
 def test_gap_free_since_history_download_count():
-    db = _mock_db(gap_free_count=80)
+    """Gap-free count is computed inline from proven tickers + bulk coverage."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+        {"ticker": "B.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+        {"_id": "B.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US", "B.US", "C.US"],
+        history_download_completed_count=2,
+        bulk_days=[{"processed_date": "2026-03-11", "status": "success"}],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
     result = asyncio.run(get_price_integrity_metrics(db))
-    assert result["gap_free_since_history_download_count"] == 80
+    assert result["gap_free_since_history_download_count"] == 2
 
 
 def test_process_truth_counts_zero_default():
@@ -244,6 +272,51 @@ def test_process_truth_counts_zero_default():
     result = asyncio.run(get_price_integrity_metrics(db))
     assert result["history_download_completed_count"] == 0
     assert result["gap_free_since_history_download_count"] == 0
+
+
+def test_fundamentals_complete_count():
+    db = _mock_db(fundamentals_complete_count=50)
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["fundamentals_complete_count"] == 50
+
+
+def test_fundamentals_complete_count_zero_default():
+    db = _mock_db()
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["fundamentals_complete_count"] == 0
+
+
+def test_gap_free_with_missing_coverage():
+    """Proven ticker missing a bulk date after anchor → not gap-free."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    # A.US has NO coverage for the bulk date → gap
+    coverage_docs = []
+    db = _mock_db(
+        visible_tickers=["A.US", "B.US"],
+        history_download_completed_count=1,
+        bulk_days=[{"processed_date": "2026-03-11", "status": "success"}],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["gap_free_since_history_download_count"] == 0
+
+
+def test_gap_free_no_bulk_dates():
+    """Proven ticker with no bulk dates → trivially gap-free."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        proven_ticker_docs=proven_docs,
+        bulk_days=[],
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["gap_free_since_history_download_count"] == 1
 
 
 def test_coverage_checkpoints_present():
@@ -281,6 +354,7 @@ def test_zero_visible_returns_safe_defaults():
     assert result["full_price_history_count"] == 0
     assert result["history_download_completed_count"] == 0
     assert result["gap_free_since_history_download_count"] == 0
+    assert result["fundamentals_complete_count"] == 0
     assert result["missing_expected_dates"] == 0
     assert result["coverage_checkpoints"] == {}
     assert "today_visible_source" in result

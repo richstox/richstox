@@ -458,6 +458,9 @@ async def _detect_split_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
                 "price_history_complete": False,
                 "price_history_status": "pending",
                 "last_split_detected": today_str,
+                # Clear computed fields alongside proof markers
+                "history_download_completed": False,
+                "gap_free_since_history_download": False,
             },
             "$unset": {
                 "history_download_proven_at": "",
@@ -558,6 +561,9 @@ async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any
                 "price_history_complete": False,
                 "price_history_status": "pending",
                 "last_dividend_detected": today_str,
+                # Clear computed fields alongside proof markers
+                "history_download_completed": False,
+                "gap_free_since_history_download": False,
             },
             "$unset": {
                 "history_download_proven_at": "",
@@ -797,6 +803,9 @@ async def _remediate_price_redownload(
                         # Strict proof marker — canonical source for history_download_completed
                         "history_download_proven_at": now,
                         "history_download_proven_anchor": _anchor,
+                        # Computed fields — kept in sync so dashboard facet reads work
+                        "history_download_completed": True,
+                        "gap_free_since_history_download": True,
                     }
                     await db.tracked_tickers.update_one(
                         {"ticker": ticker_us},
