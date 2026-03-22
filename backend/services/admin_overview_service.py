@@ -436,12 +436,23 @@ def get_next_run_datetime(job_name: str, now_prague: datetime) -> datetime:
 # PRICE INTEGRITY METRICS
 # =============================================================================
 
+# ── Truth-based full price history rule ─────────────────────────────────────
+# full_price_history = True iff:
+#   row_count >= FULL_HISTORY_MIN_ROWS (approx 1 year of US trading days)
+#   AND min_date <= today - FULL_HISTORY_MIN_DAYS
+# These thresholds are intentionally conservative: a ticker must have at least
+# one full calendar year of daily price records AND the earliest record must
+# go back at least one year.
+FULL_HISTORY_MIN_ROWS = 252
+FULL_HISTORY_MIN_DAYS = 365
+
 _SAFE_INTEGRITY = {
     "today_visible": 0,
     "today_visible_source": None,
     "last_bulk_trading_date": None,
     "needs_price_redownload": 0,
     "price_history_incomplete": 0,
+    "full_price_history_count": 0,
     "missing_expected_dates": 0,
     "coverage_checkpoints": {},
 }
@@ -591,6 +602,10 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                     {"$match": {"price_history_complete": {"$ne": True}}},
                     {"$count": "n"},
                 ],
+                "full_price_history": [
+                    {"$match": {"full_price_history": True}},
+                    {"$count": "n"},
+                ],
             }},
         ]).to_list(1)
         ff = flag_facet[0] if flag_facet else {}
@@ -600,6 +615,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
 
         needs_redownload = _n("needs_redownload")
         incomplete_history = _n("incomplete_history")
+        full_price_history_count = _n("full_price_history")
 
         # ── 4. Coverage checkpoints ─────────────────────────────────────────
         target_offsets = {
@@ -684,12 +700,148 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             "last_bulk_trading_date": last_bulk_date,
             "needs_price_redownload": needs_redownload,
             "price_history_incomplete": incomplete_history,
+            "full_price_history_count": full_price_history_count,
             "missing_expected_dates": missing_expected_dates,
             "coverage_checkpoints": checkpoints,
         }
     except Exception as exc:
         logger.warning("get_price_integrity_metrics failed: %s", exc)
         return {**_SAFE_INTEGRITY}
+
+
+async def backfill_full_price_history(db) -> Dict[str, Any]:
+    """
+    Admin-only backfill: recompute truth-based full_price_history fields
+    for all visible tickers based on actual stock_prices coverage.
+
+    For each visible ticker, computes:
+      - min(stock_prices.date) → full_price_history_min_date
+      - count(stock_prices)    → full_price_history_row_count
+      - derived boolean        → full_price_history
+
+    Rule (see module-level constants):
+      full_price_history = True iff
+        row_count >= FULL_HISTORY_MIN_ROWS (252)
+        AND min_date <= today - FULL_HISTORY_MIN_DAYS (365)
+
+    Idempotent: safe to re-run; same inputs always produce same outputs.
+    Writes audit summary to ops_job_runs.
+    """
+    started_at = datetime.now(timezone.utc)
+    today_str = date.today().isoformat()
+    cutoff_date = (date.today() - timedelta(days=FULL_HISTORY_MIN_DAYS)).isoformat()
+
+    # 1. Get all visible tickers
+    visible_tickers = await db.tracked_tickers.distinct(
+        "ticker", {"is_visible": True}
+    )
+    total_visible = len(visible_tickers)
+    if total_visible == 0:
+        return {
+            "status": "no_work",
+            "total_visible": 0,
+            "full_history": 0,
+            "partial_history": 0,
+            "no_price_data": 0,
+        }
+
+    # 2. Aggregate min_date and row_count per ticker from stock_prices
+    agg_pipeline = [
+        {"$match": {"ticker": {"$in": visible_tickers}}},
+        {"$group": {
+            "_id": "$ticker",
+            "min_date": {"$min": "$date"},
+            "row_count": {"$sum": 1},
+        }},
+    ]
+    stats_by_ticker: Dict[str, Dict[str, Any]] = {}
+    async for doc in db.stock_prices.aggregate(agg_pipeline):
+        stats_by_ticker[doc["_id"]] = {
+            "min_date": doc["min_date"],
+            "row_count": doc["row_count"],
+        }
+
+    # 3. Compute and write fields per ticker
+    now = datetime.now(timezone.utc)
+    full_count = 0
+    partial_count = 0
+    no_data_count = 0
+    sample_full: List[str] = []
+    sample_partial: List[str] = []
+    sample_no_data: List[str] = []
+
+    for ticker in visible_tickers:
+        stats = stats_by_ticker.get(ticker)
+        if not stats:
+            min_date_val = None
+            row_count = 0
+        else:
+            min_date_val = stats["min_date"]
+            row_count = stats["row_count"]
+
+        is_full = (
+            row_count >= FULL_HISTORY_MIN_ROWS
+            and min_date_val is not None
+            and min_date_val <= cutoff_date
+        )
+
+        await db.tracked_tickers.update_one(
+            {"ticker": ticker},
+            {"$set": {
+                "full_price_history": is_full,
+                "full_price_history_verified_at": now,
+                "full_price_history_min_date": min_date_val,
+                "full_price_history_row_count": row_count,
+            }},
+        )
+
+        if not min_date_val:
+            no_data_count += 1
+            if len(sample_no_data) < 5:
+                sample_no_data.append(ticker)
+        elif is_full:
+            full_count += 1
+            if len(sample_full) < 5:
+                sample_full.append(ticker)
+        else:
+            partial_count += 1
+            if len(sample_partial) < 5:
+                sample_partial.append(ticker)
+
+    finished_at = datetime.now(timezone.utc)
+    duration_s = round((finished_at - started_at).total_seconds(), 1)
+
+    # 4. Write audit summary to ops_job_runs
+    audit_details = {
+        "total_visible_tickers": total_visible,
+        "full_history_count": full_count,
+        "partial_history_count": partial_count,
+        "no_price_data_count": no_data_count,
+        "threshold": {
+            "min_row_count": FULL_HISTORY_MIN_ROWS,
+            "min_days": FULL_HISTORY_MIN_DAYS,
+            "cutoff_date": cutoff_date,
+        },
+        "sample_full": sample_full,
+        "sample_partial": sample_partial,
+        "sample_no_data": sample_no_data,
+    }
+    await db.ops_job_runs.insert_one({
+        "job_name": "backfill_full_price_history",
+        "status": "completed",
+        "source": "admin_manual",
+        "triggered_by": "admin_manual",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": duration_s,
+        "details": audit_details,
+    })
+
+    return {
+        "status": "completed",
+        "duration_seconds": duration_s,
+        **audit_details,
+    }
 
 
 async def get_pipeline_last_success_age(db) -> Dict[str, Any]:

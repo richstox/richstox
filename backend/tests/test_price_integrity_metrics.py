@@ -44,6 +44,7 @@ def _mock_db(
     bulk_state=None,
     redownload_count=0,
     incomplete_count=0,
+    full_price_history_count=0,
     checkpoint_counts=None,
     gap_count=0,
     chain_doc="DEFAULT",
@@ -57,6 +58,7 @@ def _mock_db(
     facet_data = [{
         "needs_redownload": [{"n": redownload_count}] if redownload_count else [],
         "incomplete_history": [{"n": incomplete_count}] if incomplete_count else [],
+        "full_price_history": [{"n": full_price_history_count}] if full_price_history_count else [],
     }]
     tracked_tickers = SimpleNamespace(
         distinct=AsyncMock(return_value=visible_tickers),
@@ -150,6 +152,7 @@ def test_returns_correct_keys():
     assert "last_bulk_trading_date" in result
     assert "needs_price_redownload" in result
     assert "price_history_incomplete" in result
+    assert "full_price_history_count" in result
     assert "missing_expected_dates" in result
     assert "coverage_checkpoints" in result
 
@@ -206,6 +209,18 @@ def test_incomplete_history_count():
     assert result["price_history_incomplete"] == 10
 
 
+def test_full_price_history_count():
+    db = _mock_db(full_price_history_count=42)
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["full_price_history_count"] == 42
+
+
+def test_full_price_history_count_zero_default():
+    db = _mock_db()
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["full_price_history_count"] == 0
+
+
 def test_coverage_checkpoints_present():
     db = _mock_db(
         bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
@@ -238,6 +253,7 @@ def test_zero_visible_returns_safe_defaults():
     result = asyncio.run(get_price_integrity_metrics(db))
     assert result["today_visible"] == 0
     assert result["needs_price_redownload"] == 0
+    assert result["full_price_history_count"] == 0
     assert result["missing_expected_dates"] == 0
     assert result["coverage_checkpoints"] == {}
     assert "today_visible_source" in result

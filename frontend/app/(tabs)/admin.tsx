@@ -38,6 +38,7 @@ interface PriceIntegrity {
   last_bulk_trading_date?: string | null;
   needs_price_redownload?: number;
   price_history_incomplete?: number;
+  full_price_history_count?: number;
   missing_expected_dates?: number;
   coverage_checkpoints?: Record<string, CoverageCheckpoint>;
 }
@@ -245,7 +246,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             warn={(pi?.needs_price_redownload ?? 0) > 0}
           />
           <IntegrityMetric
-            label="Incomplete History"
+            label="Incomplete History (remediation)"
             value={String(pi?.price_history_incomplete ?? 0)}
             warn={(pi?.price_history_incomplete ?? 0) > 0}
           />
@@ -265,6 +266,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         <Text style={d.cpHint}>
           How many of today's visible tickers have price data at older dates — low values are expected if historical backfill is incomplete
         </Text>
+        <IntegrityMetric
+          label="Full Price History"
+          value={`${pi?.full_price_history_count ?? 0}/${pi?.today_visible ?? 0}${(pi?.today_visible ?? 0) > 0 ? ` (${Math.round(((pi?.full_price_history_count ?? 0) / (pi?.today_visible ?? 1)) * 100)}%)` : ''}`}
+          warn={false}
+        />
         {renderCheckpoint('1 month ago', '1_month_ago')}
         {renderCheckpoint('1 year ago', '1_year_ago')}
       </View>
