@@ -57,6 +57,7 @@ def _default_step3_telemetry_response() -> Dict[str, Any]:
         "status": "idle",
         "started_at_prague": None,
         "updated_at_prague": None,
+        "active_phase": None,
         "pending_refresh_flags": 0,
         "pending_events_audit": 0,
         "phases": {
@@ -99,6 +100,10 @@ def _sanitize_phase_payload(raw: Any, *, fallback_name: str) -> Dict[str, Any]:
         phase["message"] = message.splitlines()[0]
     elif message is None:
         phase["message"] = None
+    # Pass through selection_audit (Phase C only) when present
+    sa = raw.get("selection_audit")
+    if isinstance(sa, dict):
+        phase["selection_audit"] = sa
     return phase
 
 
@@ -144,6 +149,9 @@ async def get_step3_live_telemetry(db) -> Dict[str, Any]:
     response["updated_at_prague"] = (
         telemetry.get("updated_at_prague") if isinstance(telemetry, dict) else None
     ) or run.get("finished_at_prague") or _to_prague_iso(run.get("finished_at")) or response["started_at_prague"]
+    raw_active = telemetry.get("active_phase") if isinstance(telemetry, dict) else None
+    if raw_active in ("A", "B", "C"):
+        response["active_phase"] = raw_active
     response["phases"] = {
         "A": _sanitize_phase_payload((raw_phases or {}).get("A"), fallback_name="Fundamentals"),
         "B": _sanitize_phase_payload((raw_phases or {}).get("B"), fallback_name="Visibility"),

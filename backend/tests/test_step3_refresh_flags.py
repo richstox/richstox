@@ -810,6 +810,97 @@ def test_step3_live_telemetry_normalizes_running_phase_on_cancelled_run():
     assert resp["phases"]["C"]["message"] == "Run terminated"
 
 
+def test_step3_live_telemetry_returns_active_phase():
+    """active_phase from telemetry is forwarded in the response."""
+    from services.admin_overview_service import get_step3_live_telemetry
+
+    running = {
+        "_id": "run-ap",
+        "status": "running",
+        "started_at_prague": "2026-03-22T10:00:00+01:00",
+        "details": {
+            "step3_telemetry": {
+                "active_phase": "B",
+                "updated_at_prague": "2026-03-22T10:05:00+01:00",
+                "phases": {
+                    "A": {"name": "Fundamentals", "status": "done", "processed": 50, "total": 50, "pct": 100, "message": "Done"},
+                    "B": {"name": "Visibility", "status": "running", "processed": 10, "total": 30, "pct": 33.3, "message": "Checking visibility"},
+                    "C": {"name": "PriceHistory", "status": "idle", "processed": 0, "total": None, "pct": None, "message": None},
+                },
+            }
+        },
+    }
+    db = _FakeStep3TelemetryReadDB(running=running, pending_refresh=0, pending_events=0)
+    resp = asyncio.run(get_step3_live_telemetry(db))
+    assert resp["active_phase"] == "B"
+
+
+def test_step3_live_telemetry_active_phase_defaults_to_none():
+    """When no active_phase is set, response defaults to None."""
+    from services.admin_overview_service import get_step3_live_telemetry
+
+    running = {
+        "_id": "run-no-ap",
+        "status": "running",
+        "started_at_prague": "2026-03-22T10:00:00+01:00",
+        "details": {
+            "step3_telemetry": {
+                "updated_at_prague": "2026-03-22T10:01:00+01:00",
+                "phases": {
+                    "A": {"name": "Fundamentals", "status": "running", "processed": 5, "total": 100, "pct": 5, "message": "Working"},
+                },
+            }
+        },
+    }
+    db = _FakeStep3TelemetryReadDB(running=running, pending_refresh=0, pending_events=0)
+    resp = asyncio.run(get_step3_live_telemetry(db))
+    assert resp["active_phase"] is None
+
+
+def test_step3_live_telemetry_passes_selection_audit_for_phase_c():
+    """selection_audit on Phase C is forwarded through _sanitize_phase_payload."""
+    from services.admin_overview_service import get_step3_live_telemetry
+
+    audit = {
+        "counts_by_reason": {
+            "price_history_incomplete": 12,
+            "needs_price_redownload": 3,
+            "missing_strict_proof": 7,
+        },
+        "sample_tickers_by_reason": {
+            "price_history_incomplete": ["AAPL.US", "MSFT.US"],
+            "needs_price_redownload": ["TSLA.US"],
+            "missing_strict_proof": ["GOOG.US"],
+        },
+    }
+    finished = {
+        "_id": "run-sa",
+        "status": "completed",
+        "started_at_prague": "2026-03-22T09:00:00+01:00",
+        "finished_at_prague": "2026-03-22T10:00:00+01:00",
+        "details": {
+            "step3_telemetry": {
+                "active_phase": "C",
+                "updated_at_prague": "2026-03-22T09:55:00+01:00",
+                "phases": {
+                    "A": {"name": "Fundamentals", "status": "done", "processed": 50, "total": 50, "pct": 100, "message": "Done"},
+                    "B": {"name": "Visibility", "status": "done", "processed": 10, "total": 10, "pct": 100, "message": "Done"},
+                    "C": {"name": "PriceHistory", "status": "done", "processed": 22, "total": 22, "pct": 100, "message": "Done", "selection_audit": audit},
+                },
+            }
+        },
+    }
+    db = _FakeStep3TelemetryReadDB(running=None, finished=finished, pending_refresh=0, pending_events=0)
+    resp = asyncio.run(get_step3_live_telemetry(db))
+    assert resp["active_phase"] == "C"
+    sa = resp["phases"]["C"].get("selection_audit")
+    assert sa is not None
+    assert sa["counts_by_reason"]["price_history_incomplete"] == 12
+    assert "AAPL.US" in sa["sample_tickers_by_reason"]["price_history_incomplete"]
+    # Phase A should NOT have selection_audit
+    assert "selection_audit" not in resp["phases"]["A"]
+
+
 # ---------------------------------------------------------------------------
 # Phase C finalization with zero workload
 # ---------------------------------------------------------------------------
