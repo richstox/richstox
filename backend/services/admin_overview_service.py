@@ -446,6 +446,13 @@ _SAFE_INTEGRITY = {
     "coverage_checkpoints": {},
 }
 
+_CHECKPOINT_KIND = {
+    "latest_trading_day": "recent",
+    "1_week_ago": "recent",
+    "1_month_ago": "historical",
+    "1_year_ago": "historical",
+}
+
 
 async def _find_nearest_price_date(db, target_date_str: str) -> Optional[str]:
     """Find the nearest date <= target_date_str that has price data."""
@@ -623,13 +630,6 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             ])
             async for doc in count_cursor:
                 price_counts_by_date[doc["_id"]] = doc["count"]
-
-        _CHECKPOINT_KIND = {
-            "latest_trading_day": "recent",
-            "1_week_ago": "recent",
-            "1_month_ago": "historical",
-            "1_year_ago": "historical",
-        }
 
         checkpoints: Dict[str, Any] = {}
         for label in target_offsets:
