@@ -5,7 +5,7 @@
  * 
  * DO NOT CHANGE WITHOUT RICHARD APPROVAL (kurtarichard@gmail.com)
  */
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -29,6 +29,7 @@ import FinancialHub from '../../components/FinancialHub';
 import BottomNav from '../../components/BottomNav';
 import { MetricTooltip, TOOLTIP_CONTENT } from '../../components/MetricTooltip';
 import AppHeader from '../../components/AppHeader';
+import { useSearchStore } from '../../stores/searchStore';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const EODHD_LOGO_BASE = 'https://eodhd.com';
@@ -400,6 +401,22 @@ export default function StockDetail() {
     setActiveTooltip(key);
     setTooltipVisible(true);
   };
+
+  // Search results navigation
+  const { query: searchQuery, results: searchResults } = useSearchStore();
+  const searchIndex = useMemo(
+    () => searchResults.findIndex(r => r.ticker === ticker),
+    [searchResults, ticker]
+  );
+  const hasSearchNav = searchIndex >= 0 && searchResults.length > 1;
+  const prevTicker = searchIndex > 0 ? searchResults[searchIndex - 1].ticker : null;
+  const nextTicker = searchIndex >= 0 && searchIndex < searchResults.length - 1 ? searchResults[searchIndex + 1].ticker : null;
+  const navigateToTicker = useCallback((target: string) => {
+    router.replace(`/stock/${target}`);
+  }, [router]);
+
+  // Swipe detection for search result navigation
+  const swipeRef = useRef({ startX: 0, startY: 0 });
 
   const fetchMobileDetail = async (period: PriceRange = '1Y') => {
     try {
@@ -1228,9 +1245,51 @@ export default function StockDetail() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['left', 'right', 'bottom']}>
+    <SafeAreaView
+      style={styles.container}
+      edges={['left', 'right', 'bottom']}
+      onTouchStart={(e: any) => {
+        swipeRef.current = { startX: e.nativeEvent.pageX, startY: e.nativeEvent.pageY };
+      }}
+      onTouchEnd={(e: any) => {
+        if (!hasSearchNav) return;
+        const dx = e.nativeEvent.pageX - swipeRef.current.startX;
+        const dy = e.nativeEvent.pageY - swipeRef.current.startY;
+        if (Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 2) {
+          if (dx < 0 && nextTicker) navigateToTicker(nextTicker);
+          else if (dx > 0 && prevTicker) navigateToTicker(prevTicker);
+        }
+      }}
+    >
       {/* Persistent Top Bar */}
       <AppHeader title={company.code} showSubscriptionBadge={false} />
+
+      {/* Search results navigation bar */}
+      {hasSearchNav && (
+        <View style={styles.searchNavBar}>
+          <TouchableOpacity
+            style={[styles.searchNavButton, !prevTicker && styles.searchNavButtonDisabled]}
+            onPress={() => prevTicker && navigateToTicker(prevTicker)}
+            disabled={!prevTicker}
+          >
+            <Ionicons name="chevron-back" size={16} color={prevTicker ? COLORS.primary : COLORS.textMuted} />
+            {prevTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{prevTicker}</Text>}
+          </TouchableOpacity>
+
+          <Text style={styles.searchNavCounter}>
+            {searchIndex + 1} of {searchResults.length}
+          </Text>
+
+          <TouchableOpacity
+            style={[styles.searchNavButton, !nextTicker && styles.searchNavButtonDisabled]}
+            onPress={() => nextTicker && navigateToTicker(nextTicker)}
+            disabled={!nextTicker}
+          >
+            {nextTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{nextTicker}</Text>}
+            <Ionicons name="chevron-forward" size={16} color={nextTicker ? COLORS.primary : COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
+      )}
 
       <ScrollView
         style={styles.scrollView}
@@ -4041,4 +4100,35 @@ const styles = StyleSheet.create({
   // Footer
   footer: { alignItems: 'center', paddingTop: 8 },
   footerText: { fontSize: 11, color: COLORS.textMuted, textAlign: 'center' },
+
+  // Search results navigation bar
+  searchNavBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#F0F4FF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E5E7EB',
+  },
+  searchNavButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 4,
+    gap: 4,
+    minWidth: 60,
+  },
+  searchNavButtonDisabled: {
+    opacity: 0.3,
+  },
+  searchNavTicker: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1E3A5F',
+  },
+  searchNavCounter: {
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
 });
