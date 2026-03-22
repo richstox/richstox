@@ -436,15 +436,43 @@ def get_next_run_datetime(job_name: str, now_prague: datetime) -> datetime:
 # PRICE INTEGRITY METRICS
 # =============================================================================
 
-# ── Truth-based full price history rule ─────────────────────────────────────
+# ── Heuristic depth thresholds (secondary/informational) ───────────────────
 # full_price_history = True iff:
 #   row_count >= FULL_HISTORY_MIN_ROWS (approx 1 year of US trading days)
 #   AND min_date <= today - FULL_HISTORY_MIN_DAYS
-# These thresholds are intentionally conservative: a ticker must have at least
-# one full calendar year of daily price records AND the earliest record must
-# go back at least one year.
+# Kept as a lightweight depth indicator; NOT the canonical truth model.
 FULL_HISTORY_MIN_ROWS = 252
 FULL_HISTORY_MIN_DAYS = 365
+
+# ── Canonical process-truth model ──────────────────────────────────────────
+# The canonical truth for "price-complete" is:
+#
+#   history_download_completed = True
+#     Evidence: tracked_tickers.price_history_complete == True
+#     Set by: full_sync_service.py (after successful full historical download)
+#             scheduler_service.py (after successful split/dividend remediation)
+#     This is a process-truth flag: it means the system successfully completed
+#     a full price download (or re-download) for this ticker.
+#
+#   history_download_completed_at = tracked_tickers.price_history_complete_as_of
+#     A date string (same type as stock_prices.date, "YYYY-MM-DD") representing
+#     the latest price date covered by the historical download.
+#     This is the CONTINUITY ANCHOR: bulk dates after this anchor must exist.
+#
+#   missing_bulk_dates_since_history_download = count of canonical successful
+#     bulk processed dates D where D > anchor AND ticker has no price row on D.
+#     Canonical bulk dates source: _get_bulk_processed_dates() from
+#     ops_job_runs.details.price_bulk_gapfill.days[].processed_date
+#     where status == "success".
+#
+#   gap_free_since_history_download = True iff:
+#     history_download_completed == True
+#     AND missing_bulk_dates_since_history_download == 0
+#
+# This is STRONGER than the old heuristic model because:
+# 1. It requires PROVEN historical download completion (not row-count guessing)
+# 2. It requires ZERO gaps against canonical bulk ingestion truth (not depth)
+# 3. The evidence sources are actual persisted process events, not estimates.
 
 _SAFE_INTEGRITY = {
     "today_visible": 0,
@@ -453,6 +481,8 @@ _SAFE_INTEGRITY = {
     "needs_price_redownload": 0,
     "price_history_incomplete": 0,
     "full_price_history_count": 0,
+    "history_download_completed_count": 0,
+    "gap_free_since_history_download_count": 0,
     "missing_expected_dates": 0,
     "coverage_checkpoints": {},
 }
@@ -606,6 +636,14 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                     {"$match": {"full_price_history": True}},
                     {"$count": "n"},
                 ],
+                "history_download_completed": [
+                    {"$match": {"history_download_completed": True}},
+                    {"$count": "n"},
+                ],
+                "gap_free_since_history_download": [
+                    {"$match": {"gap_free_since_history_download": True}},
+                    {"$count": "n"},
+                ],
             }},
         ]).to_list(1)
         ff = flag_facet[0] if flag_facet else {}
@@ -616,6 +654,8 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         needs_redownload = _n("needs_redownload")
         incomplete_history = _n("incomplete_history")
         full_price_history_count = _n("full_price_history")
+        history_download_completed_count = _n("history_download_completed")
+        gap_free_count = _n("gap_free_since_history_download")
 
         # ── 4. Coverage checkpoints ─────────────────────────────────────────
         target_offsets = {
@@ -701,6 +741,8 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             "needs_price_redownload": needs_redownload,
             "price_history_incomplete": incomplete_history,
             "full_price_history_count": full_price_history_count,
+            "history_download_completed_count": history_download_completed_count,
+            "gap_free_since_history_download_count": gap_free_count,
             "missing_expected_dates": missing_expected_dates,
             "coverage_checkpoints": checkpoints,
         }
@@ -711,41 +753,68 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
 
 async def backfill_full_price_history(db) -> Dict[str, Any]:
     """
-    Admin-only backfill: recompute truth-based full_price_history fields
-    for all visible tickers based on actual stock_prices coverage.
+    Admin-only backfill: recompute process-truth price completeness fields
+    for all visible tickers.
 
-    For each visible ticker, computes:
-      - min(stock_prices.date) → full_price_history_min_date
-      - count(stock_prices)    → full_price_history_row_count
-      - derived boolean        → full_price_history
+    CANONICAL TRUTH MODEL (see module-level constants/comments for full docs):
 
-    Rule (see module-level constants):
-      full_price_history = True iff
-        row_count >= FULL_HISTORY_MIN_ROWS (252)
-        AND min_date <= today - FULL_HISTORY_MIN_DAYS (365)
+      history_download_completed = tracked_tickers.price_history_complete
+        Evidence: set True by full_sync_service.py after successful full
+        historical download, and by scheduler_service.py after split/dividend
+        remediation re-download.
+
+      history_download_completed_at = tracked_tickers.price_history_complete_as_of
+        A date string ("YYYY-MM-DD"), same type as stock_prices.date.
+        Represents the latest price date covered by the historical download.
+        This is the CONTINUITY ANCHOR: we check for gaps after this date.
+
+      history_download_min_date = min(stock_prices.date) for the ticker
+
+      missing_bulk_dates_since_history_download = count of canonical
+        successful bulk processed dates D where D > anchor AND ticker has
+        no stock_prices row on date D.
+        Canonical bulk dates: _get_bulk_processed_dates() from
+        ops_job_runs.details.price_bulk_gapfill.days[].processed_date
+        where status == "success".
+
+      gap_free_since_history_download = True iff:
+        history_download_completed AND missing_bulk_dates == 0
+
+    Also preserves legacy heuristic fields (full_price_history*) for
+    backward compatibility and secondary informational display.
 
     Idempotent: safe to re-run; same inputs always produce same outputs.
     Writes audit summary to ops_job_runs.
     """
     started_at = datetime.now(timezone.utc)
-    today_str = date.today().isoformat()
     cutoff_date = (date.today() - timedelta(days=FULL_HISTORY_MIN_DAYS)).isoformat()
 
-    # 1. Get all visible tickers
-    visible_tickers = await db.tracked_tickers.distinct(
-        "ticker", {"is_visible": True}
-    )
+    # ── 1. Get all visible tickers with remediation fields ──────────────
+    visible_docs = await db.tracked_tickers.find(
+        {"is_visible": True},
+        {
+            "ticker": 1,
+            "price_history_complete": 1,
+            "price_history_complete_as_of": 1,
+            "_id": 0,
+        },
+    ).to_list(None)
+    visible_tickers = [d["ticker"] for d in visible_docs]
+    ticker_info = {d["ticker"]: d for d in visible_docs}
     total_visible = len(visible_tickers)
+
     if total_visible == 0:
         return {
             "status": "no_work",
             "total_visible": 0,
-            "full_history": 0,
-            "partial_history": 0,
-            "no_price_data": 0,
+            "history_download_completed_count": 0,
+            "gap_free_since_history_download_count": 0,
+            "tickers_with_missing_bulk_dates_count": 0,
+            "total_missing_bulk_ticker_date_pairs": 0,
+            "full_history_heuristic_count": 0,
         }
 
-    # 2. Aggregate min_date and row_count per ticker from stock_prices
+    # ── 2. Aggregate min_date and row_count per ticker from stock_prices ─
     agg_pipeline = [
         {"$match": {"ticker": {"$in": visible_tickers}}},
         {"$group": {
@@ -761,25 +830,56 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
             "row_count": doc["row_count"],
         }
 
-    # 3. Compute and write fields per ticker
+    # ── 3. Get canonical bulk processed dates ────────────────────────────
+    bulk_dates = await _get_bulk_processed_dates(db)
+    bulk_dates_set = set(bulk_dates)
+
+    # ── 4. Get existing bulk-date coverage per ticker (one query) ────────
+    dates_by_ticker: Dict[str, set] = {}
+    if bulk_dates:
+        dates_pipeline = [
+            {"$match": {
+                "ticker": {"$in": visible_tickers},
+                "date": {"$in": bulk_dates},
+            }},
+            {"$group": {"_id": "$ticker", "dates": {"$addToSet": "$date"}}},
+        ]
+        async for doc in db.stock_prices.aggregate(dates_pipeline):
+            dates_by_ticker[doc["_id"]] = set(doc["dates"])
+
+    # ── 5. Compute and write fields per ticker ───────────────────────────
     now = datetime.now(timezone.utc)
-    full_count = 0
-    partial_count = 0
+    history_completed_count = 0
+    gap_free_count = 0
+    tickers_with_gaps_count = 0
+    total_missing_pairs = 0
+    heuristic_full_count = 0
     no_data_count = 0
-    sample_full: List[str] = []
-    sample_partial: List[str] = []
-    sample_no_data: List[str] = []
+    sample_gap_free: List[str] = []
+    sample_with_gaps: List[str] = []
+    sample_no_history_download: List[str] = []
 
     for ticker in visible_tickers:
+        info = ticker_info.get(ticker, {})
         stats = stats_by_ticker.get(ticker)
-        if not stats:
-            min_date_val = None
-            row_count = 0
-        else:
-            min_date_val = stats["min_date"]
-            row_count = stats["row_count"]
+        min_date_val = stats["min_date"] if stats else None
+        row_count = stats["row_count"] if stats else 0
 
-        is_full = (
+        # Process-truth: history download completed?
+        history_completed = info.get("price_history_complete") is True
+        anchor_date = info.get("price_history_complete_as_of") if history_completed else None
+
+        # Missing bulk dates since anchor
+        missing_count = 0
+        if history_completed and anchor_date:
+            relevant_bulk = [d for d in bulk_dates if d > anchor_date]
+            actual_dates = dates_by_ticker.get(ticker, set())
+            missing_count = sum(1 for d in relevant_bulk if d not in actual_dates)
+
+        gap_free = history_completed and missing_count == 0
+
+        # Heuristic (legacy, kept for backward compat)
+        is_full_heuristic = (
             row_count >= FULL_HISTORY_MIN_ROWS
             and min_date_val is not None
             and min_date_val <= cutoff_date
@@ -788,43 +888,62 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
         await db.tracked_tickers.update_one(
             {"ticker": ticker},
             {"$set": {
-                "full_price_history": is_full,
+                # Process-truth fields (canonical)
+                "history_download_completed": history_completed,
+                "history_download_completed_at": anchor_date,
+                "history_download_min_date": min_date_val,
+                "missing_bulk_dates_since_history_download": missing_count,
+                "gap_free_since_history_download": gap_free,
+                # Legacy heuristic fields (informational)
+                "full_price_history": is_full_heuristic,
                 "full_price_history_verified_at": now,
                 "full_price_history_min_date": min_date_val,
                 "full_price_history_row_count": row_count,
             }},
         )
 
+        # Counting
+        if history_completed:
+            history_completed_count += 1
+            if gap_free:
+                gap_free_count += 1
+                if len(sample_gap_free) < 5:
+                    sample_gap_free.append(ticker)
+            else:
+                tickers_with_gaps_count += 1
+                total_missing_pairs += missing_count
+                if len(sample_with_gaps) < 5:
+                    sample_with_gaps.append(ticker)
+        else:
+            if len(sample_no_history_download) < 5:
+                sample_no_history_download.append(ticker)
+
+        if is_full_heuristic:
+            heuristic_full_count += 1
         if not min_date_val:
             no_data_count += 1
-            if len(sample_no_data) < 5:
-                sample_no_data.append(ticker)
-        elif is_full:
-            full_count += 1
-            if len(sample_full) < 5:
-                sample_full.append(ticker)
-        else:
-            partial_count += 1
-            if len(sample_partial) < 5:
-                sample_partial.append(ticker)
 
     finished_at = datetime.now(timezone.utc)
     duration_s = round((finished_at - started_at).total_seconds(), 1)
 
-    # 4. Write audit summary to ops_job_runs
+    # ── 6. Write audit summary to ops_job_runs ───────────────────────────
     audit_details = {
         "total_visible_tickers": total_visible,
-        "full_history_count": full_count,
-        "partial_history_count": partial_count,
+        "history_download_completed_count": history_completed_count,
+        "gap_free_since_history_download_count": gap_free_count,
+        "tickers_with_missing_bulk_dates_count": tickers_with_gaps_count,
+        "total_missing_bulk_ticker_date_pairs": total_missing_pairs,
+        "canonical_bulk_dates_count": len(bulk_dates),
         "no_price_data_count": no_data_count,
-        "threshold": {
+        "full_history_heuristic_count": heuristic_full_count,
+        "heuristic_threshold": {
             "min_row_count": FULL_HISTORY_MIN_ROWS,
             "min_days": FULL_HISTORY_MIN_DAYS,
             "cutoff_date": cutoff_date,
         },
-        "sample_full": sample_full,
-        "sample_partial": sample_partial,
-        "sample_no_data": sample_no_data,
+        "sample_gap_free": sample_gap_free,
+        "sample_with_gaps": sample_with_gaps,
+        "sample_no_history_download": sample_no_history_download,
     }
     await db.ops_job_runs.insert_one({
         "job_name": "backfill_full_price_history",

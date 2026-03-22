@@ -39,6 +39,8 @@ interface PriceIntegrity {
   needs_price_redownload?: number;
   price_history_incomplete?: number;
   full_price_history_count?: number;
+  history_download_completed_count?: number;
+  gap_free_since_history_download_count?: number;
   missing_expected_dates?: number;
   coverage_checkpoints?: Record<string, CoverageCheckpoint>;
 }
@@ -148,11 +150,19 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (pi && (pi.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi.missing_expected_dates} date(s) with incomplete price coverage` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
-  // Full price history summary for Historical Depth section
+  // Process-truth metrics for Historical Depth / Price Integrity section
+  const hdcCount = pi?.history_download_completed_count ?? 0;
+  const gfCount = pi?.gap_free_since_history_download_count ?? 0;
+  const tvTotal = pi?.today_visible ?? 0;
+  const hdcPct = tvTotal > 0 ? Math.round((hdcCount / tvTotal) * 100) : 0;
+  const gfPct = tvTotal > 0 ? Math.round((gfCount / tvTotal) * 100) : 0;
+  const hdcValue = tvTotal > 0 ? `${hdcCount}/${tvTotal} (${hdcPct}%)` : `${hdcCount}/${tvTotal}`;
+  const gfValue = tvTotal > 0 ? `${gfCount}/${tvTotal} (${gfPct}%)` : `${gfCount}/${tvTotal}`;
+
+  // Legacy heuristic depth (secondary informational)
   const fphCount = pi?.full_price_history_count ?? 0;
-  const fphTotal = pi?.today_visible ?? 0;
-  const fphPct = fphTotal > 0 ? Math.round((fphCount / fphTotal) * 100) : 0;
-  const fphValue = fphTotal > 0 ? `${fphCount}/${fphTotal} (${fphPct}%)` : `${fphCount}/${fphTotal}`;
+  const fphPct = tvTotal > 0 ? Math.round((fphCount / tvTotal) * 100) : 0;
+  const fphValue = tvTotal > 0 ? `${fphCount}/${tvTotal} (${fphPct}%)` : `${fphCount}/${tvTotal}`;
 
   // Coverage checkpoint helper
   const renderCheckpoint = (label: string, key: string) => {
@@ -267,13 +277,29 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         {renderCheckpoint('Latest trading day', 'latest_trading_day')}
         {renderCheckpoint('1 week ago', '1_week_ago')}
 
-        {/* Historical coverage depth */}
-        <Text style={[d.subSection, { marginTop: 12 }]}>Historical Depth</Text>
+        {/* Historical / Price Integrity truth */}
+        <Text style={[d.subSection, { marginTop: 12 }]}>Price Completeness (process truth)</Text>
         <Text style={d.cpHint}>
-          How many of today's visible tickers have price data at older dates — low values are expected if historical backfill is incomplete
+          Proven historical download + no missing bulk dates since download
         </Text>
         <IntegrityMetric
-          label="Full Price History"
+          label="History Download Completed"
+          value={hdcValue}
+          warn={false}
+        />
+        <IntegrityMetric
+          label="Gap-Free Since Download"
+          value={gfValue}
+          warn={false}
+        />
+
+        {/* Historical coverage depth (secondary informational) */}
+        <Text style={[d.subSection, { marginTop: 12 }]}>Historical Depth (heuristic)</Text>
+        <Text style={d.cpHint}>
+          Heuristic depth indicator (≥252 rows, min date ≥1yr ago) — not the canonical truth
+        </Text>
+        <IntegrityMetric
+          label="Full Price History (heuristic)"
           value={fphValue}
           warn={false}
         />

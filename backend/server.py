@@ -1895,12 +1895,16 @@ async def admin_backfill_asset_type():
 @api_router.post("/admin/backfill-full-price-history")
 async def admin_backfill_full_price_history():
     """
-    Recompute truth-based full_price_history fields for all visible tickers.
+    Recompute process-truth price completeness fields for all visible tickers.
 
-    Sets full_price_history, full_price_history_verified_at,
-    full_price_history_min_date, full_price_history_row_count on each
-    tracked_ticker based on actual stock_prices coverage.
+    Canonical truth model:
+      history_download_completed  = price_history_complete (proven download)
+      history_download_completed_at = price_history_complete_as_of (anchor date)
+      history_download_min_date   = min(stock_prices.date)
+      missing_bulk_dates_since_history_download = gaps after anchor
+      gap_free_since_history_download = no gaps since anchor
 
+    Also preserves legacy heuristic fields (full_price_history*).
     Idempotent: safe to re-run at any time.
     """
     from services.admin_overview_service import backfill_full_price_history
