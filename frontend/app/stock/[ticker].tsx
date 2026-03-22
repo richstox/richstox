@@ -405,7 +405,7 @@ export default function StockDetail() {
   };
 
   // Search results navigation
-  const { query: searchQuery, results: searchResults } = useSearchStore();
+  const { query: searchQuery, results: searchResults, clearSearch } = useSearchStore();
   const searchIndex = useMemo(
     () => searchResults.findIndex(r => r.ticker === ticker),
     [searchResults, ticker]
@@ -1304,6 +1304,13 @@ export default function StockDetail() {
           >
             {nextTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{nextTicker}</Text>}
             <Ionicons name="chevron-forward" size={16} color={nextTicker ? COLORS.primary : COLORS.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.searchNavClose}
+            onPress={clearSearch}
+          >
+            <Ionicons name="close" size={16} color={COLORS.textMuted} />
           </TouchableOpacity>
         </View>
       )}
@@ -4147,5 +4154,9 @@ const styles = StyleSheet.create({
   searchNavCounter: {
     fontSize: 12,
     color: '#9CA3AF',
+  },
+  searchNavClose: {
+    padding: 4,
+    marginLeft: 4,
   },
 });

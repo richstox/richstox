@@ -15,10 +15,12 @@ interface SearchState {
   query: string;
   results: SearchResult[];
   setSearch: (query: string, results: SearchResult[]) => void;
+  clearSearch: () => void;
 }
 
 export const useSearchStore = create<SearchState>((set) => ({
   query: '',
   results: [],
   setSearch: (query, results) => set({ query, results }),
+  clearSearch: () => set({ query: '', results: [] }),
 }));
