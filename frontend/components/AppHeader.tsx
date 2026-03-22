@@ -194,6 +194,23 @@ export default function AppHeader({
                   <View style={styles.menuUserText}>
                     <Text style={styles.menuUserName}>{user?.name || 'User'}</Text>
                     <Text style={styles.menuUserEmail}>{user?.email}</Text>
+                    {/* Subscription badge inside menu */}
+                    <View style={[
+                      styles.menuSubscriptionBadge,
+                      (user?.subscription_tier === 'pro') && styles.subscriptionBadgePro,
+                      (user?.subscription_tier === 'pro_plus') && styles.subscriptionBadgeProPlus,
+                    ]}>
+                      {(user?.subscription_tier === 'pro' || user?.subscription_tier === 'pro_plus') && (
+                        <Ionicons name="sparkles" size={10} color="#FFF" style={{ marginRight: 3 }} />
+                      )}
+                      <Text style={[
+                        styles.subscriptionBadgeText,
+                        (user?.subscription_tier === 'pro' || user?.subscription_tier === 'pro_plus') && styles.subscriptionBadgeTextPro,
+                      ]}>
+                        {user?.subscription_tier === 'pro_plus' ? 'PRO+' : 
+                         user?.subscription_tier === 'pro' ? 'PRO' : 'FREE'}
+                      </Text>
+                    </View>
                   </View>
                 </View>
                 
@@ -396,6 +413,16 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.body,
     color: COLORS.textMuted,
     marginTop: 2,
+  },
+  menuSubscriptionBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 10,
+    backgroundColor: COLORS.border,
+    marginTop: 6,
   },
   menuDivider: {
     height: 1,

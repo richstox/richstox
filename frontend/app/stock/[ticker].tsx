@@ -30,6 +30,7 @@ import BottomNav from '../../components/BottomNav';
 import { MetricTooltip, TOOLTIP_CONTENT } from '../../components/MetricTooltip';
 import AppHeader from '../../components/AppHeader';
 import { useSearchStore } from '../../stores/searchStore';
+import { useAuth } from '../../contexts/AuthContext';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const EODHD_LOGO_BASE = 'https://eodhd.com';
@@ -334,6 +335,7 @@ export default function StockDetail() {
   const { ticker } = useLocalSearchParams();
   const router = useRouter();
   const { width } = useWindowDimensions();
+  const { sessionToken } = useAuth();
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -533,29 +535,44 @@ export default function StockDetail() {
 
   // P34 Fix 5: Check if ticker is in watchlist
   const checkIfFollowed = useCallback(async () => {
+    if (!sessionToken) {
+      setIsFollowed(false);
+      return;
+    }
     try {
       // P33/P34: Use watchlist endpoint - source of truth
-      const response = await axios.get(`${API_URL}/api/v1/watchlist/check/${ticker}`);
+      const response = await axios.get(`${API_URL}/api/v1/watchlist/check/${ticker}`, {
+        headers: { Authorization: `Bearer ${sessionToken}` },
+      });
       setIsFollowed(response.data.is_followed || false);
     } catch (err) {
       console.error('Error checking follow status:', err);
       setIsFollowed(false);
     }
-  }, [ticker]);
+  }, [ticker, sessionToken]);
 
   // P34 Fix 5: Toggle follow status (Watchlist only, NOT Portfolio)
   const toggleFollow = async () => {
     if (followLoading) return;
     
     setFollowLoading(true);
+    if (!sessionToken) {
+      setFollowLoading(false);
+      return;
+    }
+    const authHeaders = { Authorization: `Bearer ${sessionToken}` };
     try {
       if (isFollowed) {
         // Unfollow - remove from watchlist
-        await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`);
+        await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`, {
+          headers: authHeaders,
+        });
         setIsFollowed(false);
       } else {
         // Follow - add to watchlist
-        await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`);
+        await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`, {}, {
+          headers: authHeaders,
+        });
         setIsFollowed(true);
       }
     } catch (err) {
