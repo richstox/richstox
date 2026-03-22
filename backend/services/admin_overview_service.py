@@ -806,7 +806,7 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
     if total_visible == 0:
         return {
             "status": "no_work",
-            "total_visible": 0,
+            "total_visible_tickers": 0,
             "history_download_completed_count": 0,
             "gap_free_since_history_download_count": 0,
             "tickers_with_missing_bulk_dates_count": 0,

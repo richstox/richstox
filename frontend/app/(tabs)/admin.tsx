@@ -150,19 +150,19 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (pi && (pi.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi.missing_expected_dates} date(s) with incomplete price coverage` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
+  // Format count/total with percentage
+  const fmtRatio = (count: number, total: number) => {
+    const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+    return total > 0 ? `${count}/${total} (${pct}%)` : `${count}/${total}`;
+  };
+
   // Process-truth metrics for Historical Depth / Price Integrity section
-  const hdcCount = pi?.history_download_completed_count ?? 0;
-  const gfCount = pi?.gap_free_since_history_download_count ?? 0;
   const tvTotal = pi?.today_visible ?? 0;
-  const hdcPct = tvTotal > 0 ? Math.round((hdcCount / tvTotal) * 100) : 0;
-  const gfPct = tvTotal > 0 ? Math.round((gfCount / tvTotal) * 100) : 0;
-  const hdcValue = tvTotal > 0 ? `${hdcCount}/${tvTotal} (${hdcPct}%)` : `${hdcCount}/${tvTotal}`;
-  const gfValue = tvTotal > 0 ? `${gfCount}/${tvTotal} (${gfPct}%)` : `${gfCount}/${tvTotal}`;
+  const hdcValue = fmtRatio(pi?.history_download_completed_count ?? 0, tvTotal);
+  const gfValue = fmtRatio(pi?.gap_free_since_history_download_count ?? 0, tvTotal);
 
   // Legacy heuristic depth (secondary informational)
-  const fphCount = pi?.full_price_history_count ?? 0;
-  const fphPct = tvTotal > 0 ? Math.round((fphCount / tvTotal) * 100) : 0;
-  const fphValue = tvTotal > 0 ? `${fphCount}/${tvTotal} (${fphPct}%)` : `${fphCount}/${tvTotal}`;
+  const fphValue = fmtRatio(pi?.full_price_history_count ?? 0, tvTotal);
 
   // Coverage checkpoint helper
   const renderCheckpoint = (label: string, key: string) => {

@@ -318,7 +318,7 @@ def test_no_visible_tickers():
     result = asyncio.run(backfill_full_price_history(db))
 
     assert result["status"] == "no_work"
-    assert result["total_visible"] == 0
+    assert result["total_visible_tickers"] == 0
 
 
 def test_no_price_data():
