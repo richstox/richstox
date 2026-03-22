@@ -102,7 +102,7 @@ export default function AppHeader({
       <View style={styles.headerRight}>
         <TouchableOpacity 
           style={styles.headerIcon} 
-          onPress={() => router.push('/(tabs)/search')}
+          onPress={() => router.push('/(tabs)/search?autofocus=true')}
           testID="header-search-btn"
         >
           <Ionicons name="search-outline" size={22} color={COLORS.text} />
