@@ -4907,13 +4907,11 @@ async def admin_toggle_job(job_name: str):
 async def admin_get_job_status(job_name: str):
     """
     Get current enabled/disabled status of a job.
-    
+    READ-ONLY: no finalization side-effects (page refresh must never mutate).
+
     Returns:
         Job config and last run info
     """
-    if job_name in {"price_sync", "fundamentals_sync"}:
-        from scheduler_service import finalize_stuck_admin_job_runs
-        await finalize_stuck_admin_job_runs(db, job_names=[job_name])
 
     config_key = f"job_{job_name}_enabled"
     config = await db.ops_config.find_one({"key": config_key}, {"_id": 0})
@@ -5357,10 +5355,9 @@ async def admin_enqueue_manual_refresh():
 
 @api_router.get("/admin/jobs/{job_name}/status")
 async def admin_job_status(job_name: str):
-    """Get the latest run status for a specific job."""
-    if job_name in {"price_sync", "fundamentals_sync"}:
-        from scheduler_service import finalize_stuck_admin_job_runs
-        await finalize_stuck_admin_job_runs(db, job_names=[job_name])
+    """Get the latest run status for a specific job.
+    READ-ONLY: no finalization side-effects (page refresh must never mutate).
+    """
 
     run = await db.ops_job_runs.find_one(
         {"job_name": job_name},
@@ -5604,12 +5601,8 @@ async def admin_overview():
     """
     P47: Single aggregated endpoint for Admin Panel v2.
     Returns all data needed in one response for fast page load (<3s).
+    READ-ONLY: no finalization side-effects (page refresh must never mutate).
     """
-    from scheduler_service import finalize_stuck_admin_job_runs
-    await finalize_stuck_admin_job_runs(
-        db,
-        job_names=["price_sync", "fundamentals_sync"],
-    )
     return await get_admin_overview(db)
 
 
