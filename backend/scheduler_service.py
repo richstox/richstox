@@ -2506,6 +2506,46 @@ async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
     return running_zombie_result.modified_count + cancel_zombie_result.modified_count
 
 
+async def _finalize_orphaned_chain_runs(db, now: datetime) -> int:
+    """
+    Finalize pipeline_chain_runs stuck in 'running' whose child jobs are all
+    terminal (no ops_job_runs with status running/cancel_requested for that
+    chain).  This closes the gap where zombie job finalization updates
+    ops_job_runs but never propagates to the parent chain document.
+    """
+    stale_before = now - timedelta(seconds=FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS)
+    finalized = 0
+    async for chain_doc in db.pipeline_chain_runs.find({
+        "status": "running",
+        "started_at": {"$lt": stale_before},
+    }):
+        chain_id = chain_doc.get("chain_run_id")
+        if not chain_id:
+            continue
+        active_job = await db.ops_job_runs.find_one({
+            "details.chain_run_id": chain_id,
+            "status": {"$in": ["running", "cancel_requested"]},
+        })
+        if active_job:
+            continue
+        result = await db.pipeline_chain_runs.update_one(
+            {"chain_run_id": chain_id, "status": "running"},
+            {"$set": {
+                "status": "cancelled",
+                "finished_at": now,
+                "finished_at_prague": _to_prague_iso(now),
+                "error": "orphaned_chain_no_active_jobs",
+            }},
+        )
+        if result.modified_count:
+            finalized += 1
+            logger.warning(
+                f"pipeline_chain_runs: finalized orphaned chain {chain_id} "
+                f"(no active jobs, started_at < {stale_before.isoformat()})"
+            )
+    return finalized
+
+
 async def finalize_stuck_admin_job_runs(
     db,
     *,
@@ -2514,6 +2554,7 @@ async def finalize_stuck_admin_job_runs(
 ) -> Dict[str, int]:
     """
     Finalize stale running docs for admin pipeline jobs so UI status stays truthful.
+    Also finalizes orphaned pipeline_chain_runs whose child jobs are all terminal.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -2523,6 +2564,7 @@ async def finalize_stuck_admin_job_runs(
         finalized["price_sync"] = await _finalize_stuck_price_sync_runs(db, now)
     if "fundamentals_sync" in targets:
         finalized["fundamentals_sync"] = await _finalize_zombie_fundamentals_runs(db, now)
+    finalized["orphaned_chains"] = await _finalize_orphaned_chain_runs(db, now)
     return finalized
 
 
