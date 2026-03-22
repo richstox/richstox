@@ -185,9 +185,13 @@ export default function Search() {
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Search Stocks</Text>
-        <TouchableOpacity style={styles.doneButton} onPress={handleDonePress}>
-          <Text style={styles.doneButtonText}>Done</Text>
-        </TouchableOpacity>
+        {addedThisSession.length > 0 ? (
+          <TouchableOpacity style={styles.doneButton} onPress={handleDonePress}>
+            <Text style={styles.doneButtonText}>Done</Text>
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.headerPlaceholder} />
+        )}
       </View>
 
       {/* P34 Fix 2: Search Input with ref for auto-focus */}
@@ -332,6 +336,10 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   headerTitle: { flex: 1, fontSize: 18, fontWeight: '600', color: COLORS.text, textAlign: 'center' },
+  headerPlaceholder: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
   // P41: Done button - Apply style (solid filled)
   doneButton: {
     paddingHorizontal: 20,
