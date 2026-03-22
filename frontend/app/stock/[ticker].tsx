@@ -18,16 +18,18 @@ import {
   Image,
   Linking,
   Platform,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
-import { COLORS } from '../_layout';
+import { COLORS, FONTS } from '../_layout';
 import Svg, { Path, Line, Text as SvgText, Circle, Rect, G } from 'react-native-svg';
 import FinancialHub from '../../components/FinancialHub';
 import BottomNav from '../../components/BottomNav';
 import { MetricTooltip, TOOLTIP_CONTENT } from '../../components/MetricTooltip';
+import { useAuth } from '../../contexts/AuthContext';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const EODHD_LOGO_BASE = 'https://eodhd.com';
@@ -332,12 +334,14 @@ export default function StockDetail() {
   const { ticker } = useLocalSearchParams();
   const router = useRouter();
   const { width } = useWindowDimensions();
+  const { user, isAdmin, logout } = useAuth();
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [data, setData] = useState<StockOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showFullDescription, setShowFullDescription] = useState(false);
+  const [showUserMenu, setShowUserMenu] = useState(false);
   // P4: Single vertical scroll, no tabs - Key Metrics collapsed by default
   const [keyMetricsExpanded, setKeyMetricsExpanded] = useState(false); // Collapsed by default
   // P5: Collapsed sections with summary pills
@@ -1232,30 +1236,116 @@ export default function StockDetail() {
     return 'neutral'; // "In line", "N/A (Missing data)", etc.
   };
 
+  const handleUserMenuPress = (action: string) => {
+    setShowUserMenu(false);
+    switch (action) {
+      case 'dashboard':
+        router.push('/(tabs)/dashboard');
+        break;
+      case 'settings':
+        router.push('/(tabs)/settings');
+        break;
+      case 'admin':
+        router.push('/(tabs)/admin' as any);
+        break;
+      case 'signout':
+        logout();
+        break;
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity 
-          style={styles.backButton} 
-          onPress={() => router.back()}
-          hitSlop={{ top: 10, bottom: 10, left: 20, right: 5 }}
+      {/* Top Bar */}
+      <View style={styles.topBar} testID="ticker-detail-top-bar">
+        {/* Left: Richstox logo → Home */}
+        <TouchableOpacity
+          style={styles.topBarLogoButton}
+          onPress={() => router.push('/(tabs)/dashboard')}
+          testID="top-bar-logo"
         >
-          <Ionicons name="arrow-back" size={24} color={COLORS.text} />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>{company.code}</Text>
-        <TouchableOpacity 
-          style={styles.shareButton}
-          onPress={toggleFollow}
-          disabled={followLoading}
-          data-testid="follow-button"
-        >
-          <Ionicons 
-            name={isFollowed ? "star" : "star-outline"} 
-            size={24} 
-            color={isFollowed ? "#F59E0B" : COLORS.text} 
+          <Image
+            source={require('../../assets/images/richstox_icon.png')}
+            style={styles.topBarLogo}
           />
         </TouchableOpacity>
+
+        {/* Center: Ticker symbol */}
+        <Text style={styles.topBarTitle}>{company.code}</Text>
+
+        {/* Right: Avatar / User menu trigger */}
+        <View style={styles.topBarAvatarContainer}>
+          <TouchableOpacity
+            style={styles.topBarAvatar}
+            onPress={() => setShowUserMenu(!showUserMenu)}
+            testID="top-bar-avatar-btn"
+          >
+            {user?.picture ? (
+              <Image source={{ uri: user.picture }} style={styles.topBarAvatarImage} />
+            ) : (
+              <Ionicons name="person" size={18} color={COLORS.textMuted} />
+            )}
+          </TouchableOpacity>
+
+          {/* Dropdown menu */}
+          {showUserMenu && (
+            <>
+              <Pressable
+                style={styles.topBarMenuOverlay}
+                onPress={() => setShowUserMenu(false)}
+              />
+              <View style={styles.topBarMenuContainer} testID="top-bar-user-menu">
+                {/* User info */}
+                <View style={styles.topBarMenuUserInfo}>
+                  {user?.picture ? (
+                    <Image source={{ uri: user.picture }} style={styles.topBarMenuAvatar} />
+                  ) : (
+                    <View style={styles.topBarMenuAvatarPlaceholder}>
+                      <Ionicons name="person" size={24} color={COLORS.textMuted} />
+                    </View>
+                  )}
+                  <View style={styles.topBarMenuUserText}>
+                    <Text style={styles.topBarMenuUserName}>{user?.name || 'User'}</Text>
+                    <Text style={styles.topBarMenuUserEmail}>{user?.email}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.topBarMenuDivider} />
+
+                {isAdmin && (
+                  <TouchableOpacity
+                    style={styles.topBarMenuItem}
+                    onPress={() => handleUserMenuPress('admin')}
+                    testID="top-bar-menu-admin"
+                  >
+                    <Ionicons name="shield-outline" size={20} color={COLORS.primary} />
+                    <Text style={[styles.topBarMenuItemText, { color: COLORS.primary }]}>Admin Panel</Text>
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  style={styles.topBarMenuItem}
+                  onPress={() => handleUserMenuPress('settings')}
+                  testID="top-bar-menu-settings"
+                >
+                  <Ionicons name="settings-outline" size={20} color={COLORS.text} />
+                  <Text style={styles.topBarMenuItemText}>Account Settings</Text>
+                </TouchableOpacity>
+
+                <View style={styles.topBarMenuDivider} />
+
+                <TouchableOpacity
+                  style={styles.topBarMenuItem}
+                  onPress={() => handleUserMenuPress('signout')}
+                  testID="top-bar-menu-signout"
+                >
+                  <Ionicons name="log-out-outline" size={20} color={COLORS.danger} />
+                  <Text style={[styles.topBarMenuItemText, { color: COLORS.danger }]}>Sign out</Text>
+                </TouchableOpacity>
+              </View>
+            </>
+          )}
+        </View>
       </View>
 
       <ScrollView
@@ -2879,6 +2969,130 @@ export default function StockDetail() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
+
+  // ── Top Bar (ticker detail only) ──
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    zIndex: 1000,
+  },
+  topBarLogoButton: {
+    padding: 4,
+  },
+  topBarLogo: {
+    width: 36,
+    height: 36,
+  },
+  topBarTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontFamily: FONTS.heading,
+    fontWeight: '700',
+    color: COLORS.text,
+    textAlign: 'center',
+    letterSpacing: 1,
+  },
+  topBarAvatarContainer: {
+    position: 'relative',
+    zIndex: 1001,
+  },
+  topBarAvatar: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: COLORS.border,
+  },
+  topBarAvatarImage: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+  },
+  topBarMenuOverlay: {
+    position: 'fixed' as any,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'transparent',
+    zIndex: 999,
+  },
+  topBarMenuContainer: {
+    position: 'absolute',
+    top: 44,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    width: 260,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+    overflow: 'hidden',
+    zIndex: 1002,
+    ...(Platform.OS === 'web' ? {
+      boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+    } : {}),
+  },
+  topBarMenuUserInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 16,
+    gap: 12,
+  },
+  topBarMenuAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  topBarMenuAvatarPlaceholder: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: COLORS.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topBarMenuUserText: {
+    flex: 1,
+  },
+  topBarMenuUserName: {
+    fontSize: 15,
+    fontFamily: FONTS.bodySemiBold,
+    color: COLORS.text,
+  },
+  topBarMenuUserEmail: {
+    fontSize: 12,
+    fontFamily: FONTS.body,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  topBarMenuDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+  },
+  topBarMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    gap: 12,
+  },
+  topBarMenuItemText: {
+    fontSize: 15,
+    fontFamily: FONTS.body,
+    color: COLORS.text,
+  },
+
+  // ── Existing styles (preserved) ──
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: 4, paddingRight: 16, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   backButton: { 
     width: 44, 
