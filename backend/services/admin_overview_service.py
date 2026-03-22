@@ -448,16 +448,19 @@ FULL_HISTORY_MIN_DAYS = 365
 # The canonical truth for "price-complete" is:
 #
 #   history_download_completed = True
-#     Evidence: tracked_tickers.price_history_complete == True
+#     Evidence: tracked_tickers.history_download_proven_at IS NOT NULL
 #     Set by: full_sync_service.py (after successful full historical download)
 #             scheduler_service.py (after successful split/dividend remediation)
-#     This is a process-truth flag: it means the system successfully completed
-#     a full price download (or re-download) for this ticker.
+#     This is a STRICT proof marker: legacy price_history_complete alone is
+#     NOT sufficient.  The system must have explicitly completed a full
+#     price download (or re-download) and recorded the proof marker.
 #
-#   history_download_completed_at = tracked_tickers.price_history_complete_as_of
+#   history_download_completed_at = tracked_tickers.history_download_proven_anchor
 #     A date string (same type as stock_prices.date, "YYYY-MM-DD") representing
 #     the latest price date covered by the historical download.
 #     This is the CONTINUITY ANCHOR: bulk dates after this anchor must exist.
+#     A ticker with history_download_proven_at but NULL anchor is treated as
+#     NOT completed (anchor is required for gap-checking).
 #
 #   missing_bulk_dates_since_history_download = count of canonical successful
 #     bulk processed dates D where D > anchor AND ticker has no price row on D.
@@ -470,9 +473,10 @@ FULL_HISTORY_MIN_DAYS = 365
 #     AND missing_bulk_dates_since_history_download == 0
 #
 # This is STRONGER than the old heuristic model because:
-# 1. It requires PROVEN historical download completion (not row-count guessing)
+# 1. It requires an EXPLICIT proof marker (not legacy operational flags)
 # 2. It requires ZERO gaps against canonical bulk ingestion truth (not depth)
-# 3. The evidence sources are actual persisted process events, not estimates.
+# 3. Existing tickers without the proof marker are NOT completed and must
+#    enter the full history download flow.
 
 _SAFE_INTEGRITY = {
     "today_visible": 0,
@@ -758,12 +762,14 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
 
     CANONICAL TRUTH MODEL (see module-level constants/comments for full docs):
 
-      history_download_completed = tracked_tickers.price_history_complete
-        Evidence: set True by full_sync_service.py after successful full
-        historical download, and by scheduler_service.py after split/dividend
-        remediation re-download.
+      history_download_completed = tracked_tickers.history_download_proven_at IS NOT NULL
+        AND tracked_tickers.history_download_proven_anchor IS NOT NULL
+        Evidence: strict proof marker written ONLY by full_sync_service.py
+        after successful full historical download, and by scheduler_service.py
+        after split/dividend remediation re-download.
+        Legacy price_history_complete alone is NOT sufficient proof.
 
-      history_download_completed_at = tracked_tickers.price_history_complete_as_of
+      history_download_completed_at = tracked_tickers.history_download_proven_anchor
         A date string ("YYYY-MM-DD"), same type as stock_prices.date.
         Represents the latest price date covered by the historical download.
         This is the CONTINUITY ANCHOR: we check for gaps after this date.
@@ -796,6 +802,8 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
             "ticker": 1,
             "price_history_complete": 1,
             "price_history_complete_as_of": 1,
+            "history_download_proven_at": 1,
+            "history_download_proven_anchor": 1,
             "_id": 0,
         },
     ).to_list(None)
@@ -865,9 +873,11 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
         min_date_val = stats["min_date"] if stats else None
         row_count = stats["row_count"] if stats else 0
 
-        # Process-truth: history download completed?
-        history_completed = info.get("price_history_complete") is True
-        anchor_date = info.get("price_history_complete_as_of") if history_completed else None
+        # Strict proof: history download completed only if explicit proof marker
+        # AND anchor exist.  Legacy price_history_complete alone is NOT sufficient.
+        has_proof = info.get("history_download_proven_at") is not None
+        anchor_date = info.get("history_download_proven_anchor") if has_proof else None
+        history_completed = has_proof and anchor_date is not None
 
         # Missing bulk dates since anchor
         missing_count = 0

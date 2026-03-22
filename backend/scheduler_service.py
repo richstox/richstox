@@ -457,6 +457,10 @@ async def _detect_split_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
                 "price_history_complete": False,
                 "price_history_status": "pending",
                 "last_split_detected": today_str,
+            },
+            "$unset": {
+                "history_download_proven_at": "",
+                "history_download_proven_anchor": "",
             }},
         )
         flagged = result.modified_count
@@ -553,6 +557,10 @@ async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any
                 "price_history_complete": False,
                 "price_history_status": "pending",
                 "last_dividend_detected": today_str,
+            },
+            "$unset": {
+                "history_download_proven_at": "",
+                "history_download_proven_anchor": "",
             }},
         )
         flagged = result.modified_count
@@ -776,14 +784,22 @@ async def _remediate_price_redownload(
                 records_upserted = result.get("records_upserted", 0)
                 if records_upserted > 0:
                     succeeded += 1
+                    # Derive anchor from backfill result date_range
+                    _dr = result.get("date_range") or {}
+                    _anchor = _dr.get("to")
+                    _proof_fields: Dict[str, Any] = {
+                        "needs_price_redownload": False,
+                        "price_history_complete": True,
+                        "price_history_complete_as_of": _anchor,
+                        "price_history_status": "complete",
+                        "updated_at": now,
+                        # Strict proof marker — canonical source for history_download_completed
+                        "history_download_proven_at": now,
+                        "history_download_proven_anchor": _anchor,
+                    }
                     await db.tracked_tickers.update_one(
                         {"ticker": ticker_us},
-                        {"$set": {
-                            "needs_price_redownload": False,
-                            "price_history_complete": True,
-                            "price_history_status": "complete",
-                            "updated_at": now,
-                        }},
+                        {"$set": _proof_fields},
                     )
                 else:
                     failed += 1
@@ -3252,8 +3268,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         result["step3_visibility"] = step3_visibility
 
         # ── Phase C: Download complete price history for VISIBLE tickers only ──
-        # Only tickers with is_visible == true AND (price_history_complete != true
-        # OR needs_price_redownload == true) get full EOD history downloaded.
+        # Tickers selected if: is_visible == true AND any of:
+        #   - price_history_complete != true (legacy operational flag)
+        #   - needs_price_redownload == true (remediation flag)
+        #   - history_download_proven_at does not exist (strict proof missing)
         # Uses _process_price_ticker from full_sync_service (handles split redownload).
         from full_sync_service import _process_price_ticker
 
@@ -3274,9 +3292,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     "$or": [
                         {"price_history_complete": {"$ne": True}},
                         {"needs_price_redownload": True},
+                        {"history_download_proven_at": {"$exists": False}},
                     ],
                 },
-                {"_id": 0, "ticker": 1, "needs_price_redownload": 1, "price_history_complete": 1},
+                {"_id": 0, "ticker": 1, "needs_price_redownload": 1, "price_history_complete": 1, "history_download_proven_at": 1},
             )
             phase_c_docs = [doc async for doc in _phase_c_cursor]
             phase_c_tickers = [
@@ -3292,29 +3311,38 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 1 for doc in phase_c_docs
                 if bool(doc.get("needs_price_redownload"))
             )
+            phase_c_count_missing_proof = sum(
+                1 for doc in phase_c_docs
+                if doc.get("history_download_proven_at") is None
+            )
             phase_c_selection_sources = []
             if phase_c_count_incomplete > 0:
                 phase_c_selection_sources.append("price_history_incomplete")
             if phase_c_count_redownload > 0:
                 phase_c_selection_sources.append("needs_price_redownload")
+            if phase_c_count_missing_proof > 0:
+                phase_c_selection_sources.append("missing_strict_proof")
             phase_c_reasons_by_ticker = {
                 doc["ticker"]: {
                     "price_history_incomplete": doc.get("price_history_complete") is not True,
                     "needs_price_redownload": bool(doc.get("needs_price_redownload")),
+                    "missing_strict_proof": doc.get("history_download_proven_at") is None,
                 }
                 for doc in phase_c_docs
             }
             phase_c_counts_by_reason = {
                 "price_history_incomplete": 0,
                 "needs_price_redownload": 0,
+                "missing_strict_proof": 0,
             }
             phase_c_sample_tickers_by_reason = {
                 "price_history_incomplete": [],
                 "needs_price_redownload": [],
+                "missing_strict_proof": [],
             }
             for ticker, _needs_redownload in phase_c_tickers:
                 ticker_reasons = phase_c_reasons_by_ticker.get(ticker, {})
-                for reason in ("price_history_incomplete", "needs_price_redownload"):
+                for reason in ("price_history_incomplete", "needs_price_redownload", "missing_strict_proof"):
                     if ticker_reasons.get(reason) is True:
                         phase_c_counts_by_reason[reason] += 1
                         if len(phase_c_sample_tickers_by_reason[reason]) < 10:
@@ -3324,12 +3352,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 "counts_by_source_pre_dedupe": {
                     "price_history_incomplete": phase_c_count_incomplete,
                     "needs_price_redownload": phase_c_count_redownload,
+                    "missing_strict_proof": phase_c_count_missing_proof,
                 },
                 "pre_dedupe_total": len(phase_c_docs),
                 "post_dedupe_total": phase_c_post_dedupe_total,
                 "counts_by_reason": phase_c_counts_by_reason,
                 "sample_tickers_by_reason": phase_c_sample_tickers_by_reason,
-                "selection_criteria": "PhaseC: union(price_history_incomplete, needs_price_redownload) then dedupe by ticker",
+                "selection_criteria": "PhaseC: union(price_history_incomplete, needs_price_redownload, missing_strict_proof) then dedupe by ticker",
                 "overlap_possible": True,
             }
             phase_c_stats["tickers_targeted"] = phase_c_post_dedupe_total

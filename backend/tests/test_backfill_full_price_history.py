@@ -2,8 +2,9 @@
 Tests for backfill_full_price_history in admin_overview_service.py
 
 Covers:
-  - Process-truth model: history_download_completed, gap_free_since_history_download
-  - Canonical derivation from price_history_complete + bulk processed dates
+  - Strict proof model: history_download_completed, gap_free_since_history_download
+  - Canonical derivation from history_download_proven_at/anchor + bulk processed dates
+  - Legacy price_history_complete alone is NOT sufficient proof
   - Legacy heuristic fields (full_price_history*) preserved
   - Audit summary written to ops_job_runs
   - Idempotency: repeated execution produces same results
@@ -57,8 +58,8 @@ def _mock_backfill_db(
     Build a mock db for backfill_full_price_history.
 
     Args:
-        visible_ticker_docs: list of dicts with ticker, price_history_complete,
-                             price_history_complete_as_of
+        visible_ticker_docs: list of dicts with ticker, history_download_proven_at,
+                             history_download_proven_anchor (strict proof fields)
         price_stats: list of dicts with _id, min_date, row_count
         bulk_days: list of dicts for ops_job_runs bulk gapfill days
         bulk_date_coverage: dict mapping ticker -> set of dates they have
@@ -132,16 +133,17 @@ def test_threshold_constants():
 
 
 def test_history_download_completed_and_gap_free():
-    """Ticker with successful history download and no missing bulk dates → gap_free=True."""
+    """Ticker with strict proof marker and no missing bulk dates → gap_free=True."""
     anchor_date = "2026-03-10"
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
         {"processed_date": "2026-03-11", "status": "success"},
         {"processed_date": "2026-03-12", "status": "success"},
     ]
     visible_docs = [{
         "ticker": "AAPL.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": anchor_date,
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": anchor_date,
     }]
     price_stats = [{"_id": "AAPL.US", "min_date": "2020-01-02", "row_count": 1500}]
     # Ticker has price data for both bulk dates
@@ -167,16 +169,17 @@ def test_history_download_completed_and_gap_free():
 
 
 def test_history_download_completed_with_missing_bulk_date():
-    """Ticker with successful history download but missing one bulk date → gap_free=False."""
+    """Ticker with strict proof marker but missing one bulk date → gap_free=False."""
     anchor_date = "2026-03-10"
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
         {"processed_date": "2026-03-11", "status": "success"},
         {"processed_date": "2026-03-12", "status": "success"},
     ]
     visible_docs = [{
         "ticker": "AAPL.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": anchor_date,
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": anchor_date,
     }]
     price_stats = [{"_id": "AAPL.US", "min_date": "2020-01-02", "row_count": 1500}]
     # Ticker only has data for one of the two bulk dates
@@ -198,13 +201,13 @@ def test_history_download_completed_with_missing_bulk_date():
 
 
 def test_no_proven_history_download():
-    """Ticker without proven history download → history_download_completed=False."""
+    """Ticker without strict proof marker → history_download_completed=False."""
     bulk_days = [
         {"processed_date": "2026-03-11", "status": "success"},
     ]
     visible_docs = [{
         "ticker": "NEW.US",
-        "price_history_complete": False,
+        # No history_download_proven_at or history_download_proven_anchor
     }]
     price_stats = [{"_id": "NEW.US", "min_date": "2026-03-01", "row_count": 10}]
 
@@ -224,6 +227,7 @@ def test_no_proven_history_download():
 def test_bulk_dates_before_anchor_are_ignored():
     """Bulk dates <= anchor should NOT count as missing gaps."""
     anchor_date = "2026-03-15"
+    proof_time = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
         {"processed_date": "2026-03-10", "status": "success"},  # before anchor
         {"processed_date": "2026-03-12", "status": "success"},  # before anchor
@@ -231,8 +235,8 @@ def test_bulk_dates_before_anchor_are_ignored():
     ]
     visible_docs = [{
         "ticker": "AAPL.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": anchor_date,
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": anchor_date,
     }]
     price_stats = [{"_id": "AAPL.US", "min_date": "2020-01-02", "row_count": 1500}]
     # Ticker has the post-anchor date
@@ -252,10 +256,11 @@ def test_bulk_dates_before_anchor_are_ignored():
 
 def test_no_bulk_dates_means_gap_free():
     """If there are no canonical bulk dates, a completed download is trivially gap-free."""
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     visible_docs = [{
         "ticker": "AAPL.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": "2026-03-10",
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": "2026-03-10",
     }]
     price_stats = [{"_id": "AAPL.US", "min_date": "2020-01-02", "row_count": 1500}]
 
@@ -272,10 +277,11 @@ def test_no_bulk_dates_means_gap_free():
 def test_legacy_heuristic_fields_preserved():
     """Legacy full_price_history* fields are still computed and written."""
     old_date = (date.today() - timedelta(days=400)).isoformat()
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     visible_docs = [{
         "ticker": "AAPL.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": "2026-03-10",
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": "2026-03-10",
     }]
     price_stats = [{"_id": "AAPL.US", "min_date": old_date, "row_count": 300}]
 
@@ -297,7 +303,7 @@ def test_legacy_heuristic_false_when_too_few_rows():
     old_date = (date.today() - timedelta(days=400)).isoformat()
     visible_docs = [{
         "ticker": "NEW.US",
-        "price_history_complete": False,
+        # No strict proof marker
     }]
     price_stats = [{"_id": "NEW.US", "min_date": old_date, "row_count": 100}]
 
@@ -323,10 +329,11 @@ def test_no_visible_tickers():
 
 def test_no_price_data():
     """Ticker with no price data → min_date=None, all booleans False."""
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     visible_docs = [{
         "ticker": "EMPTY.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": "2026-03-10",
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": "2026-03-10",
     }]
 
     db = _mock_backfill_db(visible_docs, [])
@@ -342,14 +349,15 @@ def test_no_price_data():
 def test_mixed_tickers():
     """Multiple tickers with different states produce correct aggregate counts."""
     anchor = "2026-03-10"
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
         {"processed_date": "2026-03-11", "status": "success"},
         {"processed_date": "2026-03-12", "status": "success"},
     ]
     visible_docs = [
-        {"ticker": "FULL.US", "price_history_complete": True, "price_history_complete_as_of": anchor},
-        {"ticker": "GAPPY.US", "price_history_complete": True, "price_history_complete_as_of": anchor},
-        {"ticker": "NEW.US", "price_history_complete": False},
+        {"ticker": "FULL.US", "history_download_proven_at": proof_time, "history_download_proven_anchor": anchor},
+        {"ticker": "GAPPY.US", "history_download_proven_at": proof_time, "history_download_proven_anchor": anchor},
+        {"ticker": "NEW.US"},  # No strict proof marker
     ]
     old_date = (date.today() - timedelta(days=400)).isoformat()
     price_stats = [
@@ -377,10 +385,11 @@ def test_mixed_tickers():
 
 def test_writes_audit_to_ops_job_runs():
     """Audit summary is written to ops_job_runs with process-truth counts."""
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     visible_docs = [{
         "ticker": "AAPL.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": "2026-03-10",
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": "2026-03-10",
     }]
     price_stats = [{"_id": "AAPL.US", "min_date": "2020-01-02", "row_count": 300}]
 
@@ -403,11 +412,12 @@ def test_writes_audit_to_ops_job_runs():
 def test_idempotent_recomputation():
     """Running backfill twice produces the same field values (idempotent)."""
     anchor = "2026-03-10"
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [{"processed_date": "2026-03-11", "status": "success"}]
     visible_docs = [{
         "ticker": "AAPL.US",
-        "price_history_complete": True,
-        "price_history_complete_as_of": anchor,
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": anchor,
     }]
     old_date = (date.today() - timedelta(days=400)).isoformat()
     price_stats = [{"_id": "AAPL.US", "min_date": old_date, "row_count": 300}]
@@ -430,3 +440,87 @@ def test_idempotent_recomputation():
     assert update1["missing_bulk_dates_since_history_download"] == update2["missing_bulk_dates_since_history_download"]
     assert update1["full_price_history"] == update2["full_price_history"]
     assert result1["gap_free_since_history_download_count"] == result2["gap_free_since_history_download_count"]
+
+
+# ── Tests: Strict Proof Regime ───────────────────────────────────────────────
+
+
+def test_legacy_complete_without_strict_proof_is_not_completed():
+    """Ticker with legacy price_history_complete=True but NO strict proof marker
+    must be treated as history_download_completed=False.
+    This is the core strict-regime requirement: legacy evidence alone is insufficient."""
+    bulk_days = [
+        {"processed_date": "2026-03-11", "status": "success"},
+    ]
+    visible_docs = [{
+        "ticker": "LEGACY.US",
+        "price_history_complete": True,
+        "price_history_complete_as_of": "2026-03-10",
+        # No history_download_proven_at or history_download_proven_anchor
+    }]
+    price_stats = [{"_id": "LEGACY.US", "min_date": "2020-01-02", "row_count": 1500}]
+
+    db = _mock_backfill_db(visible_docs, price_stats, bulk_days)
+    result = asyncio.run(backfill_full_price_history(db))
+
+    assert result["history_download_completed_count"] == 0
+    assert result["gap_free_since_history_download_count"] == 0
+
+    call_args = db.tracked_tickers.update_one.call_args
+    update_doc = call_args[0][1]["$set"]
+    assert update_doc["history_download_completed"] is False
+    assert update_doc["history_download_completed_at"] is None
+    assert update_doc["gap_free_since_history_download"] is False
+    assert update_doc["missing_bulk_dates_since_history_download"] == 0
+
+
+def test_proof_marker_without_anchor_is_not_completed():
+    """Ticker with history_download_proven_at but NULL anchor
+    must be treated as history_download_completed=False.
+    A completed ticker must always have both proof marker AND anchor."""
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
+    bulk_days = [
+        {"processed_date": "2026-03-11", "status": "success"},
+    ]
+    visible_docs = [{
+        "ticker": "NOANCHOR.US",
+        "history_download_proven_at": proof_time,
+        # history_download_proven_anchor is missing/None
+    }]
+    price_stats = [{"_id": "NOANCHOR.US", "min_date": "2020-01-02", "row_count": 1500}]
+
+    db = _mock_backfill_db(visible_docs, price_stats, bulk_days)
+    result = asyncio.run(backfill_full_price_history(db))
+
+    assert result["history_download_completed_count"] == 0
+    assert result["gap_free_since_history_download_count"] == 0
+
+    call_args = db.tracked_tickers.update_one.call_args
+    update_doc = call_args[0][1]["$set"]
+    assert update_doc["history_download_completed"] is False
+    assert update_doc["history_download_completed_at"] is None
+    assert update_doc["gap_free_since_history_download"] is False
+
+
+def test_strict_proof_with_anchor_is_completed():
+    """Ticker with BOTH proof marker AND anchor is treated as completed."""
+    proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
+    anchor_date = "2026-03-10"
+    visible_docs = [{
+        "ticker": "PROVEN.US",
+        "history_download_proven_at": proof_time,
+        "history_download_proven_anchor": anchor_date,
+    }]
+    price_stats = [{"_id": "PROVEN.US", "min_date": "2020-01-02", "row_count": 1500}]
+
+    db = _mock_backfill_db(visible_docs, price_stats)
+    result = asyncio.run(backfill_full_price_history(db))
+
+    assert result["history_download_completed_count"] == 1
+    assert result["gap_free_since_history_download_count"] == 1
+
+    call_args = db.tracked_tickers.update_one.call_args
+    update_doc = call_args[0][1]["$set"]
+    assert update_doc["history_download_completed"] is True
+    assert update_doc["history_download_completed_at"] == anchor_date
+    assert update_doc["gap_free_since_history_download"] is True
