@@ -1290,15 +1290,15 @@ export default function StockDetail() {
           </TouchableOpacity>
 
           <View style={styles.searchNavCenter}>
+            <Text style={styles.searchNavCounter}>
+              {searchIndex + 1} of {searchResults.length}
+            </Text>
             <TouchableOpacity
               style={styles.searchNavClose}
               onPress={clearSearch}
             >
               <Ionicons name="close" size={16} color={COLORS.textMuted} />
             </TouchableOpacity>
-            <Text style={styles.searchNavCounter}>
-              {searchIndex + 1} of {searchResults.length}
-            </Text>
           </View>
 
           <TouchableOpacity
