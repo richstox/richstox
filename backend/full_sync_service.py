@@ -203,6 +203,10 @@ async def _process_price_ticker(
             # Strict proof marker — canonical source for history_download_completed
             "history_download_proven_at": datetime.now(timezone.utc),
             "history_download_proven_anchor": complete_as_of,
+            # Computed fields — kept in sync so dashboard facet reads work
+            # without requiring a separate backfill run.
+            "history_download_completed": True,
+            "gap_free_since_history_download": True,
         }},
     )
 

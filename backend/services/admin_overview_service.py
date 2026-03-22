@@ -511,6 +511,7 @@ _SAFE_INTEGRITY = {
     "full_price_history_count": 0,
     "history_download_completed_count": 0,
     "gap_free_since_history_download_count": 0,
+    "fundamentals_complete_count": 0,
     "missing_expected_dates": 0,
     "coverage_checkpoints": {},
 }
@@ -649,7 +650,10 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         )
 
         # ── 3. Ticker-level flags (visible only) ───────────────────────────
-        flag_facet = await db.tracked_tickers.aggregate([
+        # history_download_completed: derive from strict proof markers
+        # directly, not from the pre-computed field (which requires the
+        # manual backfill job to have been run).
+        flag_facet_coro = db.tracked_tickers.aggregate([
             {"$match": {"is_visible": True}},
             {"$facet": {
                 "needs_redownload": [
@@ -665,15 +669,33 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                     {"$count": "n"},
                 ],
                 "history_download_completed": [
-                    {"$match": {"history_download_completed": True}},
+                    {"$match": {
+                        "history_download_proven_at": {"$exists": True, "$type": "date"},
+                        "history_download_proven_anchor": {"$exists": True, "$ne": None},
+                    }},
                     {"$count": "n"},
                 ],
-                "gap_free_since_history_download": [
-                    {"$match": {"gap_free_since_history_download": True}},
+                "fundamentals_complete": [
+                    {"$match": {"fundamentals_complete": True}},
                     {"$count": "n"},
                 ],
             }},
         ]).to_list(1)
+
+        # Fetch proven tickers with anchors for inline gap-free computation
+        proven_docs_coro = db.tracked_tickers.find(
+            {
+                "is_visible": True,
+                "history_download_proven_at": {"$exists": True, "$type": "date"},
+                "history_download_proven_anchor": {"$exists": True, "$ne": None},
+            },
+            {"ticker": 1, "history_download_proven_anchor": 1, "_id": 0},
+        ).to_list(None)
+
+        flag_facet, proven_docs = await asyncio.gather(
+            flag_facet_coro, proven_docs_coro,
+        )
+
         ff = flag_facet[0] if flag_facet else {}
 
         def _n(key: str) -> int:
@@ -683,7 +705,11 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         incomplete_history = _n("incomplete_history")
         full_price_history_count = _n("full_price_history")
         history_download_completed_count = _n("history_download_completed")
-        gap_free_count = _n("gap_free_since_history_download")
+        fundamentals_complete_count = _n("fundamentals_complete")
+        proven_anchors = {
+            d["ticker"]: d["history_download_proven_anchor"]
+            for d in proven_docs
+        }
 
         # ── 4. Coverage checkpoints ─────────────────────────────────────────
         target_offsets = {
@@ -762,6 +788,34 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         else:
             missing_expected_dates = 0
 
+        # ── 6. Gap-free computation (inline, from proof markers + coverage) ─
+        # A ticker is gap-free iff it has a proven download AND has price
+        # data for every canonical bulk date after its anchor.
+        if proven_anchors and expected_dates:
+            coverage_pipeline = [
+                {"$match": {
+                    "ticker": {"$in": list(proven_anchors.keys())},
+                    "date": {"$in": expected_dates},
+                }},
+                {"$group": {"_id": "$ticker", "dates": {"$addToSet": "$date"}}},
+            ]
+            dates_by_proven: Dict[str, set] = {}
+            async for doc in db.stock_prices.aggregate(coverage_pipeline):
+                dates_by_proven[doc["_id"]] = set(doc["dates"])
+
+            gap_free_count = sum(
+                1 for ticker, anchor in proven_anchors.items()
+                if all(
+                    d in dates_by_proven.get(ticker, set())
+                    for d in expected_dates if d > anchor
+                )
+            )
+        elif proven_anchors:
+            # No bulk dates processed → no gaps possible
+            gap_free_count = len(proven_anchors)
+        else:
+            gap_free_count = 0
+
         return {
             "today_visible": today_visible,
             "today_visible_source": today_visible_source,
@@ -771,6 +825,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             "full_price_history_count": full_price_history_count,
             "history_download_completed_count": history_download_completed_count,
             "gap_free_since_history_download_count": gap_free_count,
+            "fundamentals_complete_count": fundamentals_complete_count,
             "missing_expected_dates": missing_expected_dates,
             "coverage_checkpoints": checkpoints,
         }

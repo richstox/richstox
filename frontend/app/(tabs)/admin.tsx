@@ -41,6 +41,7 @@ interface PriceIntegrity {
   full_price_history_count?: number;
   history_download_completed_count?: number;
   gap_free_since_history_download_count?: number;
+  fundamentals_complete_count?: number;
   missing_expected_dates?: number;
   coverage_checkpoints?: Record<string, CoverageCheckpoint>;
 }
@@ -165,8 +166,10 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const tvTotal = pi?.today_visible ?? 0;
   const hdcCount = pi?.history_download_completed_count ?? 0;
   const gfCount = pi?.gap_free_since_history_download_count ?? 0;
+  const fundCount = pi?.fundamentals_complete_count ?? 0;
   const hdcValue = fmtRatio(hdcCount, tvTotal);
   const gfValue = fmtRatio(gfCount, tvTotal);
+  const fundValue = pi ? fmtRatio(fundCount, tvTotal) : '—';
 
   // ── Tristate status logic for Price Integrity cards ──
   // GREEN = confirmed OK, YELLOW = unknown/pending, RED = confirmed problem
@@ -186,6 +189,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     pi && tvTotal > 0 && hdcCount === tvTotal ? 'green' : 'yellow';
   const gfStatus: 'green' | 'yellow' =
     pi && tvTotal > 0 && gfCount === tvTotal ? 'green' : 'yellow';
+  const fundStatus: 'green' | 'yellow' =
+    pi && tvTotal > 0 && fundCount === tvTotal ? 'green' : 'yellow';
 
   // EODHD API usage from provider endpoint
   const eodhCallsToday = eodhd?.eodhd_api_calls_today;
@@ -296,8 +301,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           />
           <IntegrityMetric
             label="Complete Fundamentals"
-            value="—"
-            status="yellow"
+            value={fundValue}
+            status={fundStatus}
           />
         </View>
 
