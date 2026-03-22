@@ -532,8 +532,9 @@ async def _get_bulk_processed_dates(db) -> List[str]:
 
     dates: set = set()
     async for doc in db.ops_job_runs.aggregate(pipeline):
-        days = (doc.get("details") or {}).get("price_bulk_gapfill", {}).get("days", [])
-        for day in days:
+        details = doc.get("details") or {}
+        gapfill = details.get("price_bulk_gapfill") or {}
+        for day in gapfill.get("days", []):
             if day.get("status") == "success" and day.get("processed_date"):
                 dates.add(day["processed_date"])
 
@@ -662,8 +663,8 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             dates_with_data: set = set()
             async for doc in db.stock_prices.aggregate(dates_with_any_data_pipeline):
                 dates_with_data.add(doc["_id"])
-            dates_with_zero_coverage = len(
-                [d for d in expected_dates if d not in dates_with_data]
+            dates_with_zero_coverage = sum(
+                1 for d in expected_dates if d not in dates_with_data
             )
             missing_expected_dates = gap_count + dates_with_zero_coverage
         else:
