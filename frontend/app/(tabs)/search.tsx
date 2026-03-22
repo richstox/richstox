@@ -5,7 +5,7 @@
  * 
  * DO NOT CHANGE WITHOUT RICHARD APPROVAL (kurtarichard@gmail.com)
  */
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,7 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
@@ -56,12 +56,14 @@ export default function Search() {
   // P36 Item 5: Track tickers added this session
   const [addedThisSession, setAddedThisSession] = useState<string[]>([]);
 
-  // P34 Fix 2: Auto-focus search input on mount/navigation
-  useEffect(() => {
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 100);
-  }, []);
+  // P34 Fix 2: Auto-focus search input on mount/navigation and re-focus on screen focus
+  useFocusEffect(
+    useCallback(() => {
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 100);
+    }, [])
+  );
 
   useEffect(() => {
     if (searchQuery.length >= 1) {
