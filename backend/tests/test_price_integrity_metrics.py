@@ -219,6 +219,20 @@ def test_coverage_checkpoints_present():
     assert "1_year_ago" in cp
 
 
+def test_coverage_checkpoint_kind_field():
+    """Each checkpoint must carry a 'kind' field: recent or historical."""
+    db = _mock_db(
+        bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
+        checkpoint_counts={"2026-03-20": 3},
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    cp = result["coverage_checkpoints"]
+    assert cp["latest_trading_day"]["kind"] == "recent"
+    assert cp["1_week_ago"]["kind"] == "recent"
+    assert cp["1_month_ago"]["kind"] == "historical"
+    assert cp["1_year_ago"]["kind"] == "historical"
+
+
 def test_zero_visible_returns_safe_defaults():
     db = _mock_db(visible_tickers=[])
     result = asyncio.run(get_price_integrity_metrics(db))

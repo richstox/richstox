@@ -624,6 +624,13 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             async for doc in count_cursor:
                 price_counts_by_date[doc["_id"]] = doc["count"]
 
+        _CHECKPOINT_KIND = {
+            "latest_trading_day": "recent",
+            "1_week_ago": "recent",
+            "1_month_ago": "historical",
+            "1_year_ago": "historical",
+        }
+
         checkpoints: Dict[str, Any] = {}
         for label in target_offsets:
             actual_date = nearest_dates.get(label)
@@ -632,6 +639,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                 "date": actual_date,
                 "have_price_count": have_price,
                 "today_visible": today_visible,
+                "kind": _CHECKPOINT_KIND.get(label, "historical"),
             }
 
         # ── 5. Missing expected dates (from canonical bulk ingestion truth) ─

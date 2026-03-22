@@ -26,6 +26,7 @@ interface CoverageCheckpoint {
   date?: string | null;
   have_price_count?: number;
   today_visible?: number;
+  kind?: 'recent' | 'historical';
 }
 
 interface PriceIntegrity {
@@ -153,13 +154,17 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     const have = c.have_price_count ?? 0;
     const total = c.today_visible ?? 0;
     const pct = total > 0 ? Math.round((have / total) * 100) : 0;
+    const isHistorical = c.kind === 'historical';
     const isCoverageGap = total > 0 && have < total;
+    // Historical checkpoints: use neutral blue for incomplete depth (not amber warning)
+    const dotColor = !isCoverageGap ? '#22C55E' : isHistorical ? '#60A5FA' : '#F59E0B';
+    const textColor = !isCoverageGap ? undefined : isHistorical ? { color: '#60A5FA' } : { color: '#F59E0B' };
     return (
       <View key={key} style={d.cpRow}>
-        <View style={[d.cpDot, { backgroundColor: isCoverageGap ? '#F59E0B' : '#22C55E' }]} />
+        <View style={[d.cpDot, { backgroundColor: dotColor }]} />
         <Text style={d.cpLabel}>{label}</Text>
         <Text style={d.cpDate}>{c.date ?? '—'}</Text>
-        <Text style={[d.cpValue, isCoverageGap && { color: '#F59E0B' }]}>{have}/{total} ({pct}%)</Text>
+        <Text style={[d.cpValue, textColor]}>{have}/{total} ({pct}%)</Text>
       </View>
     );
   };
@@ -230,7 +235,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             warn={!pi?.last_bulk_trading_date}
           />
           <IntegrityMetric
-            label="Missing Dates"
+            label="Missing Bulk Dates"
             value={String(pi?.missing_expected_dates ?? 0)}
             warn={(pi?.missing_expected_dates ?? 0) > 0}
           />
@@ -246,13 +251,20 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           />
         </View>
 
-        {/* Coverage checkpoints */}
+        {/* Recent bulk coverage */}
         <Text style={d.subSection}>
-          Coverage Checkpoints ({pi?.today_visible ?? 0} visible
+          Recent Bulk Coverage ({pi?.today_visible ?? 0} visible
           {pi?.today_visible_source?.chain_run_id ? ` · run ${pi.today_visible_source.chain_run_id.slice(-8)}` : ''})
         </Text>
+        <Text style={d.cpHint}>Tickers with price data on recently ingested trading dates</Text>
         {renderCheckpoint('Latest trading day', 'latest_trading_day')}
         {renderCheckpoint('1 week ago', '1_week_ago')}
+
+        {/* Historical coverage depth */}
+        <Text style={[d.subSection, { marginTop: 12 }]}>Historical Depth</Text>
+        <Text style={d.cpHint}>
+          How many of today's visible tickers have price data at older dates — low values are expected if historical backfill is incomplete
+        </Text>
         {renderCheckpoint('1 month ago', '1_month_ago')}
         {renderCheckpoint('1 year ago', '1_year_ago')}
       </View>
@@ -320,7 +332,8 @@ const d = StyleSheet.create({
   intValue: { fontSize: 16, fontWeight: '800', color: COLORS.text },
   intLabel: { fontSize: 9, color: COLORS.textMuted, textAlign: 'center', marginTop: 2 },
 
-  subSection: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, marginBottom: 8 },
+  subSection: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, marginBottom: 4 },
+  cpHint: { fontSize: 9, color: COLORS.textMuted, marginBottom: 8, fontStyle: 'italic' },
 
   // Coverage checkpoints
   cpRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: COLORS.border + '55' },
