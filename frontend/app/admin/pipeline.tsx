@@ -348,6 +348,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // ── Step 2 price sync progress ────────────────────────────────────────────
   const [step2Progress, setStep2Progress] = useState<{processed: number; total: number; pct: number; phase?: string; message?: string} | null>(null);
 
+  // ── Step 3 live telemetry ─────────────────────────────────────────────────
+  const [step3Telemetry, setStep3Telemetry] = useState<Record<string, any> | null>(null);
+
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
   const [auditLive, setAuditLive] = useState(false);
@@ -480,6 +483,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         } catch { /* non-fatal */ }
       }
 
+      // Fetch Step 3 telemetry when running Step 3
+      if (sd.current_step === 3) {
+        try {
+          const tr = await authenticatedFetch(`${API_URL}/api/admin/step3/telemetry`, {}, sessionToken);
+          if (tr.ok) setStep3Telemetry(await tr.json());
+        } catch { /* non-fatal */ }
+      }
+
       if (sd.steps_done?.includes(2)) {
         setStep2Progress(prev => prev ? { ...prev, pct: 100, phase: 'completed', message: undefined } : null);
       }
@@ -524,10 +535,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       return;
     }
     try {
-      const [overviewRes, exclusionRes, freshnessRes] = await Promise.allSettled([
+      const [overviewRes, exclusionRes, freshnessRes, step3TelRes] = await Promise.allSettled([
         authenticatedFetch(`${API_URL}/api/admin/overview`, {}, sessionToken),
         authenticatedFetch(`${API_URL}/api/admin/pipeline/exclusion-report?limit=20`, {}, sessionToken),
         authenticatedFetch(`${API_URL}/api/admin/pipeline/data-freshness`, {}, sessionToken),
+        authenticatedFetch(`${API_URL}/api/admin/step3/telemetry`, {}, sessionToken),
       ]);
 
       if (overviewRes.status === 'fulfilled' && overviewRes.value.ok) {
@@ -570,6 +582,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           stepRunFetchRef.current.clear();
           setExclusionReport(excl);
         } catch (e) { console.error('exclusion processing error', e); }
+      }
+      if (step3TelRes.status === 'fulfilled' && step3TelRes.value.ok) {
+        try { setStep3Telemetry(await step3TelRes.value.json()); } catch { /* non-fatal */ }
       }
     } catch (e) {
       console.error(e);
@@ -1740,6 +1755,138 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>
                 </View>
               )}
+
+              {/* ── Step 3 Phase Telemetry ── */}
+              {step.job_name === 'fundamentals_sync' && step3Telemetry && step3Telemetry.run_id && (() => {
+                const tel = step3Telemetry;
+                const phases = tel.phases || {};
+                const activePhase: string | null = tel.active_phase ?? null;
+                const isTerminal = ['cancelled', 'failed', 'error', 'completed', 'success'].includes(tel.status);
+                const PHASE_LABELS: Record<string, string> = { A: 'Phase A — Fundamentals', B: 'Phase B — Visibility', C: 'Phase C — Price History' };
+                const PHASE_COLORS: Record<string, string> = { A: '#6366F1', B: '#F59E0B', C: '#10B981' };
+                const STATUS_ICONS: Record<string, { icon: string; color: string }> = {
+                  idle: { icon: 'time-outline', color: COLORS.textMuted },
+                  running: { icon: 'sync-outline', color: '#3B82F6' },
+                  done: { icon: 'checkmark-circle', color: '#22C55E' },
+                  error: { icon: 'close-circle', color: '#EF4444' },
+                };
+
+                return (
+                  <View style={s.substepsCard}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                      <Text style={s.substepsTitle}>Step 3 Phase Progress</Text>
+                      {isTerminal ? (
+                        <View style={{ backgroundColor: tel.status === 'success' || tel.status === 'completed' ? '#22C55E22' : '#EF444422', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 }}>
+                          <Text style={{ fontSize: 9, fontWeight: '700', color: tel.status === 'success' || tel.status === 'completed' ? '#22C55E' : '#EF4444' }}>
+                            {tel.status.toUpperCase()}
+                          </Text>
+                        </View>
+                      ) : tel.status === 'running' ? (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <ActivityIndicator size="small" color="#3B82F6" />
+                          <Text style={{ fontSize: 9, fontWeight: '700', color: '#3B82F6' }}>RUNNING</Text>
+                        </View>
+                      ) : null}
+                    </View>
+
+                    {/* Updated at */}
+                    {tel.updated_at_prague && (
+                      <Text style={{ fontSize: 9, color: COLORS.textMuted, marginBottom: 6 }}>
+                        Last telemetry: {formatTime(tel.updated_at_prague)}
+                      </Text>
+                    )}
+
+                    {/* Per-phase rows */}
+                    {(['A', 'B', 'C'] as const).map((pk) => {
+                      const phase = phases[pk];
+                      if (!phase) return null;
+                      const isActive = activePhase === pk && !isTerminal;
+                      const si = STATUS_ICONS[phase.status] || STATUS_ICONS.idle;
+                      const hasCounts = phase.total != null && phase.total > 0;
+                      const phasePct = phase.pct != null ? Math.min(phase.pct, 100) : 0;
+
+                      return (
+                        <View
+                          key={pk}
+                          style={{
+                            marginBottom: 8,
+                            paddingVertical: 6,
+                            paddingHorizontal: 8,
+                            borderRadius: 6,
+                            backgroundColor: isActive ? PHASE_COLORS[pk] + '11' : 'transparent',
+                            borderWidth: isActive ? 1 : 0,
+                            borderColor: isActive ? PHASE_COLORS[pk] + '44' : 'transparent',
+                          }}
+                        >
+                          {/* Phase header */}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3 }}>
+                            <Ionicons name={si.icon as any} size={13} color={si.color} />
+                            <Text style={{ fontSize: 11, fontWeight: '600', color: COLORS.text, flex: 1 }}>
+                              {PHASE_LABELS[pk]}
+                            </Text>
+                            <Text style={{ fontSize: 9, fontWeight: '600', color: si.color }}>
+                              {phase.status.toUpperCase()}
+                            </Text>
+                          </View>
+
+                          {/* Progress bar + counts */}
+                          {hasCounts && (
+                            <View style={{ marginTop: 2 }}>
+                              <View style={{ height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden', marginBottom: 3 }}>
+                                <View style={{ height: 4, borderRadius: 2, width: `${phasePct}%` as any, backgroundColor: PHASE_COLORS[pk] }} />
+                              </View>
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                                <Text style={{ fontSize: 10, color: COLORS.textMuted }}>
+                                  {fmt(phase.processed)} / {fmt(phase.total)}
+                                </Text>
+                                <Text style={{ fontSize: 10, fontWeight: '600', color: PHASE_COLORS[pk] }}>
+                                  {phase.pct != null ? `${Math.round(phase.pct * 10) / 10}%` : '—'}
+                                </Text>
+                              </View>
+                            </View>
+                          )}
+
+                          {/* Message */}
+                          {phase.message && (
+                            <Text style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 2 }} numberOfLines={2}>
+                              {phase.message}
+                            </Text>
+                          )}
+
+                          {/* Phase C selection audit */}
+                          {pk === 'C' && phase.selection_audit && (() => {
+                            const sa = phase.selection_audit;
+                            const counts = sa.counts_by_reason || {};
+                            const samples = sa.sample_tickers_by_reason || {};
+                            const reasons = Object.keys(counts);
+                            if (reasons.length === 0) return null;
+                            return (
+                              <View style={{ marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: COLORS.border + '66' }}>
+                                <Text style={{ fontSize: 9, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase', marginBottom: 4 }}>
+                                  Selection Summary
+                                </Text>
+                                {reasons.map((reason) => (
+                                  <View key={reason} style={{ marginBottom: 4 }}>
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                                      <Text style={{ fontSize: 10, color: COLORS.text }}>{reason.replace(/_/g, ' ')}</Text>
+                                      <Text style={{ fontSize: 10, fontWeight: '700', color: PHASE_COLORS.C }}>{fmt(counts[reason])}</Text>
+                                    </View>
+                                    {samples[reason] && samples[reason].length > 0 && (
+                                      <Text style={{ fontSize: 9, color: COLORS.textMuted, fontFamily: 'monospace', marginTop: 1 }} numberOfLines={1}>
+                                        {samples[reason].slice(0, 5).join(', ')}{samples[reason].length > 5 ? ' …' : ''}
+                                      </Text>
+                                    )}
+                                  </View>
+                                ))}
+                              </View>
+                            );
+                          })()}
+                        </View>
+                      );
+                    })}
+                  </View>
+                );
+              })()}
 
               {step.job_name === 'fundamentals_sync' && run?.details?.requested_event_types && (
                 <View style={s.substepsCard}>
