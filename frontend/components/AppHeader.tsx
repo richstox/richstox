@@ -92,10 +92,12 @@ export default function AppHeader({
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
       ) : (
-        <Image 
-          source={require('../assets/images/richstox_icon.png')} 
-          style={styles.logo} 
-        />
+        <TouchableOpacity onPress={() => router.push('/(tabs)/dashboard')} testID="header-logo-btn">
+          <Image 
+            source={require('../assets/images/richstox_icon.png')} 
+            style={styles.logo} 
+          />
+        </TouchableOpacity>
       )}
       
       <Text style={styles.headerTitle}>{title}</Text>
@@ -139,22 +141,19 @@ export default function AppHeader({
           </TouchableOpacity>
         )}
         
-        {/* Subscription Badge */}
-        {showSubscriptionBadge && (
+        {/* Subscription Badge - only show for PRO/PRO+ users */}
+        {showSubscriptionBadge && (user?.subscription_tier === 'pro' || user?.subscription_tier === 'pro_plus') && (
         <View style={[
           styles.subscriptionBadge,
           user?.subscription_tier === 'pro' && styles.subscriptionBadgePro,
           user?.subscription_tier === 'pro_plus' && styles.subscriptionBadgeProPlus,
         ]}>
-          {(user?.subscription_tier === 'pro' || user?.subscription_tier === 'pro_plus') && (
-            <Ionicons name="sparkles" size={10} color="#FFF" style={{ marginRight: 3 }} />
-          )}
+          <Ionicons name="sparkles" size={10} color="#FFF" style={{ marginRight: 3 }} />
           <Text style={[
             styles.subscriptionBadgeText,
-            (user?.subscription_tier === 'pro' || user?.subscription_tier === 'pro_plus') && styles.subscriptionBadgeTextPro,
+            styles.subscriptionBadgeTextPro,
           ]}>
-            {user?.subscription_tier === 'pro_plus' ? 'PRO+' : 
-             user?.subscription_tier === 'pro' ? 'PRO' : 'FREE'}
+            {user?.subscription_tier === 'pro_plus' ? 'PRO+' : 'PRO'}
           </Text>
         </View>
         )}
