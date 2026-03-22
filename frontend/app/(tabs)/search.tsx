@@ -22,6 +22,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
+import { useSearchStore } from '../../stores/searchStore';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -42,9 +43,10 @@ export default function Search() {
   const params = useLocalSearchParams();
   const inputRef = useRef<TextInput>(null);
   const { sessionToken } = useAuth();
+  const { query: storedQuery, results: storedResults, setSearch } = useSearchStore();
   
-  const [searchQuery, setSearchQuery] = useState('');
-  const [results, setResults] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState(storedQuery);
+  const [results, setResults] = useState<any[]>(storedResults);
   const [loading, setLoading] = useState(false);
   
   // P34 Fix 3: Track watchlist state for each ticker
@@ -77,6 +79,11 @@ export default function Search() {
       const searchResults = response.data.results || [];
       setResults(searchResults);
       setLoading(false);
+      
+      // Persist to store for ticker-to-ticker navigation
+      if (searchResults.length > 0) {
+        setSearch(searchQuery, searchResults);
+      }
       
       // Load watchlist status in background (non-blocking)
       const watchlistChecks: Record<string, boolean> = {};
@@ -217,7 +224,7 @@ export default function Search() {
       )}
 
       {/* Results */}
-      {loading ? (
+      {loading && results.length === 0 ? (
         <View style={styles.center}>
           <ActivityIndicator size="large" color={COLORS.primary} />
         </View>

@@ -39,6 +39,7 @@ interface AppHeaderProps {
   backDestination?: string;
   onNotificationPress?: () => void;
   notificationCount?: number;
+  showSubscriptionBadge?: boolean;
 }
 
 export default function AppHeader({ 
@@ -47,6 +48,7 @@ export default function AppHeader({
   backDestination,
   onNotificationPress,
   notificationCount = 0,
+  showSubscriptionBadge = true,
 }: AppHeaderProps) {
   const router = useRouter();
   const { user, isAdmin, logout } = useAuth();
@@ -108,7 +110,7 @@ export default function AppHeader({
           <Ionicons name="search-outline" size={22} color={COLORS.text} />
         </TouchableOpacity>
         
-        {onNotificationPress && (
+        {onNotificationPress ? (
           <TouchableOpacity 
             style={styles.headerIcon} 
             onPress={onNotificationPress}
@@ -127,9 +129,18 @@ export default function AppHeader({
               </View>
             )}
           </TouchableOpacity>
+        ) : (
+          <TouchableOpacity 
+            style={styles.headerIcon} 
+            onPress={() => router.push('/(tabs)/dashboard')}
+            testID="header-notifications-btn"
+          >
+            <Ionicons name="notifications-outline" size={22} color={COLORS.text} />
+          </TouchableOpacity>
         )}
         
         {/* Subscription Badge */}
+        {showSubscriptionBadge && (
         <View style={[
           styles.subscriptionBadge,
           user?.subscription_tier === 'pro' && styles.subscriptionBadgePro,
@@ -146,6 +157,7 @@ export default function AppHeader({
              user?.subscription_tier === 'pro' ? 'PRO' : 'FREE'}
           </Text>
         </View>
+        )}
         
         {/* Avatar with dropdown menu */}
         <View style={styles.avatarContainer}>
