@@ -14,14 +14,17 @@ BINDING: Do not change without Richard's approval.
 """
 
 import asyncio
+import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Dict, Any, List, Optional
 from zoneinfo import ZoneInfo
 
 from services.universe_counts_service import get_universe_counts
 from credit_log_service import get_pipeline_sync_status
+
+logger = logging.getLogger(__name__)
 
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
@@ -429,6 +432,313 @@ def get_next_run_datetime(job_name: str, now_prague: datetime) -> datetime:
     return next_run
 
 
+# =============================================================================
+# PRICE INTEGRITY METRICS
+# =============================================================================
+
+_SAFE_INTEGRITY = {
+    "today_visible": 0,
+    "today_visible_source": None,
+    "last_bulk_trading_date": None,
+    "needs_price_redownload": 0,
+    "price_history_incomplete": 0,
+    "missing_expected_dates": 0,
+    "coverage_checkpoints": {},
+}
+
+
+async def _find_nearest_price_date(db, target_date_str: str) -> Optional[str]:
+    """Find the nearest date <= target_date_str that has price data."""
+    doc = await db.stock_prices.find_one(
+        {"date": {"$lte": target_date_str}},
+        {"date": 1, "_id": 0},
+        sort=[("date", -1)],
+    )
+    return doc["date"] if doc else None
+
+
+async def _resolve_today_visible(db) -> tuple:
+    """
+    Derive TODAY_VISIBLE from the latest successful main pipeline report.
+
+    Returns (visible_tickers: List[str], today_visible: int, source: dict).
+
+    Strategy:
+      1. Find the latest *completed* pipeline_chain_runs document.
+      2. Use its chain_run_id + finished_at as the stable snapshot reference.
+      3. Read the actual visible ticker list using the same query the
+         canonical report uses (is_visible=True on tracked_tickers) — this is
+         identical to build_canonical_pipeline_report's "visible" query and
+         remains stable until the next pipeline run mutates is_visible flags.
+      4. Expose provenance so the dashboard can display which run the count
+         comes from.
+
+    Fallback: if no completed chain exists, use live is_visible=True (same
+    result but with source.chain_run_id = None).
+    """
+    chain_doc = await db.pipeline_chain_runs.find_one(
+        {"status": "completed"},
+        {"chain_run_id": 1, "finished_at": 1, "_id": 0},
+        sort=[("finished_at", -1)],
+    )
+
+    chain_run_id: Optional[str] = None
+    generated_at_prague: Optional[str] = None
+
+    if chain_doc:
+        chain_run_id = chain_doc.get("chain_run_id")
+        finished = chain_doc.get("finished_at")
+        if finished is not None:
+            if getattr(finished, "tzinfo", None) is None:
+                finished = finished.replace(tzinfo=timezone.utc)
+            generated_at_prague = finished.astimezone(PRAGUE_TZ).isoformat()
+
+    # The visible ticker list is the snapshot produced by the last pipeline
+    # run (Step 3 sets is_visible flags).  Between pipeline runs this set
+    # does NOT change, so it is inherently stable.
+    visible_tickers: List[str] = await db.tracked_tickers.distinct(
+        "ticker", {"is_visible": True}
+    )
+
+    source = {
+        "chain_run_id": chain_run_id,
+        "generated_at_prague": generated_at_prague,
+    }
+
+    return visible_tickers, len(visible_tickers), source
+
+
+async def _get_bulk_processed_dates(db) -> List[str]:
+    """
+    Return the set of dates for which bulk ingestion succeeded, derived from
+    ops_job_runs.details.price_bulk_gapfill.days[] entries with status=success.
+
+    This is the *canonical* source of expected_dates — no rolling-date
+    heuristic or calendar approximation.
+    """
+    pipeline = [
+        {"$match": {
+            "job_name": "price_sync",
+            "status": {"$in": ["success", "completed"]},
+            "details.price_bulk_gapfill.days": {"$exists": True},
+        }},
+        {"$sort": {"finished_at": -1}},
+        # Limit to the most recent successful runs to bound the query.
+        # MAX_BULK_GAPFILL_DAYS_HISTORY in scheduler_service is 60;
+        # 10 runs is generous (each run can gap-fill multiple days).
+        {"$limit": 10},
+        {"$project": {"_id": 0, "details.price_bulk_gapfill.days": 1}},
+    ]
+
+    dates: set = set()
+    async for doc in db.ops_job_runs.aggregate(pipeline):
+        details = doc.get("details") or {}
+        gapfill = details.get("price_bulk_gapfill") or {}
+        for day in gapfill.get("days", []):
+            if day.get("status") == "success" and day.get("processed_date"):
+                dates.add(day["processed_date"])
+
+    return sorted(dates)
+
+
+async def get_price_integrity_metrics(db) -> Dict[str, Any]:
+    """
+    Price integrity / coverage metrics for the admin dashboard.
+
+    TODAY_VISIBLE = visible tickers from the latest successful main pipeline
+                    report (stable snapshot tied to a chain_run_id).
+    expected_dates = dates for which we successfully processed an EODHD daily
+                     bulk payload (from ops_job_runs bulk gapfill history).
+    A gap = an expected date D where have_price_count(D, TODAY_VISIBLE) < TODAY_VISIBLE.
+
+    Coverage checkpoints resolve the nearest available trading date at or before
+    the target calendar date (latest bulk date, 1 week, 1 month, 1 year ago)
+    and report how many of TODAY_VISIBLE tickers have a price record on that date.
+    """
+    try:
+        today_str = date.today().isoformat()
+
+        # ── 1. TODAY_VISIBLE (stable, from latest completed pipeline run) ───
+        visible_tickers, today_visible, today_visible_source = (
+            await _resolve_today_visible(db)
+        )
+
+        if today_visible == 0:
+            return {**_SAFE_INTEGRITY, "today_visible_source": today_visible_source}
+
+        # ── 2. Last bulk trading date ───────────────────────────────────────
+        bulk_state = await db.pipeline_state.find_one({"_id": "price_bulk"})
+        last_bulk_date: Optional[str] = (
+            (bulk_state or {}).get("global_last_bulk_date_processed")
+        )
+
+        # ── 3. Ticker-level flags (visible only) ───────────────────────────
+        flag_facet = await db.tracked_tickers.aggregate([
+            {"$match": {"is_visible": True}},
+            {"$facet": {
+                "needs_redownload": [
+                    {"$match": {"needs_price_redownload": True}},
+                    {"$count": "n"},
+                ],
+                "incomplete_history": [
+                    {"$match": {"price_history_complete": {"$ne": True}}},
+                    {"$count": "n"},
+                ],
+            }},
+        ]).to_list(1)
+        ff = flag_facet[0] if flag_facet else {}
+
+        def _n(key: str) -> int:
+            return (ff.get(key) or [{}])[0].get("n", 0)
+
+        needs_redownload = _n("needs_redownload")
+        incomplete_history = _n("incomplete_history")
+
+        # ── 4. Coverage checkpoints ─────────────────────────────────────────
+        target_offsets = {
+            "latest_trading_day": last_bulk_date or today_str,
+            "1_week_ago": (date.today() - timedelta(days=7)).isoformat(),
+            "1_month_ago": (date.today() - timedelta(days=30)).isoformat(),
+            "1_year_ago": (date.today() - timedelta(days=365)).isoformat(),
+        }
+
+        # Resolve nearest actual dates in parallel
+        nearest_tasks = {
+            label: _find_nearest_price_date(db, target)
+            for label, target in target_offsets.items()
+        }
+        nearest_results = await asyncio.gather(*nearest_tasks.values())
+        nearest_dates = dict(zip(nearest_tasks.keys(), nearest_results))
+
+        # Batch-count prices for all checkpoint dates in one aggregation
+        checkpoint_date_values = [d for d in nearest_dates.values() if d]
+        price_counts_by_date: Dict[str, int] = {}
+        if checkpoint_date_values:
+            count_cursor = db.stock_prices.aggregate([
+                {"$match": {
+                    "date": {"$in": checkpoint_date_values},
+                    "ticker": {"$in": visible_tickers},
+                }},
+                {"$group": {"_id": "$date", "count": {"$sum": 1}}},
+            ])
+            async for doc in count_cursor:
+                price_counts_by_date[doc["_id"]] = doc["count"]
+
+        checkpoints: Dict[str, Any] = {}
+        for label in target_offsets:
+            actual_date = nearest_dates.get(label)
+            have_price = price_counts_by_date.get(actual_date, 0) if actual_date else 0
+            checkpoints[label] = {
+                "date": actual_date,
+                "have_price_count": have_price,
+                "today_visible": today_visible,
+            }
+
+        # ── 5. Missing expected dates (from canonical bulk ingestion truth) ─
+        # expected_dates = dates where bulk ingestion succeeded
+        expected_dates = await _get_bulk_processed_dates(db)
+
+        if expected_dates:
+            # Count distinct expected dates where coverage is incomplete
+            gap_pipeline = [
+                {"$match": {
+                    "date": {"$in": expected_dates},
+                    "ticker": {"$in": visible_tickers},
+                }},
+                {"$group": {"_id": "$date", "count": {"$sum": 1}}},
+                {"$match": {"count": {"$lt": today_visible}}},
+                {"$count": "n"},
+            ]
+            gap_result = await db.stock_prices.aggregate(gap_pipeline).to_list(1)
+            gap_count = gap_result[0]["n"] if gap_result else 0
+
+            # Also count dates with zero coverage (no rows at all)
+            dates_with_any_data_pipeline = [
+                {"$match": {
+                    "date": {"$in": expected_dates},
+                    "ticker": {"$in": visible_tickers},
+                }},
+                {"$group": {"_id": "$date"}},
+            ]
+            dates_with_data: set = set()
+            async for doc in db.stock_prices.aggregate(dates_with_any_data_pipeline):
+                dates_with_data.add(doc["_id"])
+            dates_with_zero_coverage = sum(
+                1 for d in expected_dates if d not in dates_with_data
+            )
+            missing_expected_dates = gap_count + dates_with_zero_coverage
+        else:
+            missing_expected_dates = 0
+
+        return {
+            "today_visible": today_visible,
+            "today_visible_source": today_visible_source,
+            "last_bulk_trading_date": last_bulk_date,
+            "needs_price_redownload": needs_redownload,
+            "price_history_incomplete": incomplete_history,
+            "missing_expected_dates": missing_expected_dates,
+            "coverage_checkpoints": checkpoints,
+        }
+    except Exception as exc:
+        logger.warning("get_price_integrity_metrics failed: %s", exc)
+        return {**_SAFE_INTEGRITY}
+
+
+async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
+    """
+    Return hours since last successful full pipeline run (Step 3 = fundamentals_sync)
+    and last successful price_sync, for Ops Health thresholds.
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+
+        pipeline_run = await db.ops_job_runs.find_one(
+            {"job_name": "fundamentals_sync", "status": {"$in": ["success", "completed"]}},
+            {"finished_at": 1, "_id": 0},
+            sort=[("finished_at", -1)],
+        )
+        price_run = await db.ops_job_runs.find_one(
+            {"job_name": "price_sync", "status": {"$in": ["success", "completed"]}},
+            {"finished_at": 1, "_id": 0},
+            sort=[("finished_at", -1)],
+        )
+
+        def _hours_since(run_doc):
+            if not run_doc or not run_doc.get("finished_at"):
+                return None
+            finished = run_doc["finished_at"]
+            if getattr(finished, "tzinfo", None) is None:
+                finished = finished.replace(tzinfo=timezone.utc)
+            return round((now_utc - finished).total_seconds() / 3600, 1)
+
+        pipeline_hours = _hours_since(pipeline_run)
+        price_hours = _hours_since(price_run)
+
+        def _status(hours):
+            if hours is None:
+                return "unknown"
+            if hours < 25:
+                return "green"
+            if hours <= 48:
+                return "yellow"
+            return "red"
+
+        return {
+            "pipeline_hours_since_success": pipeline_hours,
+            "pipeline_status": _status(pipeline_hours),
+            "morning_refresh_hours_since_success": price_hours,
+            "morning_refresh_status": _status(price_hours),
+        }
+    except Exception as exc:
+        logger.warning("get_pipeline_last_success_age failed: %s", exc)
+        return {
+            "pipeline_hours_since_success": None,
+            "pipeline_status": "unknown",
+            "morning_refresh_hours_since_success": None,
+            "morning_refresh_status": "unknown",
+        }
+
+
 async def get_admin_overview(db) -> Dict[str, Any]:
     """
     Single aggregated response for Admin Panel.
@@ -486,13 +796,19 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     # Pipeline sync status (price history + fundamentals completion + credits)
     pipeline_sync_task = get_pipeline_sync_status(db)
 
+    # Price integrity metrics for dashboard coverage section
+    price_integrity_task = get_price_integrity_metrics(db)
+
+    # Pipeline / morning refresh last-success age for Ops Health thresholds
+    pipeline_age_task = get_pipeline_last_success_age(db)
+
     results = await asyncio.gather(
         universe_counts_task, scheduler_config_task, latest_price_task,
         job_runs_task, last_universe_seed_task, api_guard_task, job_last_runs_task,
-        system_health_task, pipeline_sync_task
+        system_health_task, pipeline_sync_task, price_integrity_task, pipeline_age_task
     )
 
-    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status = results
+    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age = results
     
     scheduler_enabled = scheduler_config.get("value", True) if scheduler_config else True
     latest_date = latest_price.get("date") if latest_price else None
@@ -745,6 +1061,12 @@ async def get_admin_overview(db) -> Dict[str, Any]:
 
         # Pipeline sync status: price history + fundamentals completion + credit usage
         "pipeline_sync_status": pipeline_sync_status,
+
+        # Price integrity / coverage metrics for dashboard
+        "price_integrity": price_integrity,
+
+        # Pipeline & morning-refresh last-success age (hours) for Ops Health
+        "pipeline_age": pipeline_age,
 
         # For Talk compatibility
         "visible_universe_count": universe_data["visible_universe_count"],

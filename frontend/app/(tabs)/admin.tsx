@@ -22,10 +22,30 @@ type Tab = 'dashboard' | 'pipeline' | 'customers';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface JobRun {
-  status?: string;
-  start_time?: string;
-  duration_seconds?: number;
+interface CoverageCheckpoint {
+  date?: string | null;
+  have_price_count?: number;
+  today_visible?: number;
+}
+
+interface PriceIntegrity {
+  today_visible?: number;
+  today_visible_source?: {
+    chain_run_id?: string | null;
+    generated_at_prague?: string | null;
+  } | null;
+  last_bulk_trading_date?: string | null;
+  needs_price_redownload?: number;
+  price_history_incomplete?: number;
+  missing_expected_dates?: number;
+  coverage_checkpoints?: Record<string, CoverageCheckpoint>;
+}
+
+interface PipelineAge {
+  pipeline_hours_since_success?: number | null;
+  pipeline_status?: string;
+  morning_refresh_hours_since_success?: number | null;
+  morning_refresh_status?: string;
 }
 
 interface OverviewData {
@@ -40,42 +60,42 @@ interface OverviewData {
     failed?: any[];
     completed?: any[];
   };
-  job_last_runs?: Record<string, JobRun>;
   universe_funnel?: {
     counts?: {
-      seeded_us_total?: number;
-      with_price_data?: number;
-      with_classification?: number;
       visible_tickers?: number;
     };
   };
+  price_integrity?: PriceIntegrity;
+  pipeline_age?: PipelineAge;
 }
 
 interface StatsData {
   users?: number;
   portfolios?: number;
-  visible_tickers?: number;
-  fundamentals?: number;
-  news_articles?: number;
+  positions?: number;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatTime(iso?: string): string {
-  if (!iso) return 'Never';
-  try {
-    const d = new Date(iso);
-    return `${d.toLocaleString('en-GB', {
-      timeZone: 'Europe/Prague',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    })} Prague`;
-  } catch { return iso; }
+function statusColor(status?: string): string {
+  if (status === 'green') return '#22C55E';
+  if (status === 'yellow') return '#F59E0B';
+  if (status === 'red') return '#EF4444';
+  return COLORS.textMuted;
 }
 
-const PIPELINE_JOB_NAMES = ['universe_seed', 'price_sync', 'fundamentals_sync', 'peer_medians'];
+function statusIcon(status?: string): string {
+  if (status === 'green') return 'checkmark-circle';
+  if (status === 'yellow') return 'warning';
+  if (status === 'red') return 'close-circle';
+  return 'help-circle';
+}
+
+function formatHours(h?: number | null): string {
+  if (h == null) return '—';
+  if (h < 1) return `${Math.round(h * 60)}m ago`;
+  return `${h.toFixed(1)}h ago`;
+}
 
 // ─── Dashboard Tab ────────────────────────────────────────────────────────────
 
@@ -109,36 +129,40 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   useEffect(() => { fetchAll(); }, [fetchAll]);
   const onRefresh = () => { setRefreshing(true); fetchAll(); };
 
-  const jobRuns = overview?.job_last_runs || {};
-  const completedSteps = PIPELINE_JOB_NAMES.filter(j => {
-    const s = jobRuns[j]?.status;
-    return s === 'success' || s === 'completed';
-  }).length;
-  const healthPct = Math.round((completedSteps / PIPELINE_JOB_NAMES.length) * 100);
-  const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
+  if (loading) return <View style={d.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
 
-  const overdueCount = overview?.jobs?.overdue?.length ?? 0;
-  const failedCount = overview?.jobs?.failed?.length ?? 0;
-  const visibleCount = overview?.universe_funnel?.counts?.visible_tickers ?? 0;
-  const schedulerActive = overview?.health?.scheduler_active;
+  const health = overview?.health;
+  const failedCount = health?.jobs_failed ?? 0;
+  const schedulerActive = health?.scheduler_active;
+  const pAge = overview?.pipeline_age;
+  const pi = overview?.price_integrity;
+  const cp = pi?.coverage_checkpoints || {};
 
   // Build alerts
   const alerts: { color: string; icon: string; text: string }[] = [];
   if (failedCount > 0) alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${failedCount} pipeline job${failedCount > 1 ? 's' : ''} failed` });
-  if (overdueCount > 0) alerts.push({ color: '#F59E0B', icon: 'warning', text: `${overdueCount} job${overdueCount > 1 ? 's' : ''} overdue` });
-  if (visibleCount === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
+  if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
+  if (pi && (pi.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi.missing_expected_dates} date(s) with incomplete price coverage` });
+  if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
-  // Pipeline step summaries
-  const stepSummaries = [
-    { name: 'universe_seed', label: 'Universe Seed', icon: 'globe-outline', color: '#6366F1' },
-    { name: 'price_sync', label: 'Price Sync', icon: 'trending-up-outline', color: '#10B981' },
-    { name: 'fundamentals_sync', label: 'Fundamentals', icon: 'library-outline', color: '#F59E0B' },
-    { name: 'compute_visible_universe', label: 'Visible Universe', icon: 'eye-outline', color: '#8B5CF6' },
-    { name: 'peer_medians', label: 'Peer Medians', icon: 'stats-chart-outline', color: '#EC4899' },
-  ];
-
-  if (loading) return <View style={d.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
+  // Coverage checkpoint helper
+  const renderCheckpoint = (label: string, key: string) => {
+    const c = cp[key];
+    if (!c) return null;
+    const have = c.have_price_count ?? 0;
+    const total = c.today_visible ?? 0;
+    const pct = total > 0 ? Math.round((have / total) * 100) : 0;
+    const isCoverageGap = total > 0 && have < total;
+    return (
+      <View key={key} style={d.cpRow}>
+        <View style={[d.cpDot, { backgroundColor: isCoverageGap ? '#F59E0B' : '#22C55E' }]} />
+        <Text style={d.cpLabel}>{label}</Text>
+        <Text style={d.cpDate}>{c.date ?? '—'}</Text>
+        <Text style={[d.cpValue, isCoverageGap && { color: '#F59E0B' }]}>{have}/{total} ({pct}%)</Text>
+      </View>
+    );
+  };
 
   return (
     <ScrollView
@@ -157,98 +181,80 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         </View>
       )}
 
-      {/* System Health */}
+      {/* A) Business (compact) */}
       <View style={d.card}>
-        <Text style={d.sectionTitle}>System Health</Text>
-        <View style={d.healthRow}>
-          <HealthPill
-            label="Pipeline"
-            value={`${healthPct}%`}
-            color={healthColor}
-            icon={healthPct === 100 ? 'checkmark-circle' : 'warning'}
+        <Text style={d.sectionTitle}>Business</Text>
+        <View style={d.bizRow}>
+          <BizStat label="Users" value={String(stats?.users ?? 0)} icon="people" />
+          <BizStat label="Portfolios" value={String(stats?.portfolios ?? 0)} icon="briefcase" />
+          <BizStat label="Positions" value={String(stats?.positions ?? 0)} icon="layers" />
+        </View>
+      </View>
+
+      {/* B) Ops Health (compact) */}
+      <View style={d.card}>
+        <Text style={d.sectionTitle}>Ops Health</Text>
+        <View style={d.opsGrid}>
+          <OpsItem
+            label="Pipeline (1–3)"
+            value={formatHours(pAge?.pipeline_hours_since_success)}
+            status={pAge?.pipeline_status}
           />
-          <HealthPill
+          <OpsItem
+            label="Morning Refresh"
+            value={formatHours(pAge?.morning_refresh_hours_since_success)}
+            status={pAge?.morning_refresh_status}
+          />
+          <OpsItem
             label="Scheduler"
-            value={schedulerActive ? 'Active' : 'Paused'}
-            color={schedulerActive ? '#22C55E' : '#EF4444'}
-            icon={schedulerActive ? 'play-circle' : 'pause-circle'}
+            value={schedulerActive ? 'Running' : 'Paused'}
+            status={schedulerActive ? 'green' : 'red'}
           />
-          <HealthPill
-            label="DB"
-            value="Online"
-            color="#22C55E"
-            icon="server"
-          />
-          <HealthPill
+          <OpsItem
             label="Failed Jobs"
             value={String(failedCount)}
-            color={failedCount > 0 ? '#EF4444' : '#22C55E'}
-            icon={failedCount > 0 ? 'close-circle' : 'checkmark-circle'}
+            status={failedCount > 0 ? 'red' : 'green'}
           />
         </View>
-        {/* Pipeline Progress */}
-        <View style={d.progressWrap}>
-          <View style={d.progressBg}>
-            <View style={[d.progressFill, { width: `${healthPct}%` as any, backgroundColor: healthColor }]} />
-          </View>
-          <Text style={d.progressLabel}>{completedSteps}/5 steps completed today</Text>
-        </View>
       </View>
 
-      {/* Key Numbers */}
+      {/* C) Price Integrity / Coverage */}
       <View style={d.card}>
-        <Text style={d.sectionTitle}>Key Numbers</Text>
-        <View style={d.statsGrid}>
-          <StatCard label="Visible Tickers" value={(visibleCount || stats?.visible_tickers || 0).toLocaleString()} icon="list" color="#6366F1" />
-          <StatCard label="Total Users" value={String(stats?.users ?? 0)} icon="people" color="#10B981" />
-          <StatCard label="PRO Users" value="—" icon="star" color="#F59E0B" />
-          <StatCard label="Portfolios" value={String(stats?.portfolios ?? 0)} icon="briefcase" color="#8B5CF6" />
-          <StatCard label="News Articles" value={(stats?.news_articles ?? 0).toLocaleString()} icon="newspaper" color="#06B6D4" />
-          <StatCard label="Fundamentals" value={(stats?.fundamentals ?? 0).toLocaleString()} icon="library" color="#EC4899" />
-        </View>
-      </View>
+        <Text style={d.sectionTitle}>Price Integrity / Coverage</Text>
 
-      {/* Today's Pipeline */}
-      <View style={d.card}>
-        <Text style={d.sectionTitle}>Today&apos;s Pipeline</Text>
-        {stepSummaries.map((step, i) => {
-          const run = jobRuns[step.name];
-          const status = run?.status;
-          const ok = status === 'success' || status === 'completed';
-          const failed = status === 'failed' || status === 'error';
-          return (
-            <View key={step.name} style={d.pipelineRow}>
-              <View style={[d.pipelineDot, { backgroundColor: ok ? '#22C55E' : failed ? '#EF4444' : COLORS.border }]} />
-              <Ionicons name={step.icon as any} size={13} color={step.color} style={{ marginRight: 6 }} />
-              <Text style={d.pipelineLabel}>{step.label}</Text>
-              {run ? (
-                <Text style={[d.pipelineStatus, { color: ok ? '#22C55E' : failed ? '#EF4444' : '#F59E0B' }]}>
-                  {ok ? `✓ ${formatTime(run.start_time)}` : failed ? '✗ Failed' : status}
-                </Text>
-              ) : (
-                <Text style={d.pipelineNever}>Never run</Text>
-              )}
-            </View>
-          );
-        })}
-      </View>
+        {/* Key metrics row */}
+        <View style={d.integrityGrid}>
+          <IntegrityMetric
+            label="Last Bulk Date"
+            value={pi?.last_bulk_trading_date ?? '—'}
+            warn={!pi?.last_bulk_trading_date}
+          />
+          <IntegrityMetric
+            label="Missing Dates"
+            value={String(pi?.missing_expected_dates ?? 0)}
+            warn={(pi?.missing_expected_dates ?? 0) > 0}
+          />
+          <IntegrityMetric
+            label="Need Re-download"
+            value={String(pi?.needs_price_redownload ?? 0)}
+            warn={(pi?.needs_price_redownload ?? 0) > 0}
+          />
+          <IntegrityMetric
+            label="Incomplete History"
+            value={String(pi?.price_history_incomplete ?? 0)}
+            warn={(pi?.price_history_incomplete ?? 0) > 0}
+          />
+        </View>
 
-      {/* API Usage */}
-      <View style={d.card}>
-        <Text style={d.sectionTitle}>API Usage</Text>
-        <View style={d.apiRow}>
-          <Ionicons name="information-circle-outline" size={13} color={COLORS.textMuted} />
-          <Text style={d.apiNote}>
-            API call tracking is in-memory only — counter resets on Railway restart.
-            Persistent tracking coming soon.
-          </Text>
-        </View>
-        <View style={d.apiItems}>
-          <View style={d.apiItem}><Text style={d.apiLabel}>Universe Seed</Text><Text style={d.apiValue}>2 calls/day</Text></View>
-          <View style={d.apiItem}><Text style={d.apiLabel}>Price Sync</Text><Text style={d.apiValue}>1 call/day</Text></View>
-          <View style={d.apiItem}><Text style={d.apiLabel}>Fundamentals</Text><Text style={d.apiValue}>~10 calls/ticker</Text></View>
-          <View style={d.apiItem}><Text style={d.apiLabel}>Morning Fresh</Text><Text style={d.apiValue}>1 call/followed ticker</Text></View>
-        </View>
+        {/* Coverage checkpoints */}
+        <Text style={d.subSection}>
+          Coverage Checkpoints ({pi?.today_visible ?? 0} visible
+          {pi?.today_visible_source?.chain_run_id ? ` · run ${pi.today_visible_source.chain_run_id.slice(-8)}` : ''})
+        </Text>
+        {renderCheckpoint('Latest trading day', 'latest_trading_day')}
+        {renderCheckpoint('1 week ago', '1_week_ago')}
+        {renderCheckpoint('1 month ago', '1_month_ago')}
+        {renderCheckpoint('1 year ago', '1_year_ago')}
       </View>
 
       <View style={{ height: 40 }} />
@@ -256,24 +262,31 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   );
 }
 
-function HealthPill({ label, value, color, icon }: { label: string; value: string; color: string; icon: string }) {
+function BizStat({ label, value, icon }: { label: string; value: string; icon: string }) {
   return (
-    <View style={d.healthPill}>
-      <Ionicons name={icon as any} size={14} color={color} />
-      <Text style={[d.healthPillValue, { color }]}>{value}</Text>
-      <Text style={d.healthPillLabel}>{label}</Text>
+    <View style={d.bizStat}>
+      <Ionicons name={icon as any} size={16} color={COLORS.primary} />
+      <Text style={d.bizValue}>{value}</Text>
+      <Text style={d.bizLabel}>{label}</Text>
     </View>
   );
 }
 
-function StatCard({ label, value, icon, color }: { label: string; value: string; icon: string; color: string }) {
+function OpsItem({ label, value, status }: { label: string; value: string; status?: string }) {
   return (
-    <View style={d.statCard}>
-      <View style={[d.statIcon, { backgroundColor: color + '18' }]}>
-        <Ionicons name={icon as any} size={14} color={color} />
-      </View>
-      <Text style={d.statValue}>{value}</Text>
-      <Text style={d.statLabel}>{label}</Text>
+    <View style={d.opsItem}>
+      <Ionicons name={statusIcon(status) as any} size={14} color={statusColor(status)} />
+      <Text style={d.opsLabel}>{label}</Text>
+      <Text style={[d.opsValue, { color: statusColor(status) }]}>{value}</Text>
+    </View>
+  );
+}
+
+function IntegrityMetric({ label, value, warn }: { label: string; value: string; warn?: boolean }) {
+  return (
+    <View style={d.intMetric}>
+      <Text style={[d.intValue, warn && { color: '#F59E0B' }]}>{value}</Text>
+      <Text style={d.intLabel}>{label}</Text>
     </View>
   );
 }
@@ -287,36 +300,34 @@ const d = StyleSheet.create({
   alertText: { fontSize: 12, fontWeight: '500', flex: 1 },
 
   card: { margin: 12, marginBottom: 0, backgroundColor: COLORS.card, borderRadius: 10, padding: 14, borderWidth: 1, borderColor: COLORS.border },
-  sectionTitle: { fontSize: 12, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.6, marginBottom: 12, textTransform: 'uppercase' },
+  sectionTitle: { fontSize: 12, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.6, marginBottom: 10, textTransform: 'uppercase' },
 
-  healthRow: { flexDirection: 'row', gap: 8, marginBottom: 12 },
-  healthPill: { flex: 1, alignItems: 'center', gap: 2, backgroundColor: COLORS.background, borderRadius: 8, paddingVertical: 8, borderWidth: 1, borderColor: COLORS.border },
-  healthPillValue: { fontSize: 12, fontWeight: '700' },
-  healthPillLabel: { fontSize: 9, color: COLORS.textMuted },
+  // A) Business
+  bizRow: { flexDirection: 'row', justifyContent: 'space-around' },
+  bizStat: { alignItems: 'center', gap: 2 },
+  bizValue: { fontSize: 18, fontWeight: '800', color: COLORS.text },
+  bizLabel: { fontSize: 10, color: COLORS.textMuted },
 
-  progressWrap: { gap: 4 },
-  progressBg: { height: 4, backgroundColor: COLORS.border, borderRadius: 2, overflow: 'hidden' },
-  progressFill: { height: 4, borderRadius: 2 },
-  progressLabel: { fontSize: 10, color: COLORS.textMuted },
+  // B) Ops Health
+  opsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  opsItem: { width: '47%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border },
+  opsLabel: { flex: 1, fontSize: 11, color: COLORS.text },
+  opsValue: { fontSize: 11, fontWeight: '700' },
 
-  statsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  statCard: { width: '30.5%', backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center', gap: 4 },
-  statIcon: { width: 28, height: 28, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
-  statValue: { fontSize: 16, fontWeight: '800', color: COLORS.text },
-  statLabel: { fontSize: 9, color: COLORS.textMuted, textAlign: 'center' },
+  // C) Price Integrity
+  integrityGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
+  intMetric: { width: '47%', backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center' },
+  intValue: { fontSize: 16, fontWeight: '800', color: COLORS.text },
+  intLabel: { fontSize: 9, color: COLORS.textMuted, textAlign: 'center', marginTop: 2 },
 
-  pipelineRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border + '55' },
-  pipelineDot: { width: 8, height: 8, borderRadius: 4, marginRight: 8 },
-  pipelineLabel: { fontSize: 12, color: COLORS.text, flex: 1 },
-  pipelineStatus: { fontSize: 11, fontWeight: '500' },
-  pipelineNever: { fontSize: 11, color: COLORS.textMuted, fontStyle: 'italic' },
+  subSection: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, marginBottom: 8 },
 
-  apiRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, marginBottom: 10 },
-  apiNote: { fontSize: 11, color: COLORS.textMuted, flex: 1, lineHeight: 16 },
-  apiItems: { gap: 6 },
-  apiItem: { flexDirection: 'row', justifyContent: 'space-between' },
-  apiLabel: { fontSize: 12, color: COLORS.text },
-  apiValue: { fontSize: 12, color: COLORS.textMuted },
+  // Coverage checkpoints
+  cpRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 5, borderBottomWidth: 1, borderBottomColor: COLORS.border + '55' },
+  cpDot: { width: 6, height: 6, borderRadius: 3, marginRight: 8 },
+  cpLabel: { fontSize: 11, color: COLORS.text, width: 110 },
+  cpDate: { fontSize: 10, color: COLORS.textMuted, flex: 1 },
+  cpValue: { fontSize: 11, fontWeight: '600', color: '#22C55E' },
 });
 
 // ─── Main Admin Screen ────────────────────────────────────────────────────────
