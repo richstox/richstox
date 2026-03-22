@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
+import BrandedLoading from '../../components/BrandedLoading';
 import { FONTS } from '../_layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -372,13 +373,7 @@ export default function Dashboard() {
   };
 
   if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <Image source={require('../../assets/images/richstox_icon.png')} style={{ width: 80, height: 80 }} />
-        <Text style={styles.loadingTitle}>RICHSTOX</Text>
-        <ActivityIndicator size="large" color={COLORS.primary} style={{ marginTop: 20 }} />
-      </View>
-    );
+    return <BrandedLoading message="Loading your portfolio..." />;
   }
 
   // Mock data for demo (will be replaced with real API data)

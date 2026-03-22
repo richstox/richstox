@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../_layout';
 import AppHeader from '../../components/AppHeader';
+import BrandedLoading from '../../components/BrandedLoading';
 import PipelineTab from '../admin/pipeline';
 import CustomersTab from '../admin/customers';
 
@@ -138,7 +139,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   useEffect(() => { fetchAll(); }, [fetchAll]);
   const onRefresh = () => { setRefreshing(true); fetchAll(); };
 
-  if (loading) return <View style={d.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>;
+  if (loading) return <BrandedLoading message="Loading admin dashboard..." />;
 
   const health = overview?.health;
   const failedCount = health?.jobs_failed ?? 0;
@@ -418,7 +419,7 @@ export default function AdminScreen() {
   if (isLoading) {
     return (
       <SafeAreaView style={a.container}>
-        <View style={a.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>
+        <BrandedLoading message="Checking admin access..." />
       </SafeAreaView>
     );
   }

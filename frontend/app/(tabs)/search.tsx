@@ -23,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSearchStore } from '../../stores/searchStore';
+import BrandedLoading from '../../components/BrandedLoading';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -232,9 +233,7 @@ export default function Search() {
 
       {/* Results */}
       {loading && results.length === 0 ? (
-        <View style={styles.center}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-        </View>
+        <BrandedLoading message="Searching stocks..." />
       ) : searchQuery.length === 0 ? (
         <View style={styles.center}>
           <Ionicons name="search-outline" size={64} color={COLORS.border} />
