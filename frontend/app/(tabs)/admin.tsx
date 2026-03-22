@@ -71,6 +71,10 @@ interface OverviewData {
   };
   price_integrity?: PriceIntegrity;
   pipeline_age?: PipelineAge;
+  eodhd_api_usage?: {
+    eodhd_api_calls_today?: number | null;
+    eodhd_daily_limit?: number;
+  };
 }
 
 interface StatsData {
@@ -141,6 +145,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const pAge = overview?.pipeline_age;
   const pi = overview?.price_integrity;
   const cp = pi?.coverage_checkpoints || {};
+  const eodhd = overview?.eodhd_api_usage;
 
   // Build alerts
   const alerts: { color: string; icon: string; text: string }[] = [];
@@ -156,13 +161,15 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     return total > 0 ? `${count}/${total} (${pct}%)` : `${count}/${total}`;
   };
 
-  // Process-truth metrics for Historical Depth / Price Integrity section
+  // Process-truth metrics for Price Integrity section
   const tvTotal = pi?.today_visible ?? 0;
   const hdcValue = fmtRatio(pi?.history_download_completed_count ?? 0, tvTotal);
   const gfValue = fmtRatio(pi?.gap_free_since_history_download_count ?? 0, tvTotal);
 
-  // Legacy heuristic depth (secondary informational)
-  const fphValue = fmtRatio(pi?.full_price_history_count ?? 0, tvTotal);
+  // EODHD API usage from provider endpoint
+  const eodhCallsToday = eodhd?.eodhd_api_calls_today;
+  const eodhLimit = eodhd?.eodhd_daily_limit ?? 100000;
+  const eodhDisplay = eodhCallsToday != null ? `${eodhCallsToday} / ${eodhLimit}` : '—';
 
   // Coverage checkpoint helper
   const renderCheckpoint = (label: string, key: string) => {
@@ -237,6 +244,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             value={String(failedCount)}
             status={failedCount > 0 ? 'red' : 'green'}
           />
+          <OpsItem
+            label="EODHD API Today"
+            value={eodhDisplay}
+            status={eodhCallsToday != null ? 'green' : undefined}
+          />
         </View>
       </View>
 
@@ -262,9 +274,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             warn={(pi?.needs_price_redownload ?? 0) > 0}
           />
           <IntegrityMetric
-            label="Incomplete History (remediation)"
-            value={String(pi?.price_history_incomplete ?? 0)}
-            warn={(pi?.price_history_incomplete ?? 0) > 0}
+            label="Complete Fundamentals"
+            value="—"
+            warn={false}
           />
         </View>
 
@@ -283,7 +295,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           Proven historical download + no missing bulk dates since download
         </Text>
         <IntegrityMetric
-          label="History Download Completed"
+          label="Complete Prices (strict proof)"
           value={hdcValue}
           warn={false}
         />
@@ -292,19 +304,6 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           value={gfValue}
           warn={false}
         />
-
-        {/* Historical coverage depth (secondary informational) */}
-        <Text style={[d.subSection, { marginTop: 12 }]}>Historical Depth (heuristic)</Text>
-        <Text style={d.cpHint}>
-          Heuristic depth indicator (≥252 rows, min date ≥1yr ago) — not the canonical truth
-        </Text>
-        <IntegrityMetric
-          label="Full Price History (heuristic)"
-          value={fphValue}
-          warn={false}
-        />
-        {renderCheckpoint('1 month ago', '1_month_ago')}
-        {renderCheckpoint('1 year ago', '1_year_ago')}
       </View>
 
       <View style={{ height: 40 }} />

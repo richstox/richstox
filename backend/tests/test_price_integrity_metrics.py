@@ -375,3 +375,32 @@ def test_pipeline_age_unknown_no_runs():
     result = asyncio.run(get_pipeline_last_success_age(db))
     assert result["pipeline_status"] == "unknown"
     assert result["pipeline_hours_since_success"] is None
+
+
+def test_morning_refresh_standalone_only():
+    """Morning Refresh must query only standalone price_sync (no chain_run_id)."""
+    now = datetime.now(timezone.utc)
+    recent = now - timedelta(hours=3)
+
+    call_args_list = []
+
+    async def _mock_find_one(query, *args, **kwargs):
+        call_args_list.append(query)
+        if query.get("job_name") == "fundamentals_sync":
+            return {"finished_at": recent}
+        if query.get("job_name") == "price_sync":
+            # Standalone: no chain_run_id → should match the $or filter
+            return None  # no standalone runs exist
+        return None
+
+    ops_job_runs = SimpleNamespace(find_one=_mock_find_one)
+    db = SimpleNamespace(ops_job_runs=ops_job_runs)
+
+    result = asyncio.run(get_pipeline_last_success_age(db))
+    assert result["pipeline_status"] == "green"
+    # Morning refresh should be unknown when no standalone runs exist
+    assert result["morning_refresh_hours_since_success"] is None
+    assert result["morning_refresh_status"] == "unknown"
+    # Verify the morning refresh query includes the chain_run_id exclusion
+    mr_query = call_args_list[1]
+    assert "$or" in mr_query, "Morning refresh query must filter out chain runs via $or"
