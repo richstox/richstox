@@ -29,6 +29,7 @@ import FinancialHub from '../../components/FinancialHub';
 import BottomNav from '../../components/BottomNav';
 import { MetricTooltip, TOOLTIP_CONTENT } from '../../components/MetricTooltip';
 import AppHeader from '../../components/AppHeader';
+import BrandedLoading from '../../components/BrandedLoading';
 import { useSearchStore } from '../../stores/searchStore';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -1030,12 +1031,7 @@ export default function StockDetail() {
   };
 
   if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-        <Text style={styles.loadingText}>Loading {ticker}...</Text>
-      </View>
-    );
+    return <BrandedLoading message={`Loading ${ticker}...`} />;
   }
 
   if (error || !data?.company) {

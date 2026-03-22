@@ -2,18 +2,15 @@ import React from 'react';
 import { Tabs, Redirect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS, FONTS } from '../_layout';
-import { Platform, ActivityIndicator, View } from 'react-native';
+import { Platform } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
+import BrandedLoading from '../../components/BrandedLoading';
 
 export default function TabsLayout() {
   const { isAuthenticated, isLoading } = useAuth();
 
   if (isLoading) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: COLORS.background }}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-      </View>
-    );
+    return <BrandedLoading message="Checking your account..." />;
   }
 
   if (!isAuthenticated) {
