@@ -1,17 +1,17 @@
 # ================================================================================
-# SCHEDULER-ONLY SERVICE - DO NOT IMPORT IN RUNTIME ROUTES
+# BENCHMARK INGESTION SERVICE
 # ================================================================================
 # This file contains EODHD API calls for benchmark data updates.
-# It is ONLY called by scheduler.py at 04:15 Prague time.
-# It must NEVER be imported by server.py routes or any runtime code.
+# Called by: scheduler.py at 04:15 Prague time (daily incremental)
+#            server.py admin endpoint (manual trigger with optional params)
 #
 # Allowed EODHD endpoint for benchmarks:
 #   https://eodhd.com/api/eod/{SYMBOL}
 # ================================================================================
 
 """
-Benchmark Service - Scheduler-Only
-==================================
+Benchmark Service
+=================
 Standalone benchmark ingestion — completely independent of the bulk
 ticker pricing pipeline and its universe/ticker filters.
 
@@ -19,15 +19,20 @@ Each symbol listed in BENCHMARK_SYMBOLS is fetched via a dedicated
 EODHD ``/eod/{symbol}`` API call, so benchmarks are never subject to
 the normal seed/filter/bulk-ingest flow.
 
+Three operational modes:
+  1. **Daily incremental** (default) — scheduler at 04:15, last 30 days.
+  2. **Full history** — ``full_history=True``, from 1988-01-01.
+  3. **Date-range recovery** — explicit ``date_from`` / ``date_to``.
+
 Called by: scheduler.py at 04:15 Europe/Prague (Mon-Sat)
-Never called by: runtime routes, startup events
+           server.py admin endpoint (manual trigger)
 """
 
 import os
 import logging
 import httpx
 from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("richstox.benchmark_service")
 
@@ -67,24 +72,41 @@ async def update_benchmark(
     db,
     symbol: str,
     full_history: bool = False,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetch and persist price history for a single benchmark *symbol*.
+
+    Three modes (checked in priority order):
+      1. **Explicit date range** — ``date_from`` / ``date_to`` given →
+         fetch exactly that window.  Useful for emergency gap repair.
+      2. **Full history** — ``full_history=True`` → fetch from 1988-01-01.
+      3. **Daily incremental** (default) → last 30 calendar days.
 
     Args:
         db:            Motor database handle.
         symbol:        EODHD ticker, e.g. ``"SP500TR.INDX"``.
         full_history:  When ``True`` fetch the entire available history
-                       (from 1988-01-01).  Default ``False`` fetches only the
-                       last 30 days to minimise API calls.
+                       (from 1988-01-01).  Ignored when explicit dates
+                       are provided.
+        date_from:     Optional start date ``"YYYY-MM-DD"``.
+        date_to:       Optional end date ``"YYYY-MM-DD"`` (defaults to today).
 
     Returns:
         dict with ``status``, ``ticker``, ``records_upserted``, ``date_range``.
     """
-    logger.info(f"Starting benchmark update: {symbol} (full_history={full_history})")
+    mode = "incremental"
+    if date_from:
+        mode = "date_range"
+    elif full_history:
+        mode = "full_history"
+    logger.info(f"Starting benchmark update: {symbol} (mode={mode})")
 
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    if full_history:
+    end_date = date_to or datetime.now().strftime("%Y-%m-%d")
+    if date_from:
+        start_date = date_from
+    elif full_history:
         start_date = _EARLIEST_BENCHMARK_DATE
     else:
         start_date = (datetime.now() - timedelta(days=_DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
@@ -149,25 +171,46 @@ async def update_sp500tr_benchmark(db) -> Dict[str, Any]:
     return await update_benchmark(db, BENCHMARK_SYMBOLS["SP500TR"])
 
 
-async def update_all_benchmarks(db) -> Dict[str, Any]:
+async def update_all_benchmarks(
+    db,
+    full_history: bool = False,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Update every benchmark in BENCHMARK_SYMBOLS.
 
     Called by scheduler.py and available as an admin-triggerable job.
     Each benchmark is fetched in its own dedicated API call so it is
     completely independent of the bulk ticker pipeline.
+
+    Optional params ``full_history``, ``date_from``, ``date_to`` are
+    forwarded to :func:`update_benchmark` — see its docstring for
+    mode-selection rules.
     """
     results: List[Dict[str, Any]] = []
     for name, symbol in BENCHMARK_SYMBOLS.items():
-        result = await update_benchmark(db, symbol)
+        result = await update_benchmark(
+            db, symbol,
+            full_history=full_history,
+            date_from=date_from,
+            date_to=date_to,
+        )
         result["benchmark_name"] = name
         results.append(result)
 
     succeeded = sum(1 for r in results if r.get("status") == "success")
     failed = sum(1 for r in results if r.get("status") == "error")
 
+    if failed == 0:
+        overall = "success"
+    elif succeeded == 0:
+        overall = "error"
+    else:
+        overall = "partial"
+
     return {
-        "status": "success" if failed == 0 else "partial",
+        "status": overall,
         "benchmarks_updated": succeeded,
         "benchmarks_failed": failed,
         "details": results,
