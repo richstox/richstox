@@ -347,11 +347,12 @@ export default function Dashboard() {
   
   // Defer news fetch until after main dashboard data has rendered.
   // This avoids two parallel API calls blocking first paint.
+  const dataLoaded = !loading && data != null;
   useEffect(() => {
-    if (!loading && data) {
+    if (dataLoaded) {
       fetchNews(0, false);
     }
-  }, [loading, data !== null]);
+  }, [dataLoaded]);
   
   const onRefresh = () => { 
     setRefreshing(true); 
