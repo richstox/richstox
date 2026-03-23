@@ -3360,46 +3360,34 @@ async def get_ticker_detail_mobile(
         "cusip": general.get("CUSIP"),
     }
     
-    # Batch independent DB lookups in parallel for faster response
-    latest_price_task = db.stock_prices.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0},
-        sort=[("date", -1)]
-    )
-    prev_price_task = db.stock_prices.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0},
-        sort=[("date", -1)],
-        skip=1
-    )
-    reality_check_task = calculate_reality_check_max(db, ticker_full)
-    pain_cache_task = db.ticker_pain_cache.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0, "ticker": 0, "cached_at": 0, "data_points_used": 0}
-    )
-    period_stats_task = calculate_period_stats(db, ticker_full, period)
-    valuation_cache_task = db.ticker_valuations_cache.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0}
-    )
-    
+    # Phase 1: Parallel lightweight cache/index lookups
     (
         latest_price,
         prev_price,
-        reality_check,
         pain_cache,
-        period_stats,
         valuation_cache_raw,
     ) = await asyncio.gather(
-        latest_price_task,
-        prev_price_task,
-        reality_check_task,
-        pain_cache_task,
-        period_stats_task,
-        valuation_cache_task,
+        db.stock_prices.find_one(
+            {"ticker": ticker_full}, {"_id": 0}, sort=[("date", -1)]
+        ),
+        db.stock_prices.find_one(
+            {"ticker": ticker_full}, {"_id": 0}, sort=[("date", -1)], skip=1
+        ),
+        db.ticker_pain_cache.find_one(
+            {"ticker": ticker_full},
+            {"_id": 0, "ticker": 0, "cached_at": 0, "data_points_used": 0}
+        ),
+        db.ticker_valuations_cache.find_one(
+            {"ticker": ticker_full}, {"_id": 0}
+        ),
     )
     
     valuation_cache = valuation_cache_raw if _is_local_valuation_cache_doc(valuation_cache_raw) else None
+    
+    # Phase 2: Heavy full-history queries run sequentially to avoid
+    # resource contention (both scan entire stock_prices for MAX period)
+    reality_check = await calculate_reality_check_max(db, ticker_full)
+    period_stats = await calculate_period_stats(db, ticker_full, period)
     
     current_price = latest_price["close"] if latest_price else None
     prev_close = prev_price["close"] if prev_price else current_price

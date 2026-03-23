@@ -382,6 +382,9 @@ export default function StockDetail() {
   // Benchmark chart data (SP500TR.INDX normalized to 100)
   const [benchmarkChartData, setBenchmarkChartData] = useState<{date: string; normalized: number}[]>([]);
 
+  // Per-range cache so switching back to MAX (or any range) is instant after first load
+  const chartCacheRef = useRef<Record<string, { prices: PriceHistoryPoint[]; benchmark: {date: string; normalized: number}[] }>>({});
+
   // Talk posts state
   const [talkPosts, setTalkPosts] = useState<any[]>([]);
   const [talkLoading, setTalkLoading] = useState(false);
@@ -458,7 +461,17 @@ export default function StockDetail() {
   };
 
   // Fetch price history for chart (now includes benchmark)
+  // Uses per-range cache so repeated MAX/range switches are instant
   const fetchChartData = async (range: PriceRange) => {
+    // Return cached data instantly if available (e.g. switching back to MAX)
+    const cached = chartCacheRef.current[range];
+    if (cached) {
+      setChartData(cached.prices);
+      setBenchmarkChartData(cached.benchmark);
+      setChartError(null);
+      return;
+    }
+
     setChartLoading(true);
     setChartError(null);
     setBenchmarkChartData([]);
@@ -486,14 +499,18 @@ export default function StockDetail() {
         normalized: p.normalized
       }));
       
-      setChartData(formattedPrices);
-      
-      // Set benchmark data (already normalized)
+      // Cache benchmark data
+      let benchData: {date: string; normalized: number}[] = [];
       if (benchmark && benchmark.prices) {
         const benchStep = Math.max(1, Math.floor(benchmark.prices.length / targetPoints));
-        const benchDownsampled = benchmark.prices.filter((_: any, i: number) => i % benchStep === 0 || i === benchmark.prices.length - 1);
-        setBenchmarkChartData(benchDownsampled);
+        benchData = benchmark.prices.filter((_: any, i: number) => i % benchStep === 0 || i === benchmark.prices.length - 1);
       }
+
+      // Store in cache for instant re-access
+      chartCacheRef.current[range] = { prices: formattedPrices, benchmark: benchData };
+
+      setChartData(formattedPrices);
+      setBenchmarkChartData(benchData);
     } catch (err: any) {
       console.error('Error fetching chart data:', err);
       setChartError('Failed to load chart');
@@ -506,6 +523,8 @@ export default function StockDetail() {
 
   useEffect(() => {
     if (!ticker) return;
+    // Clear chart cache when ticker changes (data is ticker-specific)
+    chartCacheRef.current = {};
     fetchStock(false);
     fetchDividends();
   }, [ticker]);
@@ -625,6 +644,8 @@ export default function StockDetail() {
 
   const onRefresh = () => {
     setRefreshing(true);
+    // Clear chart cache on refresh so fresh data is fetched
+    chartCacheRef.current = {};
     fetchStock(false); // P4: Always load full data for single vertical scroll
     fetchChartData(priceRange);
     fetchDividends();
