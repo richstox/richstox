@@ -358,6 +358,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   // ── Benchmark update state ────────────────────────────────────────────────
   const [benchmarkUpdating, setBenchmarkUpdating] = useState(false);
+  const benchmarkPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
@@ -910,6 +911,50 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     Object.entries(merged).forEach(([k, v]) => { normalized[k] = normaliseRun(v); });
     return normalized;
   }, [jobRunsRaw, liveLastRuns]);
+
+  // Derive benchmark running state from real backend status
+  const benchmarkRunStatus = jobRuns['benchmark_update']?.status;
+  const isBenchmarkRunning = benchmarkUpdating || benchmarkRunStatus === 'running';
+
+  // Poll benchmark status while it is running so UI updates when the job finishes
+  useEffect(() => {
+    if (benchmarkRunStatus !== 'running' || !sessionToken) {
+      if (benchmarkPollRef.current) {
+        clearTimeout(benchmarkPollRef.current);
+        benchmarkPollRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/job/benchmark_update/status`,
+          {},
+          sessionToken,
+        );
+        if (res.ok && !cancelled) {
+          const payload = await res.json();
+          const lr = normaliseRun(payload.last_run);
+          if (lr) {
+            setLiveLastRuns(prev => ({ ...prev, benchmark_update: lr }));
+          }
+        }
+      } catch { /* non-fatal */ }
+      if (!cancelled) {
+        benchmarkPollRef.current = setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (benchmarkPollRef.current) {
+        clearTimeout(benchmarkPollRef.current);
+        benchmarkPollRef.current = null;
+      }
+    };
+  }, [benchmarkRunStatus, sessionToken]);
+
   useEffect(() => {
     const lr = jobRuns['price_sync'];
     if (lr) {
@@ -2121,6 +2166,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               <Text style={s.stepTitle}>Benchmark Update</Text>
               {(() => {
                 const run = jobRuns['benchmark_update'];
+                if (isBenchmarkRunning) {
+                  return <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />;
+                }
                 return run ? (
                   <Ionicons name={getStatusIcon(run.status) as any} size={14} color={getStatusColor(run.status)} style={{ marginLeft: 4 }} />
                 ) : null;
@@ -2131,17 +2179,21 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           <TouchableOpacity
             style={[
               { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: '#8B5CF6' },
-              benchmarkUpdating && { opacity: 0.5 },
+              isBenchmarkRunning && { opacity: 0.5 },
             ]}
             onPress={handleRunBenchmarkUpdate}
-            disabled={benchmarkUpdating}
+            disabled={isBenchmarkRunning}
           >
-            {benchmarkUpdating
+            {isBenchmarkRunning
               ? <ActivityIndicator size="small" color="#fff" />
               : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
           </TouchableOpacity>
         </View>
-        {jobRuns['benchmark_update'] ? (
+        {isBenchmarkRunning ? (
+          <View style={s.runInfo}>
+            <Text style={[s.runValue, { color: '#F59E0B' }]}>Running…</Text>
+          </View>
+        ) : jobRuns['benchmark_update'] ? (
           <View style={s.runInfo}>
             <Text style={s.runValue}>
               Last: {formatTime(jobRuns['benchmark_update'].start_time)} · {formatDuration(jobRuns['benchmark_update'].duration_seconds)}
