@@ -93,6 +93,7 @@ const railStyles = StyleSheet.create({
     flexDirection: 'row',
     backgroundColor: RAIL_BACKGROUND,
     justifyContent: 'center',
+    width: '100%',
   },
   rail: {
     flex: 1,
