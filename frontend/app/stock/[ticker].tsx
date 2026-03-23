@@ -301,6 +301,9 @@ interface MobileDetailData {
     ipo_date: string | null;
     address: string | null;
     phone: string | null;
+    city: string | null;
+    state: string | null;
+    country_name: string | null;
   };
   // P8/P9: Financials data (5 essential metrics + prior_ttm)
   financials?: {
@@ -1118,7 +1121,10 @@ export default function StockDetail() {
 
   const company = data.company;
   const price = data.price;
-  const logoUrl = company.logo_url ? `${EODHD_LOGO_BASE}${company.logo_url}` : null;
+  const rawLogoUrl = company.logo_url || mobileData?.company?.logo_url;
+  const logoUrl = rawLogoUrl
+    ? (rawLogoUrl.startsWith('http') ? rawLogoUrl : `${EODHD_LOGO_BASE}${rawLogoUrl}`)
+    : null;
 
   // =============================================================================
   // P5: SUMMARY PILLS LOGIC (Honest Data - never guess)
@@ -1386,7 +1392,7 @@ export default function StockDetail() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {/* ===== FUNDAMENTALS PENDING BANNER ===== */}
-        {data?.fundamentals_pending && (
+        {data?.fundamentals_pending && !mobileData?.key_metrics && (
           <View style={styles.pendingBanner} data-testid="fundamentals-pending-banner">
             <Ionicons name="time-outline" size={18} color="#D97706" />
             <View style={styles.pendingBannerContent}>
@@ -1482,48 +1488,57 @@ export default function StockDetail() {
           <Text style={styles.companyDetailsMinimalText}>Company Details</Text>
         </TouchableOpacity>
         
-        {companyDetailsExpanded && (
+        {companyDetailsExpanded && (() => {
+          const cd = mobileData?.company_details;
+          const detCity = company.city || cd?.city;
+          const detState = company.state || cd?.state;
+          const detCountry = company.country_name || cd?.country_name;
+          const detWebsite = company.website || cd?.website;
+          const detEmployees = company.full_time_employees || cd?.employees;
+          const detIpoDate = company.ipo_date || cd?.ipo_date;
+          const detDescription = company.description || cd?.description;
+          return (
           <View style={styles.companyDetailsExpanded}>
-            {(company.city || company.state || company.country_name) && (
+            {(detCity || detState || detCountry) && (
               <View style={styles.detailRowCompact}>
                 <Ionicons name="location-outline" size={14} color={COLORS.textMuted} />
                 <Text style={styles.detailTextCompact}>
-                  {[company.city, company.state, company.country_name].filter(Boolean).join(', ')}
+                  {[detCity, detState, detCountry].filter(Boolean).join(', ')}
                 </Text>
               </View>
             )}
-            {company.website && (
+            {detWebsite && (
               <TouchableOpacity 
                 style={styles.detailRowCompact}
-                onPress={() => Linking.openURL(company.website)}
+                onPress={() => Linking.openURL(detWebsite)}
               >
                 <Ionicons name="globe-outline" size={14} color={COLORS.accent} />
                 <Text style={[styles.detailTextCompact, styles.linkText]} numberOfLines={1}>
-                  {company.website.replace(/^https?:\/\//, '').replace(/\/$/, '')}
+                  {detWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '')}
                 </Text>
               </TouchableOpacity>
             )}
-            {company.full_time_employees && (
+            {detEmployees && (
               <View style={styles.detailRowCompact}>
                 <Ionicons name="people-outline" size={14} color={COLORS.textMuted} />
-                <Text style={styles.detailTextCompact}>{formatNumber(company.full_time_employees)} employees</Text>
+                <Text style={styles.detailTextCompact}>{formatNumber(detEmployees)} employees</Text>
               </View>
             )}
-            {company.ipo_date && (
+            {detIpoDate && (
               <View style={styles.detailRowCompact}>
                 <Ionicons name="calendar-outline" size={14} color={COLORS.textMuted} />
-                <Text style={styles.detailTextCompact}>IPO: {formatDateDMY(company.ipo_date)}</Text>
+                <Text style={styles.detailTextCompact}>IPO: {formatDateDMY(detIpoDate)}</Text>
               </View>
             )}
-            {company.description && (
+            {detDescription && (
               <>
                 <Text 
                   style={styles.descriptionTextCompact} 
                   numberOfLines={showFullDescription ? undefined : 3}
                 >
-                  {company.description}
+                  {detDescription}
                 </Text>
-                {company.description.length > 150 && (
+                {detDescription.length > 150 && (
                   <TouchableOpacity onPress={() => setShowFullDescription(!showFullDescription)}>
                     <Text style={styles.showMoreText}>
                       {showFullDescription ? 'Show less' : 'Show more'}
@@ -1533,7 +1548,8 @@ export default function StockDetail() {
               </>
             )}
           </View>
-        )}
+          );
+        })()}
 
         {/* ===== PRICE CARD ===== */}
         {price && (

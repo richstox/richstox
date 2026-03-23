@@ -2888,13 +2888,47 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
         if not tracked.get("is_visible", False):
             raise HTTPException(404, f"Ticker {ticker} is not available")
     
-    # 1. Company fundamentals - BINDING: Read from EMBEDDED tracked_tickers.fundamentals
-    # NOT from company_fundamentals_cache (which is empty)
+    # 1. Company fundamentals - Read from EMBEDDED tracked_tickers.fundamentals first,
+    # then fall back to company_fundamentals_cache if embedded data is missing.
     embedded_fundamentals = tracked.get("fundamentals", {}) if tracked else {}
     general = embedded_fundamentals.get("General", {}) if embedded_fundamentals else {}
     
-    # Build company dict from embedded fundamentals
+    # Fallback: check company_fundamentals_cache when embedded fundamentals are empty
+    cache_doc = None
+    if not general:
+        cache_doc = await db.company_fundamentals_cache.find_one(
+            {"ticker": ticker_full}, {"_id": 0}
+        )
+        if cache_doc:
+            if cache_doc.get("General"):
+                # EODHD-shaped cache doc
+                general = cache_doc["General"]
+            elif cache_doc.get("name"):
+                # Flat cache schema - build a synthetic General dict
+                general = {
+                    "Name": cache_doc.get("name"),
+                    "Code": cache_doc.get("code"),
+                    "Exchange": cache_doc.get("exchange"),
+                    "Sector": cache_doc.get("sector"),
+                    "Industry": cache_doc.get("industry"),
+                    "Type": cache_doc.get("asset_type") or cache_doc.get("security_type"),
+                    "Description": cache_doc.get("description"),
+                    "WebURL": cache_doc.get("website"),
+                    "LogoURL": cache_doc.get("logo_url"),
+                    "FullTimeEmployees": cache_doc.get("full_time_employees"),
+                    "IPODate": cache_doc.get("ipo_date"),
+                    "City": cache_doc.get("city"),
+                    "State": cache_doc.get("state"),
+                    "CountryName": cache_doc.get("country_name"),
+                    "Address": cache_doc.get("address"),
+                    "Phone": cache_doc.get("phone"),
+                    "ISIN": cache_doc.get("isin"),
+                    "CUSIP": cache_doc.get("cusip"),
+                }
+    
+    # Build company dict from fundamentals (embedded or cache)
     fundamentals_pending = False
+    addr_data = (general.get("AddressData") or {}) if general else {}
     if general:
         company = {
             "ticker": ticker_full,
@@ -2909,8 +2943,8 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "logo_url": general.get("LogoURL") or (tracked.get("logo_url") if tracked else None),
             "full_time_employees": general.get("FullTimeEmployees"),
             "ipo_date": general.get("IPODate") or (tracked.get("ipo_date") if tracked else None),
-            "city": general.get("City"),
-            "state": general.get("State"),
+            "city": general.get("City") or addr_data.get("City"),
+            "state": general.get("State") or addr_data.get("State"),
             "country_name": general.get("CountryName", "USA"),
             "isin": general.get("ISIN"),
             "cusip": general.get("CUSIP"),
@@ -2929,13 +2963,13 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "revenue_ttm": None,
         }
     else:
-        # No embedded fundamentals - check if ticker has price data
+        # No fundamentals in embedded or cache - check if ticker has price data
         has_prices = await db.stock_prices.count_documents({"ticker": ticker_full}) > 0
         
         if not tracked and not has_prices:
             raise HTTPException(404, f"No data for {ticker}")
         
-        # Create placeholder company data from tracked_tickers
+        # Create placeholder company data from tracked_tickers with best-effort fallbacks
         fundamentals_pending = True
         company = {
             "ticker": ticker_full,
@@ -2947,9 +2981,9 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "asset_type": tracked.get("asset_type") if tracked else "Common Stock",
             "description": None,
             "website": None,
-            "logo_url": None,
+            "logo_url": tracked.get("logo_url") if tracked else None,
             "full_time_employees": None,
-            "ipo_date": None,
+            "ipo_date": tracked.get("ipo_date") if tracked else None,
             "city": None,
             "state": None,
             "country_name": "USA",
@@ -3337,12 +3371,44 @@ async def get_ticker_detail_mobile(
     if not tracked:
         raise HTTPException(404, f"Ticker {ticker} is not available")
     
-    # Get company fundamentals from EMBEDDED tracked_tickers.fundamentals
-    # BINDING: Fundamentals are embedded, NOT in separate cache collection
+    # Get company fundamentals from EMBEDDED tracked_tickers.fundamentals first,
+    # then fall back to company_fundamentals_cache if embedded data is missing.
     embedded_fundamentals = tracked.get("fundamentals", {})
     general = embedded_fundamentals.get("General", {}) if embedded_fundamentals else {}
     
-    # Build company dict from embedded fundamentals - ALWAYS return a dict, never None
+    # Fallback: check company_fundamentals_cache when embedded fundamentals are empty
+    if not general:
+        cache_doc = await db.company_fundamentals_cache.find_one(
+            {"ticker": ticker_full}, {"_id": 0}
+        )
+        if cache_doc:
+            if cache_doc.get("General"):
+                general = cache_doc["General"]
+            elif cache_doc.get("name"):
+                # Flat cache schema - build a synthetic General dict
+                general = {
+                    "Name": cache_doc.get("name"),
+                    "Code": cache_doc.get("code"),
+                    "Exchange": cache_doc.get("exchange"),
+                    "Sector": cache_doc.get("sector"),
+                    "Industry": cache_doc.get("industry"),
+                    "Type": cache_doc.get("asset_type") or cache_doc.get("security_type"),
+                    "Description": cache_doc.get("description"),
+                    "WebURL": cache_doc.get("website"),
+                    "LogoURL": cache_doc.get("logo_url"),
+                    "FullTimeEmployees": cache_doc.get("full_time_employees"),
+                    "IPODate": cache_doc.get("ipo_date"),
+                    "City": cache_doc.get("city"),
+                    "State": cache_doc.get("state"),
+                    "CountryName": cache_doc.get("country_name"),
+                    "Address": cache_doc.get("address"),
+                    "Phone": cache_doc.get("phone"),
+                    "ISIN": cache_doc.get("isin"),
+                    "CUSIP": cache_doc.get("cusip"),
+                }
+    
+    # Build company dict from fundamentals (embedded or cache) - ALWAYS return a dict, never None
+    addr_data = (general.get("AddressData") or {}) if general else {}
     company = {
         "name": general.get("Name") or tracked.get("name"),
         "sector": general.get("Sector") or tracked.get("sector"),
@@ -3356,6 +3422,8 @@ async def get_ticker_detail_mobile(
         "address": general.get("Address"),
         "phone": general.get("Phone"),
         "country": general.get("CountryName"),
+        "city": general.get("City") or addr_data.get("City"),
+        "state": general.get("State") or addr_data.get("State"),
         "isin": general.get("ISIN"),
         "cusip": general.get("CUSIP"),
     }
@@ -4156,6 +4224,9 @@ async def get_ticker_detail_mobile(
             "ipo_date": company.get("ipo_date") if company else None,
             "address": company.get("address") if company else None,
             "phone": company.get("phone") if company else None,
+            "city": company.get("city") if company else None,
+            "state": company.get("state") if company else None,
+            "country_name": company.get("country") if company else None,
         },
         
         # P8: Financials data (5 essential metrics)
