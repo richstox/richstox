@@ -5134,6 +5134,7 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
     from parallel_batch_service import run_scheduled_backfill_all_prices
     from visibility_rules import recompute_visibility_all, clean_zombie_tickers, recompute_visibility_with_zombie_cleanup
     from scheduler_service import save_step3_visibility_exclusion_report as _save_step3_vis_report
+    from benchmark_service import update_all_benchmarks
 
     async def _recompute_visibility_and_report(database):
         """Run recompute_visibility_all then regenerate Step 3 visibility exclusion report."""
@@ -5152,6 +5153,7 @@ async def admin_run_job_now(job_name: str, background_tasks: BackgroundTasks, wa
         "recompute_visibility_all": _recompute_visibility_and_report,
         "clean_zombie_tickers": clean_zombie_tickers,
         "recompute_visibility_with_zombies": recompute_visibility_with_zombie_cleanup,
+        "benchmark_update": update_all_benchmarks,
     }
     
     if job_name not in JOB_RUNNERS:

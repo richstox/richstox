@@ -75,7 +75,13 @@ async def cleanup_invisible_ticker_data(db) -> Dict[str, Any]:
     """
     Delete price and fundamentals data for tickers that are no longer visible.
     Called at the start of both full sync jobs.
+
+    Benchmark tickers (from BENCHMARK_SYMBOLS) are explicitly excluded so
+    that their price history is never removed by visibility-based cleanup.
     """
+    from benchmark_service import BENCHMARK_SYMBOLS
+    benchmark_tickers = set(BENCHMARK_SYMBOLS.values())
+
     invisible = await db.tracked_tickers.distinct(
         "ticker",
         {"$or": [{"is_visible": {"$ne": True}}, {"is_delisted": True}]},
@@ -85,7 +91,10 @@ async def cleanup_invisible_ticker_data(db) -> Dict[str, Any]:
 
     invisible_us = [t if t.endswith(".US") else f"{t}.US" for t in invisible]
     invisible_plain = [t.replace(".US", "") for t in invisible_us]
-    all_variants = list(set(invisible_us + invisible_plain))
+    all_variants = list(set(invisible_us + invisible_plain) - benchmark_tickers)
+
+    if not all_variants:
+        return {"deleted_tickers": 0}
 
     collections = [
         "stock_prices",

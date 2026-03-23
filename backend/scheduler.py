@@ -677,14 +677,6 @@ async def scheduler_loop():
                             }},
                         )
             
-            # SP500TR benchmark at 04:15 (catch-up enabled)
-            if should_run("sp500tr_update", SP500TR_UPDATE_HOUR, SP500TR_UPDATE_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering sp500tr_update (hour={current_hour}, scheduled={SP500TR_UPDATE_HOUR}:{SP500TR_UPDATE_MINUTE:02d})")
-                from benchmark_service import update_sp500tr_benchmark
-                await run_job_with_retry("sp500tr_update", update_sp500tr_benchmark, db)
-                last_run["sp500tr_update"] = today_str
-                await set_last_run_state(last_run)
-            
             # STEP 3: Fundamentals sync immediately after Step 2 completes
             if should_run_after_dependency("fundamentals_sync", "price_sync", last_run, today_str):
                 logger.info("Triggering fundamentals_sync (dependency: price_sync completed)")
@@ -736,6 +728,20 @@ async def scheduler_loop():
                                 "finished_at_prague": to_prague_iso(_s3_fin),
                             }},
                         )
+            
+            # ==================================================================
+            # BENCHMARK UPDATE at 04:15 — standalone, NOT part of Steps 1-2-3
+            # ==================================================================
+            # Runs after the main pricing pipeline but is completely independent
+            # of the bulk ticker flow.  Uses its own dedicated EODHD /eod/ calls
+            # and is never filtered by universe/seed/visibility rules.
+            # Extensible: iterates BENCHMARK_SYMBOLS registry automatically.
+            if should_run("sp500tr_update", SP500TR_UPDATE_HOUR, SP500TR_UPDATE_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering sp500tr_update (hour={current_hour}, scheduled={SP500TR_UPDATE_HOUR}:{SP500TR_UPDATE_MINUTE:02d})")
+                from benchmark_service import update_all_benchmarks
+                await run_job_with_retry("sp500tr_update", update_all_benchmarks, db)
+                last_run["sp500tr_update"] = today_str
+                await set_last_run_state(last_run)
             
             # BACKFILL_ALL: MANUAL ONLY by default
             backfill_all_enabled = await db.ops_config.find_one({"key": "job_backfill_all_enabled"})

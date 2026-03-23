@@ -65,11 +65,15 @@ ADMIN_REPORT_MINUTE = 0
 - **API**: `GET https://eodhd.com/api/eod-bulk-last-day/US`
 - **Cost**: 1 API call/day
 
-### 4. SP500TR Update (Mon-Sat 04:15)
-- **File**: `/app/backend/scheduler_service.py`
-- **Purpose**: Update S&P 500 Total Return benchmark index
-- **API**: `GET https://eodhd.com/api/eod/SP500TR.INDX`
-- **Cost**: 1 API call/day
+### 4. Benchmark Update (Mon-Sat 04:15) — Standalone
+- **File**: `/app/backend/benchmark_service.py` → `update_all_benchmarks()`
+- **Purpose**: Update benchmark index price history (SP500TR.INDX and future benchmarks)
+- **API**: `GET https://eodhd.com/api/eod/{SYMBOL}` per benchmark
+- **Cost**: 1 API call per benchmark/day (currently 1)
+- **Design**: Completely independent of the bulk ticker pipeline. Not subject to
+  universe seed, visibility rules, or ticker filters. Extensible via
+  `BENCHMARK_SYMBOLS` registry in `benchmark_service.py`.
+- **Admin**: Can be triggered manually via `POST /api/v1/admin/job/benchmark_update/run`
 
 ### 5. Fundamentals Sync (Mon-Sat 04:30)
 - **File**: `/app/backend/scheduler_service.py` → `run_fundamentals_changes_sync()`
