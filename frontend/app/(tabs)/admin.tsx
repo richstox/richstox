@@ -139,7 +139,47 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   useEffect(() => { fetchAll(); }, [fetchAll]);
   const onRefresh = () => { setRefreshing(true); fetchAll(); };
 
-  if (loading) return <BrandedLoading message="Loading admin dashboard..." />;
+  if (loading) return (
+    <ScrollView style={d.container} contentContainerStyle={{ paddingBottom: 40 }}>
+      {/* Skeleton: Business card */}
+      <View style={d.card}>
+        <View style={sk.titleBar} />
+        <View style={d.bizRow}>
+          {[0, 1, 2].map(i => (
+            <View key={i} style={d.bizStat}>
+              <View style={[sk.circle, { width: 16, height: 16 }]} />
+              <View style={[sk.bar, { width: 32, height: 18 }]} />
+              <View style={[sk.bar, { width: 48, height: 10 }]} />
+            </View>
+          ))}
+        </View>
+      </View>
+      {/* Skeleton: Ops Health card */}
+      <View style={d.card}>
+        <View style={sk.titleBar} />
+        <View style={d.opsGrid}>
+          {[0, 1, 2, 3].map(i => (
+            <View key={i} style={[d.opsItem, { minHeight: 36 }]}>
+              <View style={[sk.circle, { width: 14, height: 14 }]} />
+              <View style={[sk.bar, { flex: 1, height: 11 }]} />
+            </View>
+          ))}
+        </View>
+      </View>
+      {/* Skeleton: Price Integrity card */}
+      <View style={d.card}>
+        <View style={sk.titleBar} />
+        <View style={d.integrityGrid}>
+          {[0, 1, 2, 3].map(i => (
+            <View key={i} style={[d.intMetric, { alignItems: 'center', minHeight: 44 }]}>
+              <View style={[sk.bar, { width: 40, height: 16, marginBottom: 4 }]} />
+              <View style={[sk.bar, { width: 64, height: 9 }]} />
+            </View>
+          ))}
+        </View>
+      </View>
+    </ScrollView>
+  );
 
   const health = overview?.health;
   const failedCount = health?.jobs_failed ?? 0;
@@ -413,6 +453,13 @@ const d = StyleSheet.create({
   cpLabel: { fontSize: 11, color: COLORS.text, width: 110 },
   cpDate: { fontSize: 10, color: COLORS.textMuted, flex: 1 },
   cpValue: { fontSize: 11, fontWeight: '600', color: '#22C55E' },
+});
+
+// ─── Skeleton placeholder styles (shared across admin tabs) ───────────────────
+const sk = StyleSheet.create({
+  titleBar: { width: 80, height: 12, borderRadius: 4, backgroundColor: COLORS.border, marginBottom: 10 },
+  bar: { borderRadius: 4, backgroundColor: COLORS.border },
+  circle: { borderRadius: 999, backgroundColor: COLORS.border },
 });
 
 // ─── Main Admin Screen ────────────────────────────────────────────────────────
