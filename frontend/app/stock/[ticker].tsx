@@ -36,6 +36,8 @@ import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const EODHD_LOGO_BASE = 'https://eodhd.com';
+// Delay before fetching below-the-fold content (talk posts) to prioritize critical data
+const DEFERRED_FETCH_MS = 800;
 
 interface CompanyData {
   ticker: string;
@@ -617,7 +619,7 @@ export default function StockDetail() {
     // Defer talk posts fetch (below-the-fold content) until after critical data loads
     const timer = setTimeout(() => {
       fetchTalkPosts();
-    }, 800);
+    }, DEFERRED_FETCH_MS);
     return () => clearTimeout(timer);
   }, [ticker]);
 
