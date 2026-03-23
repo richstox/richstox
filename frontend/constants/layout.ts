@@ -11,7 +11,7 @@
  * - All screens reuse these tokens — no per-page overrides for core spacing.
  */
 
-import { Platform } from 'react-native';
+import { Platform, useWindowDimensions } from 'react-native';
 
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
@@ -78,6 +78,68 @@ export function lineHeight(
   variant: keyof typeof LINE_HEIGHT = 'normal',
 ): number {
   return Math.round(fontSize * LINE_HEIGHT[variant]);
+}
+
+// ─── Compact Mode (ultra-narrow viewports) ───────────────────────────────────
+
+/**
+ * Compact mode activates below this viewport width.
+ * Designed for ultra-narrow devices (320–359 px).
+ */
+export const COMPACT_BREAKPOINT = 360;
+
+/**
+ * Compact spacing overrides — used only when viewport < COMPACT_BREAKPOINT.
+ *
+ * These are the least-destructive adaptations: reduce spacing first,
+ * preserve readability, keep the same app shell concept.
+ */
+export const COMPACT_SPACING = {
+  PAGE_GUTTER: SPACING.md,   // 16 → 12
+  CARD_PADDING: SPACING.md,  // 16 → 12
+  SECTION_GAP: SPACING.md,   // 24 → 12
+  ROW_GAP: SPACING.sm,       //  12 → 8
+  TITLE_GAP: 6,              //   8 → 6
+} as const;
+
+/**
+ * Hook: returns true when the viewport is below the compact breakpoint.
+ */
+export function useCompactMode(): boolean {
+  const { width } = useWindowDimensions();
+  return width < COMPACT_BREAKPOINT;
+}
+
+/**
+ * Hook: returns responsive spacing values.
+ * On ultra-narrow viewports (< 360 px) returns compact overrides;
+ * otherwise returns the standard values.
+ *
+ * Usage:
+ *   const sp = useLayoutSpacing();
+ *   <View style={{ padding: sp.pageGutter }} />
+ */
+export function useLayoutSpacing() {
+  const compact = useCompactMode();
+  return compact
+    ? {
+        pageGutter: COMPACT_SPACING.PAGE_GUTTER,
+        cardPadding: COMPACT_SPACING.CARD_PADDING,
+        sectionGap: COMPACT_SPACING.SECTION_GAP,
+        rowGap: COMPACT_SPACING.ROW_GAP,
+        titleGap: COMPACT_SPACING.TITLE_GAP,
+        bannerGap: BANNER_GAP,
+        compact: true as const,
+      }
+    : {
+        pageGutter: PAGE_GUTTER,
+        cardPadding: CARD_PADDING,
+        sectionGap: SECTION_GAP,
+        rowGap: ROW_GAP,
+        titleGap: TITLE_GAP,
+        bannerGap: BANNER_GAP,
+        compact: false as const,
+      };
 }
 
 // ─── Breakpoints (web only) ──────────────────────────────────────────────────

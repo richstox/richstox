@@ -11,7 +11,7 @@ import WebRails from '../components/WebRails';
 import { APP_SHELL_MAX_WIDTH, RAIL_BACKGROUND, IS_WEB } from '../constants/layout';
 
 // Re-export layout tokens so screens can import from '_layout' or 'constants/layout'
-export { SPACING, PAGE_GUTTER, SECTION_GAP, CARD_PADDING, ROW_GAP, TITLE_GAP, BANNER_GAP, LINE_HEIGHT, lineHeight } from '../constants/layout';
+export { SPACING, PAGE_GUTTER, SECTION_GAP, CARD_PADDING, ROW_GAP, TITLE_GAP, BANNER_GAP, LINE_HEIGHT, lineHeight, COMPACT_BREAKPOINT, COMPACT_SPACING, useCompactMode, useLayoutSpacing } from '../constants/layout';
 
 // Calm color palette
 export const COLORS = {

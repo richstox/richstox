@@ -67,6 +67,40 @@ All values live in `frontend/constants/layout.ts` and are re-exported from `fron
 | `TITLE_GAP` | 8 | Space below a section title before its content |
 | `BANNER_GAP` | 16 | Space around info/status banners |
 
+### Compact mode (ultra-narrow viewports)
+
+Viewports **below 360 px** (`COMPACT_BREAKPOINT`) activate compact spacing overrides.
+This prevents layout breakage and overcrowding on devices like 320 px screens
+while preserving the app's minimalist, premium feel.
+
+| Standard Token | Standard | Compact (< 360 px) |
+|----------------|--------:|-----------:|
+| `PAGE_GUTTER`  | 16      | 12         |
+| `CARD_PADDING` | 16      | 12         |
+| `SECTION_GAP`  | 24      | 12         |
+| `ROW_GAP`      | 12      |  8         |
+| `TITLE_GAP`    |  8      |  6         |
+| `BANNER_GAP`   | 16      | 16 (unchanged) |
+
+**Hooks:**
+
+| Hook | Returns |
+|------|---------|
+| `useCompactMode()` | `boolean` — true when viewport < 360 px |
+| `useLayoutSpacing()` | Object with `pageGutter`, `cardPadding`, `sectionGap`, `rowGap`, `titleGap`, `bannerGap`, `compact` — auto-switches between standard and compact values |
+
+**Rules:**
+
+1. Body text must remain ≥ 12 px; line-height must remain ≥ 1.5×.
+2. Primary navigation, critical actions, and primary content must stay visible.
+3. No horizontal scrolling on the main app shell.
+4. Adaptation priority: reduce spacing → reduce decorative space → tighten secondary UI → shorten labels → move non-primary actions.
+5. No separate alternative layout system — use the same app shell concept.
+
+**Validation widths:** 320 px, 340 px, and standard 390 px+ (no regression).
+
+Source: `frontend/constants/layout.ts` → `COMPACT_BREAKPOINT`, `COMPACT_SPACING`, `useCompactMode`, `useLayoutSpacing`
+
 ---
 
 ## 4. Section / Card / List / Banner Spacing Rules
@@ -210,12 +244,13 @@ Rails are rendered by `frontend/components/WebRails.tsx`.
 
 | File | Purpose |
 |------|---------|
-| `frontend/constants/layout.ts` | All spacing tokens, app shell constants, breakpoints |
+| `frontend/constants/layout.ts` | All spacing tokens, app shell constants, breakpoints, compact mode |
 | `frontend/app/_layout.tsx` | Root layout — shell container, COLORS, FONTS, TYPOGRAPHY, re-exports tokens |
 | `frontend/components/WebRails.tsx` | Desktop side-rail wrapper (web-only, subscription-aware) |
 | `frontend/app/+html.tsx` | HTML template — viewport meta, overflow-x prevention, rail background |
 | `frontend/app/(tabs)/_layout.tsx` | Tab bar configuration |
 | `frontend/components/AppHeader.tsx` | Global header component |
+| `frontend/__tests__/compactMode.test.js` | Compact mode regression tests (26 tests) |
 | `docs/GLOBAL_LAYOUT_STANDARD.md` | This document |
 
 ---
@@ -230,6 +265,15 @@ Rails are rendered by `frontend/components/WebRails.tsx`.
 - Typography presets updated with explicit line-heights
 - HTML template hardened against horizontal overflow
 - This documentation created
+
+### Phase 1 follow-up: Compact mode
+
+- Compact breakpoint added at 360 px (`COMPACT_BREAKPOINT`)
+- Compact spacing overrides defined (`COMPACT_SPACING`)
+- `useCompactMode()` and `useLayoutSpacing()` hooks added
+- Re-exported from `_layout.tsx` alongside existing tokens
+- Documentation updated with compact mode rules (§3)
+- Regression tests added (`__tests__/compactMode.test.js`, 26 tests)
 
 ### Phase 2 (future)
 
