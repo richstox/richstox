@@ -95,11 +95,11 @@ export const COMPACT_BREAKPOINT = 360;
  * preserve readability, keep the same app shell concept.
  */
 export const COMPACT_SPACING = {
-  PAGE_GUTTER: SPACING.md,   // 16 → 12
-  CARD_PADDING: SPACING.md,  // 16 → 12
-  SECTION_GAP: SPACING.md,   // 24 → 12
-  ROW_GAP: SPACING.sm,       //  12 → 8
-  TITLE_GAP: 6,              //   8 → 6
+  PAGE_GUTTER: SPACING.md,   // 12 (standard: 16)
+  CARD_PADDING: SPACING.md,  // 12 (standard: 16)
+  SECTION_GAP: SPACING.md,   // 12 (standard: 24)
+  ROW_GAP: SPACING.sm,       //  8 (standard: 12)
+  TITLE_GAP: 6,              //  6 (standard:  8)
 } as const;
 
 /**
