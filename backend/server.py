@@ -7826,8 +7826,8 @@ async def build_canonical_pipeline_report(db_ref, chain_run_id: str) -> Dict[str
     })
     visibility_rule = max(step3_filtered_out - fundamentals_blocker, 0)
 
-    # Use the chain's finished_at timestamp so the "Generated" / "Chain completed"
-    # label in the UI matches the actual pipeline completion time — not the
+    # Use the chain's finished_at timestamp so the "Chain completed" label
+    # in the UI matches the actual pipeline completion time — not the
     # moment the report is fetched (which caused the stale-step-run vs fresh-
     # timestamp inconsistency reported in the pipeline consistency bug).
     _finished_at = chain_doc.get("finished_at")
