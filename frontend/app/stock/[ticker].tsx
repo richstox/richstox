@@ -758,6 +758,22 @@ export default function StockDetail() {
     return { peak, trough, durationDays, recoveryDate };
   }, [chartData]);
 
+  // Merge company details from stock-overview (primary) and detail endpoint (fallback)
+  // MUST be before conditional returns to satisfy React Rules of Hooks
+  const companyDetails = useMemo(() => {
+    const co = data?.company;
+    const cd = mobileData?.company_details;
+    return {
+      city: co?.city || cd?.city,
+      state: co?.state || cd?.state,
+      country_name: co?.country_name || cd?.country_name,
+      website: co?.website || cd?.website,
+      employees: co?.full_time_employees || cd?.employees,
+      ipo_date: co?.ipo_date || cd?.ipo_date,
+      description: co?.description || cd?.description,
+    };
+  }, [data?.company, mobileData?.company_details]);
+
   // P21: EU/CZ Number Formatting - import utility
   // Thousands separator: . (dot), Decimal separator: , (comma)
   const toEU = (value: number, decimals: number = 2): string => {
@@ -1125,20 +1141,6 @@ export default function StockDetail() {
   const logoUrl = rawLogoUrl
     ? (rawLogoUrl.startsWith('http') ? rawLogoUrl : `${EODHD_LOGO_BASE}${rawLogoUrl}`)
     : null;
-
-  // Merge company details from stock-overview (primary) and detail endpoint (fallback)
-  const companyDetails = useMemo(() => {
-    const cd = mobileData?.company_details;
-    return {
-      city: company.city || cd?.city,
-      state: company.state || cd?.state,
-      country_name: company.country_name || cd?.country_name,
-      website: company.website || cd?.website,
-      employees: company.full_time_employees || cd?.employees,
-      ipo_date: company.ipo_date || cd?.ipo_date,
-      description: company.description || cd?.description,
-    };
-  }, [company, mobileData?.company_details]);
 
   // =============================================================================
   // P5: SUMMARY PILLS LOGIC (Honest Data - never guess)
