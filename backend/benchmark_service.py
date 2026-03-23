@@ -40,7 +40,7 @@ import os
 import logging
 import httpx
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, List, Optional
+from typing import Callable, Dict, Any, List, Optional
 
 logger = logging.getLogger("richstox.benchmark_service")
 
@@ -132,6 +132,7 @@ async def update_benchmark(
     full_history: bool = False,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    progress_cb: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """
     Fetch and persist price history for a single benchmark *symbol*.
@@ -208,6 +209,12 @@ async def update_benchmark(
     )
 
     try:
+        if progress_cb:
+            await progress_cb(
+                phase=f"Fetching {symbol} from EODHD ({mode})",
+                message=f"API call: /eod/{symbol} · {start_date} → {end_date}",
+            )
+
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(url)
             response.raise_for_status()
@@ -235,6 +242,12 @@ async def update_benchmark(
 
         # Upsert each record
         upserted = 0
+        total_rows = len(data)
+        if progress_cb:
+            await progress_cb(
+                phase=f"Upserting {total_rows} records for {symbol}",
+                message=f"Writing {total_rows} price rows to stock_prices",
+            )
         for row in data:
             await db.stock_prices.update_one(
                 {"ticker": symbol, "date": row["date"]},
@@ -255,6 +268,11 @@ async def update_benchmark(
         logger.info(f"{symbol} benchmark update complete: {upserted} records upserted")
 
         # ── update sync state ─────────────────────────────────────────────
+        if progress_cb:
+            await progress_cb(
+                phase=f"Updating sync state for {symbol}",
+                message=f"{upserted} records upserted · refreshing date bounds",
+            )
         earliest_in_db, latest_in_db = await _refresh_date_bounds(db, symbol)
 
         state_update: Dict[str, Any] = {
@@ -310,6 +328,7 @@ async def update_all_benchmarks(
     full_history: bool = False,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    progress_cb: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """
     Update every benchmark in BENCHMARK_SYMBOLS.
@@ -321,14 +340,26 @@ async def update_all_benchmarks(
     Optional params ``full_history``, ``date_from``, ``date_to`` are
     forwarded to :func:`update_benchmark` — see its docstring for
     mode-selection rules.
+
+    Optional ``progress_cb`` receives ``(phase, message)`` keyword args
+    at each execution step so the admin UI can display live progress.
     """
     results: List[Dict[str, Any]] = []
-    for name, symbol in BENCHMARK_SYMBOLS.items():
+    total = len(BENCHMARK_SYMBOLS)
+    for idx, (name, symbol) in enumerate(BENCHMARK_SYMBOLS.items()):
+        if progress_cb:
+            await progress_cb(
+                phase=f"Processing {name} ({idx + 1}/{total})",
+                message=f"Starting benchmark {symbol}",
+                processed=idx,
+                total=total,
+            )
         result = await update_benchmark(
             db, symbol,
             full_history=full_history,
             date_from=date_from,
             date_to=date_to,
+            progress_cb=progress_cb,
         )
         result["benchmark_name"] = name
         results.append(result)
@@ -345,6 +376,14 @@ async def update_all_benchmarks(
         overall = "error"
     else:
         overall = "partial"
+
+    if progress_cb:
+        await progress_cb(
+            phase=f"Done — {succeeded} updated, {total_records} records",
+            message=f"{overall}: {succeeded}/{total} benchmarks, {total_records} records upserted",
+            processed=total,
+            total=total,
+        )
 
     return {
         "status": overall,

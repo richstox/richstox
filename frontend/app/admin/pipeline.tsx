@@ -2192,6 +2192,16 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         {isBenchmarkRunning ? (
           <View style={s.runInfo}>
             <Text style={[s.runValue, { color: '#F59E0B' }]}>Running…</Text>
+            {jobRuns['benchmark_update']?.phase ? (
+              <Text style={[s.runValue, { marginTop: 2, fontSize: 11, color: '#9CA3AF' }]}>
+                {jobRuns['benchmark_update'].phase}
+              </Text>
+            ) : null}
+            {jobRuns['benchmark_update']?.progress ? (
+              <Text style={[s.runValue, { marginTop: 1, fontSize: 10, color: '#6B7280' }]}>
+                {jobRuns['benchmark_update'].progress}
+              </Text>
+            ) : null}
           </View>
         ) : jobRuns['benchmark_update'] ? (
           <View style={s.runInfo}>

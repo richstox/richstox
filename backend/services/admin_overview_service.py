@@ -202,6 +202,7 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             "progress_total":     {"$first": "$progress_total"},
             "progress_processed": {"$first": "$progress_processed"},
             "progress_pct":       {"$first": "$progress_pct"},
+            "phase":              {"$first": "$phase"},
         }},
     ]
     docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
