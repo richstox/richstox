@@ -377,14 +377,8 @@ export default function StockDetail() {
   
   // Financials period toggle - handled internally by FinancialHub component
   
-  // S&P 500 benchmark state
-  const [spyPerformance, setSpyPerformance] = useState<{change_pct: number; start_price: number; end_price: number} | null>(null);
-  
   // Benchmark chart data (SP500TR.INDX normalized to 100)
   const [benchmarkChartData, setBenchmarkChartData] = useState<{date: string; normalized: number}[]>([]);
-
-  // P1 FINAL: MAX chart data for Reality Check RRR calculation
-  const [maxChartData, setMaxChartData] = useState<PriceHistoryPoint[]>([]);
 
   // Talk posts state
   const [talkPosts, setTalkPosts] = useState<any[]>([]);
@@ -506,27 +500,12 @@ export default function StockDetail() {
     }
   };
 
-  const fetchMaxChartData = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/chart?period=MAX&include_benchmark=false`);
-      const prices = response.data.prices || [];
-      const formattedPrices = prices.map((p: any) => ({
-        date: p.date,
-        adjusted_close: p.adjusted_close || p.close,
-      }));
-      setMaxChartData(formattedPrices);
-    } catch (err: any) {
-      console.error('Error fetching MAX chart data:', err);
-    }
-  };
-
   // P25/P26: PAIN data now comes from ticker_pain_cache via /v1/ticker/{ticker}/detail API
 
   useEffect(() => {
     if (!ticker) return;
     fetchStock(false);
     fetchDividends();
-    fetchMaxChartData();
   }, [ticker]);
 
   useEffect(() => {
@@ -632,11 +611,14 @@ export default function StockDetail() {
   }, []);
   // ===== END CHART-TOOLTIP handlers =====
 
-  // Fetch talk posts when ticker changes
+  // Fetch talk posts when ticker changes - deferred to avoid blocking initial render
   useEffect(() => {
-    if (ticker) {
+    if (!ticker) return;
+    // Defer talk posts fetch (below-the-fold content) until after critical data loads
+    const timer = setTimeout(() => {
       fetchTalkPosts();
-    }
+    }, 800);
+    return () => clearTimeout(timer);
   }, [ticker]);
 
   const onRefresh = () => {
@@ -646,23 +628,6 @@ export default function StockDetail() {
     fetchDividends();
     fetchTalkPosts();
   };
-  
-  // Calculate dividends received for selected range
-  const dividendsReceived = useMemo(() => {
-    if (!chartData.length || !dividendPayments.length) return 0;
-    
-    const startDate = chartData[0]?.date;
-    const endDate = chartData[chartData.length - 1]?.date;
-    
-    if (!startDate || !endDate) return 0;
-    
-    // Sum dividends within the chart date range
-    const total = dividendPayments
-      .filter(d => d.ex_date >= startDate && d.ex_date <= endDate)
-      .reduce((sum, d) => sum + (d.amount || 0), 0);
-    
-    return total;
-  }, [chartData, dividendPayments]);
   
   // UTC-safe date formatter for MM/YY format
   const formatMMYY = (dateStr: string): string => {
@@ -688,6 +653,46 @@ export default function StockDetail() {
       changePercent,
       isPositive: changePercent >= 0,
     };
+  }, [chartData]);
+
+  // Memoize drawdown peak/trough calculation (avoids recomputing 400+ points on every render)
+  const drawdownDetails = useMemo(() => {
+    if (chartData.length <= 10) return null;
+    
+    let peak = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
+    let trough = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
+    let maxDrawdown = 0;
+    let runningMax = chartData[0]?.adjusted_close || 0;
+    let runningMaxIdx = 0;
+    
+    chartData.forEach((d, i) => {
+      if (d.adjusted_close > runningMax) {
+        runningMax = d.adjusted_close;
+        runningMaxIdx = i;
+      }
+      const drawdown = (runningMax - d.adjusted_close) / runningMax;
+      if (drawdown > maxDrawdown) {
+        maxDrawdown = drawdown;
+        peak = { idx: runningMaxIdx, value: runningMax, date: chartData[runningMaxIdx]?.date };
+        trough = { idx: i, value: d.adjusted_close, date: d.date };
+      }
+    });
+    
+    if (!peak.date || !trough.date || maxDrawdown <= 0.01) return null;
+    
+    const peakDate = new Date(peak.date + 'T00:00:00Z');
+    const troughDate = new Date(trough.date + 'T00:00:00Z');
+    const durationDays = Math.round((troughDate.getTime() - peakDate.getTime()) / (1000 * 60 * 60 * 24));
+    
+    let recoveryDate: string | null = null;
+    for (let i = trough.idx + 1; i < chartData.length; i++) {
+      if (chartData[i].adjusted_close >= peak.value) {
+        recoveryDate = chartData[i].date;
+        break;
+      }
+    }
+    
+    return { peak, trough, durationDays, recoveryDate };
   }, [chartData]);
 
   // P21: EU/CZ Number Formatting - import utility
@@ -2060,59 +2065,22 @@ export default function StockDetail() {
                   </Text>
                 </View>
                 
-                {/* P22: Drawdown details from chartData */}
-                {chartData.length > 10 && (() => {
-                  // Calculate peak and trough from chart data
-                  let peak = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
-                  let trough = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
-                  let maxDrawdown = 0;
-                  let runningMax = chartData[0]?.adjusted_close || 0;
-                  let runningMaxIdx = 0;
-                  
-                  chartData.forEach((d, i) => {
-                    if (d.adjusted_close > runningMax) {
-                      runningMax = d.adjusted_close;
-                      runningMaxIdx = i;
-                    }
-                    const drawdown = (runningMax - d.adjusted_close) / runningMax;
-                    if (drawdown > maxDrawdown) {
-                      maxDrawdown = drawdown;
-                      peak = { idx: runningMaxIdx, value: runningMax, date: chartData[runningMaxIdx]?.date };
-                      trough = { idx: i, value: d.adjusted_close, date: d.date };
-                    }
-                  });
-                  
-                  if (peak.date && trough.date && maxDrawdown > 0.01) {
-                    const peakDate = new Date(peak.date + 'T00:00:00Z');
-                    const troughDate = new Date(trough.date + 'T00:00:00Z');
-                    const durationDays = Math.round((troughDate.getTime() - peakDate.getTime()) / (1000 * 60 * 60 * 24));
-                    
-                    let recoveryDate: string | null = null;
-                    for (let i = trough.idx + 1; i < chartData.length; i++) {
-                      if (chartData[i].adjusted_close >= peak.value) {
-                        recoveryDate = chartData[i].date;
-                        break;
-                      }
-                    }
-                    
-                    return (
-                      <View style={styles.painDetails}>
-                        <Text style={styles.painDateRange}>
-                          {formatDateDMY(peak.date)} → {formatDateDMY(trough.date)}
-                        </Text>
-                        <Text style={styles.painDuration}>
-                          Duration: {durationDays} days
-                        </Text>
-                        <Text style={styles.painRecovery}>
-                          {recoveryDate 
-                            ? `Recovered: ${formatDateDMY(recoveryDate)}`
-                            : 'Recovered: Not recovered'}
-                        </Text>
-                      </View>
-                    );
-                  }
-                  return null;
-                })()}
+                {/* P22: Drawdown details from chartData (memoized) */}
+                {drawdownDetails && (
+                  <View style={styles.painDetails}>
+                    <Text style={styles.painDateRange}>
+                      {formatDateDMY(drawdownDetails.peak.date)} → {formatDateDMY(drawdownDetails.trough.date)}
+                    </Text>
+                    <Text style={styles.painDuration}>
+                      Duration: {drawdownDetails.durationDays} days
+                    </Text>
+                    <Text style={styles.painRecovery}>
+                      {drawdownDetails.recoveryDate 
+                        ? `Recovered: ${formatDateDMY(drawdownDetails.recoveryDate)}`
+                        : 'Recovered: Not recovered'}
+                    </Text>
+                  </View>
+                )}
               </View>
             </View>
             
