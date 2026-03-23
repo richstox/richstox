@@ -19,10 +19,14 @@ Each symbol listed in BENCHMARK_SYMBOLS is fetched via a dedicated
 EODHD ``/eod/{symbol}`` API call, so benchmarks are never subject to
 the normal seed/filter/bulk-ingest flow.
 
-Three operational modes:
+Four operational modes:
   1. **Daily incremental** (default) — scheduler at 04:15, last 30 days.
   2. **Full history** — ``full_history=True``, from 1988-01-01.
   3. **Date-range recovery** — explicit ``date_from`` / ``date_to``.
+  4. **Auto-backfill** — when fewer than ``_MIN_RECORDS_FOR_INCREMENTAL``
+     records exist in the DB for a benchmark, incremental mode is
+     automatically escalated to full-history.  This ensures the first
+     run (or recovery from data loss) is self-healing.
 
 Called by: scheduler.py at 04:15 Europe/Prague (Mon-Sat)
            server.py admin endpoint (manual trigger)
@@ -64,6 +68,11 @@ _DEFAULT_LOOKBACK_DAYS = 30
 # Earliest date for full history backfill (SP500TR data begins 1988-01-04)
 _EARLIEST_BENCHMARK_DATE = "1988-01-01"
 
+# Minimum records required before incremental mode is allowed.
+# If the DB has fewer records for a benchmark, auto-escalate to full_history.
+# ~252 trading days ≈ 1 year — a safe threshold to detect missing backfill.
+_MIN_RECORDS_FOR_INCREMENTAL = 252
+
 
 # ---------------------------------------------------------------------------
 # Generic single-benchmark updater
@@ -78,11 +87,16 @@ async def update_benchmark(
     """
     Fetch and persist price history for a single benchmark *symbol*.
 
-    Three modes (checked in priority order):
+    Four modes (checked in priority order):
       1. **Explicit date range** — ``date_from`` / ``date_to`` given →
          fetch exactly that window.  Useful for emergency gap repair.
       2. **Full history** — ``full_history=True`` → fetch from 1988-01-01.
-      3. **Daily incremental** (default) → last 30 calendar days.
+      3. **Auto-backfill** — when the DB has fewer than
+         ``_MIN_RECORDS_FOR_INCREMENTAL`` records for this symbol the
+         incremental default is automatically escalated to a full-history
+         fetch.  This makes the first run (or any run after data loss)
+         self-healing without manual intervention.
+      4. **Daily incremental** (default) → last 30 calendar days.
 
     Args:
         db:            Motor database handle.
@@ -101,6 +115,19 @@ async def update_benchmark(
         mode = "date_range"
     elif full_history:
         mode = "full_history"
+    else:
+        # Auto-detect missing backfill: if the DB has very few records for
+        # this benchmark, escalate to full_history automatically so the
+        # scheduler self-heals without manual intervention.
+        existing_count = await db.stock_prices.count_documents({"ticker": symbol})
+        if existing_count < _MIN_RECORDS_FOR_INCREMENTAL:
+            mode = "full_history"
+            full_history = True
+            logger.warning(
+                f"Auto-backfill triggered for {symbol}: only {existing_count} "
+                f"records in DB (threshold={_MIN_RECORDS_FOR_INCREMENTAL}). "
+                f"Escalating to full_history mode."
+            )
     logger.info(f"Starting benchmark update: {symbol} (mode={mode})")
 
     end_date = date_to or datetime.now().strftime("%Y-%m-%d")
