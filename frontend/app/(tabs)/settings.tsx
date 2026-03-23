@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -8,7 +8,7 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
@@ -25,9 +25,12 @@ export default function Settings() {
   const sp = useLayoutSpacing();
   const [portfolioName, setPortfolioName] = useState('');
 
-  useEffect(() => {
-    loadPortfolioInfo();
-  }, []);
+  // Only load portfolio info when this screen is focused (not on boot)
+  useFocusEffect(
+    useCallback(() => {
+      loadPortfolioInfo();
+    }, [])
+  );
 
   const loadPortfolioInfo = async () => {
     try {

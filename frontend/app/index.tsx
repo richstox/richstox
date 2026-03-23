@@ -11,15 +11,11 @@ export default function Index() {
   useEffect(() => {
     if (isLoading) return;
     
-    const timer = setTimeout(() => {
-      if (isAuthenticated) {
-        router.replace('/(tabs)/dashboard');
-      } else {
-        router.replace('/login');
-      }
-    }, 500);
-    
-    return () => clearTimeout(timer);
+    if (isAuthenticated) {
+      router.replace('/(tabs)/dashboard');
+    } else {
+      router.replace('/login');
+    }
   }, [isAuthenticated, isLoading]);
 
   return (
