@@ -1120,7 +1120,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   ];
 
   if (loading) return (
-    <View style={s.center}><ActivityIndicator size="large" color={COLORS.primary} /></View>
+    <ScrollView style={s.container} contentContainerStyle={{ paddingBottom: 40 }}>
+      {/* Skeleton: Health card */}
+      <View style={s.healthCard}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+          <View style={{ width: 100, height: 13, borderRadius: 4, backgroundColor: COLORS.border, flex: 1 }} />
+          <View style={{ width: 36, height: 20, borderRadius: 4, backgroundColor: COLORS.border, marginLeft: 8 }} />
+        </View>
+        <View style={s.progressBg} />
+        <View style={{ width: 140, height: 11, borderRadius: 4, backgroundColor: COLORS.border, marginBottom: 10 }} />
+        <View style={{ width: '100%', height: 48, borderRadius: 8, backgroundColor: COLORS.border, marginTop: 8 }} />
+        <View style={{ width: '100%', height: 48, borderRadius: 8, backgroundColor: COLORS.border, marginTop: 12 }} />
+      </View>
+      {/* Skeleton: Step cards */}
+      {[1, 2, 3].map(i => (
+        <View key={i} style={[s.stepCard, { marginTop: 10 }]}>
+          <View style={s.stepHeader}>
+            <View style={[s.stepBadge, { backgroundColor: COLORS.border }]} />
+            <View style={s.stepMeta}>
+              <View style={{ width: 80, height: 9, borderRadius: 4, backgroundColor: COLORS.border, marginBottom: 4 }} />
+              <View style={{ width: 120, height: 13, borderRadius: 4, backgroundColor: COLORS.border }} />
+            </View>
+            <View style={{ width: 54, height: 20, borderRadius: 4, backgroundColor: COLORS.border }} />
+          </View>
+        </View>
+      ))}
+    </ScrollView>
   );
 
   const isRunDisabled = runMode === 'AUTO' || chainRunning;
