@@ -436,12 +436,6 @@ export default function Dashboard() {
         notificationCount={notificationCount}
       />
 
-      {loading ? (
-        <View style={styles.inlineLoadingContainer}>
-          <ActivityIndicator size="large" color={COLORS.primary} />
-          <Text style={styles.inlineLoadingText}>Loading your portfolio...</Text>
-        </View>
-      ) : (
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
@@ -535,7 +529,7 @@ export default function Dashboard() {
           <View style={styles.cardHeader}>
             <View style={styles.sectionTitleRow}>
               <Ionicons name="star" size={18} color={COLORS.warning} />
-              <Text style={styles.sectionTitle}>My Stocks ({filteredStocks.length})</Text>
+              <Text style={styles.sectionTitle}>My Stocks {loading ? '' : `(${filteredStocks.length})`}</Text>
             </View>
             <View style={styles.titleRightControls}>
               {/* P40 A) Portfolio toggle in title row */}
@@ -566,6 +560,22 @@ export default function Dashboard() {
             </View>
           </View>
 
+          {/* Skeleton loading state for My Stocks content */}
+          {loading ? (
+            <View style={styles.stocksSkeletonContainer}>
+              {[0, 1, 2].map((i) => (
+                <View key={i} style={styles.stocksSkeletonRow}>
+                  <View style={styles.stocksSkeletonAvatar} />
+                  <View style={styles.stocksSkeletonLines}>
+                    <View style={[styles.stocksSkeletonLine, { width: '50%' }]} />
+                    <View style={[styles.stocksSkeletonLine, { width: '70%', marginTop: 6 }]} />
+                  </View>
+                  <View style={[styles.stocksSkeletonLine, { width: 48, height: 16 }]} />
+                </View>
+              ))}
+            </View>
+          ) : (
+          <>
           {/* Search field */}
           {myStocks.length > 0 && (
             <View style={styles.myStocksSearchWrapper}>
@@ -792,6 +802,8 @@ export default function Dashboard() {
               )}
             </>
           )}
+          </>
+          )}
         </View>
 
         {/* ===== P35: NEWS & SENTIMENT FEED with section icon ===== */}
@@ -933,7 +945,6 @@ export default function Dashboard() {
         {/* Bottom padding for tab bar */}
         <View style={{ height: 100 }} />
       </ScrollView>
-      )}
 
       {/* Article Modal */}
       <Modal
@@ -2179,5 +2190,30 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: COLORS.danger,
     alignSelf: 'center',
+  },
+  // My Stocks skeleton loading state
+  stocksSkeletonContainer: {
+    paddingVertical: 8,
+    gap: 16,
+  },
+  stocksSkeletonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  stocksSkeletonAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    backgroundColor: '#E5E7EB',
+  },
+  stocksSkeletonLines: {
+    flex: 1,
+    gap: 0,
+  },
+  stocksSkeletonLine: {
+    height: 12,
+    borderRadius: 4,
+    backgroundColor: '#E5E7EB',
   },
 });
