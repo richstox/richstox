@@ -5,9 +5,11 @@ import { COLORS, FONTS } from '../_layout';
 import { Platform } from 'react-native';
 import { useAuth } from '../../contexts/AuthContext';
 import BrandedLoading from '../../components/BrandedLoading';
+import { useCompactMode } from '../../constants/layout';
 
 export default function TabsLayout() {
   const { isAuthenticated, isLoading } = useAuth();
+  const compact = useCompactMode();
 
   if (isLoading) {
     return <BrandedLoading message="Checking your account..." />;
@@ -26,9 +28,9 @@ export default function TabsLayout() {
           backgroundColor: COLORS.surface,
           borderTopWidth: 1,
           borderTopColor: COLORS.border,
-          paddingTop: 8,
-          paddingBottom: Platform.OS === 'ios' ? 24 : 12,
-          height: Platform.OS === 'ios' ? 84 : 64,
+          paddingTop: compact ? 6 : 8,
+          paddingBottom: Platform.OS === 'ios' ? (compact ? 20 : 24) : (compact ? 8 : 12),
+          height: Platform.OS === 'ios' ? (compact ? 76 : 84) : (compact ? 56 : 64),
         },
         tabBarLabelStyle: {
           fontSize: 11,

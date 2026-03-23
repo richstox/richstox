@@ -21,6 +21,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
 import BrandedLoading from '../../components/BrandedLoading';
 import { FONTS } from '../_layout';
+import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -94,6 +95,7 @@ const newsLogoStyles = StyleSheet.create({
 export default function Dashboard() {
   const router = useRouter();
   const { user, isAuthenticated, sessionToken } = useAuth();
+  const sp = useLayoutSpacing();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [data, setData] = useState<any>(null);
@@ -433,7 +435,7 @@ export default function Dashboard() {
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
       >

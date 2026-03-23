@@ -15,12 +15,14 @@ import axios from 'axios';
 import { COLORS } from '../_layout';
 import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
+import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function Settings() {
   const router = useRouter();
   const { isAdmin } = useAuth();
+  const sp = useLayoutSpacing();
   const [portfolioName, setPortfolioName] = useState('');
 
   useEffect(() => {
@@ -72,7 +74,7 @@ export default function Settings() {
       <AppHeader title="Settings" />
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
         showsVerticalScrollIndicator={false}
       >
 
