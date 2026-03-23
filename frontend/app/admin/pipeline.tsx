@@ -356,6 +356,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // ── Step 3 live telemetry ─────────────────────────────────────────────────
   const [step3Telemetry, setStep3Telemetry] = useState<Record<string, any> | null>(null);
 
+  // ── Benchmark update state ────────────────────────────────────────────────
+  const [benchmarkUpdating, setBenchmarkUpdating] = useState(false);
+
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
   const [auditLive, setAuditLive] = useState(false);
@@ -708,6 +711,27 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       Alert.alert('Update failed', e?.message || 'Could not update scheduler state');
     } finally {
       setSchedulerUpdating(false);
+    }
+  };
+
+  const handleRunBenchmarkUpdate = async () => {
+    setBenchmarkUpdating(true);
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/job/benchmark_update/run`,
+        { method: 'POST' },
+        sessionToken,
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload?.detail || payload?.message || res.statusText);
+      }
+      Alert.alert('Benchmark Update', 'Benchmark update started in background.');
+      await fetchSnapshotOnce();
+    } catch (e: any) {
+      Alert.alert('Benchmark Update Failed', e?.message || 'Could not start benchmark update');
+    } finally {
+      setBenchmarkUpdating(false);
     }
   };
 
@@ -2084,6 +2108,54 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         )}
         <Text style={[s.detailValue, { marginTop: 4 }]}>Fetch news + compute sentiment for tracked tickers</Text>
         <Text style={s.apiText}>· https://eodhd.com/api/news (per tracked ticker)</Text>
+      </View>
+
+      {/* Benchmark Update — independent job, not part of universe pipeline */}
+      <View style={[s.stepCard, { marginTop: 16, borderLeftColor: '#8B5CF6', borderLeftWidth: 3 }]}>
+        <View style={s.stepHeader}>
+          <View style={[s.stepBadge, { backgroundColor: '#8B5CF622' }]}>
+            <Ionicons name="trending-up-outline" size={16} color="#8B5CF6" />
+          </View>
+          <View style={s.stepMeta}>
+            <View style={s.stepTitleRow}>
+              <Text style={s.stepTitle}>Benchmark Update</Text>
+              {(() => {
+                const run = jobRuns['benchmark_update'];
+                return run ? (
+                  <Ionicons name={getStatusIcon(run.status) as any} size={14} color={getStatusColor(run.status)} style={{ marginLeft: 4 }} />
+                ) : null;
+              })()}
+            </View>
+            <Text style={s.stepSchedule}>Daily 04:15 Prague · SP500TR</Text>
+          </View>
+          <TouchableOpacity
+            style={[
+              { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: '#8B5CF6' },
+              benchmarkUpdating && { opacity: 0.5 },
+            ]}
+            onPress={handleRunBenchmarkUpdate}
+            disabled={benchmarkUpdating}
+          >
+            {benchmarkUpdating
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
+          </TouchableOpacity>
+        </View>
+        {jobRuns['benchmark_update'] ? (
+          <View style={s.runInfo}>
+            <Text style={s.runValue}>
+              Last: {formatTime(jobRuns['benchmark_update'].start_time)} · {formatDuration(jobRuns['benchmark_update'].duration_seconds)}
+            </Text>
+            {jobRuns['benchmark_update'].triggered_by && (
+              <Text style={[s.runValue, { marginTop: 2 }]}>
+                Triggered by: {jobRuns['benchmark_update'].triggered_by}
+              </Text>
+            )}
+          </View>
+        ) : (
+          <Text style={s.neverRun}>Never run</Text>
+        )}
+        <Text style={[s.detailValue, { marginTop: 4 }]}>Incremental update of S&P 500 Total Return benchmark (SP500TR.INDX)</Text>
       </View>
 
       <View style={{ height: 40 }} />
