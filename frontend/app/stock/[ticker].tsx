@@ -1126,6 +1126,20 @@ export default function StockDetail() {
     ? (rawLogoUrl.startsWith('http') ? rawLogoUrl : `${EODHD_LOGO_BASE}${rawLogoUrl}`)
     : null;
 
+  // Merge company details from stock-overview (primary) and detail endpoint (fallback)
+  const companyDetails = useMemo(() => {
+    const cd = mobileData?.company_details;
+    return {
+      city: company.city || cd?.city,
+      state: company.state || cd?.state,
+      country_name: company.country_name || cd?.country_name,
+      website: company.website || cd?.website,
+      employees: company.full_time_employees || cd?.employees,
+      ipo_date: company.ipo_date || cd?.ipo_date,
+      description: company.description || cd?.description,
+    };
+  }, [company, mobileData?.company_details]);
+
   // =============================================================================
   // P5: SUMMARY PILLS LOGIC (Honest Data - never guess)
   // =============================================================================
@@ -1488,57 +1502,48 @@ export default function StockDetail() {
           <Text style={styles.companyDetailsMinimalText}>Company Details</Text>
         </TouchableOpacity>
         
-        {companyDetailsExpanded && (() => {
-          const cd = mobileData?.company_details;
-          const detCity = company.city || cd?.city;
-          const detState = company.state || cd?.state;
-          const detCountry = company.country_name || cd?.country_name;
-          const detWebsite = company.website || cd?.website;
-          const detEmployees = company.full_time_employees || cd?.employees;
-          const detIpoDate = company.ipo_date || cd?.ipo_date;
-          const detDescription = company.description || cd?.description;
-          return (
+        {companyDetailsExpanded && (
           <View style={styles.companyDetailsExpanded}>
-            {(detCity || detState || detCountry) && (
+            {(companyDetails.city || companyDetails.state || companyDetails.country_name) && (
               <View style={styles.detailRowCompact}>
                 <Ionicons name="location-outline" size={14} color={COLORS.textMuted} />
                 <Text style={styles.detailTextCompact}>
-                  {[detCity, detState, detCountry].filter(Boolean).join(', ')}
+                  {[companyDetails.city, companyDetails.state, companyDetails.country_name].filter(Boolean).join(', ')}
                 </Text>
               </View>
             )}
-            {detWebsite && (
+            {companyDetails.website && (
               <TouchableOpacity 
                 style={styles.detailRowCompact}
-                onPress={() => Linking.openURL(detWebsite)}
+                onPress={() => Linking.openURL(companyDetails.website!)}
               >
                 <Ionicons name="globe-outline" size={14} color={COLORS.accent} />
                 <Text style={[styles.detailTextCompact, styles.linkText]} numberOfLines={1}>
-                  {detWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '')}
+                  {companyDetails.website.replace(/^https?:\/\//, '').replace(/\/$/, '')}
                 </Text>
               </TouchableOpacity>
             )}
-            {detEmployees && (
+            {companyDetails.employees && (
               <View style={styles.detailRowCompact}>
                 <Ionicons name="people-outline" size={14} color={COLORS.textMuted} />
-                <Text style={styles.detailTextCompact}>{formatNumber(detEmployees)} employees</Text>
+                <Text style={styles.detailTextCompact}>{formatNumber(companyDetails.employees)} employees</Text>
               </View>
             )}
-            {detIpoDate && (
+            {companyDetails.ipo_date && (
               <View style={styles.detailRowCompact}>
                 <Ionicons name="calendar-outline" size={14} color={COLORS.textMuted} />
-                <Text style={styles.detailTextCompact}>IPO: {formatDateDMY(detIpoDate)}</Text>
+                <Text style={styles.detailTextCompact}>IPO: {formatDateDMY(companyDetails.ipo_date)}</Text>
               </View>
             )}
-            {detDescription && (
+            {companyDetails.description && (
               <>
                 <Text 
                   style={styles.descriptionTextCompact} 
                   numberOfLines={showFullDescription ? undefined : 3}
                 >
-                  {detDescription}
+                  {companyDetails.description}
                 </Text>
-                {detDescription.length > 150 && (
+                {companyDetails.description.length > 150 && (
                   <TouchableOpacity onPress={() => setShowFullDescription(!showFullDescription)}>
                     <Text style={styles.showMoreText}>
                       {showFullDescription ? 'Show less' : 'Show more'}
@@ -1548,8 +1553,7 @@ export default function StockDetail() {
               </>
             )}
           </View>
-          );
-        })()}
+        )}
 
         {/* ===== PRICE CARD ===== */}
         {price && (

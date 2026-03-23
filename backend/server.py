@@ -317,6 +317,30 @@ async def _get_latest_price_from_db(ticker: str) -> Optional[dict]:
     )
 
 
+def _cache_doc_to_general(cache_doc: dict) -> dict:
+    """Convert a flat company_fundamentals_cache document to an EODHD General dict."""
+    return {
+        "Name": cache_doc.get("name"),
+        "Code": cache_doc.get("code"),
+        "Exchange": cache_doc.get("exchange"),
+        "Sector": cache_doc.get("sector"),
+        "Industry": cache_doc.get("industry"),
+        "Type": cache_doc.get("asset_type") or cache_doc.get("security_type"),
+        "Description": cache_doc.get("description"),
+        "WebURL": cache_doc.get("website"),
+        "LogoURL": cache_doc.get("logo_url"),
+        "FullTimeEmployees": cache_doc.get("full_time_employees"),
+        "IPODate": cache_doc.get("ipo_date"),
+        "City": cache_doc.get("city"),
+        "State": cache_doc.get("state"),
+        "CountryName": cache_doc.get("country_name"),
+        "Address": cache_doc.get("address"),
+        "Phone": cache_doc.get("phone"),
+        "ISIN": cache_doc.get("isin"),
+        "CUSIP": cache_doc.get("cusip"),
+    }
+
+
 async def _get_fundamentals_from_db(ticker: str) -> dict:
     """
     Read fundamentals from MongoDB.
@@ -2901,30 +2925,9 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
         )
         if cache_doc:
             if cache_doc.get("General"):
-                # EODHD-shaped cache doc
                 general = cache_doc["General"]
             elif cache_doc.get("name"):
-                # Flat cache schema - build a synthetic General dict
-                general = {
-                    "Name": cache_doc.get("name"),
-                    "Code": cache_doc.get("code"),
-                    "Exchange": cache_doc.get("exchange"),
-                    "Sector": cache_doc.get("sector"),
-                    "Industry": cache_doc.get("industry"),
-                    "Type": cache_doc.get("asset_type") or cache_doc.get("security_type"),
-                    "Description": cache_doc.get("description"),
-                    "WebURL": cache_doc.get("website"),
-                    "LogoURL": cache_doc.get("logo_url"),
-                    "FullTimeEmployees": cache_doc.get("full_time_employees"),
-                    "IPODate": cache_doc.get("ipo_date"),
-                    "City": cache_doc.get("city"),
-                    "State": cache_doc.get("state"),
-                    "CountryName": cache_doc.get("country_name"),
-                    "Address": cache_doc.get("address"),
-                    "Phone": cache_doc.get("phone"),
-                    "ISIN": cache_doc.get("isin"),
-                    "CUSIP": cache_doc.get("cusip"),
-                }
+                general = _cache_doc_to_general(cache_doc)
     
     # Build company dict from fundamentals (embedded or cache)
     fundamentals_pending = False
@@ -3385,27 +3388,7 @@ async def get_ticker_detail_mobile(
             if cache_doc.get("General"):
                 general = cache_doc["General"]
             elif cache_doc.get("name"):
-                # Flat cache schema - build a synthetic General dict
-                general = {
-                    "Name": cache_doc.get("name"),
-                    "Code": cache_doc.get("code"),
-                    "Exchange": cache_doc.get("exchange"),
-                    "Sector": cache_doc.get("sector"),
-                    "Industry": cache_doc.get("industry"),
-                    "Type": cache_doc.get("asset_type") or cache_doc.get("security_type"),
-                    "Description": cache_doc.get("description"),
-                    "WebURL": cache_doc.get("website"),
-                    "LogoURL": cache_doc.get("logo_url"),
-                    "FullTimeEmployees": cache_doc.get("full_time_employees"),
-                    "IPODate": cache_doc.get("ipo_date"),
-                    "City": cache_doc.get("city"),
-                    "State": cache_doc.get("state"),
-                    "CountryName": cache_doc.get("country_name"),
-                    "Address": cache_doc.get("address"),
-                    "Phone": cache_doc.get("phone"),
-                    "ISIN": cache_doc.get("isin"),
-                    "CUSIP": cache_doc.get("cusip"),
-                }
+                general = _cache_doc_to_general(cache_doc)
     
     # Build company dict from fundamentals (embedded or cache) - ALWAYS return a dict, never None
     addr_data = (general.get("AddressData") or {}) if general else {}
