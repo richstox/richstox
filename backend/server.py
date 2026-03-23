@@ -8196,40 +8196,40 @@ async def admin_list_users(limit: int = Query(100, ge=1, le=500), offset: int = 
     PERF: Uses batch aggregation instead of N+1 per-user count queries.
     Previous: 1 + (2 × limit) sequential queries → now 3 parallel queries.
     """
-    import asyncio as _aio
 
     # 1. Fetch paginated users + total count in parallel
     users_task = db.users.find({}, {"_id": 0}).skip(offset).limit(limit).to_list(limit)
     total_task = db.users.count_documents({})
-    users, total = await _aio.gather(users_task, total_task)
+    users, total = await asyncio.gather(users_task, total_task)
 
     # 2. Collect all user_ids for batch lookup
     user_ids = []
-    for u in users:
+    uid_by_idx: dict[int, str] = {}
+    for idx, u in enumerate(users):
         uid = u.get("user_id") or u.get("id") or str(u.get("_id", ""))
-        u["_resolved_uid"] = uid
+        uid_by_idx[idx] = uid
         user_ids.append(uid)
 
     # 3. Batch count portfolios + watchlists per user in parallel aggregations
     portfolio_agg = db.portfolios.aggregate([
         {"$match": {"user_id": {"$in": user_ids}}},
         {"$group": {"_id": "$user_id", "n": {"$sum": 1}}},
-    ]).to_list(len(user_ids) + 1)
+    ]).to_list(None)
 
     watchlist_agg = db.user_watchlist.aggregate([
         {"$match": {"user_id": {"$in": user_ids}}},
         {"$group": {"_id": "$user_id", "n": {"$sum": 1}}},
-    ]).to_list(len(user_ids) + 1)
+    ]).to_list(None)
 
-    port_counts_raw, wl_counts_raw = await _aio.gather(portfolio_agg, watchlist_agg)
+    port_counts_raw, wl_counts_raw = await asyncio.gather(portfolio_agg, watchlist_agg)
 
     port_map = {r["_id"]: r["n"] for r in port_counts_raw}
     wl_map = {r["_id"]: r["n"] for r in wl_counts_raw}
 
     # 4. Build response
     result = []
-    for user in users:
-        uid = user.pop("_resolved_uid", "")
+    for idx, user in enumerate(users):
+        uid = uid_by_idx[idx]
         result.append({
             "user_id": uid,
             "email": user.get("email"),
