@@ -56,6 +56,9 @@ BENCHMARK_SYMBOLS: Dict[str, str] = {
 # Default rolling window for daily incremental updates (days)
 _DEFAULT_LOOKBACK_DAYS = 30
 
+# Earliest date for full history backfill (SP500TR data begins 1988-01-04)
+_EARLIEST_BENCHMARK_DATE = "1988-01-01"
+
 
 # ---------------------------------------------------------------------------
 # Generic single-benchmark updater
@@ -82,7 +85,7 @@ async def update_benchmark(
 
     end_date = datetime.now().strftime("%Y-%m-%d")
     if full_history:
-        start_date = "1988-01-01"
+        start_date = _EARLIEST_BENCHMARK_DATE
     else:
         start_date = (datetime.now() - timedelta(days=_DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
 

@@ -127,8 +127,8 @@ NEWS_REFRESH_HOUR = 13
 NEWS_REFRESH_MINUTE = 0
 
 # SP500TR.INDX: Daily benchmark update at 04:15
-SP500TR_UPDATE_HOUR = 4
-SP500TR_UPDATE_MINUTE = 15
+BENCHMARK_UPDATE_HOUR = 4
+BENCHMARK_UPDATE_MINUTE = 15
 
 # KEY METRICS: Job A - compute per-ticker metrics at 05:00
 KEY_METRICS_HOUR = 5
@@ -489,7 +489,7 @@ async def scheduler_loop():
     logger.info(f"Scheduler started - Timezone: Europe/Prague")
     logger.info(f"Schedule: Mon-Sat")
     logger.info(f"  {PRICE_SYNC_HOUR:02d}:{PRICE_SYNC_MINUTE:02d} - Daily price sync (bulk)")
-    logger.info(f"  {SP500TR_UPDATE_HOUR:02d}:{SP500TR_UPDATE_MINUTE:02d} - SP500TR benchmark update")
+    logger.info(f"  {BENCHMARK_UPDATE_HOUR:02d}:{BENCHMARK_UPDATE_MINUTE:02d} - Benchmark update (SP500TR + future benchmarks)")
     logger.info(f"  {FUNDAMENTALS_SYNC_HOUR:02d}:{FUNDAMENTALS_SYNC_MINUTE:02d} - Fundamentals sync")
     logger.info(f"  {KEY_METRICS_HOUR:02d}:{KEY_METRICS_MINUTE:02d} - Key Metrics + Peer Medians")
     logger.info(f"  {PAIN_CACHE_HOUR:02d}:{PAIN_CACHE_MINUTE:02d} - PAIN cache refresh")
@@ -736,11 +736,11 @@ async def scheduler_loop():
             # of the bulk ticker flow.  Uses its own dedicated EODHD /eod/ calls
             # and is never filtered by universe/seed/visibility rules.
             # Extensible: iterates BENCHMARK_SYMBOLS registry automatically.
-            if should_run("sp500tr_update", SP500TR_UPDATE_HOUR, SP500TR_UPDATE_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering sp500tr_update (hour={current_hour}, scheduled={SP500TR_UPDATE_HOUR}:{SP500TR_UPDATE_MINUTE:02d})")
+            if should_run("benchmark_update", BENCHMARK_UPDATE_HOUR, BENCHMARK_UPDATE_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering benchmark_update (hour={current_hour}, scheduled={BENCHMARK_UPDATE_HOUR}:{BENCHMARK_UPDATE_MINUTE:02d})")
                 from benchmark_service import update_all_benchmarks
-                await run_job_with_retry("sp500tr_update", update_all_benchmarks, db)
-                last_run["sp500tr_update"] = today_str
+                await run_job_with_retry("benchmark_update", update_all_benchmarks, db)
+                last_run["benchmark_update"] = today_str
                 await set_last_run_state(last_run)
             
             # BACKFILL_ALL: MANUAL ONLY by default

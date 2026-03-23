@@ -80,7 +80,7 @@ async def generate_daily_report(db, source: GenerationSource = "manual") -> Dict
         "backfill_gaps": {"patterns": ["backfill_gaps", "scheduled_backfill_gaps"], "sunday_only": False},
         "backfill_all": {"patterns": ["backfill_all", "scheduled_backfill_all", "parallel_backfill"], "sunday_only": False},
         "news_refresh": {"patterns": ["news_refresh", "news_daily_refresh", "news_sync"], "sunday_only": False},
-        "sp500tr_update": {"patterns": ["sp500tr_update", "sp500tr_sync"], "sunday_only": False},
+        "benchmark_update": {"patterns": ["benchmark_update", "sp500tr_update", "sp500tr_sync"], "sunday_only": False},
         "key_metrics": {"patterns": ["key_metrics", "metrics_calc"], "sunday_only": False},
         "peer_medians": {"patterns": ["peer_medians", "medians_calc"], "sunday_only": False},
         "pain_cache": {"patterns": ["pain_cache", "pain_refresh"], "sunday_only": False},
@@ -99,7 +99,7 @@ async def generate_daily_report(db, source: GenerationSource = "manual") -> Dict
     # and become expected once their dependency should already have run.
     job_schedule = {
         "universe_seed": {"hour": 23, "minute": 0},      # Mon-Sat 23:00
-        "sp500tr_update": {"hour": 4, "minute": 15},     # 04:15
+        "benchmark_update": {"hour": 4, "minute": 15},    # 04:15
         "backfill_gaps": {"hour": 4, "minute": 45},      # 04:45
         "backfill_all": {"hour": 5, "minute": 0},        # 05:00
         "key_metrics": {"hour": 5, "minute": 0},         # 05:00
