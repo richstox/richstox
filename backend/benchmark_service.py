@@ -19,14 +19,18 @@ Each symbol listed in BENCHMARK_SYMBOLS is fetched via a dedicated
 EODHD ``/eod/{symbol}`` API call, so benchmarks are never subject to
 the normal seed/filter/bulk-ingest flow.
 
-Four operational modes:
-  1. **Daily incremental** (default) — scheduler at 04:15, last 30 days.
-  2. **Full history** — ``full_history=True``, from 1988-01-01.
-  3. **Date-range recovery** — explicit ``date_from`` / ``date_to``.
-  4. **Auto-backfill** — when fewer than ``_MIN_RECORDS_FOR_INCREMENTAL``
-     records exist in the DB for a benchmark, incremental mode is
-     automatically escalated to full-history.  This ensures the first
-     run (or recovery from data loss) is self-healing.
+Sync state is tracked explicitly in the ``benchmark_sync_state``
+MongoDB collection (one document per symbol).  This makes mode
+selection deterministic:
+
+  1. **Full history** — runs automatically when no ``last_full_backfill_at``
+     exists for a symbol (first run / data loss), or when explicitly
+     requested via ``full_history=True``.  Fetches from 1988-01-01.
+  2. **Daily incremental** (default) — fetches from the day after the
+     stored ``latest_date_in_db`` through today.  Runs only when a
+     prior full backfill is recorded.
+  3. **Date-range repair** — explicit ``date_from`` / ``date_to``
+     for manual gap repair.
 
 Called by: scheduler.py at 04:15 Europe/Prague (Mon-Sat)
            server.py admin endpoint (manual trigger)
@@ -35,7 +39,7 @@ Called by: scheduler.py at 04:15 Europe/Prague (Mon-Sat)
 import os
 import logging
 import httpx
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("richstox.benchmark_service")
@@ -62,16 +66,61 @@ BENCHMARK_SYMBOLS: Dict[str, str] = {
     # "DOW30": "DJI.INDX",           # Dow Jones Industrial Average (future)
 }
 
-# Default rolling window for daily incremental updates (days)
-_DEFAULT_LOOKBACK_DAYS = 30
-
 # Earliest date for full history backfill (SP500TR data begins 1988-01-04)
 _EARLIEST_BENCHMARK_DATE = "1988-01-01"
 
-# Minimum records required before incremental mode is allowed.
-# If the DB has fewer records for a benchmark, auto-escalate to full_history.
-# ~252 trading days ≈ 1 year — a safe threshold to detect missing backfill.
-_MIN_RECORDS_FOR_INCREMENTAL = 252
+# Collection that stores per-symbol sync metadata.
+_SYNC_STATE_COLLECTION = "benchmark_sync_state"
+
+
+# ---------------------------------------------------------------------------
+# Sync-state helpers  (benchmark_sync_state collection)
+# ---------------------------------------------------------------------------
+async def _get_sync_state(db, symbol: str) -> Optional[Dict[str, Any]]:
+    """Return the sync-state document for *symbol*, or ``None``."""
+    return await db[_SYNC_STATE_COLLECTION].find_one({"symbol": symbol})
+
+
+async def _save_sync_state(db, symbol: str, update_fields: Dict[str, Any]) -> None:
+    """Upsert sync-state fields for *symbol*."""
+    await db[_SYNC_STATE_COLLECTION].update_one(
+        {"symbol": symbol},
+        {"$set": {**update_fields, "symbol": symbol}},
+        upsert=True,
+    )
+
+
+async def _refresh_date_bounds(db, symbol: str) -> tuple:
+    """Query earliest / latest dates for *symbol* from stock_prices.
+
+    Returns ``(earliest_date_str | None, latest_date_str | None)``.
+    """
+    pipeline = [
+        {"$match": {"ticker": symbol}},
+        {"$group": {
+            "_id": None,
+            "earliest": {"$min": "$date"},
+            "latest": {"$max": "$date"},
+        }},
+    ]
+    cursor = db.stock_prices.aggregate(pipeline)
+    doc = await cursor.to_list(length=1)
+    if doc:
+        return doc[0].get("earliest"), doc[0].get("latest")
+    return None, None
+
+
+async def get_benchmark_sync_states(db) -> List[Dict[str, Any]]:
+    """Return sync-state documents for all known benchmarks (admin visibility)."""
+    states: List[Dict[str, Any]] = []
+    for _name, symbol in BENCHMARK_SYMBOLS.items():
+        doc = await _get_sync_state(db, symbol)
+        if doc:
+            doc.pop("_id", None)
+            states.append(doc)
+        else:
+            states.append({"symbol": symbol, "last_status": "never_synced"})
+    return states
 
 
 # ---------------------------------------------------------------------------
@@ -87,16 +136,18 @@ async def update_benchmark(
     """
     Fetch and persist price history for a single benchmark *symbol*.
 
-    Four modes (checked in priority order):
+    Mode selection (checked in priority order):
       1. **Explicit date range** — ``date_from`` / ``date_to`` given →
          fetch exactly that window.  Useful for emergency gap repair.
       2. **Full history** — ``full_history=True`` → fetch from 1988-01-01.
-      3. **Auto-backfill** — when the DB has fewer than
-         ``_MIN_RECORDS_FOR_INCREMENTAL`` records for this symbol the
-         incremental default is automatically escalated to a full-history
-         fetch.  This makes the first run (or any run after data loss)
-         self-healing without manual intervention.
-      4. **Daily incremental** (default) → last 30 calendar days.
+      3. **Auto full-history** — when no ``last_full_backfill_at`` exists
+         in the sync state for this symbol (first run or after state
+         reset).  Self-healing: the next scheduler tick after data loss
+         will perform a full backfill automatically.
+      4. **Daily incremental** — fetch from the day after
+         ``latest_date_in_db`` through today.
+
+    Sync state is updated atomically on success.
 
     Args:
         db:            Motor database handle.
@@ -108,35 +159,48 @@ async def update_benchmark(
         date_to:       Optional end date ``"YYYY-MM-DD"`` (defaults to today).
 
     Returns:
-        dict with ``status``, ``ticker``, ``records_upserted``, ``date_range``.
+        dict with ``status``, ``ticker``, ``records_upserted``, ``date_range``,
+        and ``mode``.
     """
+    now_utc = datetime.now(timezone.utc)
+    sync_state = await _get_sync_state(db, symbol)
+
+    # ── mode selection ────────────────────────────────────────────────────
     mode = "incremental"
     if date_from:
         mode = "date_range"
     elif full_history:
         mode = "full_history"
-    else:
-        # Auto-detect missing backfill: if the DB has very few records for
-        # this benchmark, escalate to full_history automatically so the
-        # scheduler self-heals without manual intervention.
-        existing_count = await db.stock_prices.count_documents({"ticker": symbol})
-        if existing_count < _MIN_RECORDS_FOR_INCREMENTAL:
-            mode = "full_history"
-            full_history = True
-            logger.warning(
-                f"Auto-backfill triggered for {symbol}: only {existing_count} "
-                f"records in DB (threshold={_MIN_RECORDS_FOR_INCREMENTAL}). "
-                f"Escalating to full_history mode."
-            )
+    elif not sync_state or not sync_state.get("last_full_backfill_at"):
+        mode = "full_history"
+        full_history = True
+        logger.warning(
+            f"No full-backfill state for {symbol} — "
+            f"auto-escalating to full_history mode."
+        )
     logger.info(f"Starting benchmark update: {symbol} (mode={mode})")
 
-    end_date = date_to or datetime.now().strftime("%Y-%m-%d")
+    # ── date-range computation ────────────────────────────────────────────
+    end_date = date_to or now_utc.strftime("%Y-%m-%d")
     if date_from:
         start_date = date_from
     elif full_history:
         start_date = _EARLIEST_BENCHMARK_DATE
     else:
-        start_date = (datetime.now() - timedelta(days=_DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        # Incremental: start from the day after the last known date in DB.
+        last_known = (sync_state or {}).get("latest_date_in_db")
+        if last_known:
+            try:
+                next_day = (
+                    datetime.strptime(last_known, "%Y-%m-%d") + timedelta(days=1)
+                ).strftime("%Y-%m-%d")
+                start_date = next_day
+            except (ValueError, TypeError):
+                start_date = (now_utc - timedelta(days=7)).strftime("%Y-%m-%d")
+        else:
+            # Safety fallback — should not normally be reached because we
+            # escalate to full_history when no sync state exists.
+            start_date = (now_utc - timedelta(days=7)).strftime("%Y-%m-%d")
 
     url = (
         f"{EODHD_BASE_URL}/eod/{symbol}"
@@ -150,8 +214,24 @@ async def update_benchmark(
             data = response.json()
 
         if not data:
-            logger.warning(f"No data returned for {symbol}")
-            return {"status": "no_data", "ticker": symbol}
+            logger.info(f"No new data returned for {symbol} ({start_date}→{end_date})")
+            # Still a success — no gap, just nothing new.
+            no_data_state: Dict[str, Any] = {
+                "last_status": "no_new_data",
+                "last_error": None,
+            }
+            if mode == "incremental":
+                no_data_state["last_incremental_sync_at"] = now_utc.isoformat()
+            elif mode == "full_history":
+                no_data_state["last_full_backfill_at"] = now_utc.isoformat()
+            await _save_sync_state(db, symbol, no_data_state)
+            return {
+                "status": "no_data",
+                "ticker": symbol,
+                "records_upserted": 0,
+                "date_range": f"{start_date} to {end_date}",
+                "mode": mode,
+            }
 
         # Upsert each record
         upserted = 0
@@ -174,19 +254,46 @@ async def update_benchmark(
 
         logger.info(f"{symbol} benchmark update complete: {upserted} records upserted")
 
+        # ── update sync state ─────────────────────────────────────────────
+        earliest_in_db, latest_in_db = await _refresh_date_bounds(db, symbol)
+
+        state_update: Dict[str, Any] = {
+            "last_status": "success",
+            "last_error": None,
+            "earliest_date_in_db": earliest_in_db,
+            "latest_date_in_db": latest_in_db,
+        }
+        if mode == "full_history":
+            state_update["last_full_backfill_at"] = now_utc.isoformat()
+            state_update["last_full_backfill_through_date"] = end_date
+        if mode == "incremental":
+            state_update["last_incremental_sync_at"] = now_utc.isoformat()
+            state_update["last_incremental_sync_through_date"] = end_date
+
+        await _save_sync_state(db, symbol, state_update)
+
         return {
             "status": "success",
             "ticker": symbol,
             "records_upserted": upserted,
             "date_range": f"{start_date} to {end_date}",
+            "mode": mode,
         }
 
     except httpx.HTTPError as e:
         logger.error(f"EODHD API error for {symbol}: {e}")
-        return {"status": "error", "ticker": symbol, "error": str(e)}
+        await _save_sync_state(db, symbol, {
+            "last_status": "error",
+            "last_error": str(e),
+        })
+        return {"status": "error", "ticker": symbol, "error": str(e), "mode": mode}
     except Exception as e:
         logger.error(f"Unexpected error updating {symbol}: {e}")
-        return {"status": "error", "ticker": symbol, "error": str(e)}
+        await _save_sync_state(db, symbol, {
+            "last_status": "error",
+            "last_error": str(e),
+        })
+        return {"status": "error", "ticker": symbol, "error": str(e), "mode": mode}
 
 
 # ---------------------------------------------------------------------------
