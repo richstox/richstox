@@ -52,16 +52,38 @@ function removeStorage(key: string): void {
   try { localStorage.removeItem(key); } catch {}
 }
 
+/**
+ * Restore cached user synchronously from localStorage so the app shell
+ * can render immediately without waiting for a network round-trip.
+ */
+function restoreCachedSession(): { user: User | null; token: string | null } {
+  const storedToken = getStorage(SESSION_TOKEN_KEY);
+  if (!storedToken) return { user: null, token: null };
+  try {
+    const raw = getStorage(USER_DATA_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as User;
+      if (parsed && parsed.user_id) return { user: parsed, token: storedToken };
+    }
+  } catch {}
+  return { user: null, token: storedToken };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  // Restore cached session synchronously — avoids a loading screen on startup.
+  const cached = restoreCachedSession();
+  const [user, setUser] = useState<User | null>(cached.user);
+  const [sessionToken, setSessionToken] = useState<string | null>(cached.token);
+  // If we restored a cached user, we can render immediately (isLoading=false).
+  // The session will be re-validated in the background.
+  const [isLoading, setIsLoading] = useState(!cached.user);
 
   useEffect(() => {
-    checkExistingSession();
+    revalidateSession();
   }, []);
 
-  const checkExistingSession = async () => {
+  /** Re-validate the stored token against the server (background, non-blocking). */
+  const revalidateSession = async () => {
     try {
       const storedToken = getStorage(SESSION_TOKEN_KEY);
       if (storedToken) {
@@ -77,6 +99,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         } else {
           removeStorage(SESSION_TOKEN_KEY);
           removeStorage(USER_DATA_KEY);
+          setUser(null);
+          setSessionToken(null);
         }
       }
     } catch (error) {
@@ -88,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshSession = async () => {
     setIsLoading(true);
-    await checkExistingSession();
+    await revalidateSession();
   };
 
   const login = () => {

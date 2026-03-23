@@ -19,7 +19,6 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
-import BrandedLoading from '../../components/BrandedLoading';
 import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 
@@ -344,8 +343,16 @@ export default function Dashboard() {
 
   useFocusEffect(useCallback(() => { 
     fetchData(); 
-    fetchNews(0, false);
   }, []));
+  
+  // Defer news fetch until after main dashboard data has rendered.
+  // This avoids two parallel API calls blocking first paint.
+  const dataLoaded = !loading && data != null;
+  useEffect(() => {
+    if (dataLoaded) {
+      fetchNews(0, false);
+    }
+  }, [dataLoaded]);
   
   const onRefresh = () => { 
     setRefreshing(true); 
@@ -373,10 +380,6 @@ export default function Dashboard() {
   const openExternalLink = (url: string) => {
     Linking.openURL(url);
   };
-
-  if (loading) {
-    return <BrandedLoading message="Loading your portfolio..." />;
-  }
 
   // Mock data for demo (will be replaced with real API data)
   const myPerformance = {
@@ -426,13 +429,19 @@ export default function Dashboard() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      {/* Global Header with Avatar Menu */}
+      {/* Global Header with Avatar Menu — always visible immediately */}
       <AppHeader
         title="Home"
         onNotificationPress={openNotifications}
         notificationCount={notificationCount}
       />
 
+      {loading ? (
+        <View style={styles.inlineLoadingContainer}>
+          <ActivityIndicator size="large" color={COLORS.primary} />
+          <Text style={styles.inlineLoadingText}>Loading your portfolio...</Text>
+        </View>
+      ) : (
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
@@ -924,6 +933,7 @@ export default function Dashboard() {
         {/* Bottom padding for tab bar */}
         <View style={{ height: 100 }} />
       </ScrollView>
+      )}
 
       {/* Article Modal */}
       <Modal
@@ -1118,6 +1128,18 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     marginTop: 12,
     letterSpacing: 2,
+  },
+  // Inline loading state (renders inside app shell, not full-screen)
+  inlineLoadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+  },
+  inlineLoadingText: {
+    marginTop: 12,
+    fontSize: 14,
+    color: COLORS.textLight,
   },
 
   // Header
