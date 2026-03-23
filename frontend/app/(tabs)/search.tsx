@@ -24,6 +24,7 @@ import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSearchStore } from '../../stores/searchStore';
 import BrandedLoading from '../../components/BrandedLoading';
+import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
@@ -45,6 +46,7 @@ export default function Search() {
   const inputRef = useRef<TextInput>(null);
   const { sessionToken } = useAuth();
   const { query: storedQuery, results: storedResults, setSearch } = useSearchStore();
+  const sp = useLayoutSpacing();
   
   const [searchQuery, setSearchQuery] = useState(storedQuery);
   const [results, setResults] = useState<any[]>(storedResults);
@@ -195,7 +197,7 @@ export default function Search() {
       </View>
 
       {/* P34 Fix 2: Search Input with ref for auto-focus */}
-      <View style={styles.searchWrapper}>
+      <View style={[styles.searchWrapper, { marginHorizontal: sp.pageGutter }]}>
         <Ionicons name="search" size={22} color={COLORS.textMuted} />
         <TextInput
           ref={inputRef}
@@ -217,7 +219,7 @@ export default function Search() {
       
       {/* P36 Item 5: Added this session chips */}
       {addedThisSession.length > 0 && (
-        <View style={styles.addedSessionContainer}>
+        <View style={[styles.addedSessionContainer, { paddingHorizontal: sp.pageGutter }]}>
           <Text style={styles.addedSessionLabel}>Added:</Text>
           <View style={styles.addedSessionChips}>
             {addedThisSession.map((ticker) => (
@@ -253,7 +255,7 @@ export default function Search() {
         <FlatList
           data={results}
           keyExtractor={(item) => item.ticker}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={[styles.list, { padding: sp.pageGutter, paddingTop: 0 }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={

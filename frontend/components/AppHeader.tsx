@@ -21,6 +21,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { FONTS } from '../app/_layout';
+import { useLayoutSpacing } from '../constants/layout';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -53,6 +54,7 @@ export default function AppHeader({
   const router = useRouter();
   const { user, isAdmin, logout } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
+  const sp = useLayoutSpacing();
 
   const handleBack = () => {
     if (backDestination) {
@@ -81,7 +83,7 @@ export default function AppHeader({
   };
 
   return (
-    <View style={styles.header} testID="app-header">
+    <View style={[styles.header, { paddingHorizontal: sp.pageGutter }]} testID="app-header">
       {/* Left side: Back button or Logo */}
       {showBackButton ? (
         <TouchableOpacity 
@@ -103,7 +105,7 @@ export default function AppHeader({
       <Text style={styles.headerTitle}>{title}</Text>
       
       {/* Right side: Search, Notifications, PRO badge, Avatar */}
-      <View style={styles.headerRight}>
+      <View style={[styles.headerRight, { gap: sp.rowGap }]}>
         <TouchableOpacity 
           style={styles.headerIcon} 
           onPress={() => router.push('/(tabs)/search?autofocus=true')}

@@ -32,6 +32,7 @@ import AppHeader from '../../components/AppHeader';
 import BrandedLoading from '../../components/BrandedLoading';
 import { useSearchStore } from '../../stores/searchStore';
 import { useAuth } from '../../contexts/AuthContext';
+import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const EODHD_LOGO_BASE = 'https://eodhd.com';
@@ -337,6 +338,7 @@ export default function StockDetail() {
   const router = useRouter();
   const { width } = useWindowDimensions();
   const { sessionToken } = useAuth();
+  const sp = useLayoutSpacing();
   
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -1314,7 +1316,7 @@ export default function StockDetail() {
 
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >

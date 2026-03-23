@@ -12,6 +12,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { FONTS } from '../_layout';
+import { useLayoutSpacing } from '../../constants/layout';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -48,6 +49,7 @@ const NEWS = [
 
 export default function Markets() {
   const router = useRouter();
+  const sp = useLayoutSpacing();
   const [selectedSector, setSelectedSector] = useState<string | null>(null);
   const [notifications, setNotifications] = useState<Set<string>>(new Set());
 
@@ -70,7 +72,7 @@ export default function Markets() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingHorizontal: sp.pageGutter }]}>
         <Image source={require('../../assets/images/richstox_icon.png')} style={styles.logo} />
         <Text style={styles.headerTitle}>Markets</Text>
         <View style={styles.headerRight}>
