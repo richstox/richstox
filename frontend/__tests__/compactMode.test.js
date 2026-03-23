@@ -172,6 +172,70 @@ describe('Compact Mode: Layout Constants', () => {
       expect(layoutTsxContent).toContain('useLayoutSpacing');
     });
   });
+
+  // ========================================================================
+  // G) COMPACT MODE WIRED INTO SHARED UI COMPONENTS
+  // ========================================================================
+  describe('Compact mode applied to shared UI', () => {
+    const fs = require('fs');
+    const path = require('path');
+
+    it('AppHeader should import and use useLayoutSpacing', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../components/AppHeader.tsx'), 'utf-8');
+      expect(content).toContain("useLayoutSpacing");
+      expect(content).toMatch(/sp\.pageGutter/);
+    });
+
+    it('Tab bar should import and use useCompactMode', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../app/(tabs)/_layout.tsx'), 'utf-8');
+      expect(content).toContain("useCompactMode");
+      expect(content).toMatch(/compact\s*\?/);
+    });
+
+    it('Dashboard should import and use useLayoutSpacing', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../app/(tabs)/dashboard.tsx'), 'utf-8');
+      expect(content).toContain("useLayoutSpacing");
+      expect(content).toMatch(/sp\.pageGutter/);
+    });
+
+    it('Search should import and use useLayoutSpacing', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../app/(tabs)/search.tsx'), 'utf-8');
+      expect(content).toContain("useLayoutSpacing");
+      expect(content).toMatch(/sp\.pageGutter/);
+    });
+
+    it('Portfolio should import and use useLayoutSpacing', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../app/(tabs)/portfolio.tsx'), 'utf-8');
+      expect(content).toContain("useLayoutSpacing");
+      expect(content).toMatch(/sp\.pageGutter/);
+    });
+
+    it('Markets should import and use useLayoutSpacing', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../app/(tabs)/markets.tsx'), 'utf-8');
+      expect(content).toContain("useLayoutSpacing");
+      expect(content).toMatch(/sp\.pageGutter/);
+    });
+
+    it('Settings should import and use useLayoutSpacing', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../app/(tabs)/settings.tsx'), 'utf-8');
+      expect(content).toContain("useLayoutSpacing");
+      expect(content).toMatch(/sp\.pageGutter/);
+    });
+
+    it('Stock detail should import and use useLayoutSpacing', () => {
+      const content = fs.readFileSync(
+        path.join(__dirname, '../app/stock/[ticker].tsx'), 'utf-8');
+      expect(content).toContain("useLayoutSpacing");
+      expect(content).toMatch(/sp\.pageGutter/);
+    });
+  });
 });
 
 module.exports = {};
