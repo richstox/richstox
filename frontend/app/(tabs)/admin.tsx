@@ -305,6 +305,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             value={fundValue}
             status={fundStatus}
           />
+          <IntegrityMetric
+            label="SP500TR Benchmark"
+            value={pi?.benchmark_freshness?.label ?? '—'}
+            status={pi?.benchmark_freshness?.status as 'green' | 'yellow' | 'red' | undefined}
+          />
         </View>
 
         {/* Recent bulk coverage */}

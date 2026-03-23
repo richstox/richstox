@@ -514,6 +514,7 @@ _SAFE_INTEGRITY = {
     "fundamentals_complete_count": 0,
     "missing_expected_dates": 0,
     "coverage_checkpoints": {},
+    "benchmark_freshness": None,
 }
 
 _CHECKPOINT_KIND = {
@@ -616,6 +617,64 @@ async def _get_bulk_processed_dates(db) -> List[str]:
                 dates.add(day["processed_date"])
 
     return sorted(dates)
+
+
+SP500TR_TICKER = "SP500TR.INDX"
+
+
+async def _get_benchmark_freshness(db, last_bulk_date: Optional[str]) -> Optional[Dict[str, Any]]:
+    """
+    SP500TR.INDX benchmark freshness check.
+
+    Returns dict with keys:
+      - latest_date: str|None — most recent SP500TR.INDX date in stock_prices
+      - status: "green"|"yellow"|"red" — freshness indicator
+      - label: str — human-readable display value (date, or date + gap info)
+
+    Freshness rule:
+      - Query the latest SP500TR.INDX date from stock_prices.
+      - Compare to last_bulk_trading_date (the most recent date we ingested
+        prices for normal tickers). This inherently accounts for weekends
+        and market holidays — if normal tickers have no data for a date,
+        we don't expect the benchmark to have it either.
+      - green:  benchmark latest date >= last_bulk_trading_date (current)
+      - yellow: benchmark latest date is 1-2 calendar days behind
+      - red:    benchmark latest date is 3+ calendar days behind,
+                OR no benchmark data exists at all
+    """
+    try:
+        doc = await db.stock_prices.find_one(
+            {"ticker": SP500TR_TICKER},
+            {"date": 1, "_id": 0},
+            sort=[("date", -1)],
+        )
+        if not doc or not doc.get("date"):
+            return {"latest_date": None, "status": "red", "label": "No data"}
+
+        benchmark_latest = doc["date"]  # "YYYY-MM-DD" string
+
+        if not last_bulk_date:
+            # No reference date — can't compute staleness, show date only
+            return {"latest_date": benchmark_latest, "status": "yellow", "label": benchmark_latest}
+
+        if benchmark_latest >= last_bulk_date:
+            return {"latest_date": benchmark_latest, "status": "green", "label": benchmark_latest}
+
+        # Compute calendar-day gap
+        try:
+            d_bench = date.fromisoformat(benchmark_latest)
+            d_bulk = date.fromisoformat(last_bulk_date)
+            gap_days = (d_bulk - d_bench).days
+        except (ValueError, TypeError):
+            return {"latest_date": benchmark_latest, "status": "yellow", "label": benchmark_latest}
+
+        if gap_days <= 2:
+            return {"latest_date": benchmark_latest, "status": "yellow", "label": f"{benchmark_latest} ({gap_days}d behind)"}
+        return {"latest_date": benchmark_latest, "status": "red", "label": f"{benchmark_latest} ({gap_days}d behind)"}
+
+    except Exception as exc:
+        logger.warning("_get_benchmark_freshness failed: %s", exc)
+        return None
 
 
 async def get_price_integrity_metrics(db) -> Dict[str, Any]:
@@ -816,6 +875,9 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         else:
             gap_free_count = 0
 
+        # ── 7. SP500TR benchmark freshness ────────────────────────────────
+        benchmark_freshness = await _get_benchmark_freshness(db, last_bulk_date)
+
         return {
             "today_visible": today_visible,
             "today_visible_source": today_visible_source,
@@ -828,6 +890,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             "fundamentals_complete_count": fundamentals_complete_count,
             "missing_expected_dates": missing_expected_dates,
             "coverage_checkpoints": checkpoints,
+            "benchmark_freshness": benchmark_freshness,
         }
     except Exception as exc:
         logger.warning("get_price_integrity_metrics failed: %s", exc)
