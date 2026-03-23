@@ -5077,13 +5077,18 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
     PRAGUE = ZoneInfo("Europe/Prague")
     finished_at = datetime.now(timezone.utc)
     
-    # Get inventory snapshot AFTER
-    inventory_after = {
-        "stock_prices_total": await database.stock_prices.count_documents({}),
-        "stock_prices_tickers": len(await database.stock_prices.distinct("ticker")),
-        "fundamentals_total": await database.company_fundamentals_cache.count_documents({}),
-        "financials_total": await database.financials_cache.count_documents({}),
-    }
+    # Get inventory snapshot AFTER — best-effort; never let snapshot
+    # failures prevent the critical status/finished_at update.
+    try:
+        inventory_after = {
+            "stock_prices_total": await database.stock_prices.count_documents({}),
+            "stock_prices_tickers": len(await database.stock_prices.distinct("ticker")),
+            "fundamentals_total": await database.company_fundamentals_cache.count_documents({}),
+            "financials_total": await database.financials_cache.count_documents({}),
+        }
+    except Exception as snap_err:
+        logger.warning(f"finalize_job_audit_entry: inventory snapshot failed: {snap_err}")
+        inventory_after = None
     
     update_doc = {
         "finished_at": finished_at,
@@ -5196,7 +5201,23 @@ async def admin_run_job_now(
             return {"job": job_name, "status": "completed", "result": result, "audit_id": audit_id}
         except Exception as e:
             logger.error(f"Job {job_name} failed: {e}")
-            await finalize_job_audit_entry(db, audit_id, error=str(e))
+            try:
+                await finalize_job_audit_entry(db, audit_id, error=str(e))
+            except Exception as finalize_err:
+                logger.error(f"finalize_job_audit_entry also failed for {job_name}: {finalize_err}")
+                try:
+                    from bson import ObjectId as _OID2
+                    _now2 = datetime.now(timezone.utc)
+                    await db.ops_job_runs.update_one(
+                        {"_id": _OID2(audit_id)},
+                        {"$set": {
+                            "status": "error",
+                            "finished_at": _now2,
+                            "error_message": f"finalize failed: {finalize_err}; original: {e}"[:1000],
+                        }},
+                    )
+                except Exception:
+                    logger.exception(f"Last-resort finalization failed for {job_name} audit_id={audit_id}")
             return {"job": job_name, "status": "error", "error": str(e), "audit_id": audit_id}
     
     # Background execution with audit trail
@@ -5206,7 +5227,27 @@ async def admin_run_job_now(
             await finalize_job_audit_entry(db, audit_id, result=result)
         except Exception as e:
             logger.error(f"Job {job_name} failed in background: {e}")
-            await finalize_job_audit_entry(db, audit_id, error=str(e))
+            try:
+                await finalize_job_audit_entry(db, audit_id, error=str(e))
+            except Exception as finalize_err:
+                # Last resort: at minimum close the record so it never stays "running"
+                logger.error(
+                    f"finalize_job_audit_entry also failed for {job_name} "
+                    f"(audit_id={audit_id}): {finalize_err}"
+                )
+                try:
+                    from bson import ObjectId as _OID
+                    _now = datetime.now(timezone.utc)
+                    await db.ops_job_runs.update_one(
+                        {"_id": _OID(audit_id)},
+                        {"$set": {
+                            "status": "error",
+                            "finished_at": _now,
+                            "error_message": f"finalize failed: {finalize_err}; original: {e}"[:1000],
+                        }},
+                    )
+                except Exception:
+                    logger.exception(f"Last-resort finalization failed for {job_name} audit_id={audit_id}")
     
     # Run in background with audit trail
     background_tasks.add_task(run_with_audit)

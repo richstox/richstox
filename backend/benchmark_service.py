@@ -335,6 +335,9 @@ async def update_all_benchmarks(
 
     succeeded = sum(1 for r in results if r.get("status") == "success")
     failed = sum(1 for r in results if r.get("status") == "error")
+    total_records = sum(r.get("records_upserted", 0) for r in results)
+    # Each benchmark symbol uses one API call
+    total_api_calls = len(BENCHMARK_SYMBOLS)
 
     if failed == 0:
         overall = "success"
@@ -347,5 +350,8 @@ async def update_all_benchmarks(
         "status": overall,
         "benchmarks_updated": succeeded,
         "benchmarks_failed": failed,
+        "tickers_updated": succeeded,       # standard field for finalize_job_audit_entry
+        "api_calls": total_api_calls,       # standard field for finalize_job_audit_entry
+        "records_upserted": total_records,
         "details": results,
     }
