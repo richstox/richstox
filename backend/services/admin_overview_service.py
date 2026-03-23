@@ -624,15 +624,21 @@ SP500TR_TICKER = "SP500TR.INDX"
 
 async def _get_benchmark_freshness(db, last_bulk_date: Optional[str]) -> Optional[Dict[str, Any]]:
     """
-    SP500TR.INDX benchmark freshness check.
+    SP500TR.INDX benchmark freshness check — reads from
+    ``benchmark_sync_state`` for explicit sync metadata and falls back
+    to a direct ``stock_prices`` query for the freshness indicator.
 
     Returns dict with keys:
       - latest_date: str|None — most recent SP500TR.INDX date in stock_prices
+      - earliest_date: str|None — earliest SP500TR.INDX date in stock_prices
       - status: "green"|"yellow"|"red" — freshness indicator
       - label: str — human-readable display value (date, or date + gap info)
+      - last_full_backfill_at: str|None — ISO timestamp of last full backfill
+      - last_incremental_sync_at: str|None — ISO timestamp of last incremental sync
 
     Freshness rule:
-      - Query the latest SP500TR.INDX date from stock_prices.
+      - Read latest/earliest dates from benchmark_sync_state if available,
+        otherwise query stock_prices directly.
       - Compare to last_bulk_trading_date (the most recent date we ingested
         prices for normal tickers). This inherently accounts for weekends
         and market holidays — if normal tickers have no data for a date,
@@ -643,34 +649,72 @@ async def _get_benchmark_freshness(db, last_bulk_date: Optional[str]) -> Optiona
                 OR no benchmark data exists at all
     """
     try:
-        doc = await db.stock_prices.find_one(
-            {"ticker": SP500TR_TICKER},
-            {"date": 1, "_id": 0},
-            sort=[("date", -1)],
+        # Try reading from explicit sync state first
+        sync_doc = await db.benchmark_sync_state.find_one(
+            {"symbol": SP500TR_TICKER}, {"_id": 0}
         )
-        if not doc or not doc.get("date"):
-            return {"latest_date": None, "status": "red", "label": "No data"}
 
-        benchmark_latest = doc["date"]  # "YYYY-MM-DD" string
+        benchmark_latest = None
+        earliest_date = None
+        last_full_backfill_at = None
+        last_incremental_sync_at = None
 
+        if sync_doc:
+            benchmark_latest = sync_doc.get("latest_date_in_db")
+            earliest_date = sync_doc.get("earliest_date_in_db")
+            last_full_backfill_at = sync_doc.get("last_full_backfill_at")
+            last_incremental_sync_at = sync_doc.get("last_incremental_sync_at")
+
+        # Fallback: query stock_prices directly if sync state has no dates
+        if not benchmark_latest:
+            doc = await db.stock_prices.find_one(
+                {"ticker": SP500TR_TICKER},
+                {"date": 1, "_id": 0},
+                sort=[("date", -1)],
+            )
+            if doc and doc.get("date"):
+                benchmark_latest = doc["date"]
+
+        if not benchmark_latest:
+            return {
+                "latest_date": None,
+                "earliest_date": earliest_date,
+                "status": "red",
+                "label": "No data",
+                "last_full_backfill_at": last_full_backfill_at,
+                "last_incremental_sync_at": last_incremental_sync_at,
+            }
+
+        # Determine freshness status
         if not last_bulk_date:
-            # No reference date — can't compute staleness, show date only
-            return {"latest_date": benchmark_latest, "status": "yellow", "label": benchmark_latest}
+            status = "yellow"
+            label = benchmark_latest
+        elif benchmark_latest >= last_bulk_date:
+            status = "green"
+            label = benchmark_latest
+        else:
+            try:
+                d_bench = date.fromisoformat(benchmark_latest)
+                d_bulk = date.fromisoformat(last_bulk_date)
+                gap_days = (d_bulk - d_bench).days
+            except (ValueError, TypeError):
+                gap_days = 0
 
-        if benchmark_latest >= last_bulk_date:
-            return {"latest_date": benchmark_latest, "status": "green", "label": benchmark_latest}
+            if gap_days <= 2:
+                status = "yellow"
+                label = f"{benchmark_latest} ({gap_days}d behind)" if gap_days > 0 else benchmark_latest
+            else:
+                status = "red"
+                label = f"{benchmark_latest} ({gap_days}d behind)"
 
-        # Compute calendar-day gap
-        try:
-            d_bench = date.fromisoformat(benchmark_latest)
-            d_bulk = date.fromisoformat(last_bulk_date)
-            gap_days = (d_bulk - d_bench).days
-        except (ValueError, TypeError):
-            return {"latest_date": benchmark_latest, "status": "yellow", "label": benchmark_latest}
-
-        if gap_days <= 2:
-            return {"latest_date": benchmark_latest, "status": "yellow", "label": f"{benchmark_latest} ({gap_days}d behind)"}
-        return {"latest_date": benchmark_latest, "status": "red", "label": f"{benchmark_latest} ({gap_days}d behind)"}
+        return {
+            "latest_date": benchmark_latest,
+            "earliest_date": earliest_date,
+            "status": status,
+            "label": label,
+            "last_full_backfill_at": last_full_backfill_at,
+            "last_incremental_sync_at": last_incremental_sync_at,
+        }
 
     except Exception as exc:
         logger.warning("_get_benchmark_freshness failed: %s", exc)
