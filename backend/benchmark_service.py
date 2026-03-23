@@ -1,71 +1,138 @@
 # ================================================================================
-# SCHEDULER-ONLY SERVICE - DO NOT IMPORT IN RUNTIME ROUTES
+# BENCHMARK INGESTION SERVICE
 # ================================================================================
 # This file contains EODHD API calls for benchmark data updates.
-# It is ONLY called by scheduler.py at 04:15 Prague time.
-# It must NEVER be imported by server.py routes or any runtime code.
+# Called by: scheduler.py at 04:15 Prague time (daily incremental)
+#            server.py admin endpoint (manual trigger with optional params)
 #
 # Allowed EODHD endpoint for benchmarks:
-#   https://eodhd.com/api/eod/{SP500TR.INDX}
+#   https://eodhd.com/api/eod/{SYMBOL}
 # ================================================================================
 
 """
-Benchmark Service - Scheduler-Only
-==================================
-Updates SP500TR.INDX (S&P 500 Total Return Index) price data.
+Benchmark Service
+=================
+Standalone benchmark ingestion — completely independent of the bulk
+ticker pricing pipeline and its universe/ticker filters.
+
+Each symbol listed in BENCHMARK_SYMBOLS is fetched via a dedicated
+EODHD ``/eod/{symbol}`` API call, so benchmarks are never subject to
+the normal seed/filter/bulk-ingest flow.
+
+Three operational modes:
+  1. **Daily incremental** (default) — scheduler at 04:15, last 30 days.
+  2. **Full history** — ``full_history=True``, from 1988-01-01.
+  3. **Date-range recovery** — explicit ``date_from`` / ``date_to``.
 
 Called by: scheduler.py at 04:15 Europe/Prague (Mon-Sat)
-Never called by: runtime routes, startup events
+           server.py admin endpoint (manual trigger)
 """
 
 import os
 import logging
 import httpx
 from datetime import datetime, timedelta
+from typing import Dict, Any, List, Optional
 
 logger = logging.getLogger("richstox.benchmark_service")
 
 EODHD_API_KEY = os.environ.get("EODHD_API_KEY", "")
 EODHD_BASE_URL = "https://eodhd.com/api"
 
+# ==============================================================================
+# BENCHMARK_SYMBOLS — extensible registry
+# ==============================================================================
+# Add new benchmarks here.  Each entry maps a human-readable key to the
+# EODHD ticker used in the /eod/ endpoint.  The same ticker is used as
+# the ``ticker`` field when persisting to ``stock_prices``.
+#
+# To add a new benchmark (e.g. VIX, DOW30):
+#   1. Add an entry below
+#   2. Add the ticker to PROTECTED_TICKERS in visibility_rules.py
+#   3. No scheduler or pipeline changes needed — update_all_benchmarks
+#      iterates this registry automatically.
+# ==============================================================================
+BENCHMARK_SYMBOLS: Dict[str, str] = {
+    "SP500TR": "SP500TR.INDX",       # S&P 500 Total Return Index
+    # "VIX":   "VIX.INDX",           # CBOE Volatility Index (future)
+    # "DOW30": "DJI.INDX",           # Dow Jones Industrial Average (future)
+}
 
-async def update_sp500tr_benchmark(db) -> dict:
+# Default rolling window for daily incremental updates (days)
+_DEFAULT_LOOKBACK_DAYS = 30
+
+# Earliest date for full history backfill (SP500TR data begins 1988-01-04)
+_EARLIEST_BENCHMARK_DATE = "1988-01-01"
+
+
+# ---------------------------------------------------------------------------
+# Generic single-benchmark updater
+# ---------------------------------------------------------------------------
+async def update_benchmark(
+    db,
+    symbol: str,
+    full_history: bool = False,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Dict[str, Any]:
     """
-    Update SP500TR.INDX benchmark price data.
-    
-    SCHEDULER-ONLY: Called by scheduler.py at 04:15.
-    
-    Fetches latest prices from EODHD and upserts into stock_prices.
-    Only fetches last 30 days to minimize API calls.
+    Fetch and persist price history for a single benchmark *symbol*.
+
+    Three modes (checked in priority order):
+      1. **Explicit date range** — ``date_from`` / ``date_to`` given →
+         fetch exactly that window.  Useful for emergency gap repair.
+      2. **Full history** — ``full_history=True`` → fetch from 1988-01-01.
+      3. **Daily incremental** (default) → last 30 calendar days.
+
+    Args:
+        db:            Motor database handle.
+        symbol:        EODHD ticker, e.g. ``"SP500TR.INDX"``.
+        full_history:  When ``True`` fetch the entire available history
+                       (from 1988-01-01).  Ignored when explicit dates
+                       are provided.
+        date_from:     Optional start date ``"YYYY-MM-DD"``.
+        date_to:       Optional end date ``"YYYY-MM-DD"`` (defaults to today).
+
+    Returns:
+        dict with ``status``, ``ticker``, ``records_upserted``, ``date_range``.
     """
-    ticker = "SP500TR.INDX"
-    
-    logger.info(f"Starting SP500TR.INDX benchmark update")
-    
-    # Calculate date range (last 30 days)
-    end_date = datetime.now().strftime("%Y-%m-%d")
-    start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-    
-    # EODHD API call
-    url = f"{EODHD_BASE_URL}/eod/{ticker}?api_token={EODHD_API_KEY}&fmt=json&from={start_date}&to={end_date}"
-    
+    mode = "incremental"
+    if date_from:
+        mode = "date_range"
+    elif full_history:
+        mode = "full_history"
+    logger.info(f"Starting benchmark update: {symbol} (mode={mode})")
+
+    end_date = date_to or datetime.now().strftime("%Y-%m-%d")
+    if date_from:
+        start_date = date_from
+    elif full_history:
+        start_date = _EARLIEST_BENCHMARK_DATE
+    else:
+        start_date = (datetime.now() - timedelta(days=_DEFAULT_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+
+    url = (
+        f"{EODHD_BASE_URL}/eod/{symbol}"
+        f"?api_token={EODHD_API_KEY}&fmt=json&from={start_date}&to={end_date}"
+    )
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             data = response.json()
-        
+
         if not data:
-            logger.warning(f"No data returned for {ticker}")
-            return {"status": "no_data", "ticker": ticker}
-        
+            logger.warning(f"No data returned for {symbol}")
+            return {"status": "no_data", "ticker": symbol}
+
         # Upsert each record
         upserted = 0
         for row in data:
             await db.stock_prices.update_one(
-                {"ticker": ticker, "date": row["date"]},
+                {"ticker": symbol, "date": row["date"]},
                 {"$set": {
-                    "ticker": ticker,
+                    "ticker": symbol,
                     "date": row["date"],
                     "open": row.get("open"),
                     "high": row.get("high"),
@@ -74,22 +141,77 @@ async def update_sp500tr_benchmark(db) -> dict:
                     "adjusted_close": row.get("close"),
                     "volume": row.get("volume", 0),
                 }},
-                upsert=True
+                upsert=True,
             )
             upserted += 1
-        
-        logger.info(f"SP500TR.INDX update complete: {upserted} records upserted")
-        
+
+        logger.info(f"{symbol} benchmark update complete: {upserted} records upserted")
+
         return {
             "status": "success",
-            "ticker": ticker,
+            "ticker": symbol,
             "records_upserted": upserted,
-            "date_range": f"{start_date} to {end_date}"
+            "date_range": f"{start_date} to {end_date}",
         }
-        
+
     except httpx.HTTPError as e:
-        logger.error(f"EODHD API error for {ticker}: {e}")
-        return {"status": "error", "ticker": ticker, "error": str(e)}
+        logger.error(f"EODHD API error for {symbol}: {e}")
+        return {"status": "error", "ticker": symbol, "error": str(e)}
     except Exception as e:
-        logger.error(f"Unexpected error updating {ticker}: {e}")
-        return {"status": "error", "ticker": ticker, "error": str(e)}
+        logger.error(f"Unexpected error updating {symbol}: {e}")
+        return {"status": "error", "ticker": symbol, "error": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# Convenience wrappers
+# ---------------------------------------------------------------------------
+
+async def update_sp500tr_benchmark(db) -> Dict[str, Any]:
+    """Update SP500TR.INDX only (backward-compatible entry point)."""
+    return await update_benchmark(db, BENCHMARK_SYMBOLS["SP500TR"])
+
+
+async def update_all_benchmarks(
+    db,
+    full_history: bool = False,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Update every benchmark in BENCHMARK_SYMBOLS.
+
+    Called by scheduler.py and available as an admin-triggerable job.
+    Each benchmark is fetched in its own dedicated API call so it is
+    completely independent of the bulk ticker pipeline.
+
+    Optional params ``full_history``, ``date_from``, ``date_to`` are
+    forwarded to :func:`update_benchmark` — see its docstring for
+    mode-selection rules.
+    """
+    results: List[Dict[str, Any]] = []
+    for name, symbol in BENCHMARK_SYMBOLS.items():
+        result = await update_benchmark(
+            db, symbol,
+            full_history=full_history,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        result["benchmark_name"] = name
+        results.append(result)
+
+    succeeded = sum(1 for r in results if r.get("status") == "success")
+    failed = sum(1 for r in results if r.get("status") == "error")
+
+    if failed == 0:
+        overall = "success"
+    elif succeeded == 0:
+        overall = "error"
+    else:
+        overall = "partial"
+
+    return {
+        "status": overall,
+        "benchmarks_updated": succeeded,
+        "benchmarks_failed": failed,
+        "details": results,
+    }

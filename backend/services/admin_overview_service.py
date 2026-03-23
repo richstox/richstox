@@ -350,9 +350,9 @@ JOB_REGISTRY = {
         "dependency_on": "universe_seed",
         "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?period=d&fmt=json"
     },
-    "sp500tr_update": {
+    "benchmark_update": {
         "hour": 4, "minute": 15, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/eod/SP500TR.INDX?period=d&fmt=json"
+        "api_endpoint": "https://eodhd.com/api/eod/{BENCHMARK_SYMBOL}"
     },
     "fundamentals_sync": {
         "hour": 4, "minute": 30, "sunday_only": False, "has_api_calls": True,
@@ -403,7 +403,7 @@ JOB_PATTERNS = {
     "universe_seed": ["universe_seed", "whitelist_seed", "sync_ticker_whitelist"],
     "news_refresh": ["news_refresh", "news_daily_refresh", "news_sync"],
     "price_sync": ["daily_price_sync", "scheduled_price_sync", "price_sync"],
-    "sp500tr_update": ["sp500tr_update", "sp500tr_sync", "sp500tr"],
+    "benchmark_update": ["benchmark_update", "sp500tr_update", "sp500tr_sync", "sp500tr"],
     "fundamentals_sync": ["scheduled_fundamentals_sync", "fundamentals_sync", "fundamentals_batch"],
     "backfill_gaps": ["backfill_gaps", "scheduled_backfill_gaps"],
     "backfill_all": ["backfill_all", "scheduled_backfill_all", "parallel_backfill"],
