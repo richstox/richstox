@@ -423,3 +423,34 @@ class TestStep3ChainRunIdPropagation:
         assert "chain_run_id=_cid" in source or "chain_run_id=" in source, (
             "scheduler_loop Step 3 must pass chain_run_id to run_fundamentals_changes_sync"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test that canonical report uses chain finished_at, not datetime.now()
+# ---------------------------------------------------------------------------
+
+class TestCanonicalReportTimestamp:
+    """Verify build_canonical_pipeline_report uses chain finished_at timestamp."""
+
+    def test_report_uses_chain_finished_at_not_now(self):
+        """last_generated_at_prague must reflect the chain's finished_at, not datetime.now()."""
+        import pathlib
+
+        server_path = pathlib.Path(__file__).resolve().parent.parent / "server.py"
+        source = server_path.read_text()
+
+        # Locate the build_canonical_pipeline_report function body
+        fn_start = source.index("async def build_canonical_pipeline_report")
+        # Find the next top-level function/class/decorator to bound the search
+        fn_end = source.index("\n@", fn_start + 1)
+        fn_source = source[fn_start:fn_end]
+
+        # The function must reference chain_doc's finished_at for the timestamp
+        assert 'chain_doc.get("finished_at")' in fn_source or "chain_doc.get('finished_at')" in fn_source, (
+            "build_canonical_pipeline_report must read finished_at from chain_doc"
+        )
+        # The primary timestamp path must NOT be datetime.now() for completed chains
+        # (a fallback for running chains is acceptable)
+        assert "_finished_at" in fn_source and "astimezone" in fn_source, (
+            "build_canonical_pipeline_report must convert chain finished_at to Prague TZ"
+        )

@@ -1254,7 +1254,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     </TouchableOpacity>
     {canonicalReport?.last_generated_at_prague && (
       <Text style={{ fontSize: 10, color: COLORS.textMuted, marginTop: 4, textAlign: 'center' }}>
-        Generated: {canonicalReport.last_generated_at_prague}
+        Chain completed: {canonicalReport.last_generated_at_prague}
       </Text>
     )}
     </>
