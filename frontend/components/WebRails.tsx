@@ -1,7 +1,7 @@
 /**
  * WebRails – desktop side-rail wrapper (web-only).
  *
- * On viewports wider than the app shell (430 px), the extra horizontal space
+ * On viewports wider than the app shell (430px), the extra horizontal space
  * becomes left/right "rails".  Content of the rails depends on the user's
  * subscription tier:
  *
