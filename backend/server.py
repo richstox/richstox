@@ -4985,6 +4985,7 @@ async def admin_get_job_status(job_name: str):
             "progress_processed": raw_last_run.get("progress_processed"),
             "progress_total": seeded_total or raw_last_run.get("progress_total"),
             "progress_pct": raw_last_run.get("progress_pct"),
+            "progress": raw_last_run.get("progress"),
             "phase": phase,
             "duration_seconds": duration_seconds,
             "details": {
@@ -5176,17 +5177,42 @@ async def admin_run_job_now(
     
     job_func = JOB_RUNNERS[job_name]
     
-    # Benchmark-specific: wrap with optional date-range / full-history params
-    if job_name == "benchmark_update" and (full_history or date_from or date_to):
-        _base_func = job_func
-        async def _benchmark_with_params(database):
-            return await _base_func(
+    # Benchmark-specific: always wrap to provide live progress reporting.
+    # Optional date-range / full-history params are forwarded when present.
+    if job_name == "benchmark_update":
+        _base_bm_func = job_func
+
+        async def _benchmark_with_progress(database):
+            from bson import ObjectId as _ProgressOID
+
+            async def _bm_progress_cb(*, phase: str = "", message: str = "",
+                                      processed: int = None, total: int = None):
+                """Write live progress to the audit record for FE polling."""
+                try:
+                    upd: dict = {"phase": phase}
+                    if message:
+                        upd["progress"] = message
+                    if processed is not None:
+                        upd["progress_processed"] = processed
+                    if total is not None:
+                        upd["progress_total"] = total
+                    if total and processed is not None:
+                        upd["progress_pct"] = min(round(processed / total * 100), 99)
+                    await database.ops_job_runs.update_one(
+                        {"_id": _ProgressOID(audit_id)}, {"$set": upd},
+                    )
+                except Exception:
+                    pass  # non-fatal: don't let progress writes block the job
+
+            return await _base_bm_func(
                 database,
                 full_history=full_history,
                 date_from=date_from,
                 date_to=date_to,
+                progress_cb=_bm_progress_cb,
             )
-        job_func = _benchmark_with_params
+
+        job_func = _benchmark_with_progress
     
     logger.info(f"Admin manually triggering job: {job_name}")
     
