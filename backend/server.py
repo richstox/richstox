@@ -1481,9 +1481,18 @@ async def get_homepage_data():
     - Sorted: Portfolio first, then Watchlist-only
     ==========================================================================
     """
-    # Get S&P 500 benchmark from MongoDB
-    benchmark = await _get_prices_from_db(SP500_TR_TICKER, days=30)
-    
+    # --- Phase 1: Parallel fetch of independent setup data ---
+    benchmark_task = _get_prices_from_db(SP500_TR_TICKER, days=30)
+    watchlist_raw_task = db.user_watchlist.find({}, {"_id": 0}).to_list(length=None)
+    portfolio_docs_task = db.positions.find(
+        {"shares": {"$gt": 0}},
+        {"_id": 0, "ticker": 1}
+    ).to_list(length=None)
+
+    benchmark, watchlist_all_docs, portfolio_docs = await asyncio.gather(
+        benchmark_task, watchlist_raw_task, portfolio_docs_task
+    )
+
     if benchmark:
         sp_current = benchmark[-1].get("adjusted_close", 0)
         sp_prev = benchmark[-2].get("adjusted_close", sp_current) if len(benchmark) > 1 else sp_current
@@ -1493,25 +1502,26 @@ async def get_homepage_data():
         sp_ytd_return = ((sp_current - sp_ytd_start) / sp_ytd_start * 100) if sp_ytd_start > 0 else 0
     else:
         sp_current = sp_change = sp_change_pct = sp_ytd_return = 0
-    
-    # P33: Get WATCHLIST tickers from user_watchlist
-    watchlist_raw = await db.user_watchlist.distinct("ticker")
-    watchlist_tickers = set(t.upper().replace(".US", "") for t in watchlist_raw if t)
-    
+
+    # P33: Build watchlist ticker set + docs lookup from single query
+    watchlist_tickers = set()
+    watchlist_docs = {}
+    for doc in watchlist_all_docs:
+        ticker = doc.get("ticker", "").upper()
+        if ticker:
+            watchlist_tickers.add(ticker.replace(".US", ""))
+            watchlist_docs[ticker.replace(".US", "")] = doc
+
     # P33: Get PORTFOLIO tickers from positions (shares > 0 ONLY)
-    portfolio_docs = await db.positions.find(
-        {"shares": {"$gt": 0}},
-        {"_id": 0, "ticker": 1}
-    ).to_list(length=None)
     portfolio_tickers = set(
-        doc["ticker"].upper().replace(".US", "") 
-        for doc in portfolio_docs 
+        doc["ticker"].upper().replace(".US", "")
+        for doc in portfolio_docs
         if doc.get("ticker")
     )
-    
+
     # P33: Union of both sets
     all_tickers = watchlist_tickers | portfolio_tickers
-    
+
     # Filter to only visible tickers
     if all_tickers:
         all_full = [f"{t}.US" for t in all_tickers]
@@ -1522,51 +1532,81 @@ async def get_homepage_data():
         visible_set = set(doc["ticker"].replace(".US", "") for doc in visible_docs)
     else:
         visible_set = set()
-    
-    # P37+: Get watchlist documents with follow data for change_since_added
-    watchlist_docs = {}
-    for doc in await db.user_watchlist.find({}, {"_id": 0}).to_list(length=None):
-        ticker = doc.get("ticker", "").upper()
-        watchlist_docs[ticker] = doc
-    
+
     # P33: Build enriched list with pill classification
     # Sort: Portfolio first (sorted by ticker), then Watchlist-only (sorted by ticker)
     portfolio_visible = sorted(portfolio_tickers & visible_set)
     watchlist_only_visible = sorted((watchlist_tickers - portfolio_tickers) & visible_set)
     ordered_tickers = portfolio_visible + watchlist_only_visible
-    
+
     stocks = []
-    
-    # P37+: Batch fetch all needed prices for efficiency
+
+    # --- Phase 2: Batch fetch fundamentals + prices in parallel (no N+1) ---
     all_ticker_dbs = [f"{t}.US" for t in ordered_tickers[:20]]
-    
-    for ticker in ordered_tickers[:20]:  # Show up to 20
-        ticker_db = f"{ticker}.US"
-        fundamentals = await db.company_fundamentals_cache.find_one({"ticker": ticker_db})
-        
-        # Get current price from stock_prices collection
-        latest_price = await db.stock_prices.find_one(
-            {"ticker": ticker_db},
-            sort=[("date", -1)]
+
+    if all_ticker_dbs:
+        # Single batch query for all fundamentals
+        fundamentals_task = db.company_fundamentals_cache.find(
+            {"ticker": {"$in": all_ticker_dbs}},
+            {"_id": 0, "ticker": 1, "name": 1, "logo_url": 1}
+        ).to_list(length=None)
+
+        # Single aggregation for latest 2 prices per ticker (gives us current + previous)
+        # 14-day lookback is enough to cover weekends/holidays and guarantee ≥2 trading days
+        PRICE_LOOKBACK_DAYS = 14
+        price_cutoff = (datetime.now() - timedelta(days=PRICE_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        prices_pipeline = [
+            {"$match": {"ticker": {"$in": all_ticker_dbs}, "date": {"$gte": price_cutoff}}},
+            {"$sort": {"ticker": 1, "date": -1}},
+            {"$group": {
+                "_id": "$ticker",
+                "prices": {"$push": {
+                    "date": "$date",
+                    "close": "$close",
+                    "adjusted_close": "$adjusted_close"
+                }}
+            }},
+            {"$project": {
+                "_id": 1,
+                "prices": {"$slice": ["$prices", 2]}
+            }}
+        ]
+        prices_task = db.stock_prices.aggregate(prices_pipeline).to_list(length=None)
+
+        fundamentals_list, prices_agg = await asyncio.gather(
+            fundamentals_task, prices_task
         )
-        
-        current = 0
+    else:
+        fundamentals_list = []
+        prices_agg = []
+
+    # Build lookup dicts
+    fund_map = {doc["ticker"]: doc for doc in fundamentals_list}
+    price_map = {}  # ticker_db -> {"current": ..., "prev": ..., "date": ...}
+    for doc in prices_agg:
+        ticker_db = doc["_id"]
+        prices = doc.get("prices", [])
+        entry = {"current": 0, "prev": 0, "date": None}
+        if prices:
+            latest = prices[0]
+            entry["current"] = latest.get("adjusted_close") or latest.get("close", 0)
+            entry["date"] = latest.get("date")
+            if len(prices) > 1:
+                prev = prices[1]
+                entry["prev"] = prev.get("adjusted_close") or prev.get("close", 0)
+        price_map[ticker_db] = entry
+
+    # --- Phase 3: Build response from lookup dicts (no DB calls) ---
+    for ticker in ordered_tickers[:20]:
+        ticker_db = f"{ticker}.US"
+        fundamentals = fund_map.get(ticker_db)
+        price_data = price_map.get(ticker_db, {"current": 0, "prev": 0, "date": None})
+
+        current = price_data["current"]
         change_1d_pct = 0
-        latest_date = None
-        
-        if latest_price:
-            current = latest_price.get("adjusted_close") or latest_price.get("close", 0)
-            latest_date = latest_price.get("date")
-            # Get previous day for 1D change calculation
-            prev_price = await db.stock_prices.find_one(
-                {"ticker": ticker_db, "date": {"$lt": latest_price.get("date")}},
-                sort=[("date", -1)]
-            )
-            if prev_price:
-                prev = prev_price.get("adjusted_close") or prev_price.get("close", current)
-                if prev > 0:
-                    change_1d_pct = ((current - prev) / prev) * 100
-        
+        if current and price_data["prev"] and price_data["prev"] > 0:
+            change_1d_pct = ((current - price_data["prev"]) / price_data["prev"]) * 100
+
         # Build logo URL from EODHD
         logo_url = None
         if fundamentals and fundamentals.get("logo_url"):
@@ -1575,27 +1615,27 @@ async def get_homepage_data():
                 logo_url = f"https://eodhistoricaldata.com{logo_path}"
             else:
                 logo_url = logo_path
-        
+
         # P33: Determine pill type
         in_watchlist = ticker in watchlist_tickers
         in_portfolio = ticker in portfolio_tickers
-        
+
         if in_watchlist and in_portfolio:
             pill = "Both"
         elif in_portfolio:
             pill = "Portfolio"
         else:
             pill = "Watchlist"
-        
+
         # P37+ Part 3 (G): Add change_since_added for watchlist items
         added_at = None
         change_since_added = None
         follow_price = None
-        
+
         if ticker in watchlist_docs:
             wl_doc = watchlist_docs[ticker]
             follow_price = wl_doc.get("follow_price_close")
-            
+
             # Format added_at as DD/MM/YYYY
             followed_at_str = wl_doc.get("followed_at", "")
             if followed_at_str:
@@ -1607,11 +1647,11 @@ async def get_homepage_data():
                         added_at = followed_at_str
                 except:
                     added_at = None
-            
+
             # Calculate change since added
             if follow_price and current and follow_price > 0:
                 change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
-        
+
         stocks.append({
             "ticker": ticker,
             "name": fundamentals.get("name", ticker) if fundamentals else ticker,
