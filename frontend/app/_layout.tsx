@@ -1,11 +1,12 @@
 import React from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet } from 'react-native';
+import { View, StyleSheet, Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { useFonts, DMSerifDisplay_400Regular } from '@expo-google-fonts/dm-serif-display';
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
+import { FontDisplay } from 'expo-font';
 import BrandedLoading from '../components/BrandedLoading';
 import WebRails from '../components/WebRails';
 import { APP_SHELL_MAX_WIDTH, RAIL_BACKGROUND, IS_WEB } from '../constants/layout';
@@ -31,13 +32,24 @@ export const COLORS = {
   danger: '#EF4444',
 };
 
-export const FONTS = {
-  heading: 'DMSerifDisplay_400Regular',
-  body: 'Inter_400Regular',
-  bodyMedium: 'Inter_500Medium',
-  bodySemiBold: 'Inter_600SemiBold',
-  bodyBold: 'Inter_700Bold',
-};
+// On web, include system font fallback stacks so text renders immediately while
+// custom fonts load (works with font-display: swap). On native, single names
+// are required and fonts are guaranteed loaded before use.
+export const FONTS = Platform.OS === 'web'
+  ? {
+      heading: '"DMSerifDisplay_400Regular", Georgia, "Times New Roman", serif',
+      body: '"Inter_400Regular", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      bodyMedium: '"Inter_500Medium", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      bodySemiBold: '"Inter_600SemiBold", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+      bodyBold: '"Inter_700Bold", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
+    }
+  : {
+      heading: 'DMSerifDisplay_400Regular',
+      body: 'Inter_400Regular',
+      bodyMedium: 'Inter_500Medium',
+      bodySemiBold: 'Inter_600SemiBold',
+      bodyBold: 'Inter_700Bold',
+    };
 
 export const TYPOGRAPHY = {
   h1: { fontFamily: FONTS.heading, fontSize: 48, lineHeight: 58, letterSpacing: 0 },
@@ -57,14 +69,17 @@ export const TYPOGRAPHY = {
 
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
-    DMSerifDisplay_400Regular,
-    Inter_400Regular,
-    Inter_500Medium,
-    Inter_600SemiBold,
-    Inter_700Bold,
+    DMSerifDisplay_400Regular: { uri: DMSerifDisplay_400Regular, display: FontDisplay.SWAP },
+    Inter_400Regular: { uri: Inter_400Regular, display: FontDisplay.SWAP },
+    Inter_500Medium: { uri: Inter_500Medium, display: FontDisplay.SWAP },
+    Inter_600SemiBold: { uri: Inter_600SemiBold, display: FontDisplay.SWAP },
+    Inter_700Bold: { uri: Inter_700Bold, display: FontDisplay.SWAP },
   });
 
-  if (!fontsLoaded) {
+  // On web, font-display:swap renders text immediately with system fallbacks
+  // while custom fonts load in the background — no blocking needed.
+  // On native, fonts must finish loading before use (or the app crashes).
+  if (!fontsLoaded && Platform.OS !== 'web') {
     return <BrandedLoading message="Starting RICHSTOX..." />;
   }
 
