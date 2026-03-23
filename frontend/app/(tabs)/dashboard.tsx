@@ -2205,15 +2205,14 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 8,
-    backgroundColor: '#E5E7EB',
+    backgroundColor: COLORS.border,
   },
   stocksSkeletonLines: {
     flex: 1,
-    gap: 0,
   },
   stocksSkeletonLine: {
     height: 12,
     borderRadius: 4,
-    backgroundColor: '#E5E7EB',
+    backgroundColor: COLORS.border,
   },
 });
