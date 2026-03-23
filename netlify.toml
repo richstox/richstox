@@ -1,0 +1,8 @@
+[build]
+  base = "frontend"
+  command = "npx expo export -p web"
+  publish = "dist"
+
+[build.environment]
+  NPM_FLAGS = "--prefer-offline"
+  NODE_VERSION = "20"
