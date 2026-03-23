@@ -3360,20 +3360,34 @@ async def get_ticker_detail_mobile(
         "cusip": general.get("CUSIP"),
     }
     
-    # Get latest price
-    latest_price = await db.stock_prices.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0},
-        sort=[("date", -1)]
+    # Phase 1: Parallel lightweight cache/index lookups
+    (
+        latest_price,
+        prev_price,
+        pain_cache,
+        valuation_cache_raw,
+    ) = await asyncio.gather(
+        db.stock_prices.find_one(
+            {"ticker": ticker_full}, {"_id": 0}, sort=[("date", -1)]
+        ),
+        db.stock_prices.find_one(
+            {"ticker": ticker_full}, {"_id": 0}, sort=[("date", -1)], skip=1
+        ),
+        db.ticker_pain_cache.find_one(
+            {"ticker": ticker_full},
+            {"_id": 0, "ticker": 0, "cached_at": 0, "data_points_used": 0}
+        ),
+        db.ticker_valuations_cache.find_one(
+            {"ticker": ticker_full}, {"_id": 0}
+        ),
     )
     
-    # Get previous day price for change calculation
-    prev_price = await db.stock_prices.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0},
-        sort=[("date", -1)],
-        skip=1
-    )
+    valuation_cache = valuation_cache_raw if _is_local_valuation_cache_doc(valuation_cache_raw) else None
+    
+    # Phase 2: Heavy full-history queries run sequentially to avoid
+    # resource contention (both scan entire stock_prices for MAX period)
+    reality_check = await calculate_reality_check_max(db, ticker_full)
+    period_stats = await calculate_period_stats(db, ticker_full, period)
     
     current_price = latest_price["close"] if latest_price else None
     prev_close = prev_price["close"] if prev_price else current_price
@@ -3384,29 +3398,6 @@ async def get_ticker_detail_mobile(
     if current_price and prev_close:
         daily_change = current_price - prev_close
         daily_change_pct = (daily_change / prev_close) * 100 if prev_close > 0 else 0
-    
-    # Reality Check (MAX history - NEVER changes with period selector)
-    reality_check = await calculate_reality_check_max(db, ticker_full)
-    
-    # P25/P26: PAIN cache (exact max drawdown details from full daily series)
-    pain_cache = await db.ticker_pain_cache.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0, "ticker": 0, "cached_at": 0, "data_points_used": 0}
-    )
-    
-    # Period stats (changes with period selector)
-    period_stats = await calculate_period_stats(db, ticker_full, period)
-    
-    # =========================================================================
-    # VALUATION - READ FROM PRE-COMPUTED CACHE FOR < 200ms SLA
-    # =========================================================================
-    # BINDING: Read from ticker_valuations_cache (pre-computed nightly)
-    # This replaces expensive real-time computation with instant lookup
-    valuation_cache_raw = await db.ticker_valuations_cache.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0}
-    )
-    valuation_cache = valuation_cache_raw if _is_local_valuation_cache_doc(valuation_cache_raw) else None
     
     # Also get peer benchmarks for the ticker's industry
     peer_bench_doc = None

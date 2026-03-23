@@ -36,6 +36,8 @@ import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const EODHD_LOGO_BASE = 'https://eodhd.com';
+// Delay before fetching below-the-fold content (talk posts) to prioritize critical data
+const DEFERRED_FETCH_MS = 800;
 
 interface CompanyData {
   ticker: string;
@@ -377,14 +379,12 @@ export default function StockDetail() {
   
   // Financials period toggle - handled internally by FinancialHub component
   
-  // S&P 500 benchmark state
-  const [spyPerformance, setSpyPerformance] = useState<{change_pct: number; start_price: number; end_price: number} | null>(null);
-  
   // Benchmark chart data (SP500TR.INDX normalized to 100)
   const [benchmarkChartData, setBenchmarkChartData] = useState<{date: string; normalized: number}[]>([]);
+  const [showBenchmark, setShowBenchmark] = useState(false);
 
-  // P1 FINAL: MAX chart data for Reality Check RRR calculation
-  const [maxChartData, setMaxChartData] = useState<PriceHistoryPoint[]>([]);
+  // Per-range cache so switching back to MAX (or any range) is instant after first load
+  const chartCacheRef = useRef<Record<string, { prices: PriceHistoryPoint[]; benchmark: {date: string; normalized: number}[] }>>({});
 
   // Talk posts state
   const [talkPosts, setTalkPosts] = useState<any[]>([]);
@@ -462,7 +462,17 @@ export default function StockDetail() {
   };
 
   // Fetch price history for chart (now includes benchmark)
+  // Uses per-range cache so repeated MAX/range switches are instant
   const fetchChartData = async (range: PriceRange) => {
+    // Return cached data instantly if available (e.g. switching back to MAX)
+    const cached = chartCacheRef.current[range];
+    if (cached) {
+      setChartData(cached.prices);
+      setBenchmarkChartData(cached.benchmark);
+      setChartError(null);
+      return;
+    }
+
     setChartLoading(true);
     setChartError(null);
     setBenchmarkChartData([]);
@@ -490,14 +500,18 @@ export default function StockDetail() {
         normalized: p.normalized
       }));
       
-      setChartData(formattedPrices);
-      
-      // Set benchmark data (already normalized)
+      // Cache benchmark data
+      let benchData: {date: string; normalized: number}[] = [];
       if (benchmark && benchmark.prices) {
         const benchStep = Math.max(1, Math.floor(benchmark.prices.length / targetPoints));
-        const benchDownsampled = benchmark.prices.filter((_: any, i: number) => i % benchStep === 0 || i === benchmark.prices.length - 1);
-        setBenchmarkChartData(benchDownsampled);
+        benchData = benchmark.prices.filter((_: any, i: number) => i % benchStep === 0 || i === benchmark.prices.length - 1);
       }
+
+      // Store in cache for instant re-access
+      chartCacheRef.current[range] = { prices: formattedPrices, benchmark: benchData };
+
+      setChartData(formattedPrices);
+      setBenchmarkChartData(benchData);
     } catch (err: any) {
       console.error('Error fetching chart data:', err);
       setChartError('Failed to load chart');
@@ -506,27 +520,14 @@ export default function StockDetail() {
     }
   };
 
-  const fetchMaxChartData = async () => {
-    try {
-      const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/chart?period=MAX&include_benchmark=false`);
-      const prices = response.data.prices || [];
-      const formattedPrices = prices.map((p: any) => ({
-        date: p.date,
-        adjusted_close: p.adjusted_close || p.close,
-      }));
-      setMaxChartData(formattedPrices);
-    } catch (err: any) {
-      console.error('Error fetching MAX chart data:', err);
-    }
-  };
-
   // P25/P26: PAIN data now comes from ticker_pain_cache via /v1/ticker/{ticker}/detail API
 
   useEffect(() => {
     if (!ticker) return;
+    // Clear chart cache when ticker changes (data is ticker-specific)
+    chartCacheRef.current = {};
     fetchStock(false);
     fetchDividends();
-    fetchMaxChartData();
   }, [ticker]);
 
   useEffect(() => {
@@ -616,14 +617,50 @@ export default function StockDetail() {
   const CHART_PADDING_TOP = 15;
   const CHART_PADDING_BOTTOM = 10;
   
-  // Compute tooltip index from X coordinate
+  // Compute visible chart data based on benchmark toggle
+  // Benchmark OFF = full ticker history | Benchmark ON = overlapping date range only
+  const { visibleChartData, visibleBenchmarkData } = useMemo(() => {
+    if (!showBenchmark || benchmarkChartData.length === 0 || chartData.length === 0) {
+      return { visibleChartData: chartData, visibleBenchmarkData: [] as {date: string; normalized: number}[] };
+    }
+
+    // Common start = the later of first ticker date and first benchmark date
+    const benchStartDate = benchmarkChartData[0].date;
+    const tickerStartDate = chartData[0].date;
+    const commonStartDate = benchStartDate > tickerStartDate ? benchStartDate : tickerStartDate;
+
+    // Trim ticker data to common range
+    const trimmed = chartData.filter(d => d.date >= commonStartDate);
+    if (trimmed.length === 0) {
+      return { visibleChartData: chartData, visibleBenchmarkData: benchmarkChartData };
+    }
+
+    // Re-normalize ticker from common start so both begin at 100
+    const tickerBase = trimmed[0].normalized || 100;
+    const reNormTicker = trimmed.map(d => ({
+      ...d,
+      normalized: ((d.normalized || 100) / tickerBase) * 100,
+    }));
+
+    // Trim benchmark to common range and re-normalize
+    const trimmedBench = benchmarkChartData.filter(d => d.date >= commonStartDate);
+    const benchBase = trimmedBench.length > 0 ? (trimmedBench[0].normalized || 100) : 100;
+    const reNormBench = trimmedBench.map(d => ({
+      ...d,
+      normalized: ((d.normalized || 100) / benchBase) * 100,
+    }));
+
+    return { visibleChartData: reNormTicker, visibleBenchmarkData: reNormBench };
+  }, [chartData, benchmarkChartData, showBenchmark]);
+
+  // Compute tooltip index from X coordinate (uses visibleChartData for correct mapping)
   const computeTooltipIndex = useCallback((locationX: number, chartWidth: number): number | null => {
-    if (chartData.length === 0) return null;
+    if (visibleChartData.length === 0) return null;
     const graphW = chartWidth - CHART_PADDING_LEFT - CHART_PADDING_RIGHT;
     const relativeX = Math.max(0, Math.min(graphW, locationX - CHART_PADDING_LEFT));
     const ratio = relativeX / graphW;
-    return Math.round(ratio * (chartData.length - 1));
-  }, [chartData]);
+    return Math.round(ratio * (visibleChartData.length - 1));
+  }, [visibleChartData]);
   
   // Hide tooltip
   const hideChartTooltip = useCallback(() => {
@@ -632,37 +669,25 @@ export default function StockDetail() {
   }, []);
   // ===== END CHART-TOOLTIP handlers =====
 
-  // Fetch talk posts when ticker changes
+  // Fetch talk posts when ticker changes - deferred to avoid blocking initial render
   useEffect(() => {
-    if (ticker) {
+    if (!ticker) return;
+    // Defer talk posts fetch (below-the-fold content) until after critical data loads
+    const timer = setTimeout(() => {
       fetchTalkPosts();
-    }
+    }, DEFERRED_FETCH_MS);
+    return () => clearTimeout(timer);
   }, [ticker]);
 
   const onRefresh = () => {
     setRefreshing(true);
+    // Clear chart cache on refresh so fresh data is fetched
+    chartCacheRef.current = {};
     fetchStock(false); // P4: Always load full data for single vertical scroll
     fetchChartData(priceRange);
     fetchDividends();
     fetchTalkPosts();
   };
-  
-  // Calculate dividends received for selected range
-  const dividendsReceived = useMemo(() => {
-    if (!chartData.length || !dividendPayments.length) return 0;
-    
-    const startDate = chartData[0]?.date;
-    const endDate = chartData[chartData.length - 1]?.date;
-    
-    if (!startDate || !endDate) return 0;
-    
-    // Sum dividends within the chart date range
-    const total = dividendPayments
-      .filter(d => d.ex_date >= startDate && d.ex_date <= endDate)
-      .reduce((sum, d) => sum + (d.amount || 0), 0);
-    
-    return total;
-  }, [chartData, dividendPayments]);
   
   // UTC-safe date formatter for MM/YY format
   const formatMMYY = (dateStr: string): string => {
@@ -688,6 +713,46 @@ export default function StockDetail() {
       changePercent,
       isPositive: changePercent >= 0,
     };
+  }, [chartData]);
+
+  // Memoize drawdown peak/trough calculation (avoids recomputing 400+ points on every render)
+  const drawdownDetails = useMemo(() => {
+    if (chartData.length <= 10) return null;
+    
+    let peak = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
+    let trough = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
+    let maxDrawdown = 0;
+    let runningMax = chartData[0]?.adjusted_close || 0;
+    let runningMaxIdx = 0;
+    
+    chartData.forEach((d, i) => {
+      if (d.adjusted_close > runningMax) {
+        runningMax = d.adjusted_close;
+        runningMaxIdx = i;
+      }
+      const drawdown = (runningMax - d.adjusted_close) / runningMax;
+      if (drawdown > maxDrawdown) {
+        maxDrawdown = drawdown;
+        peak = { idx: runningMaxIdx, value: runningMax, date: chartData[runningMaxIdx]?.date };
+        trough = { idx: i, value: d.adjusted_close, date: d.date };
+      }
+    });
+    
+    if (!peak.date || !trough.date || maxDrawdown <= 0.01) return null;
+    
+    const peakDate = new Date(peak.date + 'T00:00:00Z');
+    const troughDate = new Date(trough.date + 'T00:00:00Z');
+    const durationDays = Math.round((troughDate.getTime() - peakDate.getTime()) / (1000 * 60 * 60 * 24));
+    
+    let recoveryDate: string | null = null;
+    for (let i = trough.idx + 1; i < chartData.length; i++) {
+      if (chartData[i].adjusted_close >= peak.value) {
+        recoveryDate = chartData[i].date;
+        break;
+      }
+    }
+    
+    return { peak, trough, durationDays, recoveryDate };
   }, [chartData]);
 
   // P21: EU/CZ Number Formatting - import utility
@@ -1527,10 +1592,13 @@ export default function StockDetail() {
             ))}
           </ScrollView>
           
-          {chartData.length > 0 && (
+          {visibleChartData.length > 0 && (
             <Text style={styles.dateRangeText}>
-              {formatDateDMY(chartData[0]?.date)} – {formatDateDMY(chartData[chartData.length - 1]?.date)}
+              {formatDateDMY(visibleChartData[0]?.date)} – {formatDateDMY(visibleChartData[visibleChartData.length - 1]?.date)}
             </Text>
+          )}
+          {showBenchmark && visibleBenchmarkData.length > 0 && (
+            <Text style={styles.benchmarkNote}>Comparison starts at first common date.</Text>
           )}
           
           <View style={styles.chartContainer}>
@@ -1546,7 +1614,7 @@ export default function StockDetail() {
                   <Text style={styles.chartRetryText}>Retry</Text>
                 </TouchableOpacity>
               </View>
-            ) : chartData.length > 0 ? (
+            ) : visibleChartData.length > 0 ? (
               (() => {
                 const chartW = width - 48;
                 const chartH = 180;
@@ -1671,10 +1739,10 @@ export default function StockDetail() {
                 const graphW = chartW - paddingLeft - paddingRight;
                 const graphH = chartH - paddingTop - paddingBottom;
                 
-                const values = chartData.map(d => d.adjusted_close);
+                const values = visibleChartData.map(d => d.adjusted_close);
                 const dataMin = Math.min(...values);
                 const dataMax = Math.max(...values);
-                const currentPrice = chartData[chartData.length - 1].adjusted_close;
+                const currentPrice = visibleChartData[visibleChartData.length - 1].adjusted_close;
                 
                 const highIdx = values.indexOf(dataMax);
                 const lowIdx = values.indexOf(dataMin);
@@ -1686,8 +1754,8 @@ export default function StockDetail() {
                 
                 const priceToY = (price: number) => paddingTop + graphH - ((price - yMin) / (yMax - yMin)) * graphH;
                 
-                const points = chartData.map((d, i) => {
-                  const x = paddingLeft + (i / (chartData.length - 1)) * graphW;
+                const points = visibleChartData.map((d, i) => {
+                  const x = paddingLeft + (i / (visibleChartData.length - 1)) * graphW;
                   const y = priceToY(d.adjusted_close);
                   return { x, y };
                 });
@@ -1696,9 +1764,9 @@ export default function StockDetail() {
                 const lineColor = '#6B7280';
                 
                 let benchmarkPathD = '';
-                if (benchmarkChartData.length > 1 && chartData.length > 1 && chartData[0].normalized) {
-                  const stockNormValues = chartData.map(d => d.normalized || 100);
-                  const benchNormValues = benchmarkChartData.map(d => d.normalized || 100);
+                if (visibleBenchmarkData.length > 1 && visibleChartData.length > 1 && visibleChartData[0].normalized) {
+                  const stockNormValues = visibleChartData.map(d => d.normalized || 100);
+                  const benchNormValues = visibleBenchmarkData.map(d => d.normalized || 100);
                   const allNormValues = [...stockNormValues, ...benchNormValues];
                   const normMin = Math.min(...allNormValues);
                   const normMax = Math.max(...allNormValues);
@@ -1709,8 +1777,8 @@ export default function StockDetail() {
                   
                   const normToY = (val: number) => paddingTop + graphH - ((val - normYMin) / (normYMax - normYMin)) * graphH;
                   
-                  const benchPoints = benchmarkChartData.map((d, i) => {
-                    const x = paddingLeft + (i / (benchmarkChartData.length - 1)) * graphW;
+                  const benchPoints = visibleBenchmarkData.map((d, i) => {
+                    const x = paddingLeft + (i / (visibleBenchmarkData.length - 1)) * graphW;
                     const y = normToY(d.normalized);
                     return { x, y };
                   });
@@ -1720,8 +1788,8 @@ export default function StockDetail() {
                 const highY = priceToY(dataMax);
                 const lowY = priceToY(dataMin);
                 const currentY = priceToY(currentPrice);
-                const highX = paddingLeft + (highIdx / (chartData.length - 1)) * graphW;
-                const lowX = paddingLeft + (lowIdx / (chartData.length - 1)) * graphW;
+                const highX = paddingLeft + (highIdx / (visibleChartData.length - 1)) * graphW;
+                const lowX = paddingLeft + (lowIdx / (visibleChartData.length - 1)) * graphW;
                 const formatPrice = (p: number) => p >= 1000 ? `$${toEU(p / 1000, 1)}k` : `$${toEU(p, 0)}`;
                 
                 // Compute chart labels with deterministic stacking
@@ -1733,12 +1801,12 @@ export default function StockDetail() {
                 );
                 
                 // ===== CHART-TOOLTIP: Simple crosshair (stockanalysis.com style) =====
-                const tooltipPoint = chartTooltipVisible && chartTooltipIndex !== null && chartData[chartTooltipIndex] 
-                  ? chartData[chartTooltipIndex] 
+                const tooltipPoint = chartTooltipVisible && chartTooltipIndex !== null && visibleChartData[chartTooltipIndex] 
+                  ? visibleChartData[chartTooltipIndex] 
                   : null;
                 
                 const tooltipX = tooltipPoint 
-                  ? paddingLeft + (chartTooltipIndex! / (chartData.length - 1)) * graphW 
+                  ? paddingLeft + (chartTooltipIndex! / (visibleChartData.length - 1)) * graphW 
                   : 0;
                 const tooltipY = tooltipPoint 
                   ? priceToY(tooltipPoint.adjusted_close) 
@@ -1947,7 +2015,7 @@ export default function StockDetail() {
             )}
           </View>
           
-          {chartData.length > 0 && (
+          {visibleChartData.length > 0 && (
             <View style={styles.chartLegend} data-testid="chart-legend">
               <View style={styles.legendItem}>
                 <View style={[styles.legendDot, { backgroundColor: '#10B981' }]} />
@@ -1961,11 +2029,22 @@ export default function StockDetail() {
                 <View style={[styles.legendDot, { backgroundColor: '#111827' }]} />
                 <Text style={[styles.legendLabel, { color: '#111827' }]}>PRICE</Text>
               </View>
-              {benchmarkChartData.length > 0 && (
+              {showBenchmark && visibleBenchmarkData.length > 0 && (
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: '#9CA3AF', opacity: 0.6 }]} />
                   <Text style={[styles.legendLabel, { color: '#9CA3AF' }]}>S&P 500 TR</Text>
                 </View>
+              )}
+              {benchmarkChartData.length > 0 && (
+                <TouchableOpacity
+                  style={[styles.benchmarkToggle, showBenchmark && styles.benchmarkToggleActive]}
+                  onPress={() => setShowBenchmark(!showBenchmark)}
+                  data-testid="benchmark-toggle"
+                >
+                  <Text style={[styles.benchmarkToggleText, showBenchmark && styles.benchmarkToggleTextActive]}>
+                    vs S&P 500
+                  </Text>
+                </TouchableOpacity>
               )}
             </View>
           )}
@@ -2060,59 +2139,22 @@ export default function StockDetail() {
                   </Text>
                 </View>
                 
-                {/* P22: Drawdown details from chartData */}
-                {chartData.length > 10 && (() => {
-                  // Calculate peak and trough from chart data
-                  let peak = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
-                  let trough = { idx: 0, value: chartData[0]?.adjusted_close || 0, date: chartData[0]?.date };
-                  let maxDrawdown = 0;
-                  let runningMax = chartData[0]?.adjusted_close || 0;
-                  let runningMaxIdx = 0;
-                  
-                  chartData.forEach((d, i) => {
-                    if (d.adjusted_close > runningMax) {
-                      runningMax = d.adjusted_close;
-                      runningMaxIdx = i;
-                    }
-                    const drawdown = (runningMax - d.adjusted_close) / runningMax;
-                    if (drawdown > maxDrawdown) {
-                      maxDrawdown = drawdown;
-                      peak = { idx: runningMaxIdx, value: runningMax, date: chartData[runningMaxIdx]?.date };
-                      trough = { idx: i, value: d.adjusted_close, date: d.date };
-                    }
-                  });
-                  
-                  if (peak.date && trough.date && maxDrawdown > 0.01) {
-                    const peakDate = new Date(peak.date + 'T00:00:00Z');
-                    const troughDate = new Date(trough.date + 'T00:00:00Z');
-                    const durationDays = Math.round((troughDate.getTime() - peakDate.getTime()) / (1000 * 60 * 60 * 24));
-                    
-                    let recoveryDate: string | null = null;
-                    for (let i = trough.idx + 1; i < chartData.length; i++) {
-                      if (chartData[i].adjusted_close >= peak.value) {
-                        recoveryDate = chartData[i].date;
-                        break;
-                      }
-                    }
-                    
-                    return (
-                      <View style={styles.painDetails}>
-                        <Text style={styles.painDateRange}>
-                          {formatDateDMY(peak.date)} → {formatDateDMY(trough.date)}
-                        </Text>
-                        <Text style={styles.painDuration}>
-                          Duration: {durationDays} days
-                        </Text>
-                        <Text style={styles.painRecovery}>
-                          {recoveryDate 
-                            ? `Recovered: ${formatDateDMY(recoveryDate)}`
-                            : 'Recovered: Not recovered'}
-                        </Text>
-                      </View>
-                    );
-                  }
-                  return null;
-                })()}
+                {/* P22: Drawdown details from chartData (memoized) */}
+                {drawdownDetails && (
+                  <View style={styles.painDetails}>
+                    <Text style={styles.painDateRange}>
+                      {formatDateDMY(drawdownDetails.peak.date)} → {formatDateDMY(drawdownDetails.trough.date)}
+                    </Text>
+                    <Text style={styles.painDuration}>
+                      Duration: {drawdownDetails.durationDays} days
+                    </Text>
+                    <Text style={styles.painRecovery}>
+                      {drawdownDetails.recoveryDate 
+                        ? `Recovered: ${formatDateDMY(drawdownDetails.recoveryDate)}`
+                        : 'Recovered: Not recovered'}
+                    </Text>
+                  </View>
+                )}
               </View>
             </View>
             
@@ -3170,6 +3212,7 @@ const styles = StyleSheet.create({
   rangeSelectorContent: { flexDirection: 'row', gap: 6, paddingHorizontal: 2 },
   // P22: Date range text under range selector
   dateRangeText: { fontSize: 11, color: COLORS.textMuted, textAlign: 'center', marginBottom: 12 },
+  benchmarkNote: { fontSize: 10, color: '#9CA3AF', textAlign: 'center', marginTop: -4, marginBottom: 8, fontStyle: 'italic' },
   rangeButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, backgroundColor: '#F5F8FC', alignItems: 'center', minWidth: 44 },
   rangeButtonActive: { backgroundColor: COLORS.primary },
   rangeButtonText: { fontSize: 12, fontWeight: '500', color: COLORS.textMuted },
@@ -3188,8 +3231,12 @@ const styles = StyleSheet.create({
   chartInfoLabel: { fontSize: 11, color: COLORS.textMuted, marginBottom: 2 },
   chartInfoValue: { fontSize: 14, fontWeight: '600', color: COLORS.text },
   chartInfoDate: { fontSize: 10, color: COLORS.textMuted, marginTop: 2 },
-  chartLegend: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 24, marginTop: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: '#E5E7EB' },
+  chartLegend: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 16, marginTop: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: '#E5E7EB', flexWrap: 'wrap' },
   legendLabel: { fontSize: 12, fontWeight: '600' },
+  benchmarkToggle: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: '#D1D5DB', backgroundColor: '#F9FAFB' },
+  benchmarkToggleActive: { backgroundColor: '#EEF2FF', borderColor: '#6366F1' },
+  benchmarkToggleText: { fontSize: 11, fontWeight: '600', color: '#9CA3AF' },
+  benchmarkToggleTextActive: { color: '#6366F1' },
   customXAxis: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 10, marginTop: 4 },
   customXAxisLabel: { fontSize: 10, color: COLORS.textMuted, textAlign: 'center', minWidth: 40 },
   
