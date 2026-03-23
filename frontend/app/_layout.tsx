@@ -1,12 +1,17 @@
 import React from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { View, StyleSheet, Platform } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { AuthProvider } from '../contexts/AuthContext';
+import { AuthProvider, useAuth } from '../contexts/AuthContext';
 import { useFonts, DMSerifDisplay_400Regular } from '@expo-google-fonts/dm-serif-display';
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import BrandedLoading from '../components/BrandedLoading';
+import WebRails from '../components/WebRails';
+import { APP_SHELL_MAX_WIDTH, RAIL_BACKGROUND, IS_WEB } from '../constants/layout';
+
+// Re-export layout tokens so screens can import from '_layout' or 'constants/layout'
+export { SPACING, PAGE_GUTTER, SECTION_GAP, CARD_PADDING, ROW_GAP, TITLE_GAP, BANNER_GAP, LINE_HEIGHT, lineHeight } from '../constants/layout';
 
 // Calm color palette
 export const COLORS = {
@@ -35,19 +40,19 @@ export const FONTS = {
 };
 
 export const TYPOGRAPHY = {
-  h1: { fontFamily: FONTS.heading, fontSize: 48, letterSpacing: 0 },
-  h2: { fontFamily: FONTS.heading, fontSize: 28, letterSpacing: 0 },
-  h3: { fontFamily: FONTS.heading, fontSize: 22, letterSpacing: 0 },
-  subtitle: { fontFamily: FONTS.body, fontSize: 18, color: '#444444' },
-  body: { fontFamily: FONTS.body, fontSize: 14 },
-  bodyLarge: { fontFamily: FONTS.body, fontSize: 16 },
-  label: { fontFamily: FONTS.bodyMedium, fontSize: 13 },
-  button: { fontFamily: FONTS.bodyMedium, fontSize: 16 },
-  caption: { fontFamily: FONTS.body, fontSize: 12 },
-  tabLabel: { fontFamily: FONTS.bodyMedium, fontSize: 11 },
-  metric: { fontFamily: FONTS.bodySemiBold, fontSize: 20 },
-  metricSmall: { fontFamily: FONTS.bodySemiBold, fontSize: 14 },
-  sectionTitle: { fontFamily: FONTS.bodyBold, fontSize: 14, letterSpacing: 0.5, textTransform: 'uppercase' as const },
+  h1: { fontFamily: FONTS.heading, fontSize: 48, lineHeight: 58, letterSpacing: 0 },
+  h2: { fontFamily: FONTS.heading, fontSize: 28, lineHeight: 34, letterSpacing: 0 },
+  h3: { fontFamily: FONTS.heading, fontSize: 22, lineHeight: 28, letterSpacing: 0 },
+  subtitle: { fontFamily: FONTS.body, fontSize: 18, lineHeight: 27, color: '#444444' },
+  body: { fontFamily: FONTS.body, fontSize: 14, lineHeight: 21 },
+  bodyLarge: { fontFamily: FONTS.body, fontSize: 16, lineHeight: 24 },
+  label: { fontFamily: FONTS.bodyMedium, fontSize: 13, lineHeight: 18 },
+  button: { fontFamily: FONTS.bodyMedium, fontSize: 16, lineHeight: 24 },
+  caption: { fontFamily: FONTS.body, fontSize: 12, lineHeight: 18 },
+  tabLabel: { fontFamily: FONTS.bodyMedium, fontSize: 11, lineHeight: 14 },
+  metric: { fontFamily: FONTS.bodySemiBold, fontSize: 20, lineHeight: 24 },
+  metricSmall: { fontFamily: FONTS.bodySemiBold, fontSize: 14, lineHeight: 17 },
+  sectionTitle: { fontFamily: FONTS.bodyBold, fontSize: 14, lineHeight: 18, letterSpacing: 0.5, textTransform: 'uppercase' as const },
 };
 
 export default function RootLayout() {
@@ -66,57 +71,69 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <SafeAreaProvider>
-        <View style={styles.outerContainer}>
-          <View style={styles.container}>
-            <StatusBar style="dark" />
-            <Stack
-              screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: COLORS.background },
-                animation: 'fade',
-              }}
-            >
-              <Stack.Screen name="index" />
-              <Stack.Screen name="login" />
-              <Stack.Screen name="auth/callback" />
-              <Stack.Screen name="onboarding" />
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen 
-                name="position/[id]" 
-                options={{
-                  headerShown: true,
-                  headerTitle: 'Position Details',
-                  headerStyle: { backgroundColor: COLORS.background },
-                  headerTintColor: COLORS.text,
-                  headerShadowVisible: false,
-                }}
-              />
-              <Stack.Screen 
-                name="ticker-not-found" 
-                options={{
-                  presentation: 'modal',
-                }}
-              />
-            </Stack>
-          </View>
-        </View>
+        <RootShell />
       </SafeAreaProvider>
     </AuthProvider>
   );
 }
 
-const WEB_MAX_WIDTH = 480;
+/**
+ * Inner shell — must be inside AuthProvider so it can read subscription tier.
+ */
+function RootShell() {
+  const { user } = useAuth();
+  const tier = user?.subscription_tier ?? 'free';
+
+  return (
+    <View style={styles.outerContainer}>
+      <WebRails subscriptionTier={tier}>
+        <View style={styles.container}>
+          <StatusBar style="dark" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: COLORS.background },
+              animation: 'fade',
+            }}
+          >
+            <Stack.Screen name="index" />
+            <Stack.Screen name="login" />
+            <Stack.Screen name="auth/callback" />
+            <Stack.Screen name="onboarding" />
+            <Stack.Screen name="(tabs)" />
+            <Stack.Screen
+              name="position/[id]"
+              options={{
+                headerShown: true,
+                headerTitle: 'Position Details',
+                headerStyle: { backgroundColor: COLORS.background },
+                headerTintColor: COLORS.text,
+                headerShadowVisible: false,
+              }}
+            />
+            <Stack.Screen
+              name="ticker-not-found"
+              options={{
+                presentation: 'modal',
+              }}
+            />
+          </Stack>
+        </View>
+      </WebRails>
+    </View>
+  );
+}
 
 const styles = StyleSheet.create({
   outerContainer: {
     flex: 1,
-    backgroundColor: '#E8E4DF',
+    backgroundColor: RAIL_BACKGROUND,
     alignItems: 'center',
   },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
     width: '100%',
-    ...(Platform.OS === 'web' ? { maxWidth: WEB_MAX_WIDTH } : {}),
+    ...(IS_WEB ? { maxWidth: APP_SHELL_MAX_WIDTH } : {}),
   },
 });
