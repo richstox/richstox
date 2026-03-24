@@ -623,13 +623,15 @@ async def _get_bulk_processed_dates_set(db) -> set:
       - status = "success"
       - rows_written > 0
 
-    We scan the most recent 50 price_sync runs.  Each run typically covers
-    1-3 days of gapfill, so 50 runs safely covers 50+ distinct dates —
-    well beyond the 10 completed trading days this metric needs.  The limit
-    exists only to bound the aggregation pipeline; it cannot cause the
-    "last 10 completed trading days" metric to miss a date unless the
-    system has gone 50+ successful pipeline runs without covering it
-    (which would already indicate a real gap).
+    We scan the most recent 50 successful price_sync runs (the $match
+    filters to status=success/completed, so failed runs don't consume
+    from this budget).  Each run typically covers 1-3 days of gapfill,
+    so 50 runs safely covers 50+ distinct dates — well beyond the 10
+    completed trading days this metric needs.  The limit exists only to
+    bound the aggregation pipeline; it cannot cause the "last 10
+    completed trading days" metric to miss a date unless the system has
+    gone 50+ successful pipeline runs without covering it (which would
+    already indicate a real gap).
     """
     pipeline = [
         {"$match": {

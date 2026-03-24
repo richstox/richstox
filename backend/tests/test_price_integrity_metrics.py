@@ -153,8 +153,8 @@ def _mock_db(
 
     class _DB:
         """Namespace that also supports __getitem__ for collection-name access."""
-        def __init__(self, **kw):
-            for k, v in kw.items():
+        def __init__(self, **collections):
+            for k, v in collections.items():
                 setattr(self, k, v)
         def __getitem__(self, key):
             return getattr(self, key, SimpleNamespace(

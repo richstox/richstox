@@ -91,7 +91,6 @@ class MockCollection:
     async def find_one(self, query=None, projection=None, sort=None):
         matches = self._filter(query or {})
         if sort:
-            field, direction = sort[0] if isinstance(sort, list) else sort
             if isinstance(sort, list):
                 field, direction = sort[0]
             else:
