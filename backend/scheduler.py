@@ -84,7 +84,7 @@ import os
 import sys
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # Add backend directory to path
@@ -192,7 +192,6 @@ def time_until_next_run(target_hour: int, target_minute: int) -> float:
         return (target_today - now).total_seconds()
     
     # Already passed today, calculate for tomorrow
-    from datetime import timedelta
     target_tomorrow = target_today + timedelta(days=1)
     return (target_tomorrow - now).total_seconds()
 
@@ -538,6 +537,10 @@ async def scheduler_loop():
         Returns True if:
         - Job hasn't run today AND
         - Current time is >= scheduled time
+        
+        Also handles midnight catch-up for late-night jobs (scheduled at 22:00+).
+        If the scheduler misses the 23:xx window and it's now past midnight,
+        this catches up the missed run in the first 6 hours of the next day.
         """
         if last_run.get(job_name) == today_str:
             return False
@@ -545,6 +548,20 @@ async def scheduler_loop():
             return True
         if current_hour == scheduled_hour and current_minute >= scheduled_minute:
             return True
+        # Midnight catch-up: if the job is scheduled late evening (22:00+) and
+        # we are now past midnight (00:00–05:59), the simple hour comparison
+        # above fails because 0 < 23.  Catch up the missed run unless it
+        # already executed yesterday.
+        if scheduled_hour >= 22 and current_hour < 6:
+            yesterday_str = (
+                datetime.strptime(today_str, "%Y-%m-%d") - timedelta(days=1)
+            ).strftime("%Y-%m-%d")
+            if last_run.get(job_name) != yesterday_str:
+                logger.info(
+                    f"[should_run] Midnight catch-up for {job_name}: "
+                    f"last_run={last_run.get(job_name)}, yesterday={yesterday_str}"
+                )
+                return True
         return False
 
     def should_run_after_dependency(job_name: str, dependency_job: str, last_run: dict, today_str: str) -> bool:
@@ -621,9 +638,27 @@ async def scheduler_loop():
             # STEP 1: Universe Seed at 23:00 Mon-Sat
             if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
-                await _run_universe_seed_scheduled(db)
-                last_run["universe_seed"] = today_str
-                await set_last_run_state(last_run)
+                try:
+                    await _run_universe_seed_scheduled(db)
+                    last_run["universe_seed"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    # _run_universe_seed_scheduled has its own internal try/except
+                    # for the actual sync work, but early failures (import, DB
+                    # connection) can propagate here.  Log and let the next
+                    # iteration retry instead of crashing the whole daemon.
+                    logger.error(
+                        f"[scheduler] universe_seed STEP 1 unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+                    try:
+                        await log_job_execution(
+                            db, "universe_seed", "error",
+                            datetime.now(timezone.utc), datetime.now(timezone.utc),
+                            error_message=f"Scheduler unhandled: {exc}",
+                        )
+                    except Exception:
+                        pass  # best-effort observability
 
             # STEP 2: Price sync immediately after Step 1 completes
             if should_run_after_dependency("price_sync", "universe_seed", last_run, today_str):
