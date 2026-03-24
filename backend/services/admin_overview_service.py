@@ -594,6 +594,12 @@ async def _get_bulk_processed_dates(db) -> List[str]:
 
     This is the *canonical* source of expected_dates — no rolling-date
     heuristic or calendar approximation.
+
+    NOTE: Only ``scheduler_service.run_daily_price_sync()`` writes
+    ``details.price_bulk_gapfill.days`` to ``ops_job_runs``.
+    The legacy ``price_ingestion_service.sync_daily_prices()`` endpoint
+    does NOT write this field — runs made through that path will not
+    appear here.  See DASHBOARD_METRIC_AUDIT.md §5 for details.
     """
     pipeline = [
         {"$match": {

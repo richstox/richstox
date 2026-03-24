@@ -230,3 +230,232 @@ Before building a "Complete Fundamentals" metric on the Business Truth dashboard
   - **Endpoint:** `GET /api/admin/overview` → `overview.price_integrity.gap_free_since_history_download_count`
   - **Written by:** No single writer — this is a live computation from three collections. The underlying proof markers are written by `full_sync_service.py` and `scheduler_service.py` (same as "Complete Prices"). Bulk dates come from successful `price_sync` jobs recorded in `ops_job_runs`.
   - **Invalidation:** Proof marker invalidation (split/dividend detectors) resets the ticker to non-proven. Any new bulk-processed date not covered by a ticker changes the count.
+
+---
+
+## 5. "Missing Bulk Dates" — Deep-Dive Investigation
+
+### Executive Summary
+
+**"Missing Bulk Dates"** counts the number of trading dates for which bulk
+ingestion reported success (in `ops_job_runs`) but where at least one currently
+visible ticker is missing a `stock_prices` row.  The metric reads from
+`ops_job_runs.details.price_bulk_gapfill.days[]` — a field written **only** by
+the scheduled / full-pipeline code path
+(`scheduler_service.run_daily_price_sync`), **not** by the legacy manual
+endpoint (`POST /admin/prices/sync-daily` → `sync_daily_prices`).
+
+If an admin ran prices via the legacy `sync_daily_prices` endpoint, prices are
+written to `stock_prices` but the canonical gapfill metadata is never recorded.
+The metric therefore cannot "see" the manual run's contribution and stays
+unchanged.
+
+If an admin used **"Run Full Pipeline Now"** (which calls
+`run_daily_price_sync`), the metric IS updated — but it may still show ≥ 1 if
+any visible ticker lacks a price row for any previously recorded bulk date.
+This happens when new tickers are added to the visible universe after a bulk
+date was already ingested — those tickers naturally lack data for older dates.
+
+### Q1 — Exact Data Sources and Fields
+
+#### Last Bulk Date
+
+| Item | Value |
+|------|-------|
+| Collection | `pipeline_state` |
+| Document | `{_id: "price_bulk"}` |
+| Field | `global_last_bulk_date_processed` (string `"YYYY-MM-DD"`) |
+| Written by | `price_ingestion_service._write_price_bulk_state()` (called from `scheduler_service.run_daily_price_sync` after successful bulk write) |
+| Backend code | `admin_overview_service.get_price_integrity_metrics()` line ~751: `bulk_state = await db.pipeline_state.find_one({"_id": "price_bulk"})` |
+
+#### Missing Bulk Dates
+
+| Item | Value |
+|------|-------|
+| Response field | `overview.price_integrity.missing_expected_dates` |
+| Source A — expected dates | `ops_job_runs` collection: `{job_name: "price_sync", status: {$in: ["success","completed"]}, "details.price_bulk_gapfill.days": {$exists: true}}` → last 10 docs by `finished_at` desc → extract `days[].processed_date` where `days[].status == "success"` |
+| Source B — actual coverage | `stock_prices` collection: aggregate by `date` for `{date: {$in: expected_dates}, ticker: {$in: visible_tickers}}` → count tickers per date |
+| Source C — visible ticker count | `tracked_tickers.distinct("ticker", {is_visible: true})` (anchored to latest completed `pipeline_chain_runs` doc) |
+| Backend code | `admin_overview_service._get_bulk_processed_dates()` (lines ~590–620) + `get_price_integrity_metrics()` (lines ~859–893) |
+
+#### Need Re-download
+
+| Item | Value |
+|------|-------|
+| Collection | `tracked_tickers` |
+| Query | `{is_visible: true, needs_price_redownload: true}` → `$count` |
+| Written by | Split/dividend detectors in `scheduler_service.py` set `needs_price_redownload: true`; cleared by full re-download in `full_sync_service.py` |
+| Backend code | `get_price_integrity_metrics()` facet query line ~763 |
+
+### Q2 — Exact Formula for "Missing Bulk Dates = 1"
+
+**Step 1: Collect expected dates**
+
+```
+_get_bulk_processed_dates(db):
+  ops_job_runs.aggregate([
+    {$match: {job_name: "price_sync",
+              status: {$in: ["success","completed"]},
+              "details.price_bulk_gapfill.days": {$exists: true}}},
+    {$sort: {finished_at: -1}},
+    {$limit: 10},
+    {$project: {"details.price_bulk_gapfill.days": 1}},
+  ])
+  → For each doc: extract days where status == "success" and processed_date exists
+  → Return sorted set of date strings
+```
+
+**Step 2: Count dates with incomplete coverage (`gap_count`)**
+
+```
+stock_prices.aggregate([
+  {$match: {date: {$in: expected_dates}, ticker: {$in: visible_tickers}}},
+  {$group: {_id: "$date", count: {$sum: 1}}},
+  {$match: {count: {$lt: today_visible}}},   ← date has SOME rows but fewer than visible count
+  {$count: "n"},
+])
+→ gap_count = result[0].n or 0
+```
+
+**Step 3: Count dates with zero coverage**
+
+```
+stock_prices.aggregate([
+  {$match: {date: {$in: expected_dates}, ticker: {$in: visible_tickers}}},
+  {$group: {_id: "$date"}},
+])
+→ dates_with_data = set of dates that have at least one price row
+→ dates_with_zero_coverage = count of expected_dates NOT in dates_with_data
+```
+
+**Final formula:**
+
+```
+missing_expected_dates = gap_count + dates_with_zero_coverage
+```
+
+**"Missing Bulk Dates = 1" means:** there is exactly **one** date in the
+last 10 successful `price_sync` runs' gapfill days where either:
+
+- (a) some visible tickers have price rows but the count is less than the
+  current `today_visible` count (partial coverage), **or**
+- (b) no visible tickers have any price row for that date at all (zero
+  coverage).
+
+**Which dates are expected?** Only dates explicitly recorded in
+`ops_job_runs.details.price_bulk_gapfill.days[]` with `status: "success"`.
+No calendar heuristic or rolling window is used.
+
+**Which dates are present?** Dates with at least one `stock_prices` row for a
+currently visible ticker.
+
+**Which date is considered missing?** Any expected date where the number of
+visible tickers with a price row is strictly less than `today_visible`.
+
+### Q3 — Manual Full Pipeline vs Scheduled Flow
+
+#### Does manual full pipeline execute the same bulk download path?
+
+**Yes.** The "Run Full Pipeline Now" button (`POST /admin/pipeline/run-full-now`)
+calls **the exact same function** as the scheduler:
+`scheduler_service.run_daily_price_sync()`.
+
+| Aspect | Scheduled (scheduler loop) | Manual Full Pipeline (`run-full-now`) |
+|--------|---------------------------|---------------------------------------|
+| Entry point | `scheduler_service.scheduler_loop()` | `server.py:admin_run_full_pipeline_now()` |
+| Step 2 function | `scheduler_service.run_daily_price_sync(db)` | `scheduler_service.run_daily_price_sync(db, ignore_kill_switch=True, parent_run_id=s1_run_id, chain_run_id=chain_id, run_doc_id=_s2_run_doc_id)` |
+| Bulk download | `price_ingestion_service.run_daily_bulk_catchup()` | Same |
+| Writes `pipeline_state.price_bulk` | ✅ via `_write_price_bulk_state()` | ✅ Same |
+| Writes `ops_job_runs.details.price_bulk_gapfill.days` | ✅ | ✅ Same |
+| Job name in `ops_job_runs` | `"price_sync"` | `"price_sync"` |
+
+**Exact code path for full pipeline (manual):**
+1. `server.py:7222` → `admin_run_full_pipeline_now()` → `_run_chain()`
+2. Step 2: `server.py:7416` → `run_daily_price_sync(db, ...)`
+3. Inside: `scheduler_service.py:1438` → `run_daily_bulk_catchup(db, ...)`
+4. Bulk writes: `price_ingestion_service.py:1075`
+5. State update: `scheduler_service.py:1520` → `_write_price_bulk_state()`
+6. Gapfill days: `scheduler_service.py:1544` → `ops_job_runs.update_one({$set: {"details.price_bulk_gapfill.days": days}})`
+
+**Exact code path for scheduled:**
+1. `scheduler.py` → `scheduler_loop()` → calls `run_daily_price_sync(db)`
+2. Same as steps 2–6 above.
+
+#### Does manual price update (legacy endpoint) use the same path?
+
+**No.** The legacy endpoint `POST /admin/prices/sync-daily` calls
+`price_ingestion_service.sync_daily_prices(db)` — a completely different
+function.
+
+| Aspect | `run_daily_price_sync` (scheduled/pipeline) | `sync_daily_prices` (legacy manual) |
+|--------|---------------------------------------------|--------------------------------------|
+| File | `scheduler_service.py:1158` | `price_ingestion_service.py:349` |
+| Writes `pipeline_state.price_bulk` | ✅ | ❌ |
+| Writes `ops_job_runs.details.price_bulk_gapfill.days` | ✅ | ❌ |
+| `ops_job_runs` field for job identity | `job_name: "price_sync"` | `job_type: "daily_price_sync"` |
+| Writes prices to `stock_prices` | ✅ | ✅ |
+| Ticker source | `tracked_tickers` with `_STEP2_QUERY` | `company_fundamentals_cache.distinct("ticker")` |
+
+### Q4 — Why "Missing Bulk Dates" Remains 1 After Manual Run
+
+There are **two distinct scenarios** depending on which manual path was used:
+
+#### Scenario A: Legacy `sync_daily_prices` endpoint was used
+
+The metric remains unchanged because the legacy function does **not** write the
+persisted state that `_get_bulk_processed_dates()` reads:
+
+| Missing persisted state | Expected location | What legacy `sync_daily_prices` writes instead |
+|------------------------|-------------------|-----------------------------------------------|
+| `ops_job_runs.details.price_bulk_gapfill.days` | `ops_job_runs` doc with `job_name: "price_sync"` | A doc with `job_type: "daily_price_sync"` and no `price_bulk_gapfill` field |
+| `pipeline_state.price_bulk.global_last_bulk_date_processed` | `pipeline_state` collection | Nothing — `pipeline_state` not touched |
+
+Even though `stock_prices` rows are written, the metric does not query
+`stock_prices` to discover dates — it reads the **canonical list of expected
+dates** from `ops_job_runs.details.price_bulk_gapfill.days[]`. Since the legacy
+path never writes that field, the expected-dates set is unchanged, and the
+coverage check against it yields the same result.
+
+#### Scenario B: "Run Full Pipeline Now" was used
+
+The gapfill days ARE written. The metric may still show ≥ 1 if:
+
+1. **New tickers in the visible universe:** Tickers added after a bulk date was
+   ingested will not have price rows for that older date. The metric compares
+   coverage against the **current** `today_visible` count, not the count at
+   ingestion time. A single newly added ticker causes every prior bulk date to
+   show as having incomplete coverage.
+
+2. **Ticker not in EODHD bulk payload:** Some tracked tickers may not appear in
+   the EODHD `eod-bulk-last-day/US` endpoint response (e.g., recently delisted,
+   OTC tickers, tickers with pending data on the provider side).
+
+3. **Date mismatch:** The metric checks **all** successful bulk dates from the
+   last 10 `price_sync` runs. If any older date has even one ticker missing,
+   that date counts.
+
+### Q5 — Is "Missing Bulk Dates" Used as Input/Filter for Step 2?
+
+**No.** The `missing_expected_dates` metric is purely observational. Step 2
+does not read or filter by it.
+
+**What Step 2 actually uses as input:**
+
+- **Ticker set:** `tracked_tickers.distinct("ticker", {exchange: {$in: ["NYSE","NASDAQ"]}, asset_type: "Common Stock"})` via `_STEP2_QUERY` in `price_ingestion_service.py:858` (or `seeded_tickers_override` when called from the full pipeline chain)
+- **Date to fetch:** The EODHD `eod-bulk-last-day/US` endpoint returns the provider's latest available trading day. No date parameter is passed by default.
+- **Gap detection:** `scheduler_service._get_missed_trading_dates()` determines missed dates by comparing `pipeline_state.price_bulk.global_last_bulk_date_processed` against the current date, using NYSE trading calendar rules.
+
+The `missing_expected_dates` metric is computed in `admin_overview_service.py`
+for display purposes only and is never imported or referenced by
+`scheduler_service.py` or `price_ingestion_service.py`.
+
+### Exact Files Involved
+
+| File | Role |
+|------|------|
+| `backend/services/admin_overview_service.py` | `_get_bulk_processed_dates()` (lines 590–620), `get_price_integrity_metrics()` (lines 735–942) — computes the metric |
+| `backend/scheduler_service.py` | `run_daily_price_sync()` (lines 1158–1835) — writes `price_bulk_gapfill.days` to `ops_job_runs`, calls `_write_price_bulk_state()` |
+| `backend/price_ingestion_service.py` | `_write_price_bulk_state()` (lines 93–103) — updates `pipeline_state.price_bulk`; `run_daily_bulk_catchup()` (lines 818–1100) — performs actual bulk download and writes to `stock_prices`; `sync_daily_prices()` (lines 349–452) — legacy manual endpoint that does NOT write gapfill metadata |
+| `backend/server.py` | `admin_run_full_pipeline_now()` (line 7222) — "Run Full Pipeline Now" entry point; `admin_sync_daily_prices()` (line 2676) — legacy manual sync endpoint |
+| `frontend/app/(tabs)/admin.tsx` | Lines 219–222 — reads `missing_expected_dates`, displays as "Missing Bulk Dates" with red/green status |
+| `backend/tests/test_price_integrity_metrics.py` | Tests for `missing_expected_dates` calculation |
