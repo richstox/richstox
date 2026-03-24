@@ -441,7 +441,7 @@ does not read or filter by it.
 
 **What Step 2 actually uses as input:**
 
-- **Ticker set:** `tracked_tickers.distinct("ticker", {exchange: {$in: ["NYSE","NASDAQ"]}, asset_type: "Common Stock"})` via `_STEP2_QUERY` in `price_ingestion_service.py:858` (or `seeded_tickers_override` when called from the full pipeline chain)
+- **Ticker set:** `tracked_tickers.distinct("ticker", {exchange: {$in: ["NYSE","NASDAQ"]}, asset_type: "Common Stock"})` via `_STEP2_QUERY` in `price_ingestion_service.run_daily_bulk_catchup()` (or `seeded_tickers_override` when called from the full pipeline chain)
 - **Date to fetch:** The EODHD `eod-bulk-last-day/US` endpoint returns the provider's latest available trading day. No date parameter is passed by default.
 - **Gap detection:** `scheduler_service._get_missed_trading_dates()` determines missed dates by comparing `pipeline_state.price_bulk.global_last_bulk_date_processed` against the current date, using NYSE trading calendar rules.
 
