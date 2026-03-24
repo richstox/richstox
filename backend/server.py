@@ -7826,11 +7826,20 @@ async def build_canonical_pipeline_report(db_ref, chain_run_id: str) -> Dict[str
     })
     visibility_rule = max(step3_filtered_out - fundamentals_blocker, 0)
 
-    now_prague = datetime.now(_PRAGUE)
+    # Use the chain's finished_at timestamp so the "Chain completed" label
+    # in the UI matches the actual pipeline completion time — not the
+    # moment the report is fetched (which caused the stale-step-run vs fresh-
+    # timestamp inconsistency reported in the pipeline consistency bug).
+    _finished_at = chain_doc.get("finished_at")
+    if isinstance(_finished_at, datetime):
+        _ts_prague = _finished_at.astimezone(_PRAGUE)
+    else:
+        # Chain still running or missing timestamp — fall back to now.
+        _ts_prague = datetime.now(_PRAGUE)
 
     return {
         "chain_run_id": chain_run_id,
-        "last_generated_at_prague": now_prague.isoformat(),
+        "last_generated_at_prague": _ts_prague.isoformat(),
         "raw_symbols": raw_symbols,
         "seeded_tickers": seeded_tickers,
         "with_price": with_price,
