@@ -201,14 +201,18 @@ class TestIsTradingDay:
         assert await is_trading_day(db, "2026-01-01") is False
 
     @pytest.mark.asyncio
-    async def test_fallback_weekday(self):
-        """When no calendar row exists, weekday = trading day."""
+    async def test_missing_calendar_row_returns_false(self):
+        """When no calendar row exists, is_trading_day returns False (fail-closed).
+        
+        market_calendar is the single source of truth — we do NOT fall back
+        to weekday heuristics when a row is missing.
+        """
         from services.market_calendar_service import is_trading_day
         
         db = MockDB(market_calendar=MockCollection([]))
-        # 2026-03-24 is a Tuesday
-        assert await is_trading_day(db, "2026-03-24") is True
-        # 2026-03-22 is a Sunday
+        # 2026-03-24 is a Tuesday (would be a weekday) but no calendar row exists
+        assert await is_trading_day(db, "2026-03-24") is False
+        # 2026-03-22 is a Sunday — also False
         assert await is_trading_day(db, "2026-03-22") is False
 
 
@@ -289,6 +293,61 @@ class TestLastNCompletedTradingDays:
             assert result[0] == "2026-03-23"
             assert result[1] == "2026-03-20"
             assert result[2] == "2026-03-19"
+
+    @pytest.mark.asyncio
+    async def test_early_close_day_uses_stored_close_time(self):
+        """On an early close day (e.g. 13:00), close time from calendar row is used."""
+        from services.market_calendar_service import last_n_completed_trading_days
+        
+        # 2026-03-24 is an early close day at 13:00
+        docs = [
+            {"market": "US", "date": "2026-03-23", "is_trading_day": True,
+             "trading_hours": {"open": "09:30", "close": "16:00"},
+             "holiday_name": None, "early_close_time": None, "timezone": "America/New_York"},
+            {"market": "US", "date": "2026-03-24", "is_trading_day": True,
+             "trading_hours": {"open": "09:30", "close": "13:00"},
+             "holiday_name": None, "early_close_time": "13:00", "timezone": "America/New_York"},
+        ]
+        db = MockDB(market_calendar=MockCollection(docs))
+        
+        # Mock time as 14:00 ET — after the early close of 13:00
+        mock_now = datetime(2026, 3, 24, 14, 0, 0, tzinfo=_NY_TZ)
+        
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            
+            result = await last_n_completed_trading_days(db, 2)
+            # Today's early close was 13:00, current time is 14:00 → today IS included
+            assert "2026-03-24" in result
+
+    @pytest.mark.asyncio
+    async def test_early_close_day_excluded_before_close(self):
+        """On an early close day, today excluded if before the early close time."""
+        from services.market_calendar_service import last_n_completed_trading_days
+        
+        docs = [
+            {"market": "US", "date": "2026-03-23", "is_trading_day": True,
+             "trading_hours": {"open": "09:30", "close": "16:00"},
+             "holiday_name": None, "early_close_time": None, "timezone": "America/New_York"},
+            {"market": "US", "date": "2026-03-24", "is_trading_day": True,
+             "trading_hours": {"open": "09:30", "close": "13:00"},
+             "holiday_name": None, "early_close_time": "13:00", "timezone": "America/New_York"},
+        ]
+        db = MockDB(market_calendar=MockCollection(docs))
+        
+        # Mock time as 12:00 ET — before the early close of 13:00
+        mock_now = datetime(2026, 3, 24, 12, 0, 0, tzinfo=_NY_TZ)
+        
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            
+            result = await last_n_completed_trading_days(db, 2)
+            # Today's early close is 13:00, current time is 12:00 → today NOT included
+            assert "2026-03-24" not in result
 
 
 class TestMarketStatusNow:
@@ -478,7 +537,11 @@ class TestCompletedTradingDaysHealth:
 
 
 class TestMarketOpenClosedNow:
-    """Tests for market_open_closed_now()."""
+    """Tests for market_open_closed_now().
+    
+    Semantics: is_open means the regular market session is active (REGULAR).
+    PRE_MARKET and AFTER_HOURS are NOT considered "open".
+    """
 
     @pytest.mark.asyncio
     async def test_returns_dict_shape(self):
@@ -500,3 +563,66 @@ class TestMarketOpenClosedNow:
             assert "is_open" in result
             assert "state" in result
             assert "time_to_close_seconds" in result
+
+    @pytest.mark.asyncio
+    async def test_regular_session_is_open(self):
+        """During regular hours (09:30-16:00), is_open should be True."""
+        from services.market_calendar_service import market_open_closed_now
+        
+        docs = [{"market": "US", "date": "2026-03-24", "is_trading_day": True,
+                 "trading_hours": {"open": "09:30", "close": "16:00"},
+                 "holiday_name": None, "early_close_time": None}]
+        db = MockDB(market_calendar=MockCollection(docs))
+        
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
+        
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            
+            result = await market_open_closed_now(db)
+            assert result["is_open"] is True
+            assert result["state"] == "REGULAR"
+
+    @pytest.mark.asyncio
+    async def test_pre_market_is_not_open(self):
+        """During pre-market (04:00-09:30), is_open should be False."""
+        from services.market_calendar_service import market_open_closed_now
+        
+        docs = [{"market": "US", "date": "2026-03-24", "is_trading_day": True,
+                 "trading_hours": {"open": "09:30", "close": "16:00"},
+                 "holiday_name": None, "early_close_time": None}]
+        db = MockDB(market_calendar=MockCollection(docs))
+        
+        mock_now = datetime(2026, 3, 24, 5, 0, 0, tzinfo=_NY_TZ)
+        
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            
+            result = await market_open_closed_now(db)
+            assert result["is_open"] is False
+            assert result["state"] == "PRE_MARKET"
+
+    @pytest.mark.asyncio
+    async def test_after_hours_is_not_open(self):
+        """During after-hours (16:00-20:00), is_open should be False."""
+        from services.market_calendar_service import market_open_closed_now
+        
+        docs = [{"market": "US", "date": "2026-03-24", "is_trading_day": True,
+                 "trading_hours": {"open": "09:30", "close": "16:00"},
+                 "holiday_name": None, "early_close_time": None}]
+        db = MockDB(market_calendar=MockCollection(docs))
+        
+        mock_now = datetime(2026, 3, 24, 17, 0, 0, tzinfo=_NY_TZ)
+        
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            
+            result = await market_open_closed_now(db)
+            assert result["is_open"] is False
+            assert result["state"] == "AFTER_HOURS"

@@ -34,6 +34,7 @@ interface CompletedTradingDayHealth {
   days?: { date: string; ok: boolean }[];
   ok_count?: number;
   missing_count?: number;
+  missing_dates?: string[];
   status?: 'green' | 'yellow' | 'red';
 }
 
@@ -202,7 +203,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
   const ctdh = pi?.completed_trading_days_health;
-  if (ctdh && (ctdh.missing_count ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${ctdh.missing_count} of last 10 trading days missing price data` });
+  if (ctdh && (ctdh.missing_count ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${ctdh.missing_count} of last 10 completed trading days missing price data` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
   // Format count/total with percentage
@@ -226,7 +227,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
   // ── Completed Trading Days Health metric ──
   const ctdhData = pi?.completed_trading_days_health;
-  const ctdhDisplay = ctdhData ? `${ctdhData.ok_count ?? 0}/10` : '—';
+  const ctdhMissing = ctdhData?.missing_count ?? 0;
+  const ctdhDisplay = ctdhData ? `${ctdhMissing} missing` : '—';
   const ctdhStatus: 'green' | 'yellow' | 'red' = (ctdhData?.status as 'green' | 'yellow' | 'red') ?? 'yellow';
 
   const needRedl = pi?.needs_price_redownload;
@@ -339,7 +341,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={lastBulkStatus}
           />
           <IntegrityMetric
-            label="Last 10 Trading Days"
+            label="Last 10 Completed Trading Days"
             value={ctdhDisplay}
             status={ctdhStatus}
           />
@@ -364,7 +366,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         {ctdhData?.days && ctdhData.days.length > 0 && (
           <>
             <Text style={d.subSection}>Last 10 Completed Trading Days</Text>
-            <Text style={d.cpHint}>Price pipeline ingestion status per trading day</Text>
+            <Text style={d.cpHint}>Price pipeline ingestion status per completed trading day</Text>
+            {ctdhData.missing_dates && ctdhData.missing_dates.length > 0 && (
+              <Text style={[d.cpHint, { color: '#EF4444', marginBottom: 4 }]}>
+                Missing: {ctdhData.missing_dates.join(', ')}
+              </Text>
+            )}
             {ctdhData.days.map((day) => (
               <View key={day.date} style={d.cpRow}>
                 <View style={[d.cpDot, { backgroundColor: day.ok ? '#22C55E' : '#EF4444' }]} />

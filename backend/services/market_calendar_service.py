@@ -274,7 +274,13 @@ async def is_trading_day(db, date_str: str, market: str = "US") -> bool:
     """
     Returns whether the given date is a trading day.
 
-    Falls back to weekday heuristic if no calendar row exists.
+    market_calendar is the single source of truth.  If no calendar row
+    exists for the requested date, this returns ``False`` (fail-closed)
+    rather than guessing via weekday heuristic.  This ensures we never
+    silently approximate holidays or treat unsynced dates as trading days.
+
+    Callers that need a different fallback should handle the ``None`` case
+    via :func:`is_trading_day_or_none`.
     """
     doc = await db[COLLECTION].find_one(
         {"market": market, "date": date_str},
@@ -283,12 +289,13 @@ async def is_trading_day(db, date_str: str, market: str = "US") -> bool:
     if doc is not None:
         return bool(doc.get("is_trading_day", False))
 
-    # Fallback: weekday = trading day (no holiday awareness)
-    try:
-        d = date.fromisoformat(date_str)
-        return d.weekday() < 5
-    except (ValueError, TypeError):
-        return False
+    # No calendar row — fail closed.  Do NOT fall back to weekday heuristic.
+    # market_calendar must be the only runtime source of truth.
+    logger.debug(
+        "is_trading_day: no calendar row for market=%s date=%s — returning False",
+        market, date_str,
+    )
+    return False
 
 
 async def last_n_trading_days(
@@ -322,11 +329,16 @@ async def last_n_completed_trading_days(
     A trading day is "completed" when the regular session has fully closed
     in the market's timezone.  If today is a trading day but the regular
     session has not yet ended, today is NOT included.
+
+    For market="US" the effective timezone is America/New_York.
+    The close time is read from the persisted market_calendar row for that
+    exact date (respecting early close days).  If no calendar row exists
+    for today, today is excluded (fail-closed).
     """
     now_et = datetime.now(NY_TZ)
     today_str = now_et.date().isoformat()
 
-    # Determine if today's regular session is complete
+    # Determine if today's regular session is complete using persisted data
     today_doc = await db[COLLECTION].find_one(
         {"market": market, "date": today_str},
         {"is_trading_day": 1, "trading_hours": 1, "_id": 0},
@@ -334,20 +346,23 @@ async def last_n_completed_trading_days(
 
     include_today = False
     if today_doc and today_doc.get("is_trading_day"):
-        close_str = (today_doc.get("trading_hours") or {}).get("close", DEFAULT_REGULAR_CLOSE)
-        try:
-            close_h, close_m = map(int, close_str.split(":"))
-            close_time = time(close_h, close_m)
-            if now_et.time() >= close_time:
-                include_today = True
-        except (ValueError, TypeError):
-            pass
-    elif today_doc and not today_doc.get("is_trading_day"):
-        # Today is not a trading day — don't include it regardless
-        include_today = False
-    else:
-        # No calendar row for today — fall back: don't include
-        include_today = False
+        # Close time MUST come from the calendar row — this correctly
+        # handles early close days without any hardcoded fallback.
+        trading_hours = today_doc.get("trading_hours")
+        if trading_hours and trading_hours.get("close"):
+            close_str = trading_hours["close"]
+            try:
+                close_h, close_m = map(int, close_str.split(":"))
+                close_time = time(close_h, close_m)
+                if now_et.time() >= close_time:
+                    include_today = True
+            except (ValueError, TypeError):
+                # Malformed close time — don't include today (fail-closed)
+                pass
+        # If trading_hours or close is missing from the row, don't include
+        # today.  This is fail-closed: we only include today if we can
+        # confirm the session has ended.
+    # If today is not a trading day or has no calendar row, don't include it
 
     if include_today:
         date_filter = {"$lte": today_str}
@@ -478,8 +493,14 @@ async def market_status_now(db, market: str = "US") -> Dict[str, Any]:
 async def market_open_closed_now(db, market: str = "US") -> Dict[str, Any]:
     """
     Simple open/closed check with time to close.
+
+    Semantics: ``is_open`` means the **regular** market session is currently
+    active (state == "REGULAR").  PRE_MARKET and AFTER_HOURS are NOT
+    considered "open" for this endpoint — this matches the standard
+    interpretation used by ticker detail pages and market status UIs.
     """
     status = await market_status_now(db, market)
+    # is_open = regular session only (not pre-market or after-hours)
     is_open = status["state"] == "REGULAR"
     time_to_close = 0
     if is_open:
@@ -563,14 +584,17 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
 
     # 3. Check each completed trading day
     days_result = []
+    missing_dates = []
     ok_count = 0
     for d in completed_days:
         ok = d in processed_dates
         days_result.append({"date": d, "ok": ok})
         if ok:
             ok_count += 1
+        else:
+            missing_dates.append(d)
 
-    missing_count = len(completed_days) - ok_count
+    missing_count = len(missing_dates)
 
     # Status logic: green = all OK, yellow = 1-2 missing, red = 3+ missing
     if missing_count == 0:
@@ -584,6 +608,7 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
         "days": days_result,
         "ok_count": ok_count,
         "missing_count": missing_count,
+        "missing_dates": missing_dates,
         "status": status,
     }
 
@@ -597,6 +622,14 @@ async def _get_bulk_processed_dates_set(db) -> set:
       - processed_date = D
       - status = "success"
       - rows_written > 0
+
+    We scan the most recent 50 price_sync runs.  Each run typically covers
+    1-3 days of gapfill, so 50 runs safely covers 50+ distinct dates —
+    well beyond the 10 completed trading days this metric needs.  The limit
+    exists only to bound the aggregation pipeline; it cannot cause the
+    "last 10 completed trading days" metric to miss a date unless the
+    system has gone 50+ successful pipeline runs without covering it
+    (which would already indicate a real gap).
     """
     pipeline = [
         {"$match": {
@@ -605,7 +638,7 @@ async def _get_bulk_processed_dates_set(db) -> set:
             "details.price_bulk_gapfill.days": {"$exists": True},
         }},
         {"$sort": {"finished_at": -1}},
-        {"$limit": 30},
+        {"$limit": 50},
         {"$project": {"_id": 0, "details.price_bulk_gapfill.days": 1}},
     ]
 
