@@ -9,8 +9,11 @@ import asyncio
 from datetime import date, datetime, time, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
+
+_NY_TZ = ZoneInfo("America/New_York")
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -250,7 +253,7 @@ class TestLastNCompletedTradingDays:
         db = MockDB(market_calendar=MockCollection(docs))
         
         # Mock time as 10:00 AM ET (before 16:00 close)
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -274,7 +277,7 @@ class TestLastNCompletedTradingDays:
         db = MockDB(market_calendar=MockCollection(docs))
         
         # Mock time as 10:00 AM ET on 2026-03-24 (not a trading day in our list)
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -305,7 +308,7 @@ class TestMarketStatusNow:
         db = MockDB(market_calendar=MockCollection(weekend_docs))
         
         # Mock time as Sunday
-        mock_now = datetime(2026, 3, 22, 12, 0, 0)
+        mock_now = datetime(2026, 3, 22, 12, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -325,7 +328,7 @@ class TestMarketStatusNow:
                  "holiday_name": None, "early_close_time": None}]
         db = MockDB(market_calendar=MockCollection(docs))
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -365,7 +368,7 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection(ops_docs),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -385,7 +388,7 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection([]),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -426,7 +429,7 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection(ops_docs),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -461,7 +464,7 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection(ops_docs),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -486,7 +489,7 @@ class TestMarketOpenClosedNow:
                  "holiday_name": None, "early_close_time": None}]
         db = MockDB(market_calendar=MockCollection(docs))
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0)
+        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
