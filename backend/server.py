@@ -5202,6 +5202,11 @@ async def admin_run_job_now(
     from visibility_rules import recompute_visibility_all, clean_zombie_tickers, recompute_visibility_with_zombie_cleanup
     from scheduler_service import save_step3_visibility_exclusion_report as _save_step3_vis_report
     from benchmark_service import update_all_benchmarks
+    from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
+
+    async def _market_calendar_refresh(database):
+        await _mc_ensure_indexes(database)
+        return await refresh_market_calendar(database)
 
     async def _recompute_visibility_and_report(database):
         """Run recompute_visibility_all then regenerate Step 3 visibility exclusion report."""
@@ -5221,6 +5226,7 @@ async def admin_run_job_now(
         "clean_zombie_tickers": clean_zombie_tickers,
         "recompute_visibility_with_zombies": recompute_visibility_with_zombie_cleanup,
         "benchmark_update": update_all_benchmarks,
+        "market_calendar": _market_calendar_refresh,
     }
     
     if job_name not in JOB_RUNNERS:
@@ -5777,6 +5783,23 @@ async def admin_overview():
     READ-ONLY: no finalization side-effects (page refresh must never mutate).
     """
     return await get_admin_overview(db)
+
+
+# =========================================================================
+# MARKET CALENDAR ENDPOINTS
+# =========================================================================
+@api_router.get("/market/status")
+async def market_status(market: str = "US"):
+    """Current market status (no auth required — public info)."""
+    from services.market_calendar_service import market_status_now
+    return await market_status_now(db, market)
+
+
+@api_router.get("/market/open-closed")
+async def market_open_closed(market: str = "US"):
+    """Simple open/closed check (no auth required — public info)."""
+    from services.market_calendar_service import market_open_closed_now
+    return await market_open_closed_now(db, market)
 
 
 # =========================================================================
