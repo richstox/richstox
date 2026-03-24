@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from services.universe_counts_service import get_universe_counts
+from services.market_calendar_service import get_last_10_completed_trading_days_health
 from credit_log_service import get_pipeline_sync_status
 
 logger = logging.getLogger(__name__)
@@ -355,6 +356,10 @@ JOB_REGISTRY = {
         "hour": 4, "minute": 15, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/eod/{BENCHMARK_SYMBOL}"
     },
+    "market_calendar": {
+        "hour": 3, "minute": 0, "sunday_only": False, "has_api_calls": True,
+        "api_endpoint": "https://eodhd.com/api/exchange-details/US"
+    },
     "fundamentals_sync": {
         "hour": 4, "minute": 30, "sunday_only": False, "has_api_calls": True,
         "dependency_on": "price_sync",
@@ -405,6 +410,7 @@ JOB_PATTERNS = {
     "news_refresh": ["news_refresh", "news_daily_refresh", "news_sync"],
     "price_sync": ["daily_price_sync", "scheduled_price_sync", "price_sync"],
     "benchmark_update": ["benchmark_update", "sp500tr_update", "sp500tr_sync", "sp500tr"],
+    "market_calendar": ["market_calendar", "calendar_refresh"],
     "fundamentals_sync": ["scheduled_fundamentals_sync", "fundamentals_sync", "fundamentals_batch"],
     "backfill_gaps": ["backfill_gaps", "scheduled_backfill_gaps"],
     "backfill_all": ["backfill_all", "scheduled_backfill_all", "parallel_backfill"],
@@ -513,7 +519,7 @@ _SAFE_INTEGRITY = {
     "history_download_completed_count": 0,
     "gap_free_since_history_download_count": 0,
     "fundamentals_complete_count": 0,
-    "missing_expected_dates": 0,
+    "completed_trading_days_health": None,
     "coverage_checkpoints": {},
     "benchmark_freshness": None,
 }
@@ -594,6 +600,12 @@ async def _get_bulk_processed_dates(db) -> List[str]:
 
     This is the *canonical* source of expected_dates — no rolling-date
     heuristic or calendar approximation.
+
+    NOTE: Only ``scheduler_service.run_daily_price_sync()`` writes
+    ``details.price_bulk_gapfill.days`` to ``ops_job_runs``.
+    The legacy ``price_ingestion_service.sync_daily_prices()`` endpoint
+    does NOT write this field — runs made through that path will not
+    appear here.  See DASHBOARD_METRIC_AUDIT.md §5 for details.
     """
     pipeline = [
         {"$match": {
@@ -856,45 +868,14 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                 "kind": _CHECKPOINT_KIND.get(label, "historical"),
             }
 
-        # ── 5. Missing expected dates (from canonical bulk ingestion truth) ─
-        # expected_dates = dates where bulk ingestion succeeded
-        expected_dates = await _get_bulk_processed_dates(db)
-
-        if expected_dates:
-            # Count distinct expected dates where coverage is incomplete
-            gap_pipeline = [
-                {"$match": {
-                    "date": {"$in": expected_dates},
-                    "ticker": {"$in": visible_tickers},
-                }},
-                {"$group": {"_id": "$date", "count": {"$sum": 1}}},
-                {"$match": {"count": {"$lt": today_visible}}},
-                {"$count": "n"},
-            ]
-            gap_result = await db.stock_prices.aggregate(gap_pipeline).to_list(1)
-            gap_count = gap_result[0]["n"] if gap_result else 0
-
-            # Also count dates with zero coverage (no rows at all)
-            dates_with_any_data_pipeline = [
-                {"$match": {
-                    "date": {"$in": expected_dates},
-                    "ticker": {"$in": visible_tickers},
-                }},
-                {"$group": {"_id": "$date"}},
-            ]
-            dates_with_data: set = set()
-            async for doc in db.stock_prices.aggregate(dates_with_any_data_pipeline):
-                dates_with_data.add(doc["_id"])
-            dates_with_zero_coverage = sum(
-                1 for d in expected_dates if d not in dates_with_data
-            )
-            missing_expected_dates = gap_count + dates_with_zero_coverage
-        else:
-            missing_expected_dates = 0
+        # ── 5. Completed trading days health (market-calendar-based) ──────
+        completed_trading_days_health = await get_last_10_completed_trading_days_health(db)
 
         # ── 6. Gap-free computation (inline, from proof markers + coverage) ─
         # A ticker is gap-free iff it has a proven download AND has price
         # data for every canonical bulk date after its anchor.
+        # Source bulk dates from ops_job_runs (same as before).
+        expected_dates = await _get_bulk_processed_dates(db)
         if proven_anchors and expected_dates:
             coverage_pipeline = [
                 {"$match": {
@@ -933,7 +914,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             "history_download_completed_count": history_download_completed_count,
             "gap_free_since_history_download_count": gap_free_count,
             "fundamentals_complete_count": fundamentals_complete_count,
-            "missing_expected_dates": missing_expected_dates,
+            "completed_trading_days_health": completed_trading_days_health,
             "coverage_checkpoints": checkpoints,
             "benchmark_freshness": benchmark_freshness,
         }

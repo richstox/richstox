@@ -30,6 +30,14 @@ interface CoverageCheckpoint {
   kind?: 'recent' | 'historical';
 }
 
+interface CompletedTradingDayHealth {
+  days?: { date: string; ok: boolean }[];
+  ok_count?: number;
+  missing_count?: number;
+  missing_dates?: string[];
+  status?: 'green' | 'yellow' | 'red';
+}
+
 interface PriceIntegrity {
   today_visible?: number;
   today_visible_source?: {
@@ -43,7 +51,7 @@ interface PriceIntegrity {
   history_download_completed_count?: number;
   gap_free_since_history_download_count?: number;
   fundamentals_complete_count?: number;
-  missing_expected_dates?: number;
+  completed_trading_days_health?: CompletedTradingDayHealth | null;
   coverage_checkpoints?: Record<string, CoverageCheckpoint>;
 }
 
@@ -194,7 +202,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (failedCount > 0) alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${failedCount} pipeline job${failedCount > 1 ? 's' : ''} failed` });
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
-  if (pi && (pi.missing_expected_dates ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${pi.missing_expected_dates} date(s) with incomplete price coverage` });
+  const ctdh = pi?.completed_trading_days_health;
+  if (ctdh && (ctdh.missing_count ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${ctdh.missing_count} of last 10 completed trading ${ctdh.missing_count === 1 ? 'day' : 'days'} missing price data` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
   // Format count/total with percentage
@@ -216,10 +225,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   // GREEN = confirmed OK, YELLOW = unknown/pending, RED = confirmed problem
   const lastBulkStatus: 'green' | 'yellow' = pi?.last_bulk_trading_date ? 'green' : 'yellow';
 
-  const missingBulk = pi?.missing_expected_dates;
-  const missingBulkDisplay = missingBulk != null ? String(missingBulk) : '—';
-  const missingBulkStatus: 'green' | 'yellow' | 'red' =
-    missingBulk != null ? (missingBulk === 0 ? 'green' : 'red') : 'yellow';
+  // ── Completed Trading Days Health metric ──
+  const ctdhData = pi?.completed_trading_days_health;
+  const ctdhMissing = ctdhData?.missing_count ?? 0;
+  const ctdhDisplay = ctdhData ? `${ctdhMissing} missing` : '—';
+  const ctdhStatus: 'green' | 'yellow' | 'red' = (ctdhData?.status as 'green' | 'yellow' | 'red') ?? 'yellow';
 
   const needRedl = pi?.needs_price_redownload;
   const needRedlDisplay = needRedl != null ? String(needRedl) : '—';
@@ -331,9 +341,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={lastBulkStatus}
           />
           <IntegrityMetric
-            label="Missing Bulk Dates"
-            value={missingBulkDisplay}
-            status={missingBulkStatus}
+            label="Last 10 Completed Trading Days"
+            value={ctdhDisplay}
+            status={ctdhStatus}
           />
           <IntegrityMetric
             label="Need Re-download"
@@ -351,6 +361,28 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={pi?.benchmark_freshness?.status as 'green' | 'yellow' | 'red' | undefined}
           />
         </View>
+
+        {/* Last 10 Completed Trading Days OPS Health */}
+        {ctdhData?.days && ctdhData.days.length > 0 && (
+          <>
+            <Text style={d.subSection}>Last 10 Completed Trading Days</Text>
+            <Text style={d.cpHint}>Price pipeline ingestion status per completed trading day</Text>
+            {ctdhData.missing_dates && ctdhData.missing_dates.length > 0 && (
+              <Text style={[d.cpHint, { color: '#EF4444', marginBottom: 4 }]}>
+                Missing: {ctdhData.missing_dates.join(', ')}
+              </Text>
+            )}
+            {ctdhData.days.map((day) => (
+              <View key={day.date} style={d.cpRow}>
+                <View style={[d.cpDot, { backgroundColor: day.ok ? '#22C55E' : '#EF4444' }]} />
+                <Text style={d.cpLabel}>{day.date}</Text>
+                <Text style={[d.cpValue, { color: day.ok ? '#22C55E' : '#EF4444' }]}>
+                  {day.ok ? '✓ OK' : '✗ Missing'}
+                </Text>
+              </View>
+            ))}
+          </>
+        )}
 
         {/* Recent bulk coverage */}
         <Text style={d.subSection}>

@@ -20,11 +20,18 @@ from services.admin_overview_service import (
 
 
 def _make_cursor(docs):
-    """Create an async iterable cursor that also has to_list."""
+    """Create an async iterable cursor that also has to_list, sort, and limit."""
     class _Cursor:
         def __init__(self, data):
-            self._data = data
+            self._data = list(data)
+        def sort(self, *args, **kwargs):
+            return self
+        def limit(self, n):
+            self._data = self._data[:n]
+            return self
         async def to_list(self, length=None):
+            if length is not None:
+                return self._data[:length]
             return self._data
         def __aiter__(self):
             return _CursorIter(self._data)
@@ -48,7 +55,6 @@ def _mock_db(
     history_download_completed_count=0,
     fundamentals_complete_count=0,
     checkpoint_counts=None,
-    gap_count=0,
     chain_doc="DEFAULT",
     bulk_days=None,
     proven_ticker_docs=None,
@@ -110,13 +116,9 @@ def _mock_db(
         if d.get("status") == "success" and d.get("processed_date")
     ]
 
-    # stock_prices — find_one for nearest date, aggregate for counts & gaps
+    # stock_prices — find_one for nearest date, aggregate for counts & gap-free
     checkpoint_counts = checkpoint_counts or {}
     count_docs = [{"_id": d, "count": c} for d, c in checkpoint_counts.items()]
-    gap_docs = [{"n": gap_count}] if gap_count else []
-    # For the zero-coverage check, return all expected dates as having data
-    # (so only the gap_count from the first aggregate matters)
-    dates_with_data_docs = [{"_id": d} for d in expected_dates]
 
     call_index = {"n": 0}
 
@@ -127,13 +129,7 @@ def _mock_db(
             # First call: checkpoint counts
             return _make_cursor(count_docs)
         if idx == 1:
-            # Second call: gap count (incomplete dates)
-            return _make_cursor(gap_docs)
-        if idx == 2:
-            # Third call: dates_with_data (for zero-coverage detection)
-            return _make_cursor(dates_with_data_docs)
-        if idx == 3:
-            # Fourth call: gap_free coverage per proven ticker
+            # Second call: gap_free coverage per proven ticker
             return _make_cursor(gap_free_coverage_docs)
         return _make_cursor([])
 
@@ -147,12 +143,32 @@ def _mock_db(
         find_one=AsyncMock(return_value=None),
     )
 
-    return SimpleNamespace(
+    # market_calendar — for get_last_10_completed_trading_days_health
+    # Default: empty calendar (returns yellow/no-data status)
+    market_calendar = SimpleNamespace(
+        find_one=AsyncMock(return_value=None),
+        find=lambda *a, **kw: _make_cursor([]),
+        create_index=AsyncMock(),
+    )
+
+    class _DB:
+        """Namespace that also supports __getitem__ for collection-name access."""
+        def __init__(self, **collections):
+            for k, v in collections.items():
+                setattr(self, k, v)
+        def __getitem__(self, key):
+            return getattr(self, key, SimpleNamespace(
+                find_one=AsyncMock(return_value=None),
+                find=lambda *a, **kw: _make_cursor([]),
+            ))
+
+    return _DB(
         tracked_tickers=tracked_tickers,
         pipeline_state=pipeline_state,
         pipeline_chain_runs=pipeline_chain_runs,
         stock_prices=stock_prices,
         ops_job_runs=ops_job_runs,
+        market_calendar=market_calendar,
     )
 
 
@@ -172,7 +188,7 @@ def test_returns_correct_keys():
     assert "history_download_completed_count" in result
     assert "gap_free_since_history_download_count" in result
     assert "fundamentals_complete_count" in result
-    assert "missing_expected_dates" in result
+    assert "completed_trading_days_health" in result
     assert "coverage_checkpoints" in result
 
 
@@ -355,46 +371,39 @@ def test_zero_visible_returns_safe_defaults():
     assert result["history_download_completed_count"] == 0
     assert result["gap_free_since_history_download_count"] == 0
     assert result["fundamentals_complete_count"] == 0
-    assert result["missing_expected_dates"] == 0
+    assert result["completed_trading_days_health"] is None
     assert result["coverage_checkpoints"] == {}
     assert "today_visible_source" in result
 
 
-def test_missing_expected_dates_from_bulk_history():
-    """Gap count comes from bulk-processed dates, not a rolling lookback."""
-    bulk_days = [
-        {"processed_date": "2026-03-18", "status": "success"},
-        {"processed_date": "2026-03-19", "status": "success"},
-        {"processed_date": "2026-03-20", "status": "success"},
-    ]
-    db = _mock_db(
-        bulk_days=bulk_days,
-        gap_count=2,  # 2 of the 3 expected dates have incomplete coverage
-    )
+def test_completed_trading_days_health_present():
+    """New metric: completed_trading_days_health is present in result."""
+    db = _mock_db()
     result = asyncio.run(get_price_integrity_metrics(db))
-    assert result["missing_expected_dates"] == 2
+    # With empty market_calendar, should get a health dict with yellow status
+    ctdh = result["completed_trading_days_health"]
+    assert ctdh is not None
+    assert "status" in ctdh
+    assert "days" in ctdh
+    assert "ok_count" in ctdh
+    assert "missing_count" in ctdh
 
 
-def test_no_gaps_when_no_bulk_history():
-    """When there are no successfully processed bulk dates, missing_expected_dates is 0."""
+def test_completed_trading_days_health_with_no_calendar():
+    """When market_calendar is empty, status should be yellow."""
     db = _mock_db(bulk_days=[])
     result = asyncio.run(get_price_integrity_metrics(db))
-    assert result["missing_expected_dates"] == 0
+    ctdh = result["completed_trading_days_health"]
+    assert ctdh["status"] == "yellow"
+    assert ctdh["days"] == []
 
 
-def test_failed_bulk_days_excluded():
-    """Only status=success bulk days count as expected_dates."""
-    bulk_days = [
-        {"processed_date": "2026-03-18", "status": "success"},
-        {"processed_date": "2026-03-19", "status": "error"},
-        {"processed_date": "2026-03-20", "status": "failed_sanity"},
-    ]
-    db = _mock_db(bulk_days=bulk_days)
-    # The mock ops_job_runs returns these days; only 2026-03-18 has status=success
-    # Since gap_count defaults to 0, expect 0 missing
+def test_completed_trading_days_health_key_replaces_missing_expected_dates():
+    """Confirm missing_expected_dates is no longer in the result."""
+    db = _mock_db()
     result = asyncio.run(get_price_integrity_metrics(db))
-    # With 1 expected date and gap_count=0, should be 0 missing
-    assert result["missing_expected_dates"] == 0
+    assert "missing_expected_dates" not in result
+    assert "completed_trading_days_health" in result
 
 
 # ── Tests: get_pipeline_last_success_age ────────────────────────────────────

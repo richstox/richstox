@@ -130,6 +130,10 @@ NEWS_REFRESH_MINUTE = 0
 BENCHMARK_UPDATE_HOUR = 4
 BENCHMARK_UPDATE_MINUTE = 15
 
+# MARKET CALENDAR: Daily refresh at 03:00 (before price sync)
+MARKET_CALENDAR_HOUR = 3
+MARKET_CALENDAR_MINUTE = 0
+
 # KEY METRICS: Job A - compute per-ticker metrics at 05:00
 KEY_METRICS_HOUR = 5
 KEY_METRICS_MINUTE = 0
@@ -764,6 +768,21 @@ async def scheduler_loop():
                             }},
                         )
             
+            # ==================================================================
+            # MARKET CALENDAR REFRESH at 03:00 — idempotent, runs daily
+            # ==================================================================
+            # Fetches EODHD exchange-details/US and regenerates calendar rows.
+            # Upsert-based, safe to run daily.  Ensures indexes on first run.
+            if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
+                from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
+                async def _market_calendar_job(_db):
+                    await _mc_ensure_indexes(_db)
+                    return await refresh_market_calendar(_db)
+                await run_job_with_retry("market_calendar", _market_calendar_job, db)
+                last_run["market_calendar"] = today_str
+                await set_last_run_state(last_run)
+
             # ==================================================================
             # BENCHMARK UPDATE at 04:15 — standalone, NOT part of Steps 1-2-3
             # ==================================================================
