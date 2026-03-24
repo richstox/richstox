@@ -278,9 +278,6 @@ async def is_trading_day(db, date_str: str, market: str = "US") -> bool:
     exists for the requested date, this returns ``False`` (fail-closed)
     rather than guessing via weekday heuristic.  This ensures we never
     silently approximate holidays or treat unsynced dates as trading days.
-
-    Callers that need a different fallback should handle the ``None`` case
-    via :func:`is_trading_day_or_none`.
     """
     doc = await db[COLLECTION].find_one(
         {"market": market, "date": date_str},
