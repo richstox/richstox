@@ -356,8 +356,9 @@ async def sync_daily_prices(db) -> Dict[str, Any]:
     IMPORTANT: This is a **legacy** convenience endpoint.  It writes price rows
     to ``stock_prices`` but does NOT update ``pipeline_state.price_bulk`` or
     write ``details.price_bulk_gapfill.days`` to ``ops_job_runs``.  As a result,
-    the admin "Missing Bulk Dates" metric (``missing_expected_dates``) will not
-    reflect runs made through this path.  Use "Run Full Pipeline Now"
+    the admin "Completed Trading Days" health metric
+    (``completed_trading_days_health``) will not reflect runs made through this
+    path.  Use "Run Full Pipeline Now"
     (``scheduler_service.run_daily_price_sync``) for canonical price ingestion
     that updates all metric state.  See DASHBOARD_METRIC_AUDIT.md §5.
     
