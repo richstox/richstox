@@ -49,14 +49,20 @@ def _make_cursor(docs):
     return _Cursor(docs)
 
 
-def _build_calendar_docs(dates_trading, dates_holidays=None, market="US"):
+def _build_calendar_docs(dates_trading, dates_holidays=None, dates_non_trading=None, market="US"):
     """Build mock market_calendar documents.
     
     dates_trading: list of date strings that are trading days
     dates_holidays: dict of date_str -> holiday_name
+    dates_non_trading: list of date strings for non-trading, non-holiday days
+                       (e.g. weekends).  The calendar refresh creates rows for
+                       every date, so tests that need a "healthy" calendar must
+                       include these.
     """
     if dates_holidays is None:
         dates_holidays = {}
+    if dates_non_trading is None:
+        dates_non_trading = []
     
     docs = []
     for d in dates_trading:
@@ -76,6 +82,16 @@ def _build_calendar_docs(dates_trading, dates_holidays=None, market="US"):
             "is_trading_day": False,
             "trading_hours": None,
             "holiday_name": name,
+            "early_close_time": None,
+            "timezone": "America/New_York",
+        })
+    for d in dates_non_trading:
+        docs.append({
+            "market": market,
+            "date": d,
+            "is_trading_day": False,
+            "trading_hours": None,
+            "holiday_name": None,
             "early_close_time": None,
             "timezone": "America/New_York",
         })
@@ -406,7 +422,8 @@ class TestCompletedTradingDaysHealth:
         from services.market_calendar_service import get_last_10_completed_trading_days_health
         
         trading_dates = [f"2026-03-{d:02d}" for d in range(9, 21) if date(2026, 3, d).weekday() < 5]
-        cal_docs = _build_calendar_docs(trading_dates)
+        # Include weekend rows so the staleness window is fully covered
+        cal_docs = _build_calendar_docs(trading_dates, dates_non_trading=["2026-03-21", "2026-03-22"])
         
         # Mock ops_job_runs with successful price_sync for each date
         ops_docs = []
@@ -471,7 +488,7 @@ class TestCompletedTradingDaysHealth:
             "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13",
             "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20",
         ]
-        cal_docs = _build_calendar_docs(trading_dates)
+        cal_docs = _build_calendar_docs(trading_dates, dates_non_trading=["2026-03-21", "2026-03-22"])
         
         # Only 5 days have price_sync data (missing 5)
         ops_docs = []
@@ -510,7 +527,7 @@ class TestCompletedTradingDaysHealth:
         from services.market_calendar_service import get_last_10_completed_trading_days_health
         
         trading_dates = ["2026-03-20"]
-        cal_docs = _build_calendar_docs(trading_dates)
+        cal_docs = _build_calendar_docs(trading_dates, dates_non_trading=["2026-03-19", "2026-03-21"])
         
         ops_docs = [{
             "job_name": "price_sync",
@@ -766,7 +783,7 @@ class TestCompletedTradingDaysHealth:
             "2026-03-19", "2026-03-20", "2026-03-23",
             "2026-03-24",
         ]
-        cal_docs = _build_calendar_docs(trading_dates)
+        cal_docs = _build_calendar_docs(trading_dates, dates_non_trading=["2026-03-21", "2026-03-22"])
 
         # All dates except March 24 processed
         ops_docs = []
@@ -802,6 +819,165 @@ class TestCompletedTradingDaysHealth:
             assert "2026-03-24" in result["missing_dates"]
             # Calendar is healthy (has row for today)
             assert result["calendar_stale"] is False
+
+    # ── Staleness detection tests ────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_staleness_no_weekday_inference_on_weekend(self):
+        """Staleness detection must NOT use weekday inference.
+
+        Scenario: Saturday with a healthy calendar that has rows for all
+        recent dates (including the weekend).  The staleness detector must
+        not flag this as stale just because today is a weekend day.
+        """
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        trading_dates = [
+            "2026-03-16", "2026-03-17", "2026-03-18",
+            "2026-03-19", "2026-03-20", "2026-03-23",
+        ]
+        # Weekend rows present (healthy calendar covers every date)
+        cal_docs = _build_calendar_docs(
+            trading_dates,
+            dates_non_trading=["2026-03-21", "2026-03-22"],
+        )
+
+        ops_docs = []
+        for d in trading_dates:
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 23, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # Saturday 10:00 AM — with weekend rows present, NOT stale
+        mock_now = datetime(2026, 3, 21, 10, 0, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            # Calendar is healthy — no weekday inference triggered
+            assert result["calendar_stale"] is False
+            assert result["status"] == "green"
+
+    @pytest.mark.asyncio
+    async def test_staleness_detected_when_weekend_rows_missing(self):
+        """If weekend rows are missing (calendar not refreshed), staleness
+        must be detected.  This proves the detector checks actual calendar
+        coverage, not weekday-based expectations.
+        """
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        trading_dates = [
+            "2026-03-16", "2026-03-17", "2026-03-18",
+            "2026-03-19", "2026-03-20", "2026-03-23",
+        ]
+        # No weekend rows → calendar is stale
+        cal_docs = _build_calendar_docs(trading_dates)
+
+        ops_docs = []
+        for d in trading_dates:
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 23, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # Saturday 10:00 AM — missing weekend rows → stale
+        mock_now = datetime(2026, 3, 21, 10, 0, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            assert result["calendar_stale"] is True
+            assert "2026-03-21" in result["calendar_gap_dates"]
+            # Status must NOT be green when stale
+            assert result["status"] != "green"
+            # Completed days list must only contain calendar-confirmed days
+            day_dates = [d["date"] for d in result["days"]]
+            for dd in day_dates:
+                assert dd in trading_dates
+
+    @pytest.mark.asyncio
+    async def test_holiday_in_window_not_treated_as_gap(self):
+        """A holiday with a calendar row (is_trading_day=False) must NOT
+        appear in calendar_gap_dates.  The staleness detector checks for
+        row existence, not trading-day status.
+        """
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        trading_dates = [
+            "2026-03-16", "2026-03-17", "2026-03-18",
+            "2026-03-19", "2026-03-20", "2026-03-23",
+            "2026-03-25",
+        ]
+        # March 24 is a holiday (has calendar row), and weekends covered
+        cal_docs = _build_calendar_docs(
+            trading_dates,
+            dates_holidays={"2026-03-24": "Test Holiday"},
+            dates_non_trading=["2026-03-21", "2026-03-22"],
+        )
+
+        ops_docs = []
+        for d in trading_dates:
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 25, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # 5:00 PM ET on March 25 (Wednesday)
+        mock_now = datetime(2026, 3, 25, 17, 0, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            # Calendar has rows for the entire window → not stale
+            assert result["calendar_stale"] is False
+            # Holiday March 24 must NOT be in completed days
+            day_dates = [d["date"] for d in result["days"]]
+            assert "2026-03-24" not in day_dates
+            # All completed days are calendar-confirmed trading days
+            assert result["status"] == "green"
 
 
 class TestMarketOpenClosedNow:

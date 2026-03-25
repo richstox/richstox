@@ -41,15 +41,17 @@ AFTER_HOURS_CLOSE = time(20, 0)    # 20:00 ET
 # Defaults when exchange details are unavailable
 DEFAULT_REGULAR_OPEN = "09:30"
 DEFAULT_REGULAR_CLOSE = "16:00"
-DEFAULT_REGULAR_CLOSE_TIME = time(16, 0)   # parsed version for runtime comparisons
 DEFAULT_TIMEZONE = "America/New_York"
 
 # Working days: Mon=0 .. Fri=4
 DEFAULT_WORKING_DAYS = {0, 1, 2, 3, 4}
 
-# Max calendar days to walk back when checking for missing recent rows.
-# Covers ~1 trading week plus weekend buffer.
-_MAX_CALENDAR_GAP_CHECK_DAYS = 10
+# Number of recent calendar days to check for staleness.
+# A healthy calendar has a row for every date (trading + non-trading).
+# If any date in [today-N+1 .. today] lacks a calendar row, the calendar
+# is stale.  3 days comfortably covers weekends without using weekday
+# inference.
+_STALE_CALENDAR_WINDOW_DAYS = 3
 
 NY_TZ = ZoneInfo("America/New_York")
 
@@ -601,48 +603,38 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
         }
 
     # ── Calendar staleness detection ─────────────────────────────────────
-    # Check whether the calendar is missing rows for recent weekdays.
-    # We do NOT inject those dates as trading days (that would be a
-    # hidden weekday heuristic).  Instead we detect the gap and return
-    # an explicit degraded state so the admin dashboard can surface it.
+    # The calendar refresh generates a row for EVERY date (trading days
+    # AND non-trading days like weekends/holidays).  If any date in the
+    # recent window [today - N + 1 .. today] has no calendar row at all,
+    # the calendar has not been refreshed recently enough → stale.
+    #
+    # This check does NOT use weekday inference, close-time heuristics, or
+    # any other hidden calendar logic.  It simply asks: "does the calendar
+    # cover recent dates?"
     now_et = datetime.now(NY_TZ)
     today_d = now_et.date()
+    today_str = today_d.isoformat()
 
-    # Expected latest completed date: today if after default close on a
-    # weekday, otherwise the most recent prior weekday.
-    if today_d.weekday() < 5 and now_et.time() >= DEFAULT_REGULAR_CLOSE_TIME:
-        latest_expected = today_d
-    else:
-        d = today_d - timedelta(days=1)
-        while d.weekday() >= 5:          # skip Sat/Sun
-            d -= timedelta(days=1)
-        latest_expected = d
+    # Build the list of dates in the recent window
+    window_dates = []
+    d = today_d
+    for _ in range(_STALE_CALENDAR_WINDOW_DAYS):
+        window_dates.append(d.isoformat())
+        d -= timedelta(days=1)
 
-    latest_expected_str = latest_expected.isoformat()
-    most_recent_calendar = completed_days[0]
+    # Query calendar for rows covering those dates
+    recent_rows = await db[COLLECTION].find(
+        {"market": market, "date": {"$in": window_dates}},
+        {"date": 1, "_id": 0},
+    ).to_list(len(window_dates))
 
-    # Walk backward from latest_expected to most_recent_calendar to find
-    # weekdays that have NO calendar row at all (not holidays — those have
-    # a row with is_trading_day=False which is fine).
-    calendar_gap_dates: List[str] = []
-    if most_recent_calendar < latest_expected_str:
-        d = latest_expected
-        # Walk at most _MAX_CALENDAR_GAP_CHECK_DAYS back (covers ~1 trading week + weekends)
-        for _ in range(_MAX_CALENDAR_GAP_CHECK_DAYS):
-            d_str = d.isoformat()
-            if d_str <= most_recent_calendar:
-                break
-            if d.weekday() < 5:  # only check weekdays
-                cal_doc = await db[COLLECTION].find_one(
-                    {"market": market, "date": d_str},
-                    {"is_trading_day": 1, "_id": 0},
-                )
-                if cal_doc is None:
-                    # No calendar row at all — this is a gap
-                    calendar_gap_dates.append(d_str)
-                # If cal_doc exists (trading or holiday), calendar is
-                # authoritative — no gap.
-            d -= timedelta(days=1)
+    covered_dates = {doc["date"] for doc in recent_rows}
+
+    # Dates in the window that have no calendar row at all
+    calendar_gap_dates = sorted(
+        [ds for ds in window_dates if ds not in covered_dates],
+        reverse=True,
+    )
 
     calendar_stale = len(calendar_gap_dates) > 0
 
