@@ -151,6 +151,10 @@ class _FakeStockPrices:
         _ = ordered
         return SimpleNamespace(upserted_count=len(batch), modified_count=0)
 
+    async def distinct(self, field, query=None):
+        _ = field, query
+        return []
+
 
 class _FakeDB:
     def __init__(self, *, stock_counts, initial_pipeline_state=None, seeded_tickers=None):

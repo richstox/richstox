@@ -1910,13 +1910,47 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     from price_ingestion_service import _normalize_step2_ticker
 
     if tickers_with_price is not None:
-        # ── Fast path: use the set returned by the bulk feed ─────────────
-        with_price_set = {
+        # ── Fast path: start with tickers from today's bulk feed ─────────
+        bulk_price_set = {
             _normalize_step2_ticker(t)
             for t in tickers_with_price
             if _normalize_step2_ticker(t)
         } & seeded_set
-        any_price_set = with_price_set  # same set when sourced from bulk feed
+
+        # Also check stock_prices for seeded tickers NOT in today's bulk
+        # feed so that tickers with historical price data keep
+        # has_price_data=True even when they don't appear in one day's feed.
+        remaining = seeded_set - bulk_price_set
+        if remaining:
+            remaining_codes = [t[:-3] if t.endswith(".US") else t for t in remaining]
+            remaining_candidates = list(remaining | set(remaining_codes))
+            raw_remaining_valid = await db.stock_prices.distinct("ticker", {
+                "ticker": {"$in": remaining_candidates},
+                "$or": [
+                    {"close": {"$gt": 0}},
+                    {"adjusted_close": {"$gt": 0}},
+                ],
+            })
+            raw_remaining_any = await db.stock_prices.distinct(
+                "ticker",
+                {"ticker": {"$in": remaining_candidates}},
+            )
+            hist_price_set = {
+                _normalize_step2_ticker(t)
+                for t in raw_remaining_valid
+                if _normalize_step2_ticker(t)
+            } & seeded_set
+            hist_any_set = {
+                _normalize_step2_ticker(t)
+                for t in raw_remaining_any
+                if _normalize_step2_ticker(t)
+            } & seeded_set
+        else:
+            hist_price_set = set()
+            hist_any_set = set()
+
+        with_price_set = bulk_price_set | hist_price_set
+        any_price_set = with_price_set | hist_any_set
         matched_raw = len(with_price_set)
     else:
         # ── Legacy fallback: query stock_prices collection ───────────────
