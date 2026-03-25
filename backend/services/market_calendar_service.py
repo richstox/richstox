@@ -47,6 +47,10 @@ DEFAULT_TIMEZONE = "America/New_York"
 # Working days: Mon=0 .. Fri=4
 DEFAULT_WORKING_DAYS = {0, 1, 2, 3, 4}
 
+# Max calendar days to walk back when checking for missing recent rows.
+# Covers ~1 trading week plus weekend buffer.
+_MAX_CALENDAR_GAP_CHECK_DAYS = 10
+
 NY_TZ = ZoneInfo("America/New_York")
 
 
@@ -623,8 +627,8 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
     calendar_gap_dates: List[str] = []
     if most_recent_calendar < latest_expected_str:
         d = latest_expected
-        # Walk at most 10 calendar days back (covers ~1 trading week + weekends)
-        for _ in range(10):
+        # Walk at most _MAX_CALENDAR_GAP_CHECK_DAYS back (covers ~1 trading week + weekends)
+        for _ in range(_MAX_CALENDAR_GAP_CHECK_DAYS):
             d_str = d.isoformat()
             if d_str <= most_recent_calendar:
                 break

@@ -206,7 +206,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
   const ctdh = pi?.completed_trading_days_health;
-  if (ctdh?.calendar_stale) alerts.push({ color: '#F59E0B', icon: 'calendar-outline', text: ctdh.message || 'Market calendar missing recent rows' });
+  const ctdhStaleMsg = ctdh?.message || 'Market calendar missing recent rows';
+  if (ctdh?.calendar_stale) alerts.push({ color: '#F59E0B', icon: 'calendar-outline', text: ctdhStaleMsg });
   if (ctdh && (ctdh.missing_count ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${ctdh.missing_count} of last 10 completed trading ${ctdh.missing_count === 1 ? 'day' : 'days'} missing price data` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
@@ -376,7 +377,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             <Text style={d.cpHint}>Price pipeline ingestion status per completed trading day</Text>
             {ctdhStale && (
               <Text style={[d.cpHint, { color: '#F59E0B', marginBottom: 4 }]}>
-                ⚠ {ctdhData.message || 'Market calendar missing recent rows'}
+                ⚠ {ctdhStaleMsg}
               </Text>
             )}
             {ctdhData.missing_dates && ctdhData.missing_dates.length > 0 && (
