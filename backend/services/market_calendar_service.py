@@ -676,7 +676,6 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
     }
 
     if calendar_stale:
-        calendar_gap_dates.sort(reverse=True)
         result["calendar_gap_dates"] = calendar_gap_dates
         result["message"] = (
             f"Market calendar missing recent rows: {', '.join(calendar_gap_dates)}"
