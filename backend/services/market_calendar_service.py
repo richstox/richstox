@@ -41,10 +41,15 @@ AFTER_HOURS_CLOSE = time(20, 0)    # 20:00 ET
 # Defaults when exchange details are unavailable
 DEFAULT_REGULAR_OPEN = "09:30"
 DEFAULT_REGULAR_CLOSE = "16:00"
+DEFAULT_REGULAR_CLOSE_TIME = time(16, 0)   # parsed version for runtime comparisons
 DEFAULT_TIMEZONE = "America/New_York"
 
 # Working days: Mon=0 .. Fri=4
 DEFAULT_WORKING_DAYS = {0, 1, 2, 3, 4}
+
+# Staleness guard: max calendar days to walk back when checking for
+# missing weekday rows.  Covers ~1 trading week plus weekend buffer.
+_STALENESS_CHECK_MAX_DAYS = 10
 
 NY_TZ = ZoneInfo("America/New_York")
 
@@ -594,11 +599,10 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
     # (calendar is the source of truth for confirmed holidays).
     now_et = datetime.now(NY_TZ)
     today_d = now_et.date()
-    _DEFAULT_CLOSE = time(16, 0)
 
     # Expected latest completed date: today if after default close on a
     # weekday, otherwise the most recent prior weekday.
-    if today_d.weekday() < 5 and now_et.time() >= _DEFAULT_CLOSE:
+    if today_d.weekday() < 5 and now_et.time() >= DEFAULT_REGULAR_CLOSE_TIME:
         latest_expected = today_d
     else:
         d = today_d - timedelta(days=1)
@@ -613,8 +617,7 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
         completed_set = set(completed_days)
         gap_dates: list = []
         d = latest_expected
-        # Walk at most 10 calendar days back to cover weekends + safety
-        for _ in range(10):
+        for _ in range(_STALENESS_CHECK_MAX_DAYS):
             d_str = d.isoformat()
             if most_recent and d_str <= most_recent:
                 break
