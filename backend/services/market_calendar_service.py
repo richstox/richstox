@@ -46,6 +46,13 @@ DEFAULT_TIMEZONE = "America/New_York"
 # Working days: Mon=0 .. Fri=4
 DEFAULT_WORKING_DAYS = {0, 1, 2, 3, 4}
 
+# Number of recent calendar days to check for staleness.
+# A healthy calendar has a row for every date (trading + non-trading).
+# If any date in [today-N+1 .. today] lacks a calendar row, the calendar
+# is stale.  3 days comfortably covers weekends without using weekday
+# inference.
+_STALE_CALENDAR_WINDOW_DAYS = 3
+
 NY_TZ = ZoneInfo("America/New_York")
 
 
@@ -547,17 +554,32 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
     OPS HEALTH metric: for each of the last 10 completed trading days,
     check if price_sync successfully processed that date.
 
-    Returns:
+    Returns (healthy calendar):
     {
-        "days": [
-            {"date": "2026-03-23", "ok": true},
-            {"date": "2026-03-20", "ok": true},
-            ...
-        ],
+        "days": [{"date": "2026-03-23", "ok": true}, ...],
         "ok_count": 10,
         "missing_count": 0,
-        "status": "green" | "yellow" | "red"
+        "missing_dates": [],
+        "status": "green" | "yellow" | "red",
+        "calendar_stale": false,
     }
+
+    Returns (stale/degraded calendar — recent rows missing):
+    {
+        "days": [...],            # from whatever calendar data IS available
+        "ok_count": ...,
+        "missing_count": ...,
+        "missing_dates": [...],
+        "status": "yellow",       # never green when calendar is stale
+        "calendar_stale": true,
+        "calendar_gap_dates": ["2026-03-24"],
+        "message": "Market calendar missing recent rows: ..."
+    }
+
+    market_calendar is the SOLE authority for whether a day is a trading
+    day.  This function does NOT inject weekday guesses.  Instead, if
+    recent calendar rows are missing, it reports the stale condition
+    explicitly so the admin dashboard can surface it.
 
     A day D is "ok" if ops_job_runs has at least one price_sync run where
     details.price_bulk_gapfill.days[] contains an entry with:
@@ -573,8 +595,48 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
             "days": [],
             "ok_count": 0,
             "missing_count": 0,
+            "missing_dates": [],
             "status": "yellow",
+            "calendar_stale": True,
+            "calendar_gap_dates": [],
+            "message": "Market calendar has no completed trading days",
         }
+
+    # ── Calendar staleness detection ─────────────────────────────────────
+    # The calendar refresh generates a row for EVERY date (trading days
+    # AND non-trading days like weekends/holidays).  If any date in the
+    # recent window [today - N + 1 .. today] has no calendar row at all,
+    # the calendar has not been refreshed recently enough → stale.
+    #
+    # This check does NOT use weekday inference, close-time heuristics, or
+    # any other hidden calendar logic.  It simply asks: "does the calendar
+    # cover recent dates?"
+    now_et = datetime.now(NY_TZ)
+    today_d = now_et.date()
+    today_str = today_d.isoformat()
+
+    # Build the list of dates in the recent window
+    window_dates = []
+    d = today_d
+    for _ in range(_STALE_CALENDAR_WINDOW_DAYS):
+        window_dates.append(d.isoformat())
+        d -= timedelta(days=1)
+
+    # Query calendar for rows covering those dates
+    recent_rows = await db[COLLECTION].find(
+        {"market": market, "date": {"$in": window_dates}},
+        {"date": 1, "_id": 0},
+    ).to_list(len(window_dates))
+
+    covered_dates = {doc["date"] for doc in recent_rows}
+
+    # Dates in the window that have no calendar row at all
+    calendar_gap_dates = sorted(
+        [ds for ds in window_dates if ds not in covered_dates],
+        reverse=True,
+    )
+
+    calendar_stale = len(calendar_gap_dates) > 0
 
     # 2. Collect all successfully processed dates from ops_job_runs
     processed_dates = await _get_bulk_processed_dates_set(db)
@@ -594,20 +656,32 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
     missing_count = len(missing_dates)
 
     # Status logic: green = all OK, yellow = 1-2 missing, red = 3+ missing
-    if missing_count == 0:
+    # When calendar is stale, never report green — staleness is a problem.
+    if calendar_stale:
+        status = "yellow" if missing_count <= 2 else "red"
+    elif missing_count == 0:
         status = "green"
     elif missing_count <= 2:
         status = "yellow"
     else:
         status = "red"
 
-    return {
+    result: Dict[str, Any] = {
         "days": days_result,
         "ok_count": ok_count,
         "missing_count": missing_count,
         "missing_dates": missing_dates,
         "status": status,
+        "calendar_stale": calendar_stale,
     }
+
+    if calendar_stale:
+        result["calendar_gap_dates"] = calendar_gap_dates
+        result["message"] = (
+            f"Market calendar missing recent rows: {', '.join(calendar_gap_dates)}"
+        )
+
+    return result
 
 
 async def _get_bulk_processed_dates_set(db) -> set:

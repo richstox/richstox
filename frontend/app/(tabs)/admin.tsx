@@ -36,6 +36,9 @@ interface CompletedTradingDayHealth {
   missing_count?: number;
   missing_dates?: string[];
   status?: 'green' | 'yellow' | 'red';
+  calendar_stale?: boolean;
+  calendar_gap_dates?: string[];
+  message?: string;
 }
 
 interface PriceIntegrity {
@@ -203,6 +206,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
   const ctdh = pi?.completed_trading_days_health;
+  const ctdhStaleMsg = ctdh?.message || 'Market calendar missing recent rows';
+  if (ctdh?.calendar_stale) alerts.push({ color: '#F59E0B', icon: 'calendar-outline', text: ctdhStaleMsg });
   if (ctdh && (ctdh.missing_count ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${ctdh.missing_count} of last 10 completed trading ${ctdh.missing_count === 1 ? 'day' : 'days'} missing price data` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
 
@@ -227,8 +232,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
   // ── Completed Trading Days Health metric ──
   const ctdhData = pi?.completed_trading_days_health;
+  const ctdhStale = ctdhData?.calendar_stale === true;
   const ctdhMissing = ctdhData?.missing_count ?? 0;
-  const ctdhDisplay = ctdhData ? `${ctdhMissing} missing` : '—';
+  const ctdhDisplay = ctdhData
+    ? (ctdhStale ? 'Calendar stale' : `${ctdhMissing} missing`)
+    : '—';
   const ctdhStatus: 'green' | 'yellow' | 'red' = (ctdhData?.status as 'green' | 'yellow' | 'red') ?? 'yellow';
 
   const needRedl = pi?.needs_price_redownload;
@@ -367,6 +375,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           <>
             <Text style={d.subSection}>Last 10 Completed Trading Days</Text>
             <Text style={d.cpHint}>Price pipeline ingestion status per completed trading day</Text>
+            {ctdhStale && (
+              <Text style={[d.cpHint, { color: '#F59E0B', marginBottom: 4 }]}>
+                ⚠ {ctdhStaleMsg}
+              </Text>
+            )}
             {ctdhData.missing_dates && ctdhData.missing_dates.length > 0 && (
               <Text style={[d.cpHint, { color: '#EF4444', marginBottom: 4 }]}>
                 Missing: {ctdhData.missing_dates.join(', ')}

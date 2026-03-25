@@ -5776,12 +5776,13 @@ async def admin_get_job_runs(
 from services.admin_overview_service import get_admin_overview
 
 @api_router.get("/admin/overview")
-async def admin_overview():
+async def admin_overview(response: Response):
     """
     P47: Single aggregated endpoint for Admin Panel v2.
     Returns all data needed in one response for fast page load (<3s).
     READ-ONLY: no finalization side-effects (page refresh must never mutate).
     """
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     return await get_admin_overview(db)
 
 
