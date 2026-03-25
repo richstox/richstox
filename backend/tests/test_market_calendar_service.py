@@ -402,6 +402,7 @@ class TestCompletedTradingDaysHealth:
 
     @pytest.mark.asyncio
     async def test_all_days_ok(self):
+        """Healthy calendar with all days processed → green, calendar_stale=False."""
         from services.market_calendar_service import get_last_10_completed_trading_days_health
         
         trading_dates = [f"2026-03-{d:02d}" for d in range(9, 21) if date(2026, 3, d).weekday() < 5]
@@ -437,9 +438,11 @@ class TestCompletedTradingDaysHealth:
             result = await get_last_10_completed_trading_days_health(db)
             assert result["status"] == "green"
             assert result["missing_count"] == 0
+            assert result["calendar_stale"] is False
 
     @pytest.mark.asyncio
-    async def test_empty_calendar_returns_yellow(self):
+    async def test_empty_calendar_returns_yellow_and_stale(self):
+        """Empty calendar → yellow status with calendar_stale=True."""
         from services.market_calendar_service import get_last_10_completed_trading_days_health
         
         db = MockDB(
@@ -457,6 +460,7 @@ class TestCompletedTradingDaysHealth:
             result = await get_last_10_completed_trading_days_health(db)
             assert result["status"] == "yellow"
             assert result["days"] == []
+            assert result["calendar_stale"] is True
 
     @pytest.mark.asyncio
     async def test_missing_days_shows_red(self):
@@ -541,7 +545,8 @@ class TestCompletedTradingDaysHealth:
 
     @pytest.mark.asyncio
     async def test_after_midnight_previous_trading_day_included(self):
-        """After midnight NY, previous trading day must count as completed.
+        """After midnight NY, previous trading day must count as completed
+        when the calendar row exists.
 
         Scenario: 2:35 AM ET on March 25 (Wednesday).
         Calendar has March 24 (Tuesday) as a trading day.
@@ -590,18 +595,20 @@ class TestCompletedTradingDaysHealth:
             assert "2026-03-25" not in day_dates  # today not yet completed
             assert result["missing_count"] >= 1
             assert "2026-03-24" in result["missing_dates"]
+            # Calendar is healthy (has row for 2026-03-24)
+            assert result["calendar_stale"] is False
 
     @pytest.mark.asyncio
-    async def test_after_midnight_stale_calendar_detects_gap(self):
-        """When calendar is stale (missing recent weekday rows), the
-        staleness guard must inject the missing date so the metric
-        reports it as missing rather than silently showing 0 missing.
+    async def test_stale_calendar_returns_degraded_state(self):
+        """When calendar is stale (missing recent weekday rows), the metric
+        must return an explicit degraded state with calendar_stale=True and
+        calendar_gap_dates — NOT silently inject weekday guesses.
 
         This is the exact scenario from the bug report:
         - Last Bulk Date = 2026-03-23 (all dates ≤ 23 processed)
         - Calendar is stale: no rows for 2026-03-24 or 2026-03-25
         - Current time: 2:35 AM ET on March 25
-        - Expected: metric must show ≥1 missing (2026-03-24)
+        - Expected: calendar_stale=True, status never green
         """
         from services.market_calendar_service import get_last_10_completed_trading_days_health
 
@@ -641,18 +648,68 @@ class TestCompletedTradingDaysHealth:
             mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
 
             result = await get_last_10_completed_trading_days_health(db)
-            # Staleness guard must inject 2026-03-24 as a gap date
-            day_dates = [d["date"] for d in result["days"]]
-            assert "2026-03-24" in day_dates
-            assert result["missing_count"] >= 1
-            assert "2026-03-24" in result["missing_dates"]
+            # Must report stale calendar explicitly
+            assert result["calendar_stale"] is True
+            assert "2026-03-24" in result["calendar_gap_dates"]
+            assert result["message"]  # should have a message
             # Status must NOT be green (fail-closed)
+            assert result["status"] != "green"
+            # Must NOT inject 2026-03-24 into the days list
+            day_dates = [d["date"] for d in result["days"]]
+            assert "2026-03-24" not in day_dates
+            # The days list should only contain calendar-confirmed dates
+            assert len(result["days"]) <= 10
+
+    @pytest.mark.asyncio
+    async def test_no_false_zero_missing_with_stale_calendar(self):
+        """A stale calendar must never produce a false green / 0-missing result.
+        Even if all known calendar dates are processed, staleness means the
+        metric is degraded.
+        """
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        trading_dates = [
+            "2026-03-16", "2026-03-17", "2026-03-18",
+            "2026-03-19", "2026-03-20", "2026-03-23",
+        ]
+        cal_docs = _build_calendar_docs(trading_dates)
+
+        ops_docs = []
+        for d in trading_dates:
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # Tuesday at 10 AM — calendar should have March 24 row but doesn't
+        mock_now = datetime(2026, 3, 25, 10, 0, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            # Calendar is stale — missing_count might be 0 for known dates
+            # but status must NOT be green
+            assert result["calendar_stale"] is True
             assert result["status"] != "green"
 
     @pytest.mark.asyncio
-    async def test_after_midnight_stale_calendar_respects_holidays(self):
+    async def test_stale_calendar_respects_holidays(self):
         """When a date is explicitly marked as a holiday in the calendar,
-        the staleness guard must NOT include it as a gap date.
+        it should NOT appear in calendar_gap_dates even if it's a weekday.
         """
         from services.market_calendar_service import get_last_10_completed_trading_days_health
 
@@ -693,11 +750,11 @@ class TestCompletedTradingDaysHealth:
 
             result = await get_last_10_completed_trading_days_health(db)
             day_dates = [d["date"] for d in result["days"]]
-            # March 24 is a holiday → must NOT be included
+            # March 24 is a holiday → must NOT be in days or gap_dates
             assert "2026-03-24" not in day_dates
-            # March 25 has no calendar row → staleness guard should
-            # NOT inject it because it's before default close
-            assert "2026-03-25" not in day_dates
+            # March 24 has a calendar row (holiday), so it's NOT a gap
+            if result.get("calendar_gap_dates"):
+                assert "2026-03-24" not in result["calendar_gap_dates"]
 
     @pytest.mark.asyncio
     async def test_after_close_today_is_completed(self):
@@ -743,6 +800,8 @@ class TestCompletedTradingDaysHealth:
             assert "2026-03-24" in day_dates
             assert result["missing_count"] >= 1
             assert "2026-03-24" in result["missing_dates"]
+            # Calendar is healthy (has row for today)
+            assert result["calendar_stale"] is False
 
 
 class TestMarketOpenClosedNow:
