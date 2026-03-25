@@ -556,6 +556,7 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
         ],
         "ok_count": 10,
         "missing_count": 0,
+        "missing_dates": [],
         "status": "green" | "yellow" | "red"
     }
 
@@ -564,6 +565,13 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
       - processed_date = D
       - status = "success"
       - rows_written > 0
+
+    Fail-closed calendar staleness check:
+    If the calendar is missing rows for recent weekdays, those dates are
+    included as completed trading days (fail-closed: we cannot confirm they
+    are holidays, so we assume they are trading days).  If the calendar
+    explicitly marks a date as a non-trading day (holiday), it is excluded
+    (calendar remains the source of truth for confirmed holidays).
     """
     # 1. Get last 10 completed trading days from market calendar
     completed_days = await last_n_completed_trading_days(db, 10, market)
@@ -573,8 +581,63 @@ async def get_last_10_completed_trading_days_health(db, market: str = "US") -> D
             "days": [],
             "ok_count": 0,
             "missing_count": 0,
+            "missing_dates": [],
             "status": "yellow",
         }
+
+    # ── Fail-closed staleness guard ──────────────────────────────────────
+    # If the calendar is missing rows for recent weekdays, the list above
+    # may silently omit valid trading days.  Walk backward from the
+    # expected boundary to the most-recent returned date and include any
+    # weekday whose calendar row is absent (fail-closed).  Dates whose
+    # calendar row explicitly says is_trading_day=False are still excluded
+    # (calendar is the source of truth for confirmed holidays).
+    now_et = datetime.now(NY_TZ)
+    today_d = now_et.date()
+    _DEFAULT_CLOSE = time(16, 0)
+
+    # Expected latest completed date: today if after default close on a
+    # weekday, otherwise the most recent prior weekday.
+    if today_d.weekday() < 5 and now_et.time() >= _DEFAULT_CLOSE:
+        latest_expected = today_d
+    else:
+        d = today_d - timedelta(days=1)
+        while d.weekday() >= 5:          # skip Sat/Sun
+            d -= timedelta(days=1)
+        latest_expected = d
+
+    latest_expected_str = latest_expected.isoformat()
+    most_recent = completed_days[0] if completed_days else None
+
+    if most_recent is None or most_recent < latest_expected_str:
+        completed_set = set(completed_days)
+        gap_dates: list = []
+        d = latest_expected
+        # Walk at most 10 calendar days back to cover weekends + safety
+        for _ in range(10):
+            d_str = d.isoformat()
+            if most_recent and d_str <= most_recent:
+                break
+            if d.weekday() < 5 and d_str not in completed_set:
+                cal_doc = await db[COLLECTION].find_one(
+                    {"market": market, "date": d_str},
+                    {"is_trading_day": 1, "_id": 0},
+                )
+                if cal_doc is None:
+                    # Calendar row missing → fail-closed: include
+                    gap_dates.append(d_str)
+                # If cal_doc exists with is_trading_day=False (holiday),
+                # calendar is source of truth → skip.
+                # If cal_doc exists with is_trading_day=True, the date
+                # should already have been returned by
+                # last_n_completed_trading_days; don't duplicate.
+            d -= timedelta(days=1)
+
+        if gap_dates:
+            gap_dates.sort(reverse=True)
+            completed_days = gap_dates + completed_days
+            # Keep the list to 10 entries (trim oldest)
+            completed_days = completed_days[:10]
 
     # 2. Collect all successfully processed dates from ops_job_runs
     processed_dates = await _get_bulk_processed_dates_set(db)

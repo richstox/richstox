@@ -426,7 +426,8 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection(ops_docs),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
+        # Use Saturday so expected boundary = Friday March 20 (matches calendar)
+        mock_now = datetime(2026, 3, 21, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -446,7 +447,7 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection([]),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
+        mock_now = datetime(2026, 3, 21, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -474,7 +475,7 @@ class TestCompletedTradingDaysHealth:
             ops_docs.append({
                 "job_name": "price_sync",
                 "status": "success",
-                "finished_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+                "finished_at": datetime(2026, 3, 21, tzinfo=timezone.utc),
                 "details": {
                     "price_bulk_gapfill": {
                         "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
@@ -487,7 +488,8 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection(ops_docs),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
+        # Use Saturday so expected boundary = Friday March 20 (matches calendar)
+        mock_now = datetime(2026, 3, 21, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -509,7 +511,7 @@ class TestCompletedTradingDaysHealth:
         ops_docs = [{
             "job_name": "price_sync",
             "status": "success",
-            "finished_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+            "finished_at": datetime(2026, 3, 21, tzinfo=timezone.utc),
             "details": {
                 "price_bulk_gapfill": {
                     "days": [{"processed_date": "2026-03-20", "status": "success", "rows_written": 0}]
@@ -522,7 +524,8 @@ class TestCompletedTradingDaysHealth:
             ops_job_runs=MockCollection(ops_docs),
         )
         
-        mock_now = datetime(2026, 3, 24, 10, 0, 0, tzinfo=_NY_TZ)
+        # Use Saturday so expected boundary = Friday March 20 (matches calendar)
+        mock_now = datetime(2026, 3, 21, 10, 0, 0, tzinfo=_NY_TZ)
         
         with patch("services.market_calendar_service.datetime") as mock_dt:
             mock_dt.now.return_value = mock_now
@@ -533,6 +536,213 @@ class TestCompletedTradingDaysHealth:
             # rows_written=0 should NOT count as OK
             assert result["ok_count"] == 0
             assert result["missing_count"] == 1
+
+    # ── Boundary tests: after midnight on next day ───────────────────────
+
+    @pytest.mark.asyncio
+    async def test_after_midnight_previous_trading_day_included(self):
+        """After midnight NY, previous trading day must count as completed.
+
+        Scenario: 2:35 AM ET on March 25 (Wednesday).
+        Calendar has March 24 (Tuesday) as a trading day.
+        March 24 should appear in the completed days list.
+        """
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        trading_dates = [
+            "2026-03-11", "2026-03-12", "2026-03-13",
+            "2026-03-16", "2026-03-17", "2026-03-18",
+            "2026-03-19", "2026-03-20", "2026-03-23",
+            "2026-03-24", "2026-03-25",
+        ]
+        cal_docs = _build_calendar_docs(trading_dates)
+
+        # price_sync succeeded for all dates EXCEPT 2026-03-24
+        ops_docs = []
+        for d in trading_dates[:-2]:  # exclude 2026-03-24 and 2026-03-25
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # 2:35 AM ET on March 25 — after midnight, before market open
+        mock_now = datetime(2026, 3, 25, 2, 35, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            day_dates = [d["date"] for d in result["days"]]
+            assert "2026-03-24" in day_dates
+            assert "2026-03-25" not in day_dates  # today not yet completed
+            assert result["missing_count"] >= 1
+            assert "2026-03-24" in result["missing_dates"]
+
+    @pytest.mark.asyncio
+    async def test_after_midnight_stale_calendar_detects_gap(self):
+        """When calendar is stale (missing recent weekday rows), the
+        staleness guard must inject the missing date so the metric
+        reports it as missing rather than silently showing 0 missing.
+
+        This is the exact scenario from the bug report:
+        - Last Bulk Date = 2026-03-23 (all dates ≤ 23 processed)
+        - Calendar is stale: no rows for 2026-03-24 or 2026-03-25
+        - Current time: 2:35 AM ET on March 25
+        - Expected: metric must show ≥1 missing (2026-03-24)
+        """
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        # Stale calendar: only has dates up to March 23
+        trading_dates = [
+            "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13",
+            "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20",
+            "2026-03-23",
+        ]
+        cal_docs = _build_calendar_docs(trading_dates)
+
+        # All dates in the stale calendar were successfully processed
+        ops_docs = []
+        for d in trading_dates:
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # 2:35 AM ET on March 25 — after midnight on next day
+        mock_now = datetime(2026, 3, 25, 2, 35, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            # Staleness guard must inject 2026-03-24 as a gap date
+            day_dates = [d["date"] for d in result["days"]]
+            assert "2026-03-24" in day_dates
+            assert result["missing_count"] >= 1
+            assert "2026-03-24" in result["missing_dates"]
+            # Status must NOT be green (fail-closed)
+            assert result["status"] != "green"
+
+    @pytest.mark.asyncio
+    async def test_after_midnight_stale_calendar_respects_holidays(self):
+        """When a date is explicitly marked as a holiday in the calendar,
+        the staleness guard must NOT include it as a gap date.
+        """
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        trading_dates = [
+            "2026-03-16", "2026-03-17", "2026-03-18",
+            "2026-03-19", "2026-03-20", "2026-03-23",
+        ]
+        # March 24 is explicitly a holiday in the calendar
+        holiday_docs = {"2026-03-24": "Test Holiday"}
+        cal_docs = _build_calendar_docs(trading_dates, dates_holidays=holiday_docs)
+
+        # All trading dates processed
+        ops_docs = []
+        for d in trading_dates:
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # 2:35 AM ET on March 25
+        mock_now = datetime(2026, 3, 25, 2, 35, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            day_dates = [d["date"] for d in result["days"]]
+            # March 24 is a holiday → must NOT be included
+            assert "2026-03-24" not in day_dates
+            # March 25 has no calendar row → staleness guard should
+            # NOT inject it because it's before default close
+            assert "2026-03-25" not in day_dates
+
+    @pytest.mark.asyncio
+    async def test_after_close_today_is_completed(self):
+        """After market close on the same day, today must be completed."""
+        from services.market_calendar_service import get_last_10_completed_trading_days_health
+
+        trading_dates = [
+            "2026-03-16", "2026-03-17", "2026-03-18",
+            "2026-03-19", "2026-03-20", "2026-03-23",
+            "2026-03-24",
+        ]
+        cal_docs = _build_calendar_docs(trading_dates)
+
+        # All dates except March 24 processed
+        ops_docs = []
+        for d in trading_dates[:-1]:
+            ops_docs.append({
+                "job_name": "price_sync",
+                "status": "success",
+                "finished_at": datetime(2026, 3, 24, tzinfo=timezone.utc),
+                "details": {
+                    "price_bulk_gapfill": {
+                        "days": [{"processed_date": d, "status": "success", "rows_written": 100}]
+                    }
+                }
+            })
+
+        db = MockDB(
+            market_calendar=MockCollection(cal_docs),
+            ops_job_runs=MockCollection(ops_docs),
+        )
+
+        # 5:00 PM ET on March 24 — after regular close
+        mock_now = datetime(2026, 3, 24, 17, 0, 0, tzinfo=_NY_TZ)
+
+        with patch("services.market_calendar_service.datetime") as mock_dt:
+            mock_dt.now.return_value = mock_now
+            mock_dt.combine = datetime.combine
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+
+            result = await get_last_10_completed_trading_days_health(db)
+            day_dates = [d["date"] for d in result["days"]]
+            assert "2026-03-24" in day_dates
+            assert result["missing_count"] >= 1
+            assert "2026-03-24" in result["missing_dates"]
 
 
 class TestMarketOpenClosedNow:
