@@ -291,28 +291,33 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
             if attempt < max_retries - 1:
                 await asyncio.sleep(30)  # Wait before retry
     
-    # Log failed job to BOTH collections
+    # Log failed job to BOTH collections — best-effort so that a logging
+    # failure cannot crash the caller (e.g. the scheduler daemon).
     completed_at = datetime.now(timezone.utc)
     error_msg = f"Max retries ({max_retries}) exceeded"
     
-    # NEW: Log failure to system_job_logs
-    await log_job_execution(
-        db, job_name, "error", started_at, completed_at,
-        error_message=error_msg
-    )
+    try:
+        await log_job_execution(
+            db, job_name, "error", started_at, completed_at,
+            error_message=error_msg
+        )
+    except Exception:
+        logger.error(f"{job_name}: failed to log failure to system_job_logs")
     
-    # LEGACY: Log to ops_job_runs
-    await db.ops_job_runs.insert_one({
-        "job_name": job_name,
-        "status": "failed",
-        "started_at": started_at,
-        "completed_at": completed_at,
-        "started_at_prague": to_prague_iso(started_at),
-        "completed_at_prague": to_prague_iso(completed_at),
-        "log_timezone": "Europe/Prague",
-        "duration_seconds": (completed_at - started_at).total_seconds(),
-        "details": {"error": error_msg}
-    })
+    try:
+        await db.ops_job_runs.insert_one({
+            "job_name": job_name,
+            "status": "failed",
+            "started_at": started_at,
+            "completed_at": completed_at,
+            "started_at_prague": to_prague_iso(started_at),
+            "completed_at_prague": to_prague_iso(completed_at),
+            "log_timezone": "Europe/Prague",
+            "duration_seconds": (completed_at - started_at).total_seconds(),
+            "details": {"error": error_msg}
+        })
+    except Exception:
+        logger.error(f"{job_name}: failed to log failure to ops_job_runs")
     
     return {"status": "failed", "error": error_msg}
 
@@ -773,15 +778,32 @@ async def scheduler_loop():
             # ==================================================================
             # Fetches EODHD exchange-details/US and regenerates calendar rows.
             # Upsert-based, safe to run daily.  Ensures indexes on first run.
+            # Wrapped in try/except so a failure here cannot crash the daemon
+            # and block Steps 1-2-3 at 23:00.
             if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
-                from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
-                async def _market_calendar_job(_db):
-                    await _mc_ensure_indexes(_db)
-                    return await refresh_market_calendar(_db)
-                await run_job_with_retry("market_calendar", _market_calendar_job, db)
-                last_run["market_calendar"] = today_str
-                await set_last_run_state(last_run)
+                _mc_started = datetime.now(timezone.utc)
+                try:
+                    from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
+                    async def _market_calendar_job(_db):
+                        await _mc_ensure_indexes(_db)
+                        return await refresh_market_calendar(_db)
+                    await run_job_with_retry("market_calendar", _market_calendar_job, db)
+                    last_run["market_calendar"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        f"[scheduler] market_calendar unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+                    try:
+                        await log_job_execution(
+                            db, "market_calendar", "error",
+                            _mc_started, datetime.now(timezone.utc),
+                            error_message=f"Scheduler unhandled: {exc}",
+                        )
+                    except Exception:
+                        pass  # best-effort observability
 
             # ==================================================================
             # BENCHMARK UPDATE at 04:15 — standalone, NOT part of Steps 1-2-3
