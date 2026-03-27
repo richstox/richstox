@@ -782,6 +782,7 @@ async def scheduler_loop():
             # and block Steps 1-2-3 at 23:00.
             if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
+                _mc_started = datetime.now(timezone.utc)
                 try:
                     from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
                     async def _market_calendar_job(_db):
@@ -798,7 +799,7 @@ async def scheduler_loop():
                     try:
                         await log_job_execution(
                             db, "market_calendar", "error",
-                            datetime.now(timezone.utc), datetime.now(timezone.utc),
+                            _mc_started, datetime.now(timezone.utc),
                             error_message=f"Scheduler unhandled: {exc}",
                         )
                     except Exception:
