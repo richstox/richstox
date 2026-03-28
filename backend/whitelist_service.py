@@ -1062,7 +1062,7 @@ async def search_whitelist(
     db,
     query: str,
     limit: int = 20,
-    followed_tickers: Optional[set] = None,
+    followed_tickers: Optional[set[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search the whitelist for tickers matching a query.
