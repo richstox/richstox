@@ -1163,7 +1163,20 @@ async def search_whitelist(
     ]
     
     results = await db.tracked_tickers.aggregate(pipeline).to_list(None)
-    
+
+    # Fallback: batch-fetch logo_url from company_fundamentals_cache for results
+    # where tracked_tickers.logo_url is missing (not all update paths propagate it).
+    tickers_missing_logo = [r["ticker"] for r in results if not r.get("logo")]
+    if tickers_missing_logo:
+        cache_logos = await db.company_fundamentals_cache.find(
+            {"ticker": {"$in": tickers_missing_logo}},
+            {"_id": 0, "ticker": 1, "logo_url": 1},
+        ).to_list(None)
+        logo_map = {d["ticker"]: d.get("logo_url") for d in cache_logos}
+        for r in results:
+            if not r.get("logo"):
+                r["logo"] = logo_map.get(r["ticker"])
+
     # Format results
     formatted = []
     for r in results:

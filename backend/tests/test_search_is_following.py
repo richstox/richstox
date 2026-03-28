@@ -32,10 +32,16 @@ class _FakeCursor:
         return self._docs
 
 
-def _make_fake_db(tracked_docs):
-    """Return a fake db object whose tracked_tickers.aggregate returns *tracked_docs*."""
+def _make_fake_db(tracked_docs, cache_docs=None):
+    """Return a fake db object whose tracked_tickers.aggregate returns *tracked_docs*.
+
+    If *cache_docs* is provided, ``company_fundamentals_cache.find()`` returns
+    a cursor over those docs (used for the logo fallback lookup).
+    """
     db = MagicMock()
     db.tracked_tickers.aggregate = MagicMock(return_value=_FakeCursor(tracked_docs))
+    # company_fundamentals_cache.find(...) returns a cursor-like object
+    db.company_fundamentals_cache.find = MagicMock(return_value=_FakeCursor(cache_docs or []))
     return db
 
 
@@ -147,3 +153,29 @@ async def test_search_results_include_full_logo_url():
     assert results[0]["logo"] == "https://eodhistoricaldata.com/img/logos/US/AAPL.png"
     assert results[1]["logo"] == "https://cdn.example.com/msft.png"
     assert results[2]["logo"] is None
+
+
+@pytest.mark.asyncio
+async def test_search_logo_fallback_from_fundamentals_cache():
+    """When tracked_tickers.logo_url is missing, fall back to company_fundamentals_cache."""
+    from whitelist_service import search_whitelist
+
+    # tracked_tickers docs with NO logo (simulates the common case)
+    tracked_docs = [
+        {"ticker": "KO.US", "name": "The Coca-Cola Company", "exchange": "NYSE", "sector": "Consumer Defensive", "industry": "Beverages", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 0},
+        {"ticker": "KOD.US", "name": "Kodiak Sciences Inc", "exchange": "NASDAQ", "sector": "Healthcare", "industry": "Biotech", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 1},
+    ]
+
+    # company_fundamentals_cache has the logo URLs
+    cache_docs = [
+        {"ticker": "KO.US", "logo_url": "/img/logos/US/KO.png"},
+        {"ticker": "KOD.US", "logo_url": "https://cdn.example.com/kod.png"},
+    ]
+
+    db = _make_fake_db(tracked_docs, cache_docs=cache_docs)
+    results = await search_whitelist(db, "KO", limit=20)
+
+    assert results[0]["ticker"] == "KO"
+    assert results[0]["logo"] == "https://eodhistoricaldata.com/img/logos/US/KO.png"
+    assert results[1]["ticker"] == "KOD"
+    assert results[1]["logo"] == "https://cdn.example.com/kod.png"
