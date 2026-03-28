@@ -1388,8 +1388,8 @@ export default function StockDetail() {
         }
       />
 
-      {/* Search results navigation bar */}
-      {hasSearchNav && (
+      {/* Navigation row below AppHeader */}
+      {hasSearchNav ? (
         <View style={styles.searchNavBar}>
           <TouchableOpacity
             style={[styles.searchNavButton, !prevTicker && styles.searchNavButtonDisabled]}
@@ -1419,6 +1419,18 @@ export default function StockDetail() {
           >
             {nextTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{nextTicker}</Text>}
             <Ionicons name="chevron-forward" size={16} color={nextTicker ? COLORS.primary : COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View style={styles.searchNavBar}>
+          <TouchableOpacity
+            style={styles.searchNavButton}
+            onPress={() => router.back()}
+            accessibilityLabel="Go back"
+            accessibilityRole="button"
+          >
+            <Ionicons name="chevron-back" size={16} color={COLORS.primary} />
+            <Text style={styles.searchNavTicker}>Back</Text>
           </TouchableOpacity>
         </View>
       )}
