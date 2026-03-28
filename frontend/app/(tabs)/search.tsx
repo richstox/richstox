@@ -80,7 +80,10 @@ export default function Search() {
   const searchTickers = async () => {
     setLoading(true);
     try {
-      const response = await axios.get(`${API_URL}/api/whitelist/search?q=${searchQuery}`);
+      const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+      const response = await axios.get(`${API_URL}/api/whitelist/search?q=${searchQuery}`, {
+        headers: authHeaders,
+      });
       const searchResults = response.data.results || [];
       setResults(searchResults);
       setLoading(false);
@@ -90,21 +93,11 @@ export default function Search() {
         setSearch(searchQuery, searchResults);
       }
       
-      // Load watchlist status in background (non-blocking)
+      // Initialize watchlist state from backend-provided is_following
       const watchlistChecks: Record<string, boolean> = {};
-      const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-      await Promise.all(
-        searchResults.slice(0, 20).map(async (item: any) => {
-          try {
-            const checkRes = await axios.get(`${API_URL}/api/v1/watchlist/check/${item.ticker}`, {
-              headers: authHeaders,
-            });
-            watchlistChecks[item.ticker] = checkRes.data.is_followed || false;
-          } catch {
-            watchlistChecks[item.ticker] = false;
-          }
-        })
-      );
+      for (const item of searchResults) {
+        watchlistChecks[item.ticker] = item.is_following || false;
+      }
       setWatchlistState(watchlistChecks);
     } catch (error) {
       console.error('Error searching:', error);

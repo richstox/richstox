@@ -1061,7 +1061,8 @@ async def get_whitelist_stats(db) -> Dict[str, Any]:
 async def search_whitelist(
     db,
     query: str,
-    limit: int = 20
+    limit: int = 20,
+    followed_tickers: Optional[set] = None,
 ) -> List[Dict[str, Any]]:
     """
     Search the whitelist for tickers matching a query.
@@ -1169,7 +1170,7 @@ async def search_whitelist(
             }.get(safety_type),
         }
         
-        formatted.append({
+        entry: Dict[str, Any] = {
             "ticker": ticker_code,
             "name": r.get("name") or ticker_code,
             "exchange": r.get("exchange", "US"),
@@ -1179,7 +1180,10 @@ async def search_whitelist(
             "fundamentals_pending": r.get("status") != "active",
             "safety": safety_info,
             "logo": r.get("logo"),
-        })
+        }
+        if followed_tickers is not None:
+            entry["is_following"] = ticker_code in followed_tickers
+        formatted.append(entry)
     
     return formatted
 

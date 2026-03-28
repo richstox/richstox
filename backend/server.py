@@ -1918,12 +1918,26 @@ async def whitelist_stats():
     return stats
 
 @api_router.get("/whitelist/search")
-async def whitelist_search(q: str = Query(..., min_length=1), limit: int = Query(20, ge=1, le=100)):
+async def whitelist_search(q: str = Query(..., min_length=1), limit: int = Query(20, ge=1, le=100), request: Request = None):
     """
     Search the whitelist for tickers.
     Only returns ACTIVE tickers (those with fundamentals).
+    If authenticated, each result includes is_following for the current user.
     """
-    results = await search_whitelist(db, q, limit)
+    # Optionally resolve user for is_following annotation (single DB query)
+    followed_tickers: set | None = None
+    if request is not None:
+        token = get_session_token_from_request(request)
+        if token:
+            user = await validate_session(db, token)
+            if user:
+                docs = await db.user_watchlist.find(
+                    {"user_id": user["user_id"]},
+                    {"_id": 0, "ticker": 1},
+                ).to_list(length=None)
+                followed_tickers = {d["ticker"] for d in docs}
+
+    results = await search_whitelist(db, q, limit, followed_tickers=followed_tickers)
     return {"query": q, "count": len(results), "results": results}
 
 @api_router.get("/whitelist/check/{ticker}")
