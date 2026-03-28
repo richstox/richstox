@@ -9,6 +9,7 @@ export interface SearchResult {
   name: string;
   exchange: string;
   logo?: string;
+  is_following?: boolean;
 }
 
 interface SearchState {
