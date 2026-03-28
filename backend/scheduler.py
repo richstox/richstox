@@ -617,11 +617,7 @@ async def scheduler_loop():
             # =================================================================
             # KILL SWITCH CHECK
             # =================================================================
-            try:
-                scheduler_enabled = await get_scheduler_enabled(db)
-            except Exception as ks_exc:
-                logger.error(f"[KILL SWITCH] Failed to read kill switch (assuming enabled): {ks_exc}")
-                scheduler_enabled = True
+            scheduler_enabled = await get_scheduler_enabled(db)
             
             if not scheduler_enabled:
                 logger.debug("Scheduler disabled (kill switch engaged)")
@@ -631,10 +627,8 @@ async def scheduler_loop():
             # =================================================================
             # SUNDAY: News refresh only, then skip all other jobs
             # Universe Seed runs Mon-Sat only (markets closed on Sunday)
-            # NOTE: Uses `now` captured above to avoid TOCTOU race with
-            # get_prague_time() returning a different day near midnight.
             # =================================================================
-            if now.weekday() == UNIVERSE_SEED_DAY:
+            if is_sunday():
                 # News refresh at 13:00 Sunday (catch-up enabled)
                 if should_run("news_refresh", NEWS_REFRESH_HOUR, NEWS_REFRESH_MINUTE, last_run, today_str, current_hour, current_minute):
                     logger.info(f"Triggering news_refresh (hour={current_hour}, scheduled={NEWS_REFRESH_HOUR}:{NEWS_REFRESH_MINUTE:02d})")
@@ -648,9 +642,8 @@ async def scheduler_loop():
             
             # =================================================================
             # MON-SAT JOBS (with catch-up logic)
-            # NOTE: Uses `now` captured above — same TOCTOU fix as Sunday check.
             # =================================================================
-            if now.weekday() not in DAILY_SCHEDULE_DAYS:
+            if not is_daily_job_day():
                 await asyncio.sleep(60)
                 continue
             
