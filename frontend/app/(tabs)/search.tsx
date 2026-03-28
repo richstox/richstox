@@ -13,7 +13,6 @@ import {
   TextInput,
   TouchableOpacity,
   FlatList,
-  ActivityIndicator,
   Keyboard,
   Image,
 } from 'react-native';
@@ -105,7 +104,7 @@ export default function Search() {
     }
   };
 
-  // P35 Item 3 & 4 + P36 Item 5: Toggle watchlist with error handling + clear input + track added
+  // P35 Item 3 & 4 + P36 Item 5: Toggle watchlist with optimistic UI + track added
   const toggleWatchlist = async (ticker: string) => {
     if (toggleLoading[ticker]) return;
     
@@ -113,33 +112,27 @@ export default function Search() {
     const isCurrentlyFollowed = watchlistState[ticker];
     const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
     
+    // Optimistic UI: update star immediately
+    setWatchlistState(prev => ({ ...prev, [ticker]: !isCurrentlyFollowed }));
+    
     try {
       if (isCurrentlyFollowed) {
         await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`, {
           headers: authHeaders,
         });
-        setWatchlistState(prev => ({ ...prev, [ticker]: false }));
         // P36 Item 5: Remove from added this session
         setAddedThisSession(prev => prev.filter(t => t !== ticker));
       } else {
         await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`, {}, {
           headers: authHeaders,
         });
-        setWatchlistState(prev => ({ ...prev, [ticker]: true }));
         
         // P36 Item 5: Add to "added this session" list
         setAddedThisSession(prev => prev.includes(ticker) ? prev : [...prev, ticker]);
-        
-        // P35 Item 3: Clear input after adding, keep cursor ready
-        setSearchQuery('');
-        setResults([]);
-        // Keep input focused for fast multiple adds
-        setTimeout(() => {
-          inputRef.current?.focus();
-        }, 100);
       }
     } catch (error) {
-      // P35 Item 4: Show error toast and do not change star UI state
+      // Revert optimistic update on error
+      setWatchlistState(prev => ({ ...prev, [ticker]: isCurrentlyFollowed }));
       console.error('Error toggling watchlist:', error);
       alert(`Failed to ${isCurrentlyFollowed ? 'unfollow' : 'follow'} ${ticker}. Please try again.`);
     } finally {
@@ -262,22 +255,18 @@ export default function Search() {
             
             return (
               <View style={styles.itemRow}>
-                {/* P34 Fix 3: Star toggle button */}
+                {/* P34 Fix 3: Star toggle button (optimistic – no spinner) */}
                 <TouchableOpacity
                   style={styles.starButton}
                   onPress={() => toggleWatchlist(item.ticker)}
                   disabled={isToggling}
                   data-testid={`star-toggle-${item.ticker}`}
                 >
-                  {isToggling ? (
-                    <ActivityIndicator size="small" color={COLORS.warning} />
-                  ) : (
-                    <Ionicons
-                      name={isFollowed ? "star" : "star-outline"}
-                      size={24}
-                      color={isFollowed ? COLORS.warning : COLORS.textMuted}
-                    />
-                  )}
+                  <Ionicons
+                    name={isFollowed ? "star" : "star-outline"}
+                    size={24}
+                    color={isFollowed ? COLORS.warning : COLORS.textMuted}
+                  />
                 </TouchableOpacity>
                 
                 {/* Stock info - navigates to detail */}
