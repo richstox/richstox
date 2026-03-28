@@ -1157,25 +1157,23 @@ async def search_whitelist(
             "asset_type": 1,
             "status": 1,
             "safety_type": 1,
-            "logo": "$logo_url",
             "rank": 1,
         }}
     ]
     
     results = await db.tracked_tickers.aggregate(pipeline).to_list(None)
 
-    # Fallback: batch-fetch logo_url from company_fundamentals_cache for results
-    # where tracked_tickers.logo_url is missing (not all update paths propagate it).
-    tickers_missing_logo = [r["ticker"] for r in results if not r.get("logo")]
-    if tickers_missing_logo:
+    # Logo source-of-truth: company_fundamentals_cache (same as dashboard/homepage).
+    # Single batch query for all result tickers — no per-row lookups.
+    result_tickers = [r["ticker"] for r in results]
+    if result_tickers:
         cache_logos = await db.company_fundamentals_cache.find(
-            {"ticker": {"$in": tickers_missing_logo}},
+            {"ticker": {"$in": result_tickers}},
             {"_id": 0, "ticker": 1, "logo_url": 1},
         ).to_list(None)
         logo_map = {d["ticker"]: d.get("logo_url") for d in cache_logos}
-        for r in results:
-            if not r.get("logo"):
-                r["logo"] = logo_map.get(r["ticker"])
+    else:
+        logo_map = {}
 
     # Format results
     formatted = []
@@ -1208,7 +1206,7 @@ async def search_whitelist(
             "asset_type": r.get("asset_type", "Common Stock"),
             "fundamentals_pending": r.get("status") != "active",
             "safety": safety_info,
-            "logo": _build_full_logo_url(r.get("logo")),
+            "logo": _build_full_logo_url(logo_map.get(ticker)),
         }
         if followed_tickers is not None:
             entry["is_following"] = ticker_code in followed_tickers

@@ -36,7 +36,7 @@ def _make_fake_db(tracked_docs, cache_docs=None):
     """Return a fake db object whose tracked_tickers.aggregate returns *tracked_docs*.
 
     If *cache_docs* is provided, ``company_fundamentals_cache.find()`` returns
-    a cursor over those docs (used for the logo fallback lookup).
+    a cursor over those docs (used for the logo batch lookup).
     """
     db = MagicMock()
     db.tracked_tickers.aggregate = MagicMock(return_value=_FakeCursor(tracked_docs))
@@ -47,9 +47,9 @@ def _make_fake_db(tracked_docs, cache_docs=None):
 
 # Raw docs as the aggregation pipeline would return (after $project)
 _RAW_DOCS = [
-    {"ticker": "KO.US",   "name": "The Coca-Cola Company",     "exchange": "NYSE",   "sector": "Consumer Defensive", "industry": "Beverages", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 0},
-    {"ticker": "KOD.US",  "name": "Kodiak Sciences Inc",       "exchange": "NASDAQ", "sector": "Healthcare",         "industry": "Biotech",   "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 1},
-    {"ticker": "KODK.US", "name": "Eastman Kodak Co",          "exchange": "NYSE",   "sector": "Technology",         "industry": "Imaging",   "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 1},
+    {"ticker": "KO.US",   "name": "The Coca-Cola Company",     "exchange": "NYSE",   "sector": "Consumer Defensive", "industry": "Beverages", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 0},
+    {"ticker": "KOD.US",  "name": "Kodiak Sciences Inc",       "exchange": "NASDAQ", "sector": "Healthcare",         "industry": "Biotech",   "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 1},
+    {"ticker": "KODK.US", "name": "Eastman Kodak Co",          "exchange": "NYSE",   "sector": "Technology",         "industry": "Imaging",   "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 1},
 ]
 
 
@@ -138,15 +138,20 @@ def test_build_full_logo_url_empty():
 
 @pytest.mark.asyncio
 async def test_search_results_include_full_logo_url():
-    """Search results should include fully-qualified logo URLs."""
+    """Search results should include fully-qualified logo URLs from company_fundamentals_cache."""
     from whitelist_service import search_whitelist
 
-    docs_with_logos = [
-        {"ticker": "AAPL.US", "name": "Apple Inc", "exchange": "NASDAQ", "sector": "Technology", "industry": "Consumer Electronics", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": "/img/logos/US/AAPL.png", "rank": 0},
-        {"ticker": "MSFT.US", "name": "Microsoft Corp", "exchange": "NASDAQ", "sector": "Technology", "industry": "Software", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": "https://cdn.example.com/msft.png", "rank": 1},
-        {"ticker": "AMZN.US", "name": "Amazon.com Inc", "exchange": "NASDAQ", "sector": "Consumer Cyclical", "industry": "Internet Retail", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 2},
+    tracked_docs = [
+        {"ticker": "AAPL.US", "name": "Apple Inc", "exchange": "NASDAQ", "sector": "Technology", "industry": "Consumer Electronics", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 0},
+        {"ticker": "MSFT.US", "name": "Microsoft Corp", "exchange": "NASDAQ", "sector": "Technology", "industry": "Software", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 1},
+        {"ticker": "AMZN.US", "name": "Amazon.com Inc", "exchange": "NASDAQ", "sector": "Consumer Cyclical", "industry": "Internet Retail", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 2},
     ]
-    db = _make_fake_db(docs_with_logos)
+    cache_docs = [
+        {"ticker": "AAPL.US", "logo_url": "/img/logos/US/AAPL.png"},
+        {"ticker": "MSFT.US", "logo_url": "https://cdn.example.com/msft.png"},
+        # AMZN missing from cache → logo should be None
+    ]
+    db = _make_fake_db(tracked_docs, cache_docs=cache_docs)
 
     results = await search_whitelist(db, "A", limit=20)
 
@@ -156,14 +161,14 @@ async def test_search_results_include_full_logo_url():
 
 
 @pytest.mark.asyncio
-async def test_search_logo_fallback_from_fundamentals_cache():
-    """When tracked_tickers.logo_url is missing, fall back to company_fundamentals_cache."""
+async def test_search_logo_from_fundamentals_cache():
+    """Logos come from company_fundamentals_cache (same source as dashboard)."""
     from whitelist_service import search_whitelist
 
-    # tracked_tickers docs with NO logo (simulates the common case)
+    # tracked_tickers docs (no logo field — logo comes from cache)
     tracked_docs = [
-        {"ticker": "KO.US", "name": "The Coca-Cola Company", "exchange": "NYSE", "sector": "Consumer Defensive", "industry": "Beverages", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 0},
-        {"ticker": "KOD.US", "name": "Kodiak Sciences Inc", "exchange": "NASDAQ", "sector": "Healthcare", "industry": "Biotech", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 1},
+        {"ticker": "KO.US", "name": "The Coca-Cola Company", "exchange": "NYSE", "sector": "Consumer Defensive", "industry": "Beverages", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 0},
+        {"ticker": "KOD.US", "name": "Kodiak Sciences Inc", "exchange": "NASDAQ", "sector": "Healthcare", "industry": "Biotech", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 1},
     ]
 
     # company_fundamentals_cache has the logo URLs
