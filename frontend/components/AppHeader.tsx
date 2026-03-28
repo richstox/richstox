@@ -41,6 +41,7 @@ interface AppHeaderProps {
   onNotificationPress?: () => void;
   notificationCount?: number;
   showSubscriptionBadge?: boolean;
+  rightAction?: React.ReactNode;
 }
 
 export default function AppHeader({ 
@@ -50,6 +51,7 @@ export default function AppHeader({
   onNotificationPress,
   notificationCount = 0,
   showSubscriptionBadge = true,
+  rightAction,
 }: AppHeaderProps) {
   const router = useRouter();
   const { user, isAdmin, logout } = useAuth();
@@ -106,6 +108,7 @@ export default function AppHeader({
       
       {/* Right side: Search, Notifications, PRO badge, Avatar */}
       <View style={[styles.headerRight, { gap: sp.rowGap }]}>
+        {rightAction}
         <TouchableOpacity 
           style={styles.headerIcon} 
           onPress={() => router.push('/(tabs)/search?autofocus=true')}

@@ -558,7 +558,7 @@ export default function StockDetail() {
     }
   }, [ticker, sessionToken]);
 
-  // P34 Fix 5: Toggle follow status (Watchlist only, NOT Portfolio)
+  // P34 Fix 5: Toggle follow status (Watchlist only, NOT Portfolio) – optimistic UI
   const toggleFollow = async () => {
     if (followLoading) return;
     
@@ -567,23 +567,26 @@ export default function StockDetail() {
       setFollowLoading(false);
       return;
     }
+    const wasFollowed = isFollowed;
+    // Optimistic: flip UI immediately
+    setIsFollowed(!wasFollowed);
+
     const authHeaders = { Authorization: `Bearer ${sessionToken}` };
     try {
-      if (isFollowed) {
-        // Unfollow - remove from watchlist
+      if (wasFollowed) {
         await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`, {
           headers: authHeaders,
         });
-        setIsFollowed(false);
       } else {
-        // Follow - add to watchlist
         await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`, {}, {
           headers: authHeaders,
         });
-        setIsFollowed(true);
       }
     } catch (err) {
+      // Revert optimistic update on error
+      setIsFollowed(wasFollowed);
       console.error('Error toggling follow:', err);
+      alert(`Failed to ${wasFollowed ? 'unfollow' : 'follow'} ${ticker}. Please try again.`);
     } finally {
       setFollowLoading(false);
     }
@@ -1364,7 +1367,26 @@ export default function StockDetail() {
       }}
     >
       {/* Persistent Top Bar */}
-      <AppHeader title={company.code} showSubscriptionBadge={false} />
+      <AppHeader
+        title={company.code}
+        showSubscriptionBadge={false}
+        rightAction={
+          <TouchableOpacity
+            onPress={toggleFollow}
+            disabled={followLoading}
+            style={{ padding: 4 }}
+            accessibilityLabel={isFollowed ? `Unfollow ${company.code}` : `Follow ${company.code}`}
+            accessibilityRole="button"
+            data-testid="header-follow-star"
+          >
+            <Ionicons
+              name={isFollowed ? 'star' : 'star-outline'}
+              size={22}
+              color={isFollowed ? COLORS.warning : COLORS.textMuted}
+            />
+          </TouchableOpacity>
+        }
+      />
 
       {/* Search results navigation bar */}
       {hasSearchNav && (
