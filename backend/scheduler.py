@@ -609,7 +609,10 @@ async def scheduler_loop():
             if current_minute % 15 == 0 and current_minute != last_heartbeat_minute:
                 last_heartbeat_minute = current_minute
                 logger.info(f"[HEARTBEAT] Scheduler alive at {now.strftime('%Y-%m-%d %H:%M')} Prague")
-                await log_heartbeat(last_run)
+                try:
+                    await log_heartbeat(last_run)
+                except Exception as hb_exc:
+                    logger.error(f"[HEARTBEAT] Failed to write heartbeat (non-fatal): {hb_exc}")
             
             # =================================================================
             # KILL SWITCH CHECK
