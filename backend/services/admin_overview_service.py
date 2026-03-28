@@ -1266,6 +1266,15 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     # Scheduler config
     scheduler_config_task = db.ops_config.find_one({"key": "scheduler_enabled"}, {"_id": 0})
     
+    # Scheduler daemon heartbeat — latest heartbeat from system_job_logs.
+    # The daemon writes one every 15 min; stale = daemon not alive.
+    _heartbeat_cutoff = now_utc - timedelta(minutes=20)
+    scheduler_heartbeat_task = db.system_job_logs.find_one(
+        {"job_name": "scheduler_heartbeat", "start_time": {"$gte": _heartbeat_cutoff}},
+        {"_id": 0, "start_time": 1},
+        sort=[("start_time", -1)],
+    )
+    
     # Latest price
     latest_price_task = db.stock_prices.find_one({}, {"date": 1, "_id": 0}, sort=[("date", -1)])
     
@@ -1310,12 +1319,13 @@ async def get_admin_overview(db) -> Dict[str, Any]:
         universe_counts_task, scheduler_config_task, latest_price_task,
         job_runs_task, last_universe_seed_task, api_guard_task, job_last_runs_task,
         system_health_task, pipeline_sync_task, price_integrity_task, pipeline_age_task,
-        eodhd_usage_task
+        eodhd_usage_task, scheduler_heartbeat_task
     )
 
-    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age, eodhd_usage = results
+    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age, eodhd_usage, scheduler_heartbeat = results
     
     scheduler_enabled = scheduler_config.get("value", True) if scheduler_config else True
+    scheduler_daemon_alive = scheduler_heartbeat is not None
     latest_date = latest_price.get("date") if latest_price else None
     
     # =========================================================================
@@ -1526,7 +1536,9 @@ async def get_admin_overview(db) -> Dict[str, Any]:
             "score_pct": health_score,  # None if unknown
             "status": health_status,
             "deductions": health_deductions,
-            "scheduler_active": scheduler_enabled,
+            "scheduler_active": scheduler_enabled and scheduler_daemon_alive,
+            "scheduler_enabled": scheduler_enabled,
+            "scheduler_daemon_alive": scheduler_daemon_alive,
             "jobs_completed": completed_count,
             "jobs_failed": failed_count,
             "jobs_total": total_expected,
