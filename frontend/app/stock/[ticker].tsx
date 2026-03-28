@@ -1366,29 +1366,32 @@ export default function StockDetail() {
         }
       }}
     >
-      {/* Persistent Top Bar */}
-      <AppHeader
-        title={company.code}
-        showSubscriptionBadge={false}
-        rightAction={
-          <TouchableOpacity
-            onPress={toggleFollow}
-            disabled={followLoading}
-            style={{ padding: 4 }}
-            accessibilityLabel={isFollowed ? `Unfollow ${company.code}` : `Follow ${company.code}`}
-            accessibilityRole="button"
-            data-testid="header-follow-star"
-          >
-            <Ionicons
-              name={isFollowed ? 'star' : 'star-outline'}
-              size={22}
-              color={isFollowed ? COLORS.warning : COLORS.textMuted}
-            />
-          </TouchableOpacity>
-        }
-      />
+      {/* Persistent Top Bar – hidden in browse mode */}
+      {!hasSearchNav && (
+        <AppHeader
+          title={company.code}
+          showBackButton
+          showSubscriptionBadge={false}
+          rightAction={
+            <TouchableOpacity
+              onPress={toggleFollow}
+              disabled={followLoading}
+              style={{ padding: 4 }}
+              accessibilityLabel={isFollowed ? `Unfollow ${company.code}` : `Follow ${company.code}`}
+              accessibilityRole="button"
+              data-testid="header-follow-star"
+            >
+              <Ionicons
+                name={isFollowed ? 'star' : 'star-outline'}
+                size={22}
+                color={isFollowed ? COLORS.warning : COLORS.textMuted}
+              />
+            </TouchableOpacity>
+          }
+        />
+      )}
 
-      {/* Search results navigation bar */}
+      {/* Search results navigation bar (browse mode) */}
       {hasSearchNav && (
         <View style={styles.searchNavBar}>
           <TouchableOpacity
@@ -1401,12 +1404,27 @@ export default function StockDetail() {
           </TouchableOpacity>
 
           <View style={styles.searchNavCenter}>
+            <Text style={styles.searchNavTicker}>{company.code}</Text>
             <Text style={styles.searchNavCounter}>
               {searchIndex + 1} of {searchResults.length}
             </Text>
             <TouchableOpacity
+              onPress={toggleFollow}
+              disabled={followLoading}
+              style={{ padding: 4 }}
+              accessibilityLabel={isFollowed ? `Unfollow ${company.code}` : `Follow ${company.code}`}
+              accessibilityRole="button"
+              data-testid="browse-follow-star"
+            >
+              <Ionicons
+                name={isFollowed ? 'star' : 'star-outline'}
+                size={18}
+                color={isFollowed ? COLORS.warning : COLORS.textMuted}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
               style={styles.searchNavClose}
-              onPress={clearSearch}
+              onPress={() => { clearSearch(); router.back(); }}
             >
               <Ionicons name="close" size={16} color={COLORS.textMuted} />
             </TouchableOpacity>
