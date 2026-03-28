@@ -96,3 +96,54 @@ async def test_is_following_empty_set_all_false():
     assert len(results) == 3
     for r in results:
         assert r["is_following"] is False, f"{r['ticker']} should not be followed"
+
+
+# ---------------------------------------------------------------------------
+# Logo URL tests
+# ---------------------------------------------------------------------------
+
+def test_build_full_logo_url_relative_path():
+    """Relative paths should be prefixed with the EODHD CDN."""
+    from whitelist_service import _build_full_logo_url
+
+    assert _build_full_logo_url("/img/logos/US/AAPL.png") == "https://eodhistoricaldata.com/img/logos/US/AAPL.png"
+
+
+def test_build_full_logo_url_absolute():
+    """Absolute URLs should be returned as-is."""
+    from whitelist_service import _build_full_logo_url
+
+    assert _build_full_logo_url("https://example.com/logo.png") == "https://example.com/logo.png"
+
+
+def test_build_full_logo_url_none():
+    """None input should return None."""
+    from whitelist_service import _build_full_logo_url
+
+    assert _build_full_logo_url(None) is None
+
+
+def test_build_full_logo_url_empty():
+    """Empty string input should return None."""
+    from whitelist_service import _build_full_logo_url
+
+    assert _build_full_logo_url("") is None
+
+
+@pytest.mark.asyncio
+async def test_search_results_include_full_logo_url():
+    """Search results should include fully-qualified logo URLs."""
+    from whitelist_service import search_whitelist
+
+    docs_with_logos = [
+        {"ticker": "AAPL.US", "name": "Apple Inc", "exchange": "NASDAQ", "sector": "Technology", "industry": "Consumer Electronics", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": "/img/logos/US/AAPL.png", "rank": 0},
+        {"ticker": "MSFT.US", "name": "Microsoft Corp", "exchange": "NASDAQ", "sector": "Technology", "industry": "Software", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": "https://cdn.example.com/msft.png", "rank": 1},
+        {"ticker": "AMZN.US", "name": "Amazon.com Inc", "exchange": "NASDAQ", "sector": "Consumer Cyclical", "industry": "Internet Retail", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "logo": None, "rank": 2},
+    ]
+    db = _make_fake_db(docs_with_logos)
+
+    results = await search_whitelist(db, "A", limit=20)
+
+    assert results[0]["logo"] == "https://eodhistoricaldata.com/img/logos/US/AAPL.png"
+    assert results[1]["logo"] == "https://cdn.example.com/msft.png"
+    assert results[2]["logo"] is None

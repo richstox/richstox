@@ -1058,6 +1058,22 @@ async def get_whitelist_stats(db) -> Dict[str, Any]:
     }
 
 
+EODHD_LOGO_CDN = "https://eodhistoricaldata.com"
+
+
+def _build_full_logo_url(logo_path: Optional[str]) -> Optional[str]:
+    """Build a full logo URL from a raw logo_url value.
+
+    Relative paths (e.g. ``/img/logos/US/AAPL.png``) are prefixed with
+    the EODHD CDN host.  Absolute URLs are returned as-is.
+    """
+    if not logo_path:
+        return None
+    if logo_path.startswith("http"):
+        return logo_path
+    return f"{EODHD_LOGO_CDN}{logo_path}"
+
+
 async def search_whitelist(
     db,
     query: str,
@@ -1141,7 +1157,7 @@ async def search_whitelist(
             "asset_type": 1,
             "status": 1,
             "safety_type": 1,
-            "logo": "$fundamentals.General.LogoURL",
+            "logo": "$logo_url",
             "rank": 1,
         }}
     ]
@@ -1179,7 +1195,7 @@ async def search_whitelist(
             "asset_type": r.get("asset_type", "Common Stock"),
             "fundamentals_pending": r.get("status") != "active",
             "safety": safety_info,
-            "logo": r.get("logo"),
+            "logo": _build_full_logo_url(r.get("logo")),
         }
         if followed_tickers is not None:
             entry["is_following"] = ticker_code in followed_tickers
