@@ -618,7 +618,7 @@ export default function StockDetail() {
 
   // ===== CHART-TOOLTIP: Simple handlers (stockanalysis.com style) =====
   // Chart dimension constants (must match rendering)
-  const CHART_PADDING_LEFT = 58;
+  const CHART_PADDING_LEFT = 64;
   const CHART_PADDING_RIGHT = 16;
   const CHART_PADDING_TOP = 20;
   const CHART_PADDING_BOTTOM = 32;
@@ -1672,7 +1672,7 @@ export default function StockDetail() {
               </View>
             ) : visibleChartData.length > 0 ? (
               (() => {
-                const chartW = width - 48;
+                const chartW = width - 2 * sp.pageGutter - 2 * 14;
                 const chartH = 240;
                 
                 // Chart label positioning with deterministic stacking
@@ -1693,7 +1693,7 @@ export default function StockDetail() {
                   chartHeight: number,
                   formatPriceFn: (p: number) => string
                 ): ChartLabelData[] => {
-                  const LABEL_HEIGHT = 14;
+                  const LABEL_HEIGHT = 16;
                   const MIN_GAP = 2;
                   const TOP_BOUND = 8;
                   const BOTTOM_BOUND = chartHeight - 4;
@@ -1788,7 +1788,7 @@ export default function StockDetail() {
                   
                   return labels;
                 };
-                const paddingLeft = 58;
+                const paddingLeft = 64;
                 const paddingRight = 16;
                 const paddingTop = 20;
                 const paddingBottom = 32;
@@ -1862,7 +1862,8 @@ export default function StockDetail() {
                 
                 // ===== X-AXIS: Compute date labels at regular intervals =====
                 const xAxisTicks: { x: number; label: string }[] = (() => {
-                  const numLabels = Math.min(5, visibleChartData.length);
+                  const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / 50)));
+                  const numLabels = Math.min(maxLabels, visibleChartData.length);
                   if (numLabels < 2) return [];
                   const ticks: { x: number; label: string }[] = [];
                   for (let i = 0; i < numLabels; i++) {
@@ -2028,20 +2029,38 @@ export default function StockDetail() {
                       <Circle cx={highX} cy={highY} r={5} fill="#10B981" />
                       <Circle cx={lowX} cy={lowY} r={5} fill="#EF4444" />
                       
-                      {/* Price labels with deterministic stacking */}
-                      {chartLabels.map(label => (
-                        <SvgText 
-                          key={label.id}
-                          x={paddingLeft - 5} 
-                          y={label.adjustedY + 4} 
-                          fontSize={11} 
-                          fill={label.color} 
-                          fontWeight={label.id === 'current' ? '700' : '600'} 
-                          textAnchor="end"
-                        >
-                          {label.text}
-                        </SvgText>
-                      ))}
+                      {/* Price labels as colored badges (green=HIGH, red=LOW, dark=PRICE) */}
+                      {chartLabels.map(label => {
+                        const badgeFontSize = 9;
+                        const badgeCharW = 5.5;
+                        const badgePadH = 5;
+                        const badgeH = 16;
+                        const badgeW = Math.max(label.text.length * badgeCharW + badgePadH * 2, 28);
+                        const badgeX = paddingLeft - 3 - badgeW;
+                        const badgeY = label.adjustedY - badgeH / 2;
+                        return (
+                          <G key={label.id}>
+                            <Rect
+                              x={badgeX}
+                              y={badgeY}
+                              width={badgeW}
+                              height={badgeH}
+                              rx={3}
+                              fill={label.color}
+                            />
+                            <SvgText
+                              x={badgeX + badgeW / 2}
+                              y={badgeY + badgeH / 2 + 3}
+                              fontSize={badgeFontSize}
+                              fill="#FFFFFF"
+                              fontWeight="700"
+                              textAnchor="middle"
+                            >
+                              {label.text}
+                            </SvgText>
+                          </G>
+                        );
+                      })}
                       
                       {/* ===== CHART-TOOLTIP: Crosshair + Date + Price ===== */}
                       {tooltipPoint && (
@@ -3331,7 +3350,7 @@ const styles = StyleSheet.create({
   rangeButtonActive: { backgroundColor: COLORS.primary },
   rangeButtonText: { fontSize: 12, fontWeight: '500', color: COLORS.textMuted },
   rangeButtonTextActive: { color: '#FFF' },
-  chartContainer: { minHeight: 260 },
+  chartContainer: { minHeight: 260, overflow: 'hidden' },
   chartLoading: { height: 200, justifyContent: 'center', alignItems: 'center' },
   chartLoadingText: { fontSize: 13, color: COLORS.textMuted, marginTop: 8 },
   chartErrorText: { fontSize: 13, color: '#EF4444' },
