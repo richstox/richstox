@@ -2223,21 +2223,21 @@ export default function StockDetail() {
                 <View style={[styles.legendDot, { backgroundColor: '#111827' }]} />
                 <Text style={[styles.legendLabel, { color: '#111827' }]}>PRICE</Text>
               </View>
-              {showBenchmark && visibleBenchmarkData.length > 0 && (
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#9CA3AF', opacity: 0.6 }]} />
-                  <Text style={[styles.legendLabel, { color: '#9CA3AF' }]}>S&P 500 TR</Text>
-                </View>
-              )}
               {benchmarkChartData.length > 0 && (
                 <TouchableOpacity
                   style={[styles.benchmarkToggle, showBenchmark && styles.benchmarkToggleActive]}
                   onPress={() => setShowBenchmark(!showBenchmark)}
                   data-testid="benchmark-toggle"
                 >
-                  <Text style={[styles.benchmarkToggleText, showBenchmark && styles.benchmarkToggleTextActive]}>
-                    vs S&P 500
-                  </Text>
+                  {showBenchmark ? (
+                    <View style={styles.benchmarkToggleRow}>
+                      <View style={styles.benchmarkToggleDot} />
+                      <Text style={[styles.benchmarkToggleText, styles.benchmarkToggleTextActive]}>S&P 500</Text>
+                      <Text style={styles.benchmarkToggleDismiss}>✕</Text>
+                    </View>
+                  ) : (
+                    <Text style={styles.benchmarkToggleText}>+ Compare S&P 500</Text>
+                  )}
                 </TouchableOpacity>
               )}
             </View>
@@ -3436,8 +3436,11 @@ const styles = StyleSheet.create({
   chartInfoDate: { fontSize: 10, color: COLORS.textMuted, marginTop: 2 },
   chartLegend: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 16, marginTop: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: '#E5E7EB', flexWrap: 'wrap' },
   legendLabel: { fontSize: 12, fontWeight: '600' },
-  benchmarkToggle: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderColor: '#D1D5DB', backgroundColor: '#F9FAFB' },
-  benchmarkToggleActive: { backgroundColor: '#EEF2FF', borderColor: '#6366F1' },
+  benchmarkToggle: { paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, borderWidth: 1, borderStyle: 'dashed', borderColor: '#D1D5DB', backgroundColor: '#F9FAFB' },
+  benchmarkToggleActive: { backgroundColor: '#EEF2FF', borderColor: '#6366F1', borderStyle: 'solid' },
+  benchmarkToggleRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  benchmarkToggleDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#9CA3AF', opacity: 0.6 },
+  benchmarkToggleDismiss: { fontSize: 11, color: '#6366F1', marginLeft: 2 },
   benchmarkToggleText: { fontSize: 11, fontWeight: '600', color: '#9CA3AF' },
   benchmarkToggleTextActive: { color: '#6366F1' },
   customXAxis: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 10, marginTop: 4 },
