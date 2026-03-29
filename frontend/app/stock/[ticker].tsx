@@ -619,9 +619,9 @@ export default function StockDetail() {
   // ===== CHART-TOOLTIP: Simple handlers (stockanalysis.com style) =====
   // Chart dimension constants (must match rendering)
   const CHART_PADDING_LEFT = 50;
-  const CHART_PADDING_RIGHT = 10;
-  const CHART_PADDING_TOP = 15;
-  const CHART_PADDING_BOTTOM = 10;
+  const CHART_PADDING_RIGHT = 16;
+  const CHART_PADDING_TOP = 20;
+  const CHART_PADDING_BOTTOM = 32;
   
   // Compute visible chart data based on benchmark toggle
   // Benchmark OFF = full ticker history | Benchmark ON = overlapping date range only
@@ -1619,7 +1619,7 @@ export default function StockDetail() {
 
         {/* ===== PRICE CHART (P1 UX: Chart-first flow) ===== */}
         <View 
-          style={styles.sectionCard} 
+          style={styles.priceChartCard} 
           data-testid="price-chart-card"
         >
           <View style={styles.sectionHeader}>
@@ -1673,7 +1673,7 @@ export default function StockDetail() {
             ) : visibleChartData.length > 0 ? (
               (() => {
                 const chartW = width - 48;
-                const chartH = 180;
+                const chartH = 240;
                 
                 // Chart label positioning with deterministic stacking
                 // Rules:
@@ -1789,9 +1789,9 @@ export default function StockDetail() {
                   return labels;
                 };
                 const paddingLeft = 50;
-                const paddingRight = 10;
-                const paddingTop = 15;
-                const paddingBottom = 10;
+                const paddingRight = 16;
+                const paddingTop = 20;
+                const paddingBottom = 32;
                 const graphW = chartW - paddingLeft - paddingRight;
                 const graphH = chartH - paddingTop - paddingBottom;
                 
@@ -1847,6 +1847,33 @@ export default function StockDetail() {
                 const highX = paddingLeft + (highIdx / (visibleChartData.length - 1)) * graphW;
                 const lowX = paddingLeft + (lowIdx / (visibleChartData.length - 1)) * graphW;
                 const formatPrice = (p: number) => p >= 1000 ? `$${toEU(p / 1000, 1)}k` : `$${toEU(p, 0)}`;
+                
+                // ===== Y-AXIS GRID: Compute ~4 evenly spaced horizontal grid lines =====
+                const yAxisTicks: { price: number; y: number; label: string }[] = (() => {
+                  const numTicks = 4;
+                  const step = (yMax - yMin) / (numTicks + 1);
+                  const ticks: { price: number; y: number; label: string }[] = [];
+                  for (let i = 1; i <= numTicks; i++) {
+                    const price = yMin + step * i;
+                    ticks.push({ price, y: priceToY(price), label: formatPrice(price) });
+                  }
+                  return ticks;
+                })();
+                
+                // ===== X-AXIS: Compute date labels at regular intervals =====
+                const xAxisTicks: { x: number; label: string }[] = (() => {
+                  const numLabels = Math.min(5, visibleChartData.length);
+                  if (numLabels < 2) return [];
+                  const ticks: { x: number; label: string }[] = [];
+                  for (let i = 0; i < numLabels; i++) {
+                    const dataIdx = Math.round(i * (visibleChartData.length - 1) / (numLabels - 1));
+                    const d = new Date(visibleChartData[dataIdx].date + 'T00:00:00Z');
+                    const label = `${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear().toString().slice(2)}`;
+                    const x = paddingLeft + (dataIdx / (visibleChartData.length - 1)) * graphW;
+                    ticks.push({ x, label });
+                  }
+                  return ticks;
+                })();
                 
                 // Compute chart labels with deterministic stacking
                 const chartLabels = computeChartLabels(
@@ -1958,6 +1985,28 @@ export default function StockDetail() {
                     }}
                   >
                     <Svg width={chartW} height={chartH} style={{ position: 'absolute', top: 0, left: 0 }}>
+                      {/* Y-axis grid lines */}
+                      {yAxisTicks.map((tick, i) => (
+                        <G key={`y-grid-${i}`}>
+                          <Line x1={paddingLeft} y1={tick.y} x2={paddingLeft + graphW} y2={tick.y}
+                            stroke="#E5E7EB" strokeWidth={0.5} />
+                          <SvgText x={paddingLeft - 6} y={tick.y + 4} fontSize={10} fill="#9CA3AF" textAnchor="end">
+                            {tick.label}
+                          </SvgText>
+                        </G>
+                      ))}
+                      
+                      {/* X-axis date labels */}
+                      {xAxisTicks.map((tick, i) => (
+                        <SvgText key={`x-label-${i}`} x={tick.x} y={chartH - paddingBottom + 16} fontSize={10} fill="#9CA3AF" textAnchor="middle">
+                          {tick.label}
+                        </SvgText>
+                      ))}
+                      
+                      {/* X-axis baseline */}
+                      <Line x1={paddingLeft} y1={chartH - paddingBottom} x2={paddingLeft + graphW} y2={chartH - paddingBottom}
+                        stroke="#E5E7EB" strokeWidth={0.5} />
+                      
                       {/* High/Low/Current reference lines */}
                       <Line x1={paddingLeft} y1={highY} x2={paddingLeft + graphW} y2={highY}
                         stroke="#10B981" strokeWidth={1} strokeDasharray="4,4" />
@@ -3051,6 +3100,15 @@ const styles = StyleSheet.create({
   sectionCard: {
     marginBottom: 16,
   },
+  // Price History chart card with white background and rounded corners
+  priceChartCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -3273,7 +3331,7 @@ const styles = StyleSheet.create({
   rangeButtonActive: { backgroundColor: COLORS.primary },
   rangeButtonText: { fontSize: 12, fontWeight: '500', color: COLORS.textMuted },
   rangeButtonTextActive: { color: '#FFF' },
-  chartContainer: { marginHorizontal: -8, minHeight: 200 },
+  chartContainer: { minHeight: 260 },
   chartLoading: { height: 200, justifyContent: 'center', alignItems: 'center' },
   chartLoadingText: { fontSize: 13, color: COLORS.textMuted, marginTop: 8 },
   chartErrorText: { fontSize: 13, color: '#EF4444' },
