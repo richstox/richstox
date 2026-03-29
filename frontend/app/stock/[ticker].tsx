@@ -1673,12 +1673,13 @@ export default function StockDetail() {
             ) : visibleChartData.length > 0 ? (
               (() => {
                 const CARD_PAD = 14; // must match priceChartCard.padding
+                const CARD_BORDER = 1; // must match priceChartCard.borderWidth
                 const MIN_PX_PER_LABEL = 50;
                 const BADGE_FONT_SIZE = 9;
                 const BADGE_CHAR_W = 5.5;
                 const BADGE_PAD_H = 5;
                 const BADGE_H = 16;
-                const chartW = width - 2 * sp.pageGutter - 2 * CARD_PAD;
+                const chartW = width - 2 * sp.pageGutter - 2 * CARD_PAD - 2 * CARD_BORDER;
                 const chartH = 240;
                 
                 // Chart label positioning with deterministic stacking
@@ -1852,7 +1853,11 @@ export default function StockDetail() {
                 const currentY = priceToY(currentPrice);
                 const highX = paddingLeft + (highIdx / (visibleChartData.length - 1)) * graphW;
                 const lowX = paddingLeft + (lowIdx / (visibleChartData.length - 1)) * graphW;
-                const formatPrice = (p: number) => p >= 1000 ? `$${toEU(p / 1000, 1)}k` : `$${toEU(p, 0)}`;
+                const formatPrice = (p: number) => {
+                  if (p >= 1_000_000) return `$${toEU(p / 1_000_000, 1)}M`;
+                  if (p >= 1000) return `$${toEU(p / 1000, 1)}k`;
+                  return `$${toEU(p, 0)}`;
+                };
                 
                 // ===== Y-AXIS GRID: Compute ~4 evenly spaced horizontal grid lines =====
                 const yAxisTicks: { price: number; y: number; label: string }[] = (() => {
@@ -1866,6 +1871,27 @@ export default function StockDetail() {
                   return ticks;
                 })();
                 
+                // ===== HIGH/LOW date labels for X-axis =====
+                const formatDateLabel = (dateStr: string): string => {
+                  const d = new Date(dateStr + 'T00:00:00Z');
+                  return `${d.getUTCDate().toString().padStart(2, '0')}.${(d.getUTCMonth() + 1).toString().padStart(2, '0')}.${d.getUTCFullYear().toString().slice(2)}`;
+                };
+                const highDateLabel = formatDateLabel(visibleChartData[highIdx].date);
+                const lowDateLabel = formatDateLabel(visibleChartData[lowIdx].date);
+                
+                // Vertical offset if HIGH and LOW x-positions are too close
+                const HL_LABEL_W = 8 * 6; // ~8 chars (DD.MM.YY) * ~6px per char at fontSize=10
+                const REGULAR_LABEL_W = 5 * 6; // ~5 chars (MM/YY) * ~6px
+                const hlOverlap = Math.abs(highX - lowX) < HL_LABEL_W;
+                const xAxisBaseY = chartH - paddingBottom + 16;
+                const xAxisOffsetY = Math.min(xAxisBaseY + 12, chartH - 2); // second row, clamped to SVG bottom
+                // HIGH always gets base row; LOW gets offset row if overlapping
+                const highDateY = xAxisBaseY;
+                const lowDateY = hlOverlap ? xAxisOffsetY : xAxisBaseY;
+                // Clamp label x so half-width doesn't extend outside the graph area
+                const hlHalf = HL_LABEL_W / 2;
+                const clampX = (x: number) => Math.max(paddingLeft + hlHalf, Math.min(x, paddingLeft + graphW - hlHalf));
+
                 // ===== X-AXIS: Compute date labels at regular intervals =====
                 const xAxisTicks: { x: number; label: string }[] = (() => {
                   const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / MIN_PX_PER_LABEL)));
@@ -1877,6 +1903,9 @@ export default function StockDetail() {
                     const d = new Date(visibleChartData[dataIdx].date + 'T00:00:00Z');
                     const label = `${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear().toString().slice(2)}`;
                     const x = paddingLeft + (dataIdx / (visibleChartData.length - 1)) * graphW;
+                    // Skip regular tick if it overlaps with HIGH or LOW date label
+                    const overlapThreshold = (HL_LABEL_W + REGULAR_LABEL_W) / 2;
+                    if (Math.abs(x - highX) < overlapThreshold || Math.abs(x - lowX) < overlapThreshold) continue;
                     ticks.push({ x, label });
                   }
                   return ticks;
@@ -2009,6 +2038,14 @@ export default function StockDetail() {
                           {tick.label}
                         </SvgText>
                       ))}
+                      
+                      {/* HIGH/LOW date labels on X-axis */}
+                      <SvgText x={clampX(highX)} y={highDateY} fontSize={10} fill="#10B981" fontWeight="700" textAnchor="middle">
+                        {highDateLabel}
+                      </SvgText>
+                      <SvgText x={clampX(lowX)} y={lowDateY} fontSize={10} fill="#EF4444" fontWeight="700" textAnchor="middle">
+                        {lowDateLabel}
+                      </SvgText>
                       
                       {/* X-axis baseline */}
                       <Line x1={paddingLeft} y1={chartH - paddingBottom} x2={paddingLeft + graphW} y2={chartH - paddingBottom}

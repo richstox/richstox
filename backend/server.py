@@ -4334,15 +4334,25 @@ async def get_ticker_chart_data(
                 })
     
     # Normalize ticker prices to 100 at start
+    # Sanitize adjusted_close: if it is wildly different from close (>100x),
+    # the EODHD adjustment is suspect (e.g. FUBO reverse-split data quality
+    # issue). Fall back to close in that case so the chart stays sane.
+    def _safe_adjusted_close(p):
+        adj = p.get("adjusted_close")
+        close = p.get("close")
+        if adj and close and close > 0 and adj / close > 100:
+            return close
+        return adj or close
+
     normalized_prices = []
     if prices:
-        start_value = prices[0].get("adjusted_close") or prices[0]["close"]
+        start_value = _safe_adjusted_close(prices[0])
         for p in prices:
-            price_val = p.get("adjusted_close") or p["close"]
+            price_val = _safe_adjusted_close(p)
             normalized_prices.append({
                 "date": p["date"],
                 "close": p["close"],
-                "adjusted_close": p.get("adjusted_close"),
+                "adjusted_close": price_val,
                 "normalized": round((price_val / start_value) * 100, 2) if start_value else 100,
                 "volume": p.get("volume")
             })
