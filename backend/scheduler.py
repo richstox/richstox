@@ -836,10 +836,25 @@ async def scheduler_loop():
             # Extensible: iterates BENCHMARK_SYMBOLS registry automatically.
             if should_run("benchmark_update", BENCHMARK_UPDATE_HOUR, BENCHMARK_UPDATE_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering benchmark_update (hour={current_hour}, scheduled={BENCHMARK_UPDATE_HOUR}:{BENCHMARK_UPDATE_MINUTE:02d})")
-                from benchmark_service import update_all_benchmarks
-                await run_job_with_retry("benchmark_update", update_all_benchmarks, db)
-                last_run["benchmark_update"] = today_str
-                await set_last_run_state(last_run)
+                _bm_started = datetime.now(timezone.utc)
+                try:
+                    from benchmark_service import update_all_benchmarks
+                    await run_job_with_retry("benchmark_update", update_all_benchmarks, db)
+                    last_run["benchmark_update"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        f"[scheduler] benchmark_update unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+                    try:
+                        await log_job_execution(
+                            db, "benchmark_update", "error",
+                            _bm_started, datetime.now(timezone.utc),
+                            error_message=f"Scheduler unhandled: {exc}",
+                        )
+                    except Exception:
+                        pass  # best-effort observability
             
             # BACKFILL_ALL: MANUAL ONLY by default
             backfill_all_enabled = await db.ops_config.find_one({"key": "job_backfill_all_enabled"})

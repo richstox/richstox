@@ -58,6 +58,44 @@ class TestTOCTOUFix:
         )
 
 
+class TestBenchmarkUpdateProtection:
+    """Verify that benchmark_update block has try/except protection."""
+
+    def test_benchmark_update_wrapped_in_try_except(self):
+        """benchmark_update block must be wrapped in try/except to prevent daemon crash."""
+        import scheduler
+
+        source = inspect.getsource(scheduler.scheduler_loop)
+
+        # Find the benchmark_update should_run block
+        assert 'should_run("benchmark_update"' in source, (
+            "scheduler_loop must contain a benchmark_update should_run check"
+        )
+
+        # The block must be wrapped in try/except like market_calendar
+        # Check that the error handler pattern exists for benchmark_update
+        assert "benchmark_update unhandled error" in source, (
+            "benchmark_update block must have try/except with error logging "
+            "(matching the market_calendar pattern)"
+        )
+
+    def test_benchmark_update_reachable_on_saturday(self):
+        """Saturday (weekday=5) must reach the benchmark_update check.
+
+        Saturday is in DAILY_SCHEDULE_DAYS and is NOT UNIVERSE_SEED_DAY,
+        so the loop must NOT continue/skip before reaching benchmark_update.
+        """
+        import scheduler
+
+        # Saturday = weekday 5
+        assert 5 in scheduler.DAILY_SCHEDULE_DAYS, (
+            "Saturday (5) must be in DAILY_SCHEDULE_DAYS"
+        )
+        assert 5 != scheduler.UNIVERSE_SEED_DAY, (
+            "Saturday (5) must not equal UNIVERSE_SEED_DAY"
+        )
+
+
 class TestSwallowedExceptionFix:
     """Verify that a failed Step 1 does NOT mark universe_seed as ran today."""
 
