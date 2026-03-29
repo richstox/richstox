@@ -627,8 +627,16 @@ async def scheduler_loop():
             # =================================================================
             # SUNDAY: News refresh only, then skip all other jobs
             # Universe Seed runs Mon-Sat only (markets closed on Sunday)
+            #
+            # GUARDRAIL: Use the already-captured `now.weekday()` instead of
+            # the standalone day-check helpers which invoke get_prague_time()
+            # independently.  Near midnight the two calls could straddle the
+            # day boundary (TOCTOU) and cause the loop to skip an entire
+            # iteration — neither Sunday nor weekday code would execute.
             # =================================================================
-            if is_sunday():
+            weekday = now.weekday()
+
+            if weekday == UNIVERSE_SEED_DAY:
                 # News refresh at 13:00 Sunday (catch-up enabled)
                 if should_run("news_refresh", NEWS_REFRESH_HOUR, NEWS_REFRESH_MINUTE, last_run, today_str, current_hour, current_minute):
                     logger.info(f"Triggering news_refresh (hour={current_hour}, scheduled={NEWS_REFRESH_HOUR}:{NEWS_REFRESH_MINUTE:02d})")
@@ -643,7 +651,7 @@ async def scheduler_loop():
             # =================================================================
             # MON-SAT JOBS (with catch-up logic)
             # =================================================================
-            if not is_daily_job_day():
+            if weekday not in DAILY_SCHEDULE_DAYS:
                 await asyncio.sleep(60)
                 continue
             
@@ -651,9 +659,20 @@ async def scheduler_loop():
             if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
                 try:
-                    await _run_universe_seed_scheduled(db)
-                    last_run["universe_seed"] = today_str
-                    await set_last_run_state(last_run)
+                    _s1_result = await _run_universe_seed_scheduled(db)
+                    # _run_universe_seed_scheduled catches internal errors and
+                    # returns {"error": "..."} instead of raising.  Only mark
+                    # the job as "ran today" when it actually succeeded;
+                    # otherwise the next tick will retry and Steps 2/3 won't
+                    # be triggered on a failed Step 1.
+                    if isinstance(_s1_result, dict) and _s1_result.get("error"):
+                        logger.warning(
+                            f"[scheduler] universe_seed STEP 1 failed internally: "
+                            f"{_s1_result.get('error')} – will retry next tick"
+                        )
+                    else:
+                        last_run["universe_seed"] = today_str
+                        await set_last_run_state(last_run)
                 except Exception as exc:
                     # _run_universe_seed_scheduled has its own internal try/except
                     # for the actual sync work, but early failures (import, DB
