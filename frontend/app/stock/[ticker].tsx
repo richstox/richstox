@@ -1881,12 +1881,16 @@ export default function StockDetail() {
                 
                 // Vertical offset if HIGH and LOW x-positions are too close
                 const HL_LABEL_W = 8 * 6; // ~8 chars (DD.MM.YY) * ~6px per char at fontSize=10
+                const REGULAR_LABEL_W = 5 * 6; // ~5 chars (MM/YY) * ~6px
                 const hlOverlap = Math.abs(highX - lowX) < HL_LABEL_W;
                 const xAxisBaseY = chartH - paddingBottom + 16;
-                const xAxisOffsetY = xAxisBaseY + 12; // second row for collision avoidance
+                const xAxisOffsetY = Math.min(xAxisBaseY + 12, chartH - 2); // second row, clamped to SVG bottom
                 // HIGH always gets base row; LOW gets offset row if overlapping
                 const highDateY = xAxisBaseY;
                 const lowDateY = hlOverlap ? xAxisOffsetY : xAxisBaseY;
+                // Clamp label x so half-width doesn't extend outside the graph area
+                const hlHalf = HL_LABEL_W / 2;
+                const clampX = (x: number) => Math.max(paddingLeft + hlHalf, Math.min(x, paddingLeft + graphW - hlHalf));
 
                 // ===== X-AXIS: Compute date labels at regular intervals =====
                 const xAxisTicks: { x: number; label: string }[] = (() => {
@@ -1900,7 +1904,8 @@ export default function StockDetail() {
                     const label = `${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear().toString().slice(2)}`;
                     const x = paddingLeft + (dataIdx / (visibleChartData.length - 1)) * graphW;
                     // Skip regular tick if it overlaps with HIGH or LOW date label
-                    if (Math.abs(x - highX) < HL_LABEL_W || Math.abs(x - lowX) < HL_LABEL_W) continue;
+                    const overlapThreshold = (HL_LABEL_W + REGULAR_LABEL_W) / 2;
+                    if (Math.abs(x - highX) < overlapThreshold || Math.abs(x - lowX) < overlapThreshold) continue;
                     ticks.push({ x, label });
                   }
                   return ticks;
@@ -2035,10 +2040,10 @@ export default function StockDetail() {
                       ))}
                       
                       {/* HIGH/LOW date labels on X-axis */}
-                      <SvgText x={Math.max(paddingLeft, Math.min(highX, chartW - paddingRight))} y={highDateY} fontSize={10} fill="#10B981" fontWeight="700" textAnchor="middle">
+                      <SvgText x={clampX(highX)} y={highDateY} fontSize={10} fill="#10B981" fontWeight="700" textAnchor="middle">
                         {highDateLabel}
                       </SvgText>
-                      <SvgText x={Math.max(paddingLeft, Math.min(lowX, chartW - paddingRight))} y={lowDateY} fontSize={10} fill="#EF4444" fontWeight="700" textAnchor="middle">
+                      <SvgText x={clampX(lowX)} y={lowDateY} fontSize={10} fill="#EF4444" fontWeight="700" textAnchor="middle">
                         {lowDateLabel}
                       </SvgText>
                       
