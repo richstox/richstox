@@ -4270,6 +4270,16 @@ async def get_ticker_chart_data(
     
     start_date = start_dt.strftime("%Y-%m-%d")
     
+    # Sanitize adjusted_close: if it is wildly different from close (>100x),
+    # the EODHD adjustment is suspect (e.g. FUBO reverse-split data quality
+    # issue). Fall back to close in that case so the chart stays sane.
+    def _safe_adjusted_close(p):
+        adj = p.get("adjusted_close")
+        close = p.get("close")
+        if adj and close and close > 0 and adj / close > 100:
+            return close
+        return adj or close
+    
     # B: MAX Chart Fix - Smart Downsampling
     # For MAX period, get ALL data (no artificial limit) and downsample intelligently
     if period == "MAX":
@@ -4291,6 +4301,22 @@ async def get_ticker_chart_data(
             indices = np.linspace(0, len(all_prices) - 1, target_points, dtype=int)
             indices = sorted(set(indices))  # Remove any duplicates from rounding
             prices = [all_prices[i] for i in indices]
+            
+            # Force-include true adjusted_close extrema so displayed HIGH/LOW
+            # always reflect the true max/min of the full series.
+            sampled_dates = set(p["date"] for p in prices)
+            true_max_pt = max(all_prices, key=lambda p: _safe_adjusted_close(p))
+            true_min_pt = min(all_prices, key=lambda p: _safe_adjusted_close(p))
+            added = False
+            if true_max_pt["date"] not in sampled_dates:
+                prices.append(true_max_pt)
+                sampled_dates.add(true_max_pt["date"])
+                added = True
+            if true_min_pt["date"] not in sampled_dates:
+                prices.append(true_min_pt)
+                added = True
+            if added:
+                prices.sort(key=lambda p: p["date"])
         else:
             prices = all_prices
         
@@ -4334,16 +4360,6 @@ async def get_ticker_chart_data(
                 })
     
     # Normalize ticker prices to 100 at start
-    # Sanitize adjusted_close: if it is wildly different from close (>100x),
-    # the EODHD adjustment is suspect (e.g. FUBO reverse-split data quality
-    # issue). Fall back to close in that case so the chart stays sane.
-    def _safe_adjusted_close(p):
-        adj = p.get("adjusted_close")
-        close = p.get("close")
-        if adj and close and close > 0 and adj / close > 100:
-            return close
-        return adj or close
-
     normalized_prices = []
     if prices:
         start_value = _safe_adjusted_close(prices[0])
