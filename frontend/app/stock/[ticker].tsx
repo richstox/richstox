@@ -2288,7 +2288,7 @@ export default function StockDetail() {
                   <View style={styles.perfCheckMetricRow}>
                     <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
                     <View style={styles.perfCheckMetricInlineRow}>
-                      <Ionicons name="arrow-up-outline" size={12} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
+                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={12} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
                       <Text style={[
                         styles.perfCheckMetricValue, 
                         mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
@@ -3786,6 +3786,9 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   perfCheckMetricRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 6,
   },
   perfCheckMetricInlineRow: {
