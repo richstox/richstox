@@ -11,7 +11,7 @@ Handles scheduled tasks with:
 - Manual admin endpoints always work (bypass kill switch)
 
 Schedule (Europe/Prague timezone):
-- 23:00 (Mon-Sat): Step 1 Universe Seed
+- 03:00 (Mon-Sat): Step 1 Universe Seed
 - Step 2 auto-runs after Step 1 completion: price sync + event detectors
 - Step 3 auto-runs after Step 2 completion: fundamentals sync from pending events
 - 04:15: SP500TR benchmark update
@@ -3783,7 +3783,7 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
         "schedule": {
             "timezone": "Europe/Prague",
             "days": "Mon-Sat",
-            "universe_seed": "23:00",
+            "universe_seed": "03:00",
             "price_sync": "after universe_seed completion",
             "fundamentals_sync": "after price_sync completion",
             "price_backfill": "04:45",

@@ -52,7 +52,7 @@ Standalone scheduler process that runs scheduled jobs.
 
 UNIVERSE SYSTEM - Single Source of Truth
 =========================================
-Step 1: Universe Seed (Mon-Sat 23:00 Prague)
+Step 1: Universe Seed (Mon-Sat 03:00 Prague)
   - Fetches NYSE + NASDAQ exchange-symbol-list
   - ONLY Common Stock (no ETF/funds/warrants/preferred)
   - Sets is_whitelisted=true, is_active=false
@@ -67,10 +67,11 @@ Step 3: Fundamentals Sync (auto after Step 2 completion)
   - Stores sector/industry (does NOT block visibility)
 
 Schedule (Europe/Prague timezone):
-- MON-SAT 23:00: Universe seed (NYSE + NASDAQ Common Stock)
+- MON-SAT 02:00: Market calendar refresh (EODHD exchange-details)
+- MON-SAT 03:00: Universe seed (NYSE + NASDAQ Common Stock)
 - MON-SAT after Step 1 completion: price sync (bulk API) + split/dividend detection
-- MON-SAT 04:15: SP500TR benchmark update
 - MON-SAT after Step 2 completion: fundamentals sync (changes + corporate actions)
+- MON-SAT 04:15: SP500TR benchmark update
 - MON-SAT 04:45: Price backfill (gaps + corporate actions)
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
 - MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day)
@@ -106,7 +107,7 @@ TIMEZONE = ZoneInfo("Europe/Prague")
 
 # SUNDAY ONLY - Universe seed
 UNIVERSE_SEED_DAY = 6  # Sunday
-UNIVERSE_SEED_HOUR = 23
+UNIVERSE_SEED_HOUR = 3
 UNIVERSE_SEED_MINUTE = 0
 
 # MON-SAT - Daily jobs
@@ -130,8 +131,8 @@ NEWS_REFRESH_MINUTE = 0
 BENCHMARK_UPDATE_HOUR = 4
 BENCHMARK_UPDATE_MINUTE = 15
 
-# MARKET CALENDAR: Daily refresh at 03:00 (before price sync)
-MARKET_CALENDAR_HOUR = 3
+# MARKET CALENDAR: Daily refresh at 02:00 (before pipeline at 03:00)
+MARKET_CALENDAR_HOUR = 2
 MARKET_CALENDAR_MINUTE = 0
 
 # KEY METRICS: Job A - compute per-ticker metrics at 05:00
@@ -546,10 +547,6 @@ async def scheduler_loop():
         Returns True if:
         - Job hasn't run today AND
         - Current time is >= scheduled time
-        
-        Also handles midnight catch-up for late-night jobs (scheduled at 22:00+).
-        If the scheduler misses the 23:xx window and it's now past midnight,
-        this catches up the missed run in the first 6 hours of the next day.
         """
         if last_run.get(job_name) == today_str:
             return False
@@ -557,20 +554,6 @@ async def scheduler_loop():
             return True
         if current_hour == scheduled_hour and current_minute >= scheduled_minute:
             return True
-        # Midnight catch-up: if the job is scheduled late evening (22:00+) and
-        # we are now past midnight (00:00–05:59), the simple hour comparison
-        # above fails because 0 < 23.  Catch up the missed run unless it
-        # already executed yesterday.
-        if scheduled_hour >= 22 and current_hour < 6:
-            yesterday_str = (
-                datetime.strptime(today_str, "%Y-%m-%d") - timedelta(days=1)
-            ).strftime("%Y-%m-%d")
-            if last_run.get(job_name) != yesterday_str:
-                logger.info(
-                    f"[should_run] Midnight catch-up for {job_name}: "
-                    f"last_run={last_run.get(job_name)}, yesterday={yesterday_str}"
-                )
-                return True
         return False
 
     def should_run_after_dependency(job_name: str, dependency_job: str, last_run: dict, today_str: str) -> bool:
@@ -655,7 +638,7 @@ async def scheduler_loop():
                 await asyncio.sleep(60)
                 continue
             
-            # STEP 1: Universe Seed at 23:00 Mon-Sat
+            # STEP 1: Universe Seed at 03:00 Mon-Sat
             if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
                 try:
@@ -833,12 +816,12 @@ async def scheduler_loop():
                         pass  # best-effort observability
             
             # ==================================================================
-            # MARKET CALENDAR REFRESH at 03:00 — idempotent, runs daily
+            # MARKET CALENDAR REFRESH at 02:00 — idempotent, runs daily
             # ==================================================================
             # Fetches EODHD exchange-details/US and regenerates calendar rows.
             # Upsert-based, safe to run daily.  Ensures indexes on first run.
             # Wrapped in try/except so a failure here cannot crash the daemon
-            # and block Steps 1-2-3 at 23:00.
+            # and block Steps 1-2-3 at 03:00.
             if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
                 _mc_started = datetime.now(timezone.utc)

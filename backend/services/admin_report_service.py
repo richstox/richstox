@@ -95,10 +95,10 @@ async def generate_daily_report(db, source: GenerationSource = "manual") -> Dict
     current_minute = now_prague.minute
     
     # Scheduled times (Europe/Prague) for expected_by_now calculation.
-    # Step 1 is hard scheduled at 23:00 (Mon-Sat). Step 2/3 are dependency based
+    # Step 1 is hard scheduled at 03:00 (Mon-Sat). Step 2/3 are dependency based
     # and become expected once their dependency should already have run.
     job_schedule = {
-        "universe_seed": {"hour": 23, "minute": 0},      # Mon-Sat 23:00
+        "universe_seed": {"hour": 3, "minute": 0},      # Mon-Sat 03:00
         "benchmark_update": {"hour": 4, "minute": 15},    # 04:15
         "backfill_gaps": {"hour": 4, "minute": 45},      # 04:45
         "backfill_all": {"hour": 5, "minute": 0},        # 05:00

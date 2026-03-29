@@ -344,7 +344,7 @@ def get_env_info() -> Dict[str, str]:
 # =============================================================================
 JOB_REGISTRY = {
     "universe_seed": {
-        "hour": 23, "minute": 0, "sunday_only": False, "has_api_calls": True,
+        "hour": 3, "minute": 0, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/exchange-symbol-list/NYSE + /NASDAQ",
     },
     "price_sync": {
@@ -357,7 +357,7 @@ JOB_REGISTRY = {
         "api_endpoint": "https://eodhd.com/api/eod/{BENCHMARK_SYMBOL}"
     },
     "market_calendar": {
-        "hour": 3, "minute": 0, "sunday_only": False, "has_api_calls": True,
+        "hour": 2, "minute": 0, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/exchange-details/US"
     },
     "fundamentals_sync": {

@@ -6,9 +6,10 @@
 
 | # | Job Name | Day | Time (Prague) | EODHD Endpoint | API Calls | Condition |
 |---|----------|-----|---------------|----------------|-----------|-----------|
-| 1 | **Universe Seed** | Sunday | 04:00 | `/exchange-symbol-list/US` | 1 | `is_sunday() && not run today` |
+| 0 | Market Calendar | Mon-Sat | 02:00 | `/exchange-details/US` | 1 | `not run today` |
+| 1 | **Universe Seed** | Sunday | 03:00 | `/exchange-symbol-list/US` | 1 | `is_sunday() && not run today` |
 | 2 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
-| 3 | Price Sync | Mon-Sat | 04:00 | `/eod-bulk-last-day/US` | 1 (bulk) | `is_daily_job_day() && not run today` |
+| 3 | Price Sync | Mon-Sat | 03:00 | `/eod-bulk-last-day/US` | 1 (bulk) | `is_daily_job_day() && not run today` |
 | 4 | SP500TR Update | Mon-Sat | 04:15 | `/eod/SP500TR.INDX` | 1 | `is_daily_job_day() && not run today` |
 | 5 | Fundamentals Sync | Mon-Sat | 04:30 | `/fundamentals/{TICKER}.US` | 0-50 | `pending events exist` |
 | 6 | Backfill Gaps | Mon-Sat | 04:45 | `/eod/{TICKER}.US` | 0-50 | `tickers with gaps exist` |
@@ -22,7 +23,7 @@
 
 ```python
 TIMEZONE = "Europe/Prague"
-UNIVERSE_SEED_HOUR = 4
+UNIVERSE_SEED_HOUR = 3
 UNIVERSE_SEED_MINUTE = 0
 UNIVERSE_SEED_DAY = 6  # Sunday
 PRICE_SYNC_HOUR = 4
@@ -40,13 +41,15 @@ KEY_METRICS_MINUTE = 0
 PEER_MEDIANS_HOUR = 5
 PEER_MEDIANS_MINUTE = 30
 PAIN_CACHE_HOUR = 5
+MARKET_CALENDAR_HOUR = 2
+MARKET_CALENDAR_MINUTE = 0
 ADMIN_REPORT_HOUR = 6
 ADMIN_REPORT_MINUTE = 0
 ```
 
 ## Job Details
 
-### 1. Universe Seed (Sunday 04:00)
+### 1. Universe Seed (Sunday 03:00)
 - **File**: `/app/backend/whitelist_service.py` → `sync_ticker_whitelist()`
 - **Purpose**: Refresh tracked_tickers from EODHD exchange-symbol-list (NYSE/NASDAQ, Common Stock only)
 - **API**: `GET https://eodhd.com/api/exchange-symbol-list/US`
@@ -59,7 +62,7 @@ ADMIN_REPORT_MINUTE = 0
 - **Cost**: N API calls/day (N = unique tickers across all users)
 - **Dedup**: `$setOnInsert` by article_id prevents duplicate storage
 
-### 3. Price Sync (Mon-Sat 04:00)
+### 3. Price Sync (Mon-Sat 03:00)
 - **File**: `/app/backend/scheduler_service.py` → `run_daily_price_sync()`
 - **Purpose**: Sync latest daily prices for all tracked tickers (bulk endpoint)
 - **API**: `GET https://eodhd.com/api/eod-bulk-last-day/US`
