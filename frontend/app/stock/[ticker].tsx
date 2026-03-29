@@ -375,6 +375,9 @@ export default function StockDetail() {
   // Chart tooltip state (CHART-TOOLTIP: simple hover/touch, like stockanalysis.com)
   const [chartTooltipVisible, setChartTooltipVisible] = useState(false);
   const [chartTooltipIndex, setChartTooltipIndex] = useState<number | null>(null);
+  // Refs to keep web DOM event-listener closures up-to-date across re-renders
+  const computeTooltipIndexRef = useRef<(x: number, w: number) => number | null>(() => null);
+  const chartWRef = useRef(0);
   
   // Dividends state
   const [dividendPayments, setDividendPayments] = useState<{ex_date: string; amount: number}[]>([]);
@@ -666,6 +669,7 @@ export default function StockDetail() {
     const ratio = relativeX / graphW;
     return Math.round(ratio * (visibleChartData.length - 1));
   }, [visibleChartData]);
+  computeTooltipIndexRef.current = computeTooltipIndex;
   
   // Hide tooltip
   const hideChartTooltip = useCallback(() => {
@@ -1682,6 +1686,7 @@ export default function StockDetail() {
                 const BADGE_PAD_H = 5;
                 const BADGE_H = 16;
                 const chartW = chartWMeasured;
+                chartWRef.current = chartW;
                 const chartH = 240;
                 
                 // Chart label positioning with deterministic stacking
@@ -2000,7 +2005,7 @@ export default function StockDetail() {
                       };
                       
                       domEl.addEventListener('mousemove', (ev) => {
-                        const idx = computeTooltipIndex(getX(ev), chartW);
+                        const idx = computeTooltipIndexRef.current(getX(ev), chartWRef.current);
                         if (idx !== null) {
                           setChartTooltipVisible(true);
                           setChartTooltipIndex(idx);
@@ -2011,14 +2016,14 @@ export default function StockDetail() {
                         setChartTooltipIndex(null);
                       });
                       domEl.addEventListener('touchstart', (ev) => {
-                        const idx = computeTooltipIndex(getX(ev), chartW);
+                        const idx = computeTooltipIndexRef.current(getX(ev), chartWRef.current);
                         if (idx !== null) {
                           setChartTooltipVisible(true);
                           setChartTooltipIndex(idx);
                         }
                       });
                       domEl.addEventListener('touchmove', (ev) => {
-                        const idx = computeTooltipIndex(getX(ev), chartW);
+                        const idx = computeTooltipIndexRef.current(getX(ev), chartWRef.current);
                         if (idx !== null) setChartTooltipIndex(idx);
                       });
                       domEl.addEventListener('touchend', () => {
