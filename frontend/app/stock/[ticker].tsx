@@ -492,6 +492,25 @@ export default function StockDetail() {
       const targetPoints = 400;
       const step = Math.max(1, Math.floor(prices.length / targetPoints));
       const downsampled = prices.filter((_: any, i: number) => i % step === 0 || i === prices.length - 1);
+
+      // Force-include true max and min points from the full series so
+      // displayed HIGH/LOW always reflect the true extrema.
+      if (prices.length > 0) {
+        const getPlotValue = (p: any) => p.adjusted_close || p.close;
+        let trueMaxPoint = prices[0];
+        let trueMinPoint = prices[0];
+        let maxVal = getPlotValue(prices[0]);
+        let minVal = maxVal;
+        for (const p of prices) {
+          const v = getPlotValue(p);
+          if (v > maxVal) { trueMaxPoint = p; maxVal = v; }
+          if (v < minVal) { trueMinPoint = p; minVal = v; }
+        }
+        const dates = new Set(downsampled.map((p: any) => p.date));
+        if (!dates.has(trueMaxPoint.date)) downsampled.push(trueMaxPoint);
+        if (!dates.has(trueMinPoint.date)) downsampled.push(trueMinPoint);
+        downsampled.sort((a: any, b: any) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      }
       
       // Convert to expected format
       const formattedPrices = downsampled.map((p: any) => ({
