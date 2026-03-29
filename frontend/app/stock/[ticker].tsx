@@ -1897,15 +1897,20 @@ export default function StockDetail() {
                   const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / MIN_PX_PER_LABEL)));
                   const numLabels = Math.min(maxLabels, visibleChartData.length);
                   if (numLabels < 2) return [];
+                  const regHalf = REGULAR_LABEL_W / 2;
                   const ticks: { x: number; label: string }[] = [];
                   for (let i = 0; i < numLabels; i++) {
                     const dataIdx = Math.round(i * (visibleChartData.length - 1) / (numLabels - 1));
                     const d = new Date(visibleChartData[dataIdx].date + 'T00:00:00Z');
                     const label = `${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear().toString().slice(2)}`;
-                    const x = paddingLeft + (dataIdx / (visibleChartData.length - 1)) * graphW;
+                    // Clamp so the label stays fully inside the graph area
+                    const rawX = paddingLeft + (dataIdx / (visibleChartData.length - 1)) * graphW;
+                    const x = Math.max(paddingLeft + regHalf, Math.min(rawX, paddingLeft + graphW - regHalf));
                     // Skip regular tick if it overlaps with HIGH or LOW date label
                     const overlapThreshold = (HL_LABEL_W + REGULAR_LABEL_W) / 2;
-                    if (Math.abs(x - highX) < overlapThreshold || Math.abs(x - lowX) < overlapThreshold) continue;
+                    if (Math.abs(x - clampX(highX)) < overlapThreshold || Math.abs(x - clampX(lowX)) < overlapThreshold) continue;
+                    // Skip if clamped position overlaps the previous tick
+                    if (ticks.length > 0 && Math.abs(x - ticks[ticks.length - 1].x) < REGULAR_LABEL_W) continue;
                     ticks.push({ x, label });
                   }
                   return ticks;
