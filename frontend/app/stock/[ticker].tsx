@@ -1673,12 +1673,13 @@ export default function StockDetail() {
             ) : visibleChartData.length > 0 ? (
               (() => {
                 const CARD_PAD = 14; // must match priceChartCard.padding
+                const CARD_BORDER = 1; // must match priceChartCard.borderWidth
                 const MIN_PX_PER_LABEL = 50;
                 const BADGE_FONT_SIZE = 9;
                 const BADGE_CHAR_W = 5.5;
                 const BADGE_PAD_H = 5;
                 const BADGE_H = 16;
-                const chartW = width - 2 * sp.pageGutter - 2 * CARD_PAD;
+                const chartW = width - 2 * sp.pageGutter - 2 * CARD_PAD - 2 * CARD_BORDER;
                 const chartH = 240;
                 
                 // Chart label positioning with deterministic stacking
@@ -1852,7 +1853,11 @@ export default function StockDetail() {
                 const currentY = priceToY(currentPrice);
                 const highX = paddingLeft + (highIdx / (visibleChartData.length - 1)) * graphW;
                 const lowX = paddingLeft + (lowIdx / (visibleChartData.length - 1)) * graphW;
-                const formatPrice = (p: number) => p >= 1000 ? `$${toEU(p / 1000, 1)}k` : `$${toEU(p, 0)}`;
+                const formatPrice = (p: number) => {
+                  if (p >= 1_000_000) return `$${toEU(p / 1_000_000, 1)}M`;
+                  if (p >= 1000) return `$${toEU(p / 1000, 1)}k`;
+                  return `$${toEU(p, 0)}`;
+                };
                 
                 // ===== Y-AXIS GRID: Compute ~4 evenly spaced horizontal grid lines =====
                 const yAxisTicks: { price: number; y: number; label: string }[] = (() => {
