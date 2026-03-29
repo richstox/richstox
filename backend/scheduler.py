@@ -694,106 +694,143 @@ async def scheduler_loop():
             # STEP 2: Price sync immediately after Step 1 completes
             if should_run_after_dependency("price_sync", "universe_seed", last_run, today_str):
                 logger.info("Triggering price_sync (dependency: universe_seed completed)")
-                # Read the latest completed universe_seed run to get both
-                # parent_run_id (exclusion_report_run_id) and chain_run_id.
-                _s1_doc = await db.ops_job_runs.find_one(
-                    {
-                        "job_name": "universe_seed",
-                        "status": "completed",
-                        "details.exclusion_report_run_id": {"$exists": True, "$ne": None},
-                        "details.chain_run_id": {"$exists": True, "$ne": None},
-                    },
-                    {"details.exclusion_report_run_id": 1, "details.chain_run_id": 1},
-                    sort=[("started_at", -1)],
-                )
-                _s1_excl_run_id = (_s1_doc or {}).get("details", {}).get("exclusion_report_run_id")
-                _s1_chain_run_id = (_s1_doc or {}).get("details", {}).get("chain_run_id")
-                _s2_result = await run_job_with_retry(
-                    "price_sync",
-                    lambda _db, _pid=_s1_excl_run_id, _cid=_s1_chain_run_id: run_daily_price_sync(
-                        _db, parent_run_id=_pid, chain_run_id=_cid
-                    ),
-                    db,
-                )
-                last_run["price_sync"] = today_str
-                await set_last_run_state(last_run)
-                # Update pipeline_chain_runs: Step 2 done, advance to Step 3.
-                if _s1_chain_run_id:
-                    _s2_excl_run_id = (_s2_result or {}).get("exclusion_report_run_id") if isinstance(_s2_result, dict) else None
-                    _s2_status = (_s2_result or {}).get("status", "") if isinstance(_s2_result, dict) else ""
-                    if _s2_status == "failed":
-                        _s2_fin = datetime.now(timezone.utc)
-                        await db.pipeline_chain_runs.update_one(
-                            {"chain_run_id": _s1_chain_run_id},
-                            {"$set": {
-                                "status": "failed",
-                                "failed_step": 2,
-                                "error": (_s2_result or {}).get("error", "step 2 failed"),
-                                "finished_at": _s2_fin,
-                                "finished_at_prague": to_prague_iso(_s2_fin),
-                            }},
+                try:
+                    # Read the latest completed universe_seed run to get both
+                    # parent_run_id (exclusion_report_run_id) and chain_run_id.
+                    _s1_doc = await db.ops_job_runs.find_one(
+                        {
+                            "job_name": "universe_seed",
+                            "status": "completed",
+                            "details.exclusion_report_run_id": {"$exists": True, "$ne": None},
+                            "details.chain_run_id": {"$exists": True, "$ne": None},
+                        },
+                        {"details.exclusion_report_run_id": 1, "details.chain_run_id": 1},
+                        sort=[("started_at", -1)],
+                    )
+                    _s1_excl_run_id = (_s1_doc or {}).get("details", {}).get("exclusion_report_run_id")
+                    _s1_chain_run_id = (_s1_doc or {}).get("details", {}).get("chain_run_id")
+                    _s2_result = await run_job_with_retry(
+                        "price_sync",
+                        lambda _db, _pid=_s1_excl_run_id, _cid=_s1_chain_run_id: run_daily_price_sync(
+                            _db, parent_run_id=_pid, chain_run_id=_cid
+                        ),
+                        db,
+                    )
+                    # Only advance last_run on success so the step retries
+                    # next tick on failure (matching Step 1 pattern).
+                    _s2_failed = (
+                        isinstance(_s2_result, dict)
+                        and (_s2_result.get("error") or _s2_result.get("status") == "failed")
+                    )
+                    if _s2_failed:
+                        logger.warning(
+                            f"[scheduler] price_sync STEP 2 failed: "
+                            f"{_s2_result} – will retry next tick"
                         )
                     else:
-                        await db.pipeline_chain_runs.update_one(
-                            {"chain_run_id": _s1_chain_run_id},
-                            {"$set": {
-                                "step_run_ids.step2": _s2_excl_run_id,
-                                "current_step": 3,
-                                "steps_done": [1, 2],
-                            }},
+                        last_run["price_sync"] = today_str
+                        await set_last_run_state(last_run)
+                        # Update pipeline_chain_runs: Step 2 done, advance to Step 3.
+                        if _s1_chain_run_id:
+                            try:
+                                _s2_excl_run_id = (_s2_result or {}).get("exclusion_report_run_id") if isinstance(_s2_result, dict) else None
+                                await db.pipeline_chain_runs.update_one(
+                                    {"chain_run_id": _s1_chain_run_id},
+                                    {"$set": {
+                                        "step_run_ids.step2": _s2_excl_run_id,
+                                        "current_step": 3,
+                                        "steps_done": [1, 2],
+                                    }},
+                                )
+                            except Exception as _chain_exc:
+                                logger.error(
+                                    f"[scheduler] pipeline_chain_runs Step 2 "
+                                    f"update failed (non-fatal): {_chain_exc}"
+                                )
+                except Exception as exc:
+                    logger.error(
+                        f"[scheduler] price_sync STEP 2 unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+                    try:
+                        await log_job_execution(
+                            db, "price_sync", "error",
+                            datetime.now(timezone.utc), datetime.now(timezone.utc),
+                            error_message=f"Scheduler unhandled: {exc}",
                         )
+                    except Exception:
+                        pass  # best-effort observability
             
             # STEP 3: Fundamentals sync immediately after Step 2 completes
             if should_run_after_dependency("fundamentals_sync", "price_sync", last_run, today_str):
                 logger.info("Triggering fundamentals_sync (dependency: price_sync completed)")
-                # Exact Step 2 parent: the exclusion_report_run_id from the just-completed Step 2.
-                _s2_doc = await db.ops_job_runs.find_one(
-                    {"job_name": "price_sync",
-                     "details.exclusion_report_run_id": {"$exists": True, "$ne": None}},
-                    {"details.exclusion_report_run_id": 1, "details.chain_run_id": 1},
-                    sort=[("started_at", -1)],
-                )
-                _s2_run_id_for_s3 = (
-                    (_s2_doc or {}).get("details", {}).get("exclusion_report_run_id")
-                )
-                _s2_chain_run_id = (_s2_doc or {}).get("details", {}).get("chain_run_id")
-                _s3_result = await run_job_with_retry(
-                    "fundamentals_sync",
-                    lambda _db, _pid=_s2_run_id_for_s3, _cid=_s2_chain_run_id: run_fundamentals_changes_sync(
-                        _db, parent_run_id=_pid, chain_run_id=_cid
-                    ),
-                    db,
-                )
-                last_run["fundamentals_sync"] = today_str
-                await set_last_run_state(last_run)
-                # Update pipeline_chain_runs: terminal status.
-                if _s2_chain_run_id:
-                    _s3_status = (_s3_result or {}).get("status", "") if isinstance(_s3_result, dict) else ""
-                    _s3_fin = datetime.now(timezone.utc)
-                    _s3_excl_run_id = (_s3_result or {}).get("exclusion_report_run_id") if isinstance(_s3_result, dict) else None
-                    if _s3_status == "failed":
-                        await db.pipeline_chain_runs.update_one(
-                            {"chain_run_id": _s2_chain_run_id},
-                            {"$set": {
-                                "status": "failed",
-                                "failed_step": 3,
-                                "error": (_s3_result or {}).get("error", "step 3 failed"),
-                                "finished_at": _s3_fin,
-                                "finished_at_prague": to_prague_iso(_s3_fin),
-                            }},
+                try:
+                    # Exact Step 2 parent: the exclusion_report_run_id from the just-completed Step 2.
+                    _s2_doc = await db.ops_job_runs.find_one(
+                        {"job_name": "price_sync",
+                         "details.exclusion_report_run_id": {"$exists": True, "$ne": None}},
+                        {"details.exclusion_report_run_id": 1, "details.chain_run_id": 1},
+                        sort=[("started_at", -1)],
+                    )
+                    _s2_run_id_for_s3 = (
+                        (_s2_doc or {}).get("details", {}).get("exclusion_report_run_id")
+                    )
+                    _s2_chain_run_id = (_s2_doc or {}).get("details", {}).get("chain_run_id")
+                    _s3_result = await run_job_with_retry(
+                        "fundamentals_sync",
+                        lambda _db, _pid=_s2_run_id_for_s3, _cid=_s2_chain_run_id: run_fundamentals_changes_sync(
+                            _db, parent_run_id=_pid, chain_run_id=_cid
+                        ),
+                        db,
+                    )
+                    # Only advance last_run on success so the step retries
+                    # next tick on failure (matching Step 1 pattern).
+                    _s3_failed = (
+                        isinstance(_s3_result, dict)
+                        and (_s3_result.get("error") or _s3_result.get("status") == "failed")
+                    )
+                    if _s3_failed:
+                        logger.warning(
+                            f"[scheduler] fundamentals_sync STEP 3 failed: "
+                            f"{_s3_result} – will retry next tick"
                         )
                     else:
-                        await db.pipeline_chain_runs.update_one(
-                            {"chain_run_id": _s2_chain_run_id},
-                            {"$set": {
-                                "status": "completed",
-                                "step_run_ids.step3": _s3_excl_run_id,
-                                "steps_done": [1, 2, 3],
-                                "current_step": None,
-                                "finished_at": _s3_fin,
-                                "finished_at_prague": to_prague_iso(_s3_fin),
-                            }},
+                        last_run["fundamentals_sync"] = today_str
+                        await set_last_run_state(last_run)
+                        # Update pipeline_chain_runs: terminal status.
+                        if _s2_chain_run_id:
+                            try:
+                                _s3_excl_run_id = (_s3_result or {}).get("exclusion_report_run_id") if isinstance(_s3_result, dict) else None
+                                _s3_fin = datetime.now(timezone.utc)
+                                await db.pipeline_chain_runs.update_one(
+                                    {"chain_run_id": _s2_chain_run_id},
+                                    {"$set": {
+                                        "status": "completed",
+                                        "step_run_ids.step3": _s3_excl_run_id,
+                                        "steps_done": [1, 2, 3],
+                                        "current_step": None,
+                                        "finished_at": _s3_fin,
+                                        "finished_at_prague": to_prague_iso(_s3_fin),
+                                    }},
+                                )
+                            except Exception as _chain_exc:
+                                logger.error(
+                                    f"[scheduler] pipeline_chain_runs Step 3 "
+                                    f"update failed (non-fatal): {_chain_exc}"
+                                )
+                except Exception as exc:
+                    logger.error(
+                        f"[scheduler] fundamentals_sync STEP 3 unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+                    try:
+                        await log_job_execution(
+                            db, "fundamentals_sync", "error",
+                            datetime.now(timezone.utc), datetime.now(timezone.utc),
+                            error_message=f"Scheduler unhandled: {exc}",
                         )
+                    except Exception:
+                        pass  # best-effort observability
             
             # ==================================================================
             # MARKET CALENDAR REFRESH at 03:00 — idempotent, runs daily
@@ -857,54 +894,75 @@ async def scheduler_loop():
                         pass  # best-effort observability
             
             # BACKFILL_ALL: MANUAL ONLY by default
-            backfill_all_enabled = await db.ops_config.find_one({"key": "job_backfill_all_enabled"})
-            backfill_all_auto = backfill_all_enabled.get("value", False) if backfill_all_enabled else False
+            try:
+                backfill_all_enabled = await db.ops_config.find_one({"key": "job_backfill_all_enabled"})
+                backfill_all_auto = backfill_all_enabled.get("value", False) if backfill_all_enabled else False
+            except Exception:
+                backfill_all_auto = False
             
             if backfill_all_auto and should_run("backfill_all", BACKFILL_ALL_HOUR, BACKFILL_ALL_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering backfill_all (hour={current_hour}, scheduled={BACKFILL_ALL_HOUR}:{BACKFILL_ALL_MINUTE:02d})")
-                await run_job_with_retry("backfill_all", run_scheduled_backfill_all_prices, db)
-                last_run["backfill_all"] = today_str
-                await set_last_run_state(last_run)
+                try:
+                    await run_job_with_retry("backfill_all", run_scheduled_backfill_all_prices, db)
+                    last_run["backfill_all"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] backfill_all unhandled error (will retry next minute): {exc}")
             
             # KEY METRICS at 05:00 (catch-up enabled)
             if should_run("key_metrics", KEY_METRICS_HOUR, KEY_METRICS_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering key_metrics (hour={current_hour}, scheduled={KEY_METRICS_HOUR}:{KEY_METRICS_MINUTE:02d})")
-                from key_metrics_service import compute_daily_key_metrics
-                await run_job_with_retry("key_metrics", compute_daily_key_metrics, db)
-                last_run["key_metrics"] = today_str
-                await set_last_run_state(last_run)
+                try:
+                    from key_metrics_service import compute_daily_key_metrics
+                    await run_job_with_retry("key_metrics", compute_daily_key_metrics, db)
+                    last_run["key_metrics"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] key_metrics unhandled error (will retry next minute): {exc}")
             
             # PEER MEDIANS at 05:30 (catch-up enabled)
             if should_run("peer_medians", PEER_MEDIANS_HOUR, PEER_MEDIANS_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering peer_medians (hour={current_hour}, scheduled={PEER_MEDIANS_HOUR}:{PEER_MEDIANS_MINUTE:02d})")
-                from key_metrics_service import compute_peer_benchmarks_v3
-                await run_job_with_retry("peer_medians", compute_peer_benchmarks_v3, db)
-                last_run["peer_medians"] = today_str
-                await set_last_run_state(last_run)
+                try:
+                    from key_metrics_service import compute_peer_benchmarks_v3
+                    await run_job_with_retry("peer_medians", compute_peer_benchmarks_v3, db)
+                    last_run["peer_medians"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] peer_medians unhandled error (will retry next minute): {exc}")
             
             # PAIN CACHE at 05:00 (catch-up enabled)
             if should_run("pain_cache", PAIN_CACHE_HOUR, PAIN_CACHE_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering pain_cache (hour={current_hour}, scheduled={PAIN_CACHE_HOUR}:{PAIN_CACHE_MINUTE:02d})")
-                from server import run_pain_cache_refresh
-                await run_job_with_retry("pain_cache", run_pain_cache_refresh, db)
-                last_run["pain_cache"] = today_str
-                await set_last_run_state(last_run)
+                try:
+                    from server import run_pain_cache_refresh
+                    await run_job_with_retry("pain_cache", run_pain_cache_refresh, db)
+                    last_run["pain_cache"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] pain_cache unhandled error (will retry next minute): {exc}")
             
             # ADMIN REPORT at 06:00 (catch-up enabled)
             if should_run("admin_report", ADMIN_REPORT_HOUR, ADMIN_REPORT_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering admin_report (hour={current_hour}, scheduled={ADMIN_REPORT_HOUR}:{ADMIN_REPORT_MINUTE:02d})")
-                from services.admin_report_service import run_admin_report_job
-                await run_job_with_retry("admin_report", run_admin_report_job, db)
-                last_run["admin_report"] = today_str
-                await set_last_run_state(last_run)
+                try:
+                    from services.admin_report_service import run_admin_report_job
+                    await run_job_with_retry("admin_report", run_admin_report_job, db)
+                    last_run["admin_report"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] admin_report unhandled error (will retry next minute): {exc}")
             
             # NEWS at 13:00 (catch-up enabled)
             if should_run("news_refresh", NEWS_REFRESH_HOUR, NEWS_REFRESH_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering news_refresh (hour={current_hour}, scheduled={NEWS_REFRESH_HOUR}:{NEWS_REFRESH_MINUTE:02d})")
-                from services.news_service import news_daily_refresh
-                await run_job_with_retry("news_refresh", news_daily_refresh, db)
-                last_run["news_refresh"] = today_str
-                await set_last_run_state(last_run)
+                try:
+                    from services.news_service import news_daily_refresh
+                    await run_job_with_retry("news_refresh", news_daily_refresh, db)
+                    last_run["news_refresh"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] news_refresh unhandled error (will retry next minute): {exc}")
             
             # Sleep until next minute
             await asyncio.sleep(60)
