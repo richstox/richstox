@@ -618,7 +618,7 @@ export default function StockDetail() {
 
   // ===== CHART-TOOLTIP: Simple handlers (stockanalysis.com style) =====
   // Chart dimension constants (must match rendering)
-  const CHART_PADDING_LEFT = 50;
+  const CHART_PADDING_LEFT = 58;
   const CHART_PADDING_RIGHT = 16;
   const CHART_PADDING_TOP = 20;
   const CHART_PADDING_BOTTOM = 32;
@@ -1788,7 +1788,7 @@ export default function StockDetail() {
                   
                   return labels;
                 };
-                const paddingLeft = 50;
+                const paddingLeft = 58;
                 const paddingRight = 16;
                 const paddingTop = 20;
                 const paddingBottom = 32;
