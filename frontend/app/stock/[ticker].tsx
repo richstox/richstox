@@ -1672,7 +1672,13 @@ export default function StockDetail() {
               </View>
             ) : visibleChartData.length > 0 ? (
               (() => {
-                const chartW = width - 2 * sp.pageGutter - 2 * 14;
+                const CARD_PAD = 14; // must match priceChartCard.padding
+                const MIN_PX_PER_LABEL = 50;
+                const BADGE_FONT_SIZE = 9;
+                const BADGE_CHAR_W = 5.5;
+                const BADGE_PAD_H = 5;
+                const BADGE_H = 16;
+                const chartW = width - 2 * sp.pageGutter - 2 * CARD_PAD;
                 const chartH = 240;
                 
                 // Chart label positioning with deterministic stacking
@@ -1862,7 +1868,7 @@ export default function StockDetail() {
                 
                 // ===== X-AXIS: Compute date labels at regular intervals =====
                 const xAxisTicks: { x: number; label: string }[] = (() => {
-                  const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / 50)));
+                  const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / MIN_PX_PER_LABEL)));
                   const numLabels = Math.min(maxLabels, visibleChartData.length);
                   if (numLabels < 2) return [];
                   const ticks: { x: number; label: string }[] = [];
@@ -2031,27 +2037,23 @@ export default function StockDetail() {
                       
                       {/* Price labels as colored badges (green=HIGH, red=LOW, dark=PRICE) */}
                       {chartLabels.map(label => {
-                        const badgeFontSize = 9;
-                        const badgeCharW = 5.5;
-                        const badgePadH = 5;
-                        const badgeH = 16;
-                        const badgeW = Math.max(label.text.length * badgeCharW + badgePadH * 2, 28);
+                        const badgeW = Math.max(label.text.length * BADGE_CHAR_W + BADGE_PAD_H * 2, 28);
                         const badgeX = paddingLeft - 3 - badgeW;
-                        const badgeY = label.adjustedY - badgeH / 2;
+                        const badgeY = label.adjustedY - BADGE_H / 2;
                         return (
                           <G key={label.id}>
                             <Rect
                               x={badgeX}
                               y={badgeY}
                               width={badgeW}
-                              height={badgeH}
+                              height={BADGE_H}
                               rx={3}
                               fill={label.color}
                             />
                             <SvgText
                               x={badgeX + badgeW / 2}
-                              y={badgeY + badgeH / 2 + 3}
-                              fontSize={badgeFontSize}
+                              y={badgeY + BADGE_H / 2 + 3}
+                              fontSize={BADGE_FONT_SIZE}
                               fill="#FFFFFF"
                               fontWeight="700"
                               textAnchor="middle"
