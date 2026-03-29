@@ -16,7 +16,7 @@ import sys
 
 # Expected job configuration (from SCHEDULER_JOBS.md)
 EXPECTED_JOBS = {
-    "universe_seed": {"day": "Sunday", "hour": 4, "minute": 0},
+    "universe_seed": {"day": "Sunday", "hour": 3, "minute": 0},
     "news_refresh": {"day": "Sun-Sat", "hour": 13, "minute": 0},
     "price_sync": {"day": "Mon-Sat", "hour": 4, "minute": 0},
     "fundamentals_sync": {"day": "Mon-Sat", "hour": 4, "minute": 30},
@@ -28,7 +28,7 @@ EXPECTED_JOBS = {
 }
 
 EXPECTED_CONSTANTS = {
-    "UNIVERSE_SEED_HOUR": 4,
+    "UNIVERSE_SEED_HOUR": 3,
     "UNIVERSE_SEED_MINUTE": 0,
     "UNIVERSE_SEED_DAY": 6,  # Sunday
     "PRICE_SYNC_HOUR": 4,

@@ -490,80 +490,49 @@ class TestShouldRunMidnightCatchup:
                 return True
             if current_hour == scheduled_hour and current_minute >= scheduled_minute:
                 return True
-            if scheduled_hour >= 22 and current_hour < 6:
-                yesterday_str = (
-                    _dt.strptime(today_str, "%Y-%m-%d") - _td(days=1)
-                ).strftime("%Y-%m-%d")
-                if last_run.get(job_name) != yesterday_str:
-                    _logger.info(
-                        f"[should_run] Midnight catch-up for {job_name}: "
-                        f"last_run={last_run.get(job_name)}, yesterday={yesterday_str}"
-                    )
-                    return True
             return False
 
         return should_run
 
-    # --- Normal (non-midnight) behaviour unchanged ---
+    # --- Normal behaviour ---
 
     def test_normal_trigger_at_scheduled_time(self):
-        """At 23:00 on the scheduled day, should_run returns True."""
+        """At 03:00 on the scheduled day, should_run returns True."""
         should_run = self._make_should_run()
-        assert should_run("universe_seed", 23, 0, {}, "2026-03-23", 23, 0) is True
+        assert should_run("universe_seed", 3, 0, {}, "2026-03-23", 3, 0) is True
 
     def test_already_ran_today_returns_false(self):
         """If the job already ran today, should_run returns False."""
         should_run = self._make_should_run()
         last_run = {"universe_seed": "2026-03-23"}
-        assert should_run("universe_seed", 23, 0, last_run, "2026-03-23", 23, 30) is False
+        assert should_run("universe_seed", 3, 0, last_run, "2026-03-23", 3, 30) is False
 
     def test_before_scheduled_time_returns_false(self):
-        """Before the scheduled hour (22:00 for a 23:00 job), should_run returns False."""
+        """Before the scheduled hour (02:00 for a 03:00 job), should_run returns False."""
         should_run = self._make_should_run()
-        assert should_run("universe_seed", 23, 0, {}, "2026-03-23", 22, 0) is False
+        assert should_run("universe_seed", 3, 0, {}, "2026-03-23", 2, 0) is False
 
-    def test_catchup_same_day_afternoon(self):
-        """At 23:30 (still the same day), catch-up works via the normal hour comparison."""
+    def test_catchup_later_same_day(self):
+        """At 04:00 (later the same day), catch-up works via the normal hour comparison."""
         should_run = self._make_should_run()
         last_run = {"universe_seed": "2026-03-22"}  # ran yesterday
-        assert should_run("universe_seed", 23, 0, last_run, "2026-03-23", 23, 30) is True
+        assert should_run("universe_seed", 3, 0, last_run, "2026-03-23", 4, 0) is True
 
-    # --- Midnight catch-up (the fix) ---
-
-    def test_midnight_catchup_triggers_when_missed(self):
-        """At 00:30 the next day, if the job never ran yesterday, catch up."""
+    def test_catchup_much_later_same_day(self):
+        """At 10:00, a missed 03:00 job still catches up."""
         should_run = self._make_should_run()
-        last_run = {"universe_seed": "2026-03-21"}  # last ran 2 days ago
-        assert should_run("universe_seed", 23, 0, last_run, "2026-03-24", 0, 30) is True
+        assert should_run("universe_seed", 3, 0, {}, "2026-03-24", 10, 0) is True
 
-    def test_midnight_catchup_triggers_when_never_ran(self):
-        """If the job has never run at all, midnight catch-up triggers."""
-        should_run = self._make_should_run()
-        assert should_run("universe_seed", 23, 0, {}, "2026-03-24", 1, 0) is True
-
-    def test_midnight_catchup_skipped_if_ran_yesterday(self):
-        """If the job ran yesterday normally, do NOT catch up after midnight."""
-        should_run = self._make_should_run()
-        last_run = {"universe_seed": "2026-03-23"}  # ran yesterday at 23:00
-        assert should_run("universe_seed", 23, 0, last_run, "2026-03-24", 0, 30) is False
-
-    def test_midnight_catchup_skipped_if_already_ran_today(self):
-        """If the job already ran today (e.g. catch-up at 01:00), don't run again."""
+    def test_already_ran_today_skipped_later(self):
+        """If the job already ran today, it does not re-trigger later."""
         should_run = self._make_should_run()
         last_run = {"universe_seed": "2026-03-24"}
-        assert should_run("universe_seed", 23, 0, last_run, "2026-03-24", 2, 0) is False
+        assert should_run("universe_seed", 3, 0, last_run, "2026-03-24", 5, 0) is False
 
-    def test_midnight_catchup_window_ends_at_0600(self):
-        """At 06:00, midnight catch-up no longer triggers (current_hour >= 6)."""
+    def test_morning_job_not_affected_by_early_hours(self):
+        """A 03:00 job should NOT trigger at 01:00 (before scheduled time)."""
         should_run = self._make_should_run()
-        last_run = {"universe_seed": "2026-03-21"}
-        assert should_run("universe_seed", 23, 0, last_run, "2026-03-24", 6, 0) is False
-
-    def test_morning_job_not_affected_by_midnight_catchup(self):
-        """A 04:00 job should NOT trigger midnight catch-up (scheduled_hour < 22)."""
-        should_run = self._make_should_run()
-        # At 00:30, the 04:00 job should NOT fire (too early)
-        assert should_run("price_sync", 4, 0, {}, "2026-03-24", 0, 30) is False
+        assert should_run("universe_seed", 3, 0, {}, "2026-03-24", 1, 0) is False
 
     def test_morning_job_catchup_normal(self):
         """A 04:00 job catches up normally later in the day via hour comparison."""
