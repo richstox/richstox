@@ -2232,11 +2232,11 @@ export default function StockDetail() {
                   {showBenchmark ? (
                     <View style={styles.benchmarkToggleRow}>
                       <View style={styles.benchmarkToggleDot} />
-                      <Text style={[styles.benchmarkToggleText, styles.benchmarkToggleTextActive]}>S&P 500</Text>
+                      <Text style={[styles.benchmarkToggleText, styles.benchmarkToggleTextActive]}>S&P 500 TR</Text>
                       <Text style={styles.benchmarkToggleDismiss}>✕</Text>
                     </View>
                   ) : (
-                    <Text style={styles.benchmarkToggleText}>+ Compare S&P 500</Text>
+                    <Text style={styles.benchmarkToggleText}>+ Compare S&P 500 TR</Text>
                   )}
                 </TouchableOpacity>
               )}
