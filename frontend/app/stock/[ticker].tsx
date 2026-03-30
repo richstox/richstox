@@ -2248,131 +2248,144 @@ export default function StockDetail() {
         {/* P1 CRITICAL: Single source of truth - stats change with period selector */}
         {mobileData?.period_stats && (
           <View 
-            style={styles.sectionCard} 
+            style={styles.perfCheckCard} 
             data-testid="performance-check-card"
           >
-            {/* Dynamic Header - changes based on selected period */}
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionIcon}>🧭</Text>
-              <Text style={styles.sectionTitleBold}>
-                {priceRange === 'MAX' ? 'Performance Check (Full History)' : `Performance Check (Past ${priceRange})`}
+            {/* Header row: title left, period badge right */}
+            <View style={styles.perfCheckHeaderRow}>
+              <View style={styles.perfCheckTitleRow}>
+                <Text style={styles.sectionIcon}>📊</Text>
+                <Text style={styles.sectionTitleBold}>Performance Check</Text>
+              </View>
+              <Text style={styles.perfCheckPeriodBadge}>
+                {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
               </Text>
             </View>
-            <Text style={styles.realityCheckSubtitle}>
+            <Text style={styles.perfCheckDateRange}>
               {formatDateDMY(mobileData.period_stats.start_date)} – {formatDateDMY(mobileData.period_stats.end_date)}
             </Text>
             
-            {/* Two-column layout: Reward | Pain */}
-            <View style={styles.realityCheckColumns}>
-              {/* LEFT COLUMN - Reward - GREEN */}
-              <View style={styles.realityCheckColumnLeft}>
-                <Text style={styles.realityCheckColumnHeader}>Reward</Text>
-                
-                {/* Total profit (for period) */}
-                <View style={styles.realityCheckMetricCompact}>
-                  <Text style={styles.realityCheckLabelCompact}>Total profit</Text>
-                  <Text style={[
-                    styles.realityCheckValueCompact,
-                    mobileData.period_stats.profit_pct >= 0 ? styles.positiveText : styles.negativeText
-                  ]}>
-                    {formatLargePercent(mobileData.period_stats.profit_pct)}
-                  </Text>
+            {/* Two sub-cards: Reward | Risk */}
+            <View style={styles.perfCheckColumns}>
+              {/* REWARD sub-card - GREEN */}
+              <View style={styles.perfCheckRewardCard}>
+                <View style={styles.perfCheckCardHeader}>
+                  <Ionicons name="trending-up" size={14} color="#10B981" />
+                  <Text style={styles.perfCheckRewardTitle}>REWARD</Text>
                 </View>
                 
-                {/* Average per year (CAGR) - only show if > 1 year */}
+                {/* Total Profit */}
+                <Text style={styles.perfCheckMetricLabel}>Total Profit</Text>
+                <Text style={[
+                  styles.perfCheckMetricValueLarge,
+                  mobileData.period_stats.profit_pct >= 0 ? styles.positiveText : styles.negativeText
+                ]}>
+                  {formatLargePercent(mobileData.period_stats.profit_pct)}
+                </Text>
+                
+                {/* Average per year (CAGR) */}
                 {mobileData.period_stats.cagr_pct !== null && (
-                  <View style={styles.realityCheckMetricCompact}>
-                    <Text style={styles.realityCheckLabelCompact}>Average per year</Text>
-                    <Text style={[
-                      styles.realityCheckValueCompact, 
-                      mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
-                    ]}>
-                      {formatLargePercent(mobileData.period_stats.cagr_pct)}
-                    </Text>
+                  <View style={styles.perfCheckMetricRow}>
+                    <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
+                    <View style={styles.perfCheckMetricInlineRow}>
+                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={12} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
+                      <Text style={[
+                        styles.perfCheckMetricValue, 
+                        mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
+                      ]}>
+                        {formatLargePercent(mobileData.period_stats.cagr_pct)}
+                      </Text>
+                    </View>
                   </View>
                 )}
                 
-                {/* P1 CRITICAL: RRR inside Reward column, ABOVE benchmark */}
+                {/* Reward / Risk (RRR) */}
                 {(() => {
-                  // Use chartData for current period RRR
                   const rrr = computeRRR(chartData);
                   if (rrr === null) return null;
                   
                   return (
                     <TouchableOpacity 
-                      style={styles.realityCheckMetricCompact}
+                      style={styles.perfCheckMetricRow}
                       onPress={() => alert('RRR (Upside/Downside): how much upside the stock had vs how much it dropped, measured from the start of the period. The higher, the better.')}
                       data-testid="rrr-performance-check"
                     >
-                      <Text style={styles.realityCheckLabelCompact}>RRR (Risk/Reward)</Text>
-                      <View style={styles.rrrValueRow}>
+                      <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
+                      <View style={styles.perfCheckMetricInlineRow}>
                         <Text style={[
-                          styles.realityCheckValueCompact,
+                          styles.perfCheckMetricValue,
                           rrr > 2 ? styles.positiveText :
                           rrr >= 1 ? styles.neutralText :
                           styles.rrrNegativeText
                         ]}>
                           {formatRRR(rrr)}
                         </Text>
-                        <Ionicons name="help-circle-outline" size={12} color={COLORS.textMuted} />
+                        <Ionicons name="help-circle-outline" size={11} color={COLORS.textMuted} />
                       </View>
                     </TouchableOpacity>
                   );
                 })()}
               </View>
               
-              {/* RIGHT COLUMN - Pain - RED */}
-              <View style={styles.realityCheckColumnRight}>
-                <Text style={styles.realityCheckColumnHeaderRed}>Pain</Text>
-                
-                {/* Worst drawdown for this period */}
-                <View style={styles.realityCheckMetricCompact}>
-                  <Text style={styles.realityCheckLabelCompact}>Worst drawdown</Text>
-                  <Text style={[styles.realityCheckValueCompact, styles.negativeText]}>
-                    {formatLargePercent(-Math.abs(mobileData.period_stats.max_drawdown_pct))}
-                  </Text>
+              {/* RISK sub-card - RED */}
+              <View style={styles.perfCheckRiskCard}>
+                <View style={styles.perfCheckCardHeader}>
+                  <Ionicons name="alert-circle" size={14} color="#EF4444" />
+                  <Text style={styles.perfCheckRiskTitle}>RISK</Text>
                 </View>
                 
-                {/* P22: Drawdown details from chartData (memoized) */}
+                {/* Max Drawdown */}
+                <Text style={styles.perfCheckMetricLabel}>Max. Drawdown</Text>
+                <Text style={[styles.perfCheckMetricValueLarge, styles.negativeText]}>
+                  {formatLargePercent(-Math.abs(mobileData.period_stats.max_drawdown_pct))}
+                </Text>
+                
+                {/* Drawdown details */}
                 {drawdownDetails && (
-                  <View style={styles.painDetails}>
-                    <Text style={styles.painDateRange}>
-                      {formatDateDMY(drawdownDetails.peak.date)} → {formatDateDMY(drawdownDetails.trough.date)}
-                    </Text>
-                    <Text style={styles.painDuration}>
-                      Duration: {drawdownDetails.durationDays} days
-                    </Text>
-                    <Text style={styles.painRecovery}>
-                      {drawdownDetails.recoveryDate 
-                        ? `Recovered: ${formatDateDMY(drawdownDetails.recoveryDate)}`
-                        : 'Recovered: Not recovered'}
-                    </Text>
-                  </View>
+                  <>
+                    <View style={styles.perfCheckMetricRow}>
+                      <View style={styles.perfCheckMetricInlineRow}>
+                        <Ionicons name="time-outline" size={12} color={COLORS.textMuted} />
+                        <Text style={styles.perfCheckMetricLabel}>Duration</Text>
+                      </View>
+                      <Text style={styles.perfCheckMetricValue}>
+                        {drawdownDetails.durationDays} days
+                      </Text>
+                    </View>
+                    <View style={styles.perfCheckMetricRow}>
+                      <View style={styles.perfCheckMetricInlineRow}>
+                        <Ionicons name="refresh-outline" size={12} color={COLORS.textMuted} />
+                        <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
+                      </View>
+                      <Text style={styles.perfCheckMetricValue}>
+                        {drawdownDetails.recoveryDate 
+                          ? formatDateDMY(drawdownDetails.recoveryDate)
+                          : 'Not yet'}
+                      </Text>
+                    </View>
+                  </>
                 )}
               </View>
             </View>
             
             {/* BENCHMARK STRIP - Index comparison */}
-            <View style={styles.benchmarkStrip}>
-              <View style={styles.benchmarkDivider} />
-              <Text style={styles.benchmarkText}>
+            <View style={styles.perfCheckBenchmarkStrip}>
+              <Text style={styles.perfCheckBenchmarkText}>
                 Index (S&P 500 TR):{' '}
-                <Text style={styles.benchmarkValue}>
+                <Text style={styles.perfCheckBenchmarkValue}>
                   {mobileData.period_stats.benchmark_total_pct !== null 
                     ? `${mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}${toEU(mobileData.period_stats.benchmark_total_pct, 1)}%`
                     : 'N/A'}
                 </Text>
                 {/* P0 FIX: Use backend's Wealth Gap calculation (outperformance_pct) */}
                 {(() => {
-                  // Use backend-calculated outperformance_pct (Wealth Gap formula)
-                  // NOT: profit_pct - benchmark_total_pct (wrong!)
                   const wealthGap = mobileData.period_stats.outperformance_pct;
                   if (wealthGap === null || wealthGap === undefined) return null;
                   const deltaClamped = Math.max(wealthGap, -100);
                   const sign = deltaClamped >= 0 ? '+' : '';
                   return (
                     <Text style={[
-                      styles.benchmarkValue,
+                      styles.perfCheckBenchmarkValue,
                       deltaClamped > 0 ? styles.positiveText : 
                       deltaClamped < 0 ? styles.negativeText : null
                     ]}>
@@ -2384,7 +2397,7 @@ export default function StockDetail() {
             </View>
             
             {/* Footer disclaimer */}
-            <Text style={styles.realityCheckDisclaimer}>
+            <Text style={styles.perfCheckDisclaimer}>
               Past returns do not guarantee future gains. Context only, not advice.
             </Text>
           </View>
@@ -3684,7 +3697,129 @@ const styles = StyleSheet.create({
     fontSize: 11, 
     color: COLORS.textMuted,
   },
-  // NEW: Two-column layout
+  // ============================================================================
+  // Performance Check Card (redesigned)
+  // ============================================================================
+  perfCheckCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  perfCheckHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  perfCheckTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  perfCheckPeriodBadge: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  perfCheckDateRange: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginBottom: 12,
+  },
+  perfCheckColumns: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  perfCheckRewardCard: {
+    flex: 1,
+    backgroundColor: '#F0FDF4',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#D1FAE5',
+  },
+  perfCheckRiskCard: {
+    flex: 1,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  perfCheckCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 10,
+  },
+  perfCheckRewardTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#10B981',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  perfCheckRiskTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#EF4444',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  perfCheckMetricLabel: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    marginBottom: 2,
+  },
+  perfCheckMetricValueLarge: {
+    fontSize: 20,
+    fontWeight: '700',
+    marginBottom: 10,
+  },
+  perfCheckMetricValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  perfCheckMetricRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  perfCheckMetricInlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  perfCheckBenchmarkStrip: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: 10,
+    paddingBottom: 2,
+    alignItems: 'center',
+  },
+  perfCheckBenchmarkText: {
+    fontSize: 12,
+    color: '#6B7280',
+    textAlign: 'center',
+  },
+  perfCheckBenchmarkValue: {
+    fontWeight: '600',
+    color: '#374151',
+  },
+  perfCheckDisclaimer: {
+    fontSize: 10,
+    color: COLORS.textMuted,
+    fontStyle: 'italic',
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  // Legacy styles kept for compatibility
   realityCheckColumns: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -3728,13 +3863,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
-  // P1 CRITICAL: RRR value row with help icon
   rrrValueRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
   },
-  // Benchmark strip (neutral)
   benchmarkStrip: {
     borderTopWidth: 1,
     borderTopColor: '#E5E7EB',
@@ -3742,7 +3875,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   benchmarkDivider: {
-    // Empty, divider is the border
   },
   benchmarkText: {
     fontSize: 12,
