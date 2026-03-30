@@ -15,28 +15,30 @@ import re
 import sys
 
 # Expected job configuration (from SCHEDULER_JOBS.md)
+# NOTE: price_sync and fundamentals_sync are dependency-driven (after Step 1/2),
+# not time-driven. They are tracked in last_run but not scheduled by hour/minute.
 EXPECTED_JOBS = {
-    "universe_seed": {"day": "Sunday", "hour": 3, "minute": 0},
-    "news_refresh": {"day": "Sun-Sat", "hour": 13, "minute": 0},
-    "price_sync": {"day": "Mon-Sat", "hour": 4, "minute": 0},
-    "fundamentals_sync": {"day": "Mon-Sat", "hour": 4, "minute": 30},
-    "backfill": {"day": "Mon-Sat", "hour": 4, "minute": 45},
+    "market_calendar": {"day": "Mon-Sat", "hour": 2, "minute": 0},
+    "universe_seed": {"day": "Mon-Sat", "hour": 3, "minute": 0},
+    "price_sync": {"day": "Mon-Sat", "scheduling": "dependency"},
+    "fundamentals_sync": {"day": "Mon-Sat", "scheduling": "dependency"},
+    "benchmark_update": {"day": "Mon-Sat", "hour": 4, "minute": 15},
     "backfill_all": {"day": "Mon-Sat", "hour": 5, "minute": 0},
     "key_metrics": {"day": "Mon-Sat", "hour": 5, "minute": 0},
-    "peer_medians": {"day": "Mon-Sat", "hour": 5, "minute": 30},
     "pain_cache": {"day": "Mon-Sat", "hour": 5, "minute": 0},
+    "peer_medians": {"day": "Mon-Sat", "hour": 5, "minute": 30},
+    "admin_report": {"day": "Mon-Sat", "hour": 6, "minute": 0},
+    "news_refresh": {"day": "Sun-Sat", "hour": 13, "minute": 0},
 }
 
 EXPECTED_CONSTANTS = {
     "UNIVERSE_SEED_HOUR": 3,
     "UNIVERSE_SEED_MINUTE": 0,
-    "UNIVERSE_SEED_DAY": 6,  # Sunday
-    "PRICE_SYNC_HOUR": 4,
-    "PRICE_SYNC_MINUTE": 0,
-    "FUNDAMENTALS_SYNC_HOUR": 4,
-    "FUNDAMENTALS_SYNC_MINUTE": 30,
-    "BACKFILL_HOUR": 4,
-    "BACKFILL_MINUTE": 45,
+    "UNIVERSE_SEED_DAY": 6,  # Sunday (exclusion day — news-only)
+    "MARKET_CALENDAR_HOUR": 2,
+    "MARKET_CALENDAR_MINUTE": 0,
+    "BENCHMARK_UPDATE_HOUR": 4,
+    "BENCHMARK_UPDATE_MINUTE": 15,
     "BACKFILL_ALL_HOUR": 5,
     "BACKFILL_ALL_MINUTE": 0,
     "NEWS_REFRESH_HOUR": 13,
@@ -49,6 +51,16 @@ EXPECTED_CONSTANTS = {
     "PAIN_CACHE_MINUTE": 0,
     "ADMIN_REPORT_HOUR": 6,
     "ADMIN_REPORT_MINUTE": 0,
+}
+
+# These constants exist in scheduler.py for legacy/documentation purposes but are
+# NOT used for time-based scheduling (those jobs are dependency-driven).
+# Treat as warnings only, not errors, if missing or mismatched.
+LEGACY_CONSTANTS = {
+    "PRICE_SYNC_HOUR": 4,
+    "PRICE_SYNC_MINUTE": 0,
+    "FUNDAMENTALS_SYNC_HOUR": 4,
+    "FUNDAMENTALS_SYNC_MINUTE": 30,
 }
 
 
@@ -85,6 +97,18 @@ def audit_scheduler():
             if actual_value != expected_value:
                 errors.append(f"{const_name}: expected {expected_value}, found {actual_value}")
     
+    # Check legacy constants (warnings only — these exist but are not used for scheduling)
+    for const_name, expected_value in LEGACY_CONSTANTS.items():
+        pattern = rf"{const_name}\s*=\s*(\d+)"
+        match = re.search(pattern, content)
+        
+        if not match:
+            warnings.append(f"Legacy constant missing (not used for scheduling): {const_name}")
+        else:
+            actual_value = int(match.group(1))
+            if actual_value != expected_value:
+                warnings.append(f"Legacy constant {const_name}: expected {expected_value}, found {actual_value} (not used for scheduling)")
+    
     # Check job names exist in last_run tracking
     for job_name in EXPECTED_JOBS.keys():
         if f'last_run["{job_name}"]' not in content and f"last_run['{job_name}']" not in content:
@@ -102,14 +126,19 @@ def audit_scheduler():
         if func not in content:
             errors.append(f"Missing required function call: {func}")
     
-    # Check Sunday jobs exist
-    if "is_sunday()" not in content:
-        errors.append("Missing is_sunday() check for Sunday jobs")
+    # Check Sunday exclusion logic exists (weekday == UNIVERSE_SEED_DAY or is_sunday())
+    has_sunday_check = "weekday == UNIVERSE_SEED_DAY" in content or "is_sunday()" in content
+    if not has_sunday_check:
+        errors.append("Missing Sunday exclusion check (weekday == UNIVERSE_SEED_DAY)")
     
-    # Check news runs on Sunday - look for news_daily_refresh within the is_sunday() block
-    # The block structure is: if is_sunday(): ... news_daily_refresh ... continue
-    if "is_sunday()" in content:
-        # Find the Sunday block - it should contain news_daily_refresh before the 'continue' statement
+    # Check news runs on Sunday - look for news_daily_refresh within the Sunday block
+    if "weekday == UNIVERSE_SEED_DAY" in content:
+        sunday_match = re.search(r'if\s+weekday\s*==\s*UNIVERSE_SEED_DAY:(.*?)await\s+asyncio\.sleep', content, re.DOTALL)
+        if sunday_match:
+            sunday_block = sunday_match.group(1)
+            if "news_daily_refresh" not in sunday_block:
+                errors.append("News refresh should run on Sunday but not found in Sunday block")
+    elif "is_sunday()" in content:
         sunday_match = re.search(r'if\s+is_sunday\(\):(.*?)await\s+asyncio\.sleep', content, re.DOTALL)
         if sunday_match:
             sunday_block = sunday_match.group(1)

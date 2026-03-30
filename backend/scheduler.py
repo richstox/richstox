@@ -64,7 +64,7 @@ Step 2: Price Sync (auto after Step 1 completion)
 
 Step 3: Fundamentals Sync (auto after Step 2 completion)
   - ONLY for has_price_data=true tickers + corporate action tickers
-  - Stores sector/industry (does NOT block visibility)
+  - Stores sector/industry → contributes to has_classification for visibility
 
 Schedule (Europe/Prague timezone):
 - MON-SAT 02:00: Market calendar refresh (EODHD exchange-details)
@@ -72,10 +72,11 @@ Schedule (Europe/Prague timezone):
 - MON-SAT after Step 1 completion: price sync (bulk API) + split/dividend detection
 - MON-SAT after Step 2 completion: fundamentals sync (changes + corporate actions)
 - MON-SAT 04:15: SP500TR benchmark update
-- MON-SAT 04:45: Price backfill (gaps + corporate actions)
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
-- MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day)
-- MON-SAT 05:30: Key metrics + peer medians
+- MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day, gated by ops_config)
+- MON-SAT 05:00: Key metrics
+- MON-SAT 05:30: Peer medians
+- MON-SAT 06:00: Admin report
 - MON-SAT 13:00: News & sentiment refresh (followed/watchlisted tickers)
 
 Run with: python scheduler.py
@@ -95,6 +96,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,14 +107,16 @@ logger = logging.getLogger("richstox.scheduler_daemon")
 # Configuration
 TIMEZONE = ZoneInfo("Europe/Prague")
 
-# SUNDAY ONLY - Universe seed
-UNIVERSE_SEED_DAY = 6  # Sunday
+# SUNDAY EXCLUSION — Universe Seed runs Mon-Sat; Sunday is news-only
+UNIVERSE_SEED_DAY = 6  # Sunday (used to identify the news-only day)
 UNIVERSE_SEED_HOUR = 3
 UNIVERSE_SEED_MINUTE = 0
 
 # MON-SAT - Daily jobs
 DAILY_SCHEDULE_DAYS = [0, 1, 2, 3, 4, 5]  # Mon=0, Sat=5 (excludes Sunday=6)
 
+# LEGACY — Steps 2/3 are dependency-driven (should_run_after_dependency),
+# NOT time-driven.  These constants are retained for documentation only.
 PRICE_SYNC_HOUR = 4
 PRICE_SYNC_MINUTE = 0
 
@@ -154,6 +158,122 @@ ADMIN_REPORT_MINUTE = 0
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 db_name = os.environ.get('DB_NAME', 'richstox')
+
+# =============================================================================
+# DISTRIBUTED LEADER LOCK — only one replica runs the scheduler
+# =============================================================================
+# Uses the existing ops_locks collection (shared with fundamentals_sync lock).
+# TTL index on expires_at auto-cleans stale locks if process dies.
+# =============================================================================
+SCHEDULER_LEADER_LOCK_ID = "scheduler_leader"
+SCHEDULER_LEADER_TTL_SECONDS = 90
+# owner_id is unique per process — used to distinguish replicas
+_SCHEDULER_OWNER_ID: str | None = None
+
+_SCHEDULER_LEADER_INDEX_DONE = False
+_SCHEDULER_LEADER_INDEX_LOCK: asyncio.Lock | None = None
+
+
+async def _ensure_ops_locks_ttl_index(db) -> None:
+    """Ensure TTL index for ops_locks.expires_at exists (idempotent)."""
+    global _SCHEDULER_LEADER_INDEX_DONE, _SCHEDULER_LEADER_INDEX_LOCK
+    if _SCHEDULER_LEADER_INDEX_LOCK is None:
+        _SCHEDULER_LEADER_INDEX_LOCK = asyncio.Lock()
+    async with _SCHEDULER_LEADER_INDEX_LOCK:
+        if _SCHEDULER_LEADER_INDEX_DONE:
+            return
+        await db.ops_locks.create_index(
+            [("expires_at", 1)],
+            name="ops_locks_expires_at_ttl",
+            expireAfterSeconds=0,
+        )
+        _SCHEDULER_LEADER_INDEX_DONE = True
+
+
+def _get_owner_id() -> str:
+    """Return a stable unique owner ID for this process instance."""
+    global _SCHEDULER_OWNER_ID
+    if _SCHEDULER_OWNER_ID is None:
+        import uuid
+        _SCHEDULER_OWNER_ID = f"scheduler_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    return _SCHEDULER_OWNER_ID
+
+
+async def try_acquire_scheduler_leader_lock(db) -> bool:
+    """
+    Try to acquire the distributed scheduler leader lock.
+
+    Returns True if this process is now the leader, False otherwise.
+    Safe under concurrent replicas: uses upsert-with-filter and DuplicateKeyError.
+    """
+    await _ensure_ops_locks_ttl_index(db)
+    now = datetime.now(timezone.utc)
+    owner_id = _get_owner_id()
+    lease_expires_at = now + timedelta(seconds=SCHEDULER_LEADER_TTL_SECONDS)
+
+    # Try to re-acquire our own lock or take over an expired lock
+    reusable = await db.ops_locks.update_one(
+        {
+            "_id": SCHEDULER_LEADER_LOCK_ID,
+            "$or": [
+                {"owner_id": owner_id},
+                {"expires_at": {"$lte": now}},
+            ],
+        },
+        {"$set": {
+            "owner_id": owner_id,
+            "acquired_at": now,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        }},
+    )
+    if reusable.matched_count:
+        return True
+
+    # Lock doc doesn't exist yet — try to create it
+    try:
+        await db.ops_locks.insert_one({
+            "_id": SCHEDULER_LEADER_LOCK_ID,
+            "owner_id": owner_id,
+            "acquired_at": now,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        })
+        return True
+    except DuplicateKeyError:
+        # Another replica beat us to it
+        return False
+
+
+async def renew_scheduler_leader_lock(db) -> bool:
+    """
+    Renew the leader lock lease.  Returns True if still the leader.
+
+    Called on each scheduler tick (~60 s).  If the lock was stolen or expired,
+    returns False so the loop can exit gracefully.
+    """
+    now = datetime.now(timezone.utc)
+    owner_id = _get_owner_id()
+    result = await db.ops_locks.update_one(
+        {"_id": SCHEDULER_LEADER_LOCK_ID, "owner_id": owner_id},
+        {"$set": {
+            "heartbeat_at": now,
+            "expires_at": now + timedelta(seconds=SCHEDULER_LEADER_TTL_SECONDS),
+        }},
+    )
+    return result.matched_count > 0
+
+
+async def release_scheduler_leader_lock(db) -> None:
+    """Release the leader lock (best-effort, called on shutdown)."""
+    owner_id = _get_owner_id()
+    try:
+        await db.ops_locks.delete_one({
+            "_id": SCHEDULER_LEADER_LOCK_ID,
+            "owner_id": owner_id,
+        })
+    except Exception as exc:
+        logger.warning(f"Failed to release scheduler leader lock (non-fatal): {exc}")
 
 
 def get_prague_time() -> datetime:
@@ -490,18 +610,35 @@ async def scheduler_loop():
     GUARDRAIL: Uses ops_config collection for state persistence (survives restarts).
     GUARDRAIL: Catch-up logic runs missed jobs if scheduler restarts after scheduled time.
     GUARDRAIL: Heartbeat logged every 15 minutes for observability.
+    GUARDRAIL: Distributed leader lock ensures only one replica runs the scheduler.
     """
     # Connect to MongoDB
     client = AsyncIOMotorClient(mongo_url)
     db = client[db_name]
     
+    # ==========================================================================
+    # LEADER LOCK — bail out if another replica already holds the lock
+    # ==========================================================================
+    acquired = await try_acquire_scheduler_leader_lock(db)
+    if not acquired:
+        logger.warning(
+            "Another replica holds the scheduler leader lock — "
+            "this instance will NOT run the scheduler."
+        )
+        client.close()
+        return
+    logger.info(f"Acquired scheduler leader lock (owner={_get_owner_id()})")
+    
     logger.info(f"Scheduler started - Timezone: Europe/Prague")
     logger.info(f"Schedule: Mon-Sat")
-    logger.info(f"  {PRICE_SYNC_HOUR:02d}:{PRICE_SYNC_MINUTE:02d} - Daily price sync (bulk)")
+    logger.info(f"  {MARKET_CALENDAR_HOUR:02d}:{MARKET_CALENDAR_MINUTE:02d} - Market calendar refresh")
+    logger.info(f"  {UNIVERSE_SEED_HOUR:02d}:{UNIVERSE_SEED_MINUTE:02d} - Universe seed (Step 1)")
+    logger.info(f"  Step 2 - Daily price sync (dependency: after Step 1)")
+    logger.info(f"  Step 3 - Fundamentals sync (dependency: after Step 2)")
     logger.info(f"  {BENCHMARK_UPDATE_HOUR:02d}:{BENCHMARK_UPDATE_MINUTE:02d} - Benchmark update (SP500TR + future benchmarks)")
-    logger.info(f"  {FUNDAMENTALS_SYNC_HOUR:02d}:{FUNDAMENTALS_SYNC_MINUTE:02d} - Fundamentals sync")
-    logger.info(f"  {KEY_METRICS_HOUR:02d}:{KEY_METRICS_MINUTE:02d} - Key Metrics + Peer Medians")
+    logger.info(f"  {KEY_METRICS_HOUR:02d}:{KEY_METRICS_MINUTE:02d} - Key Metrics")
     logger.info(f"  {PAIN_CACHE_HOUR:02d}:{PAIN_CACHE_MINUTE:02d} - PAIN cache refresh")
+    logger.info(f"  {PEER_MEDIANS_HOUR:02d}:{PEER_MEDIANS_MINUTE:02d} - Peer Medians")
     logger.info(f"  {ADMIN_REPORT_HOUR:02d}:{ADMIN_REPORT_MINUTE:02d} - Admin Report")
     logger.info(f"  {NEWS_REFRESH_HOUR:02d}:{NEWS_REFRESH_MINUTE:02d} - Daily news refresh")
     
@@ -528,7 +665,7 @@ async def scheduler_loop():
             upsert=True
         )
     
-    async def log_heartbeat(last_run: dict):
+    async def log_heartbeat(last_run: dict, *, kill_switch_engaged: bool = False):
         """Log heartbeat to system_job_logs for Admin Panel visibility."""
         await db.system_job_logs.insert_one({
             "job_name": "scheduler_heartbeat",
@@ -537,7 +674,11 @@ async def scheduler_loop():
             "end_time": datetime.now(timezone.utc),
             "duration_seconds": 0,
             "records_processed": 0,
-            "details": {"last_run_state": last_run, "prague_time": get_prague_time().isoformat()}
+            "details": {
+                "last_run_state": last_run,
+                "prague_time": get_prague_time().isoformat(),
+                "kill_switch_engaged": kill_switch_engaged,
+            }
         })
     
     def should_run(job_name: str, scheduled_hour: int, scheduled_minute: int, last_run: dict, today_str: str, current_hour: int, current_minute: int) -> bool:
@@ -570,6 +711,8 @@ async def scheduler_loop():
     
     # Track last heartbeat minute
     last_heartbeat_minute = -1
+    # Track per-day Step 1 decision logging (avoids flooding DB)
+    _step1_decision_logged_date = ""
     
     # Import job functions
     from scheduler_service import (
@@ -589,21 +732,26 @@ async def scheduler_loop():
             # =================================================================
             # HEARTBEAT (every 15 minutes)
             # =================================================================
+            # Read kill switch ONCE per tick so heartbeat and job logic use the
+            # same value — avoids TOCTOU where the switch flips between reads.
+            scheduler_enabled = await get_scheduler_enabled(db)
+
             if current_minute % 15 == 0 and current_minute != last_heartbeat_minute:
                 last_heartbeat_minute = current_minute
-                logger.info(f"[HEARTBEAT] Scheduler alive at {now.strftime('%Y-%m-%d %H:%M')} Prague")
+                logger.info(
+                    f"[HEARTBEAT] Scheduler alive at {now.strftime('%Y-%m-%d %H:%M')} Prague"
+                    f" | kill_switch={'OFF' if scheduler_enabled else 'ENGAGED'}"
+                )
                 try:
-                    await log_heartbeat(last_run)
+                    await log_heartbeat(last_run, kill_switch_engaged=not scheduler_enabled)
                 except Exception as hb_exc:
                     logger.error(f"[HEARTBEAT] Failed to write heartbeat (non-fatal): {hb_exc}")
             
             # =================================================================
             # KILL SWITCH CHECK
             # =================================================================
-            scheduler_enabled = await get_scheduler_enabled(db)
-            
             if not scheduler_enabled:
-                logger.debug("Scheduler disabled (kill switch engaged)")
+                logger.warning("Scheduler disabled (kill switch engaged) — all jobs blocked this tick")
                 await asyncio.sleep(60)
                 continue
             
@@ -638,8 +786,80 @@ async def scheduler_loop():
                 await asyncio.sleep(60)
                 continue
             
+            # ==================================================================
+            # MARKET CALENDAR REFRESH at 02:00 — idempotent, runs daily
+            # ==================================================================
+            # Fetches EODHD exchange-details/US and regenerates calendar rows.
+            # Upsert-based, safe to run daily.  Ensures indexes on first run.
+            # Wrapped in try/except so a failure here cannot crash the daemon
+            # and block Steps 1-2-3 at 03:00.
+            if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
+                _mc_started = datetime.now(timezone.utc)
+                try:
+                    from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
+                    async def _market_calendar_job(_db):
+                        await _mc_ensure_indexes(_db)
+                        return await refresh_market_calendar(_db)
+                    await run_job_with_retry("market_calendar", _market_calendar_job, db)
+                    last_run["market_calendar"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        f"[scheduler] market_calendar unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+                    try:
+                        await log_job_execution(
+                            db, "market_calendar", "error",
+                            _mc_started, datetime.now(timezone.utc),
+                            error_message=f"Scheduler unhandled: {exc}",
+                        )
+                    except Exception:
+                        pass  # best-effort observability
+
+
             # STEP 1: Universe Seed at 03:00 Mon-Sat
-            if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
+            #
+            # DECISION LOG: Write one DB record per day so there is irrefutable
+            # proof of whether Step 1 was triggered, already ran, or too early.
+            _step1_should = should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute)
+            if _step1_decision_logged_date != today_str and current_hour >= UNIVERSE_SEED_HOUR:
+                _step1_decision_logged_date = today_str
+                if last_run.get("universe_seed") == today_str:
+                    _step1_reason = "already_completed_today"
+                elif _step1_should:
+                    _step1_reason = "will_trigger_now"
+                else:
+                    _step1_reason = "not_yet_scheduled_time"
+                logger.info(
+                    f"[STEP 1 DECISION] date={today_str} hour={current_hour}:{current_minute:02d} "
+                    f"should_run={_step1_should} reason={_step1_reason} "
+                    f"last_run_universe_seed={last_run.get('universe_seed')}"
+                )
+                try:
+                    await db.system_job_logs.insert_one({
+                        "job_name": "scheduler_step1_decision",
+                        "status": "evaluated",
+                        "start_time": datetime.now(timezone.utc),
+                        "end_time": datetime.now(timezone.utc),
+                        "duration_seconds": 0,
+                        "records_processed": 0,
+                        "details": {
+                            "decision": _step1_should,
+                            "reason": _step1_reason,
+                            "weekday": weekday,
+                            "current_hour": current_hour,
+                            "current_minute": current_minute,
+                            "last_run_universe_seed": last_run.get("universe_seed"),
+                            "today_str": today_str,
+                            "prague_time": now.isoformat(),
+                        }
+                    })
+                except Exception:
+                    pass  # best-effort observability
+
+            if _step1_should:
                 logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
                 try:
                     _s1_result = await _run_universe_seed_scheduled(db)
@@ -695,15 +915,20 @@ async def scheduler_loop():
                     _s2_result = await run_job_with_retry(
                         "price_sync",
                         lambda _db, _pid=_s1_excl_run_id, _cid=_s1_chain_run_id: run_daily_price_sync(
-                            _db, parent_run_id=_pid, chain_run_id=_cid
+                            _db, parent_run_id=_pid, chain_run_id=_cid,
+                            ignore_kill_switch=True,
                         ),
                         db,
                     )
-                    # Only advance last_run on success so the step retries
-                    # next tick on failure (matching Step 1 pattern).
+                    # Only advance last_run on explicit success so the step
+                    # retries next tick on failure/skip/cancel.
+                    # NOTE: ignore_kill_switch=True above prevents the job's
+                    # internal kill-switch check from returning "skipped" after
+                    # the scheduler already verified the switch at loop top.
                     _s2_failed = (
-                        isinstance(_s2_result, dict)
-                        and (_s2_result.get("error") or _s2_result.get("status") == "failed")
+                        not isinstance(_s2_result, dict)
+                        or _s2_result.get("status") not in ("completed", "success")
+                        or _s2_result.get("error")
                     )
                     if _s2_failed:
                         logger.warning(
@@ -762,15 +987,17 @@ async def scheduler_loop():
                     _s3_result = await run_job_with_retry(
                         "fundamentals_sync",
                         lambda _db, _pid=_s2_run_id_for_s3, _cid=_s2_chain_run_id: run_fundamentals_changes_sync(
-                            _db, parent_run_id=_pid, chain_run_id=_cid
+                            _db, parent_run_id=_pid, chain_run_id=_cid,
+                            ignore_kill_switch=True,
                         ),
                         db,
                     )
-                    # Only advance last_run on success so the step retries
-                    # next tick on failure (matching Step 1 pattern).
+                    # Only advance last_run on explicit success so the step
+                    # retries next tick on failure/skip/cancel.
                     _s3_failed = (
-                        isinstance(_s3_result, dict)
-                        and (_s3_result.get("error") or _s3_result.get("status") == "failed")
+                        not isinstance(_s3_result, dict)
+                        or _s3_result.get("status") not in ("completed", "success")
+                        or _s3_result.get("error")
                     )
                     if _s3_failed:
                         logger.warning(
@@ -815,37 +1042,6 @@ async def scheduler_loop():
                     except Exception:
                         pass  # best-effort observability
             
-            # ==================================================================
-            # MARKET CALENDAR REFRESH at 02:00 — idempotent, runs daily
-            # ==================================================================
-            # Fetches EODHD exchange-details/US and regenerates calendar rows.
-            # Upsert-based, safe to run daily.  Ensures indexes on first run.
-            # Wrapped in try/except so a failure here cannot crash the daemon
-            # and block Steps 1-2-3 at 03:00.
-            if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
-                _mc_started = datetime.now(timezone.utc)
-                try:
-                    from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
-                    async def _market_calendar_job(_db):
-                        await _mc_ensure_indexes(_db)
-                        return await refresh_market_calendar(_db)
-                    await run_job_with_retry("market_calendar", _market_calendar_job, db)
-                    last_run["market_calendar"] = today_str
-                    await set_last_run_state(last_run)
-                except Exception as exc:
-                    logger.error(
-                        f"[scheduler] market_calendar unhandled error "
-                        f"(will retry next minute): {exc}"
-                    )
-                    try:
-                        await log_job_execution(
-                            db, "market_calendar", "error",
-                            _mc_started, datetime.now(timezone.utc),
-                            error_message=f"Scheduler unhandled: {exc}",
-                        )
-                    except Exception:
-                        pass  # best-effort observability
 
             # ==================================================================
             # BENCHMARK UPDATE at 04:15 — standalone, NOT part of Steps 1-2-3
@@ -947,6 +1143,17 @@ async def scheduler_loop():
                 except Exception as exc:
                     logger.error(f"[scheduler] news_refresh unhandled error (will retry next minute): {exc}")
             
+            # =================================================================
+            # RENEW LEADER LOCK (before sleeping — keeps lease alive)
+            # =================================================================
+            still_leader = await renew_scheduler_leader_lock(db)
+            if not still_leader:
+                logger.warning(
+                    "Scheduler leader lock lost — another replica took over. "
+                    "Exiting scheduler loop."
+                )
+                break
+            
             # Sleep until next minute
             await asyncio.sleep(60)
             
@@ -956,6 +1163,8 @@ async def scheduler_loop():
         logger.error(f"Scheduler error: {e}")
         raise
     finally:
+        await release_scheduler_leader_lock(db)
+        logger.info("Scheduler leader lock released")
         client.close()
 
 

@@ -8617,6 +8617,75 @@ async def startup_pain_cache_guard(database):
         logger.info("✅ Startup PAIN cache guard passed - mega-caps have PAIN data")
 
 
+# =============================================================================
+# SCHEDULER DAEMON — launched as background task so it runs in the same process
+# =============================================================================
+# The scheduler is an infinite asyncio loop (scheduler.scheduler_loop).  It has
+# its own MongoDB client, heartbeat, and catch-up logic.  Launching it here
+# eliminates the need for a separate worker process / Procfile entry.
+#
+# GUARD: The daemon is OFF by default.  Set ENABLE_SCHEDULER_DAEMON=true in the
+# environment to activate it.  This prevents web-only replicas from accidentally
+# running scheduler jobs (the binding spec requires the scheduler to be an
+# explicit standalone orchestrator — not implicitly started by every API worker).
+#
+# MULTI-REPLICA SAFETY: scheduler_loop() acquires a distributed leader lock
+# (Mongo TTL on ops_locks) before entering its main loop.  If another replica
+# already holds the lock the coroutine returns immediately — no duplicate work.
+# =============================================================================
+_scheduler_task: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def startup_scheduler_daemon():
+    """Launch the scheduler daemon as a background asyncio task.
+
+    Requires ENABLE_SCHEDULER_DAEMON=true in the environment.
+    Default is OFF so that plain web workers never start the scheduler.
+    """
+    global _scheduler_task
+
+    # ENV-VAR GUARD: scheduler is opt-in, not opt-out.
+    if os.environ.get("ENABLE_SCHEDULER_DAEMON", "").lower() not in ("true", "1", "yes"):
+        logger.info(
+            "Scheduler daemon DISABLED (set ENABLE_SCHEDULER_DAEMON=true to enable)"
+        )
+        return
+
+    # Guard: don't start twice in the same process
+    if _scheduler_task and not _scheduler_task.done():
+        logger.info("Scheduler daemon already running — skipping duplicate launch")
+        return
+
+    from scheduler import scheduler_loop
+
+    _scheduler_task = asyncio.create_task(scheduler_loop(), name="scheduler_daemon")
+
+    # Surface unexpected crashes in the task (otherwise they are silently eaten).
+    def _on_done(task: asyncio.Task):
+        if task.cancelled():
+            logger.warning("Scheduler daemon task was cancelled")
+        elif task.exception():
+            logger.error(
+                "Scheduler daemon crashed: %s", task.exception(),
+                exc_info=task.exception(),
+            )
+        else:
+            # Normal completion — scheduler_loop returns if leader lock not acquired
+            logger.info("Scheduler daemon task completed (lock not acquired or loop exited)")
+
+    _scheduler_task.add_done_callback(_on_done)
+    logger.info("✅ Scheduler daemon started as background task")
+
+
 @app.on_event("shutdown")
 async def shutdown():
+    global _scheduler_task
+    if _scheduler_task and not _scheduler_task.done():
+        _scheduler_task.cancel()
+        try:
+            await _scheduler_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Scheduler daemon stopped")
     client.close()

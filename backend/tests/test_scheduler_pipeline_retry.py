@@ -141,10 +141,10 @@ class TestStep3RetryOnFailure:
 
         source = inspect.getsource(scheduler.scheduler_loop)
 
-        # Find the Step 3 block (between STEP 3 comment and MARKET CALENDAR comment)
+        # Find the Step 3 block (between STEP 3 comment and BENCHMARK UPDATE comment)
         s3_start = source.index("# STEP 3: Fundamentals sync")
-        mc_start = source.index("# MARKET CALENDAR REFRESH")
-        step3_source = source[s3_start:mc_start]
+        bm_start = source.index("# BENCHMARK UPDATE")
+        step3_source = source[s3_start:bm_start]
 
         count = step3_source.count('last_run["fundamentals_sync"] = today_str')
         assert count == 1, (
@@ -256,3 +256,135 @@ class TestPipelineChainRetryBehavior:
 
         # Step 3 should retry
         assert should_run_after_dependency("fundamentals_sync", "price_sync", last_run, today)
+
+
+class TestKillSwitchBypass:
+    """Verify Steps 2/3 pass ignore_kill_switch=True from the scheduler.
+
+    When the scheduler loop has already verified the kill switch at the top of
+    each tick, the downstream job functions must not re-check it — otherwise a
+    race-condition toggle causes silent data skips treated as success.
+    """
+
+    def test_step2_passes_ignore_kill_switch(self):
+        """run_daily_price_sync must be called with ignore_kill_switch=True."""
+        import scheduler
+
+        source = inspect.getsource(scheduler.scheduler_loop)
+
+        # Find the Step 2 block
+        s2_start = source.index("# STEP 2: Price sync")
+        s3_start = source.index("# STEP 3: Fundamentals sync")
+        step2_source = source[s2_start:s3_start]
+
+        assert "ignore_kill_switch=True" in step2_source, (
+            "Step 2 must pass ignore_kill_switch=True to run_daily_price_sync "
+            "since the scheduler already checked the kill switch at loop top"
+        )
+
+    def test_step3_passes_ignore_kill_switch(self):
+        """run_fundamentals_changes_sync must be called with ignore_kill_switch=True."""
+        import scheduler
+
+        source = inspect.getsource(scheduler.scheduler_loop)
+
+        # Find the Step 3 block
+        s3_start = source.index("# STEP 3: Fundamentals sync")
+        bm_start = source.index("# BENCHMARK UPDATE")
+        step3_source = source[s3_start:bm_start]
+
+        assert "ignore_kill_switch=True" in step3_source, (
+            "Step 3 must pass ignore_kill_switch=True to "
+            "run_fundamentals_changes_sync since the scheduler already "
+            "checked the kill switch at loop top"
+        )
+
+
+class TestStrictSuccessDetection:
+    """Verify _s2_failed / _s3_failed detect ANY non-success status.
+
+    The old code only detected status=="failed" or error key.  A "skipped" or
+    "cancelled" result would silently advance last_run, creating data gaps.
+    """
+
+    def _get_failed_block(self, step_var: str) -> str:
+        """Extract the full _sN_failed assignment block from scheduler source."""
+        import scheduler
+
+        source = inspect.getsource(scheduler.scheduler_loop)
+        marker = f"{step_var} = ("
+        start = source.index(marker)
+        # Count balanced parentheses to find end of multi-line expression
+        depth = 0
+        for i, ch in enumerate(source[start:], start=start):
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return source[start : i + 1]
+        return source[start : start + 200]
+
+    def test_step2_detects_skipped_status(self):
+        """_s2_failed must be True for status='skipped'."""
+        expr = self._get_failed_block("_s2_failed")
+        assert "completed" in expr, (
+            "_s2_failed must whitelist 'completed' as success"
+        )
+        assert "not in" in expr or "not isinstance" in expr, (
+            "_s2_failed must use a NOT pattern so that unknown/skipped/cancelled "
+            "statuses are treated as failure"
+        )
+
+    def test_step3_detects_skipped_status(self):
+        """_s3_failed must be True for status='skipped'."""
+        expr = self._get_failed_block("_s3_failed")
+        assert "completed" in expr, (
+            "_s3_failed must whitelist 'completed' as success"
+        )
+        assert "not in" in expr or "not isinstance" in expr, (
+            "_s3_failed must use a NOT pattern so that unknown/skipped/cancelled "
+            "statuses are treated as failure"
+        )
+
+    def test_skipped_result_detected_as_failure(self):
+        """Simulate the _s2_failed logic against a 'skipped' result dict."""
+        # Reproduce the exact logic from scheduler.py
+        _result = {"status": "skipped", "reason": "kill_switch_engaged"}
+
+        _failed = (
+            not isinstance(_result, dict)
+            or _result.get("status") not in ("completed", "success")
+            or _result.get("error")
+        )
+        assert _failed, (
+            "A 'skipped' result must be detected as failed "
+            "so last_run is NOT advanced"
+        )
+
+    def test_completed_result_not_detected_as_failure(self):
+        """A 'completed' result must NOT be flagged as failed."""
+        _result = {"status": "completed", "tickers_processed": 100}
+
+        _failed = (
+            not isinstance(_result, dict)
+            or _result.get("status") not in ("completed", "success")
+            or _result.get("error")
+        )
+        assert not _failed, (
+            "A 'completed' result must NOT be detected as failed"
+        )
+
+    def test_cancelled_result_detected_as_failure(self):
+        """A 'cancelled' result must be detected as failed."""
+        _result = {"status": "cancelled"}
+
+        _failed = (
+            not isinstance(_result, dict)
+            or _result.get("status") not in ("completed", "success")
+            or _result.get("error")
+        )
+        assert _failed, (
+            "A 'cancelled' result must be detected as failed "
+            "so last_run is NOT advanced"
+        )
