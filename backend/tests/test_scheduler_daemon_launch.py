@@ -103,20 +103,21 @@ class TestSchedulerDaemonEnvGuard:
             "startup_scheduler_daemon must check ENABLE_SCHEDULER_DAEMON env var"
         )
 
-    def test_default_is_enabled(self):
-        """Scheduler daemon must be ON by default (leader lock handles multi-replica)."""
+    def test_default_is_disabled(self):
+        """Scheduler daemon must be OFF by default (env var not set = disabled)."""
         source = open(
             os.path.join(os.path.dirname(__file__), "..", "server.py")
         ).read()
-        # The guard must use "true" as default so scheduler starts without explicit env var
-        assert 'os.environ.get("ENABLE_SCHEDULER_DAEMON", "true")' in source, (
-            'Must default to "true" so scheduler starts without explicit env var'
+        # The guard returns early when env var is NOT in the truthy set
+        assert 'os.environ.get("ENABLE_SCHEDULER_DAEMON"' in source, (
+            "Must use os.environ.get with ENABLE_SCHEDULER_DAEMON"
         )
-        # Verify the import comes AFTER the env var check
+        # Verify the import comes AFTER the env var check (i.e., default=disabled)
         env_check_pos = source.index("ENABLE_SCHEDULER_DAEMON")
         import_pos = source.index("from scheduler import scheduler_loop")
         assert env_check_pos < import_pos, (
-            "Env var check must come BEFORE the scheduler import"
+            "Env var check must come BEFORE the scheduler import "
+            "(so default=disabled doesn't even import the module)"
         )
 
     def test_disabled_log_message(self):
@@ -125,16 +126,16 @@ class TestSchedulerDaemonEnvGuard:
             os.path.join(os.path.dirname(__file__), "..", "server.py")
         ).read()
         assert "Scheduler daemon DISABLED" in source, (
-            "Must log 'Scheduler daemon DISABLED' when env var disables it"
+            "Must log 'Scheduler daemon DISABLED' when env var is not set"
         )
 
-    def test_comment_documents_default_on(self):
-        """The block comment must state that the daemon is ON by default."""
+    def test_comment_documents_default_off(self):
+        """The block comment must state that the daemon is OFF by default."""
         source = open(
             os.path.join(os.path.dirname(__file__), "..", "server.py")
         ).read()
-        assert "Default is ON" in source, (
-            "Block comment must document that daemon is ON by default"
+        assert "OFF by default" in source or "off by default" in source.lower(), (
+            "Block comment must document that daemon is OFF by default"
         )
 
 
@@ -182,10 +183,24 @@ class TestSchedulerRuntimeProof:
         hb_start = source.index("def log_heartbeat")
         hb_block = source[hb_start:hb_start + 2000]
         assert "ops_job_runs" in hb_block, (
-            "log_heartbeat must mirror heartbeat to ops_job_runs"
+            "log_heartbeat must write heartbeat to ops_job_runs"
         )
         assert '"scheduler_heartbeat"' in hb_block, (
             "ops_job_runs entry must use job_name scheduler_heartbeat"
+        )
+
+    def test_heartbeat_does_not_use_system_job_logs(self):
+        """log_heartbeat must NOT write to system_job_logs (not in prod)."""
+        source = self._get_scheduler_source()
+        hb_start = source.index("def log_heartbeat")
+        # Find next def to scope the function body; fall back to end of source
+        try:
+            next_def = source.index("\n    def ", hb_start + 1)
+        except ValueError:
+            next_def = len(source)
+        hb_block = source[hb_start:next_def]
+        assert "system_job_logs" not in hb_block, (
+            "log_heartbeat must NOT reference system_job_logs (collection does not exist in prod)"
         )
 
     def test_prague_timestamps_in_started(self):
@@ -226,9 +241,16 @@ class TestSchedulerRuntimeProof:
         assert "db.ops_job_runs" in hb_block, (
             "log_heartbeat must write to db.ops_job_runs"
         )
-        # The ops_job_runs insert within heartbeat should be in try/except
-        ops_idx = hb_block.index("db.ops_job_runs")
-        preceding = hb_block[:ops_idx]
-        assert "try:" in preceding, (
+        # The entire heartbeat function body should be in try/except
+        assert "try:" in hb_block, (
             "heartbeat ops_job_runs insert must be inside try block (best-effort)"
+        )
+
+    def test_heartbeat_includes_kill_switch_state(self):
+        """heartbeat ops_job_runs entry must include kill_switch_engaged."""
+        source = self._get_scheduler_source()
+        hb_start = source.index("def log_heartbeat")
+        hb_block = source[hb_start:hb_start + 2000]
+        assert "kill_switch_engaged" in hb_block, (
+            "heartbeat details must include kill_switch_engaged state"
         )

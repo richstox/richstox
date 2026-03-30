@@ -683,23 +683,9 @@ async def scheduler_loop():
         )
     
     async def log_heartbeat(last_run: dict, *, kill_switch_engaged: bool = False):
-        """Log heartbeat to system_job_logs AND ops_job_runs for Admin Panel visibility."""
-        prague_now = get_prague_time()
-        await db.system_job_logs.insert_one({
-            "job_name": "scheduler_heartbeat",
-            "status": "success",
-            "start_time": datetime.now(timezone.utc),
-            "end_time": datetime.now(timezone.utc),
-            "duration_seconds": 0,
-            "records_processed": 0,
-            "details": {
-                "last_run_state": last_run,
-                "prague_time": prague_now.isoformat(),
-                "kill_switch_engaged": kill_switch_engaged,
-            }
-        })
-        # Best-effort: mirror heartbeat to ops_job_runs (Prague timestamp)
+        """Best-effort heartbeat to ops_job_runs (Prague timestamps)."""
         try:
+            prague_now = get_prague_time()
             await db.ops_job_runs.insert_one({
                 "job_name": "scheduler_heartbeat",
                 "status": "success",
