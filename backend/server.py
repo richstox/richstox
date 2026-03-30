@@ -8635,6 +8635,11 @@ _scheduler_task: asyncio.Task | None = None
 async def startup_scheduler_daemon():
     """Launch the scheduler daemon as a background asyncio task."""
     global _scheduler_task
+
+    # Guard: don't start twice in the same process
+    if _scheduler_task and not _scheduler_task.done():
+        return
+
     from scheduler import scheduler_loop
 
     _scheduler_task = asyncio.create_task(scheduler_loop(), name="scheduler_daemon")

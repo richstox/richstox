@@ -80,6 +80,15 @@ class TestSchedulerDaemonStartup:
             "A done callback must be set to surface unexpected scheduler crashes"
         )
 
+    def test_double_start_guard(self):
+        """startup_scheduler_daemon must guard against starting twice."""
+        source = open(
+            os.path.join(os.path.dirname(__file__), "..", "server.py")
+        ).read()
+        assert "if _scheduler_task and not _scheduler_task.done():" in source, (
+            "startup_scheduler_daemon must have a double-start guard"
+        )
+
 
 class TestSchedulerLoopImportable:
     """Verify that the scheduler module exports scheduler_loop correctly."""
