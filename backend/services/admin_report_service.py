@@ -100,6 +100,7 @@ async def generate_daily_report(db, source: GenerationSource = "manual") -> Dict
     job_schedule = {
         "universe_seed": {"hour": 3, "minute": 0},      # Mon-Sat 03:00
         "benchmark_update": {"hour": 4, "minute": 15},    # 04:15
+        "backfill_gaps": {"hour": 4, "minute": 45},      # 04:45
         "backfill_all": {"hour": 5, "minute": 0},        # 05:00
         "key_metrics": {"hour": 5, "minute": 0},         # 05:00
         "pain_cache": {"hour": 5, "minute": 0},          # 05:00

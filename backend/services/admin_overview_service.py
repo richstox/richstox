@@ -365,6 +365,10 @@ JOB_REGISTRY = {
         "dependency_on": "price_sync",
         "api_endpoint": "https://eodhd.com/api/fundamentals/{SYMBOL}.US?fmt=json"
     },
+    "backfill_gaps": {
+        "hour": 4, "minute": 45, "sunday_only": False, "has_api_calls": True,
+        "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?from={date}&fmt=json"
+    },
     "backfill_all": {
         "hour": 5, "minute": 0, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?from={date}&fmt=json",
@@ -408,6 +412,7 @@ JOB_PATTERNS = {
     "benchmark_update": ["benchmark_update", "sp500tr_update", "sp500tr_sync", "sp500tr"],
     "market_calendar": ["market_calendar", "calendar_refresh"],
     "fundamentals_sync": ["scheduled_fundamentals_sync", "fundamentals_sync", "fundamentals_batch"],
+    "backfill_gaps": ["backfill_gaps", "scheduled_backfill_gaps"],
     "backfill_all": ["backfill_all", "scheduled_backfill_all", "parallel_backfill"],
     "key_metrics": ["key_metrics", "metrics_calc"],
     "peer_medians": ["peer_medians", "medians_calc"],
