@@ -16,7 +16,7 @@ import sys
 
 # Expected job configuration (from SCHEDULER_JOBS.md)
 EXPECTED_JOBS = {
-    "universe_seed": {"day": "Sunday", "hour": 3, "minute": 0},
+    "universe_seed": {"day": "Mon-Sat", "hour": 3, "minute": 0},
     "news_refresh": {"day": "Sun-Sat", "hour": 13, "minute": 0},
     "price_sync": {"day": "Mon-Sat", "hour": 4, "minute": 0},
     "fundamentals_sync": {"day": "Mon-Sat", "hour": 4, "minute": 30},
@@ -30,7 +30,7 @@ EXPECTED_JOBS = {
 EXPECTED_CONSTANTS = {
     "UNIVERSE_SEED_HOUR": 3,
     "UNIVERSE_SEED_MINUTE": 0,
-    "UNIVERSE_SEED_DAY": 6,  # Sunday
+    "UNIVERSE_SEED_DAY": 6,  # Sunday (exclusion day — news-only)
     "PRICE_SYNC_HOUR": 4,
     "PRICE_SYNC_MINUTE": 0,
     "FUNDAMENTALS_SYNC_HOUR": 4,
@@ -102,14 +102,19 @@ def audit_scheduler():
         if func not in content:
             errors.append(f"Missing required function call: {func}")
     
-    # Check Sunday jobs exist
-    if "is_sunday()" not in content:
-        errors.append("Missing is_sunday() check for Sunday jobs")
+    # Check Sunday exclusion logic exists (weekday == UNIVERSE_SEED_DAY or is_sunday())
+    has_sunday_check = "weekday == UNIVERSE_SEED_DAY" in content or "is_sunday()" in content
+    if not has_sunday_check:
+        errors.append("Missing Sunday exclusion check (weekday == UNIVERSE_SEED_DAY)")
     
-    # Check news runs on Sunday - look for news_daily_refresh within the is_sunday() block
-    # The block structure is: if is_sunday(): ... news_daily_refresh ... continue
-    if "is_sunday()" in content:
-        # Find the Sunday block - it should contain news_daily_refresh before the 'continue' statement
+    # Check news runs on Sunday - look for news_daily_refresh within the Sunday block
+    if "weekday == UNIVERSE_SEED_DAY" in content:
+        sunday_match = re.search(r'if\s+weekday\s*==\s*UNIVERSE_SEED_DAY:(.*?)await\s+asyncio\.sleep', content, re.DOTALL)
+        if sunday_match:
+            sunday_block = sunday_match.group(1)
+            if "news_daily_refresh" not in sunday_block:
+                errors.append("News refresh should run on Sunday but not found in Sunday block")
+    elif "is_sunday()" in content:
         sunday_match = re.search(r'if\s+is_sunday\(\):(.*?)await\s+asyncio\.sleep', content, re.DOTALL)
         if sunday_match:
             sunday_block = sunday_match.group(1)

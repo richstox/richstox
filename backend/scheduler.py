@@ -105,8 +105,8 @@ logger = logging.getLogger("richstox.scheduler_daemon")
 # Configuration
 TIMEZONE = ZoneInfo("Europe/Prague")
 
-# SUNDAY ONLY - Universe seed
-UNIVERSE_SEED_DAY = 6  # Sunday
+# SUNDAY EXCLUSION — Universe Seed runs Mon-Sat; Sunday is news-only
+UNIVERSE_SEED_DAY = 6  # Sunday (used to identify the news-only day)
 UNIVERSE_SEED_HOUR = 3
 UNIVERSE_SEED_MINUTE = 0
 
@@ -528,7 +528,7 @@ async def scheduler_loop():
             upsert=True
         )
     
-    async def log_heartbeat(last_run: dict):
+    async def log_heartbeat(last_run: dict, *, kill_switch_engaged: bool = False):
         """Log heartbeat to system_job_logs for Admin Panel visibility."""
         await db.system_job_logs.insert_one({
             "job_name": "scheduler_heartbeat",
@@ -537,7 +537,11 @@ async def scheduler_loop():
             "end_time": datetime.now(timezone.utc),
             "duration_seconds": 0,
             "records_processed": 0,
-            "details": {"last_run_state": last_run, "prague_time": get_prague_time().isoformat()}
+            "details": {
+                "last_run_state": last_run,
+                "prague_time": get_prague_time().isoformat(),
+                "kill_switch_engaged": kill_switch_engaged,
+            }
         })
     
     def should_run(job_name: str, scheduled_hour: int, scheduled_minute: int, last_run: dict, today_str: str, current_hour: int, current_minute: int) -> bool:
@@ -570,6 +574,8 @@ async def scheduler_loop():
     
     # Track last heartbeat minute
     last_heartbeat_minute = -1
+    # Track per-day Step 1 decision logging (avoids flooding DB)
+    _step1_decision_logged_date = ""
     
     # Import job functions
     from scheduler_service import (
@@ -589,21 +595,26 @@ async def scheduler_loop():
             # =================================================================
             # HEARTBEAT (every 15 minutes)
             # =================================================================
+            # Read kill switch ONCE per tick so heartbeat and job logic use the
+            # same value — avoids TOCTOU where the switch flips between reads.
+            scheduler_enabled = await get_scheduler_enabled(db)
+
             if current_minute % 15 == 0 and current_minute != last_heartbeat_minute:
                 last_heartbeat_minute = current_minute
-                logger.info(f"[HEARTBEAT] Scheduler alive at {now.strftime('%Y-%m-%d %H:%M')} Prague")
+                logger.info(
+                    f"[HEARTBEAT] Scheduler alive at {now.strftime('%Y-%m-%d %H:%M')} Prague"
+                    f" | kill_switch={'OFF' if scheduler_enabled else 'ENGAGED'}"
+                )
                 try:
-                    await log_heartbeat(last_run)
+                    await log_heartbeat(last_run, kill_switch_engaged=not scheduler_enabled)
                 except Exception as hb_exc:
                     logger.error(f"[HEARTBEAT] Failed to write heartbeat (non-fatal): {hb_exc}")
             
             # =================================================================
             # KILL SWITCH CHECK
             # =================================================================
-            scheduler_enabled = await get_scheduler_enabled(db)
-            
             if not scheduler_enabled:
-                logger.debug("Scheduler disabled (kill switch engaged)")
+                logger.warning("Scheduler disabled (kill switch engaged) — all jobs blocked this tick")
                 await asyncio.sleep(60)
                 continue
             
@@ -639,7 +650,46 @@ async def scheduler_loop():
                 continue
             
             # STEP 1: Universe Seed at 03:00 Mon-Sat
-            if should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute):
+            #
+            # DECISION LOG: Write one DB record per day so there is irrefutable
+            # proof of whether Step 1 was triggered, already ran, or too early.
+            _step1_should = should_run("universe_seed", UNIVERSE_SEED_HOUR, UNIVERSE_SEED_MINUTE, last_run, today_str, current_hour, current_minute)
+            if _step1_decision_logged_date != today_str and current_hour >= UNIVERSE_SEED_HOUR:
+                _step1_decision_logged_date = today_str
+                if last_run.get("universe_seed") == today_str:
+                    _step1_reason = "already_completed_today"
+                elif _step1_should:
+                    _step1_reason = "will_trigger_now"
+                else:
+                    _step1_reason = "not_yet_scheduled_time"
+                logger.info(
+                    f"[STEP 1 DECISION] date={today_str} hour={current_hour}:{current_minute:02d} "
+                    f"should_run={_step1_should} reason={_step1_reason} "
+                    f"last_run_universe_seed={last_run.get('universe_seed')}"
+                )
+                try:
+                    await db.system_job_logs.insert_one({
+                        "job_name": "scheduler_step1_decision",
+                        "status": "evaluated",
+                        "start_time": datetime.now(timezone.utc),
+                        "end_time": datetime.now(timezone.utc),
+                        "duration_seconds": 0,
+                        "records_processed": 0,
+                        "details": {
+                            "decision": _step1_should,
+                            "reason": _step1_reason,
+                            "weekday": weekday,
+                            "current_hour": current_hour,
+                            "current_minute": current_minute,
+                            "last_run_universe_seed": last_run.get("universe_seed"),
+                            "today_str": today_str,
+                            "prague_time": now.isoformat(),
+                        }
+                    })
+                except Exception:
+                    pass  # best-effort observability
+
+            if _step1_should:
                 logger.info(f"Triggering universe_seed STEP 1 (hour={current_hour}, scheduled={UNIVERSE_SEED_HOUR}:{UNIVERSE_SEED_MINUTE:02d})")
                 try:
                     _s1_result = await _run_universe_seed_scheduled(db)

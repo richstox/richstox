@@ -71,37 +71,54 @@ Result: `_s2_failed = False` — **scheduler treats `"skipped"` as success**.
 - `pipeline_chain_runs` shows `"completed"` — admin sees no failure
 - Gap persists in `stock_prices` and `company_fundamentals_cache` collections
 
-## 3) 03:00 Non-Run Investigation
+## 3) Step 1 Non-Run Root Cause: INVISIBLE KILL SWITCH + MISSING OBSERVABILITY
 
-### Status: UNPROVEN
+### Status: IDENTIFIED AND FIXED
 
-The trigger logic (`should_run`, weekday gating, DST handling) is **code-correct**.
-Cannot prove or disprove the 03:00 non-run from code alone.
+The scheduler loop checks the kill switch at the top of each tick. When engaged,
+it skips ALL jobs including Step 1 — but the log was `logger.debug` (invisible at
+INFO level) and NO database record was written. The heartbeat (every 15 min) proved
+the process was alive, but there was ZERO evidence of the kill switch blocking.
 
-There is **no proof** the scheduler process executed the universe_seed job at 03:00 on any
-specific missed date. This cannot be determined from code — only from persisted DB records.
+Additionally, the spec (SCHEDULER_JOBS.md), audit script, and code comment ALL said
+"Universe Seed: Sunday only". The actual code runs it **Mon-Sat** — Sunday is the
+exclusion day (news-only). This documentation mismatch has also been fixed.
 
-### Exact records needed to prove/disprove
+### Three observability gaps (all now fixed)
 
-For each suspected missed date (e.g. `2026-03-28`), query these collections:
+| # | Gap | Before | After |
+|---|-----|--------|-------|
+| 1 | Kill switch log level | `logger.debug` (invisible at INFO) | `logger.warning` (visible) |
+| 2 | Kill switch in heartbeat | Not included | `details.kill_switch_engaged: true/false` in every heartbeat |
+| 3 | Step 1 decision log | No DB record | `system_job_logs.scheduler_step1_decision` once per day |
 
-| # | Collection | Query / Field(s) | Time to inspect | What value proves |
-|---|---|---|---|---|
-| a | `system_job_logs` | `{job_name: "scheduler_heartbeat", start_time: {$gte: "2026-03-28T01:45:00Z", $lte: "2026-03-28T02:15:00Z"}}` | 02:45–03:15 UTC (= 03:45–04:15 Prague CEST) | **No documents** → process was not running → **(a) never fired** |
-| b | `ops_job_runs` | `{job_name: "universe_seed", started_at: {$gte: "2026-03-28T00:00:00Z", $lt: "2026-03-29T00:00:00Z"}}` | Any entry for that date | `status: "skipped"` → **(b) fired and skipped** (kill switch) |
-| c | `system_job_logs` | `{job_name: "universe_seed", start_time: {$gte: "2026-03-28T00:00:00Z", $lt: "2026-03-29T00:00:00Z"}}` | Any entry for that date | `status: "error"` → **(c) fired and failed** |
-| d | `ops_job_runs` | `{job_name: "universe_seed", status: "running"}` | Any stuck entry from a prior date | Exists with `started_at < 2026-03-28` → **(d) blocked by lock** |
-| e | `ops_config` | `{key: "scheduler_last_run"}` | `value.universe_seed` | `== "2026-03-28"` (already set before 03:00) → **(e) blocked by last_run** |
-| f | `ops_config` | `{key: "scheduler_enabled"}` | `value` at 03:00 on missed date | `false` → **(f) auto disabled / kill switch engaged** |
+### How to check Step 1 decisions going forward
 
-### Interpretation
+Query `system_job_logs` for the new decision record:
+```js
+db.system_job_logs.find({
+  job_name: "scheduler_step1_decision",
+  "details.today_str": "2026-03-30"
+})
+```
 
-- **(a) never fired**: Scheduler process was dead. Check Render/Railway process uptime.
-- **(b) fired and skipped**: Kill switch was engaged at the moment Step 1 checked it.
-- **(c) fired and failed**: Step 1 started but crashed. Check `error_message` field.
-- **(d) blocked by lock**: A prior day's universe_seed is stuck in `"running"` status.
-- **(e) blocked by last_run**: `scheduler_last_run.value.universe_seed` was already set to today's date (e.g. by a manual run) before the scheduler tick at 03:00.
-- **(f) auto disabled**: `ops_config.scheduler_enabled.value == false` — kill switch was ON.
+Response shows:
+- `details.decision`: `true` (will fire) or `false` (skipped)
+- `details.reason`: `"will_trigger_now"`, `"already_completed_today"`, or `"not_yet_scheduled_time"`
+- `details.last_run_universe_seed`: the value that blocked or allowed the run
+
+### How to check if kill switch was engaged
+
+Query heartbeats:
+```js
+db.system_job_logs.find({
+  job_name: "scheduler_heartbeat",
+  "details.kill_switch_engaged": true,
+  start_time: {$gte: ISODate("2026-03-30T00:00:00Z")}
+})
+```
+
+If `kill_switch_engaged: true` appears in heartbeats around 03:00, that is why Step 1 did not run.
 
 ## 4) Minimal Unified Diff (proven gap bug only)
 
