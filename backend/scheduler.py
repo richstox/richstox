@@ -641,7 +641,24 @@ async def scheduler_loop():
     logger.info(f"  {PEER_MEDIANS_HOUR:02d}:{PEER_MEDIANS_MINUTE:02d} - Peer Medians")
     logger.info(f"  {ADMIN_REPORT_HOUR:02d}:{ADMIN_REPORT_MINUTE:02d} - Admin Report")
     logger.info(f"  {NEWS_REFRESH_HOUR:02d}:{NEWS_REFRESH_MINUTE:02d} - Daily news refresh")
-    
+
+    # Best-effort: record scheduler_started in ops_job_runs (Prague timestamp)
+    try:
+        _prague_started = get_prague_time()
+        await db.ops_job_runs.insert_one({
+            "job_name": "scheduler_started",
+            "status": "success",
+            "started_at": _prague_started,
+            "completed_at": _prague_started,
+            "started_at_prague": _prague_started.isoformat(),
+            "completed_at_prague": _prague_started.isoformat(),
+            "log_timezone": "Europe/Prague",
+            "duration_seconds": 0,
+            "details": {"owner_id": _get_owner_id()},
+        })
+    except Exception:
+        logger.warning("Failed to log scheduler_started to ops_job_runs (non-fatal)")
+
     # ==========================================================================
     # PERSISTENT STATE FUNCTIONS (reuse ops_config collection)
     # ==========================================================================
@@ -666,20 +683,25 @@ async def scheduler_loop():
         )
     
     async def log_heartbeat(last_run: dict, *, kill_switch_engaged: bool = False):
-        """Log heartbeat to system_job_logs for Admin Panel visibility."""
-        await db.system_job_logs.insert_one({
-            "job_name": "scheduler_heartbeat",
-            "status": "success",
-            "start_time": datetime.now(timezone.utc),
-            "end_time": datetime.now(timezone.utc),
-            "duration_seconds": 0,
-            "records_processed": 0,
-            "details": {
-                "last_run_state": last_run,
-                "prague_time": get_prague_time().isoformat(),
-                "kill_switch_engaged": kill_switch_engaged,
-            }
-        })
+        """Best-effort heartbeat to ops_job_runs (Prague timestamps)."""
+        try:
+            prague_now = get_prague_time()
+            await db.ops_job_runs.insert_one({
+                "job_name": "scheduler_heartbeat",
+                "status": "success",
+                "started_at": prague_now,
+                "completed_at": prague_now,
+                "started_at_prague": prague_now.isoformat(),
+                "completed_at_prague": prague_now.isoformat(),
+                "log_timezone": "Europe/Prague",
+                "duration_seconds": 0,
+                "details": {
+                    "last_run_state": last_run,
+                    "kill_switch_engaged": kill_switch_engaged,
+                },
+            })
+        except Exception:
+            logger.warning("Failed to log scheduler_heartbeat to ops_job_runs (non-fatal)")
     
     def should_run(job_name: str, scheduled_hour: int, scheduled_minute: int, last_run: dict, today_str: str, current_hour: int, current_minute: int) -> bool:
         """

@@ -156,3 +156,101 @@ class TestSchedulerLoopImportable:
 
         assert hasattr(scheduler, "main"), "scheduler.main must exist"
         assert callable(scheduler.main), "scheduler.main must be callable"
+
+
+class TestSchedulerRuntimeProof:
+    """Verify that scheduler_loop writes runtime evidence to ops_job_runs."""
+
+    def _get_scheduler_source(self):
+        return open(
+            os.path.join(os.path.dirname(__file__), "..", "scheduler.py")
+        ).read()
+
+    def test_scheduler_started_entry(self):
+        """scheduler_loop must write scheduler_started to ops_job_runs after lock."""
+        source = self._get_scheduler_source()
+        assert '"scheduler_started"' in source, (
+            "scheduler_loop must insert scheduler_started into ops_job_runs"
+        )
+        assert "ops_job_runs" in source, (
+            "Must write to ops_job_runs collection"
+        )
+
+    def test_scheduler_heartbeat_ops_job_runs(self):
+        """log_heartbeat must write scheduler_heartbeat to ops_job_runs."""
+        source = self._get_scheduler_source()
+        # Find the heartbeat function and verify it writes to ops_job_runs
+        hb_start = source.index("def log_heartbeat")
+        hb_block = source[hb_start:hb_start + 2000]
+        assert "ops_job_runs" in hb_block, (
+            "log_heartbeat must write heartbeat to ops_job_runs"
+        )
+        assert '"scheduler_heartbeat"' in hb_block, (
+            "ops_job_runs entry must use job_name scheduler_heartbeat"
+        )
+
+    def test_heartbeat_does_not_use_system_job_logs(self):
+        """log_heartbeat must NOT write to system_job_logs (not in prod)."""
+        source = self._get_scheduler_source()
+        hb_start = source.index("def log_heartbeat")
+        # Find next def to scope the function body; fall back to end of source
+        try:
+            next_def = source.index("\n    def ", hb_start + 1)
+        except ValueError:
+            next_def = len(source)
+        hb_block = source[hb_start:next_def]
+        assert "system_job_logs" not in hb_block, (
+            "log_heartbeat must NOT reference system_job_logs (collection does not exist in prod)"
+        )
+
+    def test_prague_timestamps_in_started(self):
+        """scheduler_started entry must include Prague timestamps."""
+        source = self._get_scheduler_source()
+        # Find the scheduler_started block
+        idx = source.index('"scheduler_started"')
+        block = source[max(0, idx - 200):idx + 500]
+        assert "prague" in block.lower(), (
+            "scheduler_started entry must include Prague timestamp fields"
+        )
+
+    def test_prague_timestamps_in_heartbeat(self):
+        """scheduler_heartbeat ops_job_runs entry must include Prague timestamps."""
+        source = self._get_scheduler_source()
+        hb_start = source.index("def log_heartbeat")
+        hb_block = source[hb_start:hb_start + 2000]
+        # Check for Prague timestamp fields in the ops_job_runs insert
+        assert "started_at_prague" in hb_block, (
+            "heartbeat ops_job_runs entry must include started_at_prague"
+        )
+
+    def test_best_effort_started_no_crash(self):
+        """scheduler_started insert must be wrapped in try/except (best-effort)."""
+        source = self._get_scheduler_source()
+        idx = source.index('"scheduler_started"')
+        # Look for try/except wrapping this insert
+        preceding = source[max(0, idx - 300):idx]
+        assert "try:" in preceding, (
+            "scheduler_started insert must be inside try block (best-effort)"
+        )
+
+    def test_best_effort_heartbeat_no_crash(self):
+        """heartbeat ops_job_runs insert must be wrapped in try/except (best-effort)."""
+        source = self._get_scheduler_source()
+        hb_start = source.index("def log_heartbeat")
+        hb_block = source[hb_start:hb_start + 2000]
+        assert "db.ops_job_runs" in hb_block, (
+            "log_heartbeat must write to db.ops_job_runs"
+        )
+        # The entire heartbeat function body should be in try/except
+        assert "try:" in hb_block, (
+            "heartbeat ops_job_runs insert must be inside try block (best-effort)"
+        )
+
+    def test_heartbeat_includes_kill_switch_state(self):
+        """heartbeat ops_job_runs entry must include kill_switch_engaged."""
+        source = self._get_scheduler_source()
+        hb_start = source.index("def log_heartbeat")
+        hb_block = source[hb_start:hb_start + 2000]
+        assert "kill_switch_engaged" in hb_block, (
+            "heartbeat details must include kill_switch_engaged state"
+        )
