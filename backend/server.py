@@ -8651,7 +8651,8 @@ async def startup_scheduler_daemon():
     # ENV-VAR GUARD: default ON; set "false"/"0"/"no" to suppress.
     if os.environ.get("ENABLE_SCHEDULER_DAEMON", "true").lower() not in ("true", "1", "yes"):
         logger.info(
-            "Scheduler daemon DISABLED (set ENABLE_SCHEDULER_DAEMON=true to enable)"
+            "Scheduler daemon DISABLED by ENABLE_SCHEDULER_DAEMON=%s",
+            os.environ.get("ENABLE_SCHEDULER_DAEMON", ""),
         )
         return
 

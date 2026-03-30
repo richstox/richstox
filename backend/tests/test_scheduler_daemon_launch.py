@@ -125,7 +125,7 @@ class TestSchedulerDaemonEnvGuard:
             os.path.join(os.path.dirname(__file__), "..", "server.py")
         ).read()
         assert "Scheduler daemon DISABLED" in source, (
-            "Must log 'Scheduler daemon DISABLED' when env var is not set"
+            "Must log 'Scheduler daemon DISABLED' when env var disables it"
         )
 
     def test_comment_documents_default_on(self):
@@ -133,8 +133,7 @@ class TestSchedulerDaemonEnvGuard:
         source = open(
             os.path.join(os.path.dirname(__file__), "..", "server.py")
         ).read()
-        # New default: ON (leader lock is the primary multi-replica guard)
-        assert "Default is ON" in source or "default is on" in source.lower(), (
+        assert "Default is ON" in source, (
             "Block comment must document that daemon is ON by default"
         )
 
@@ -224,6 +223,9 @@ class TestSchedulerRuntimeProof:
         source = self._get_scheduler_source()
         hb_start = source.index("def log_heartbeat")
         hb_block = source[hb_start:hb_start + 2000]
+        assert "db.ops_job_runs" in hb_block, (
+            "log_heartbeat must write to db.ops_job_runs"
+        )
         # The ops_job_runs insert within heartbeat should be in try/except
         ops_idx = hb_block.index("db.ops_job_runs")
         preceding = hb_block[:ops_idx]
