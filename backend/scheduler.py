@@ -695,15 +695,20 @@ async def scheduler_loop():
                     _s2_result = await run_job_with_retry(
                         "price_sync",
                         lambda _db, _pid=_s1_excl_run_id, _cid=_s1_chain_run_id: run_daily_price_sync(
-                            _db, parent_run_id=_pid, chain_run_id=_cid
+                            _db, parent_run_id=_pid, chain_run_id=_cid,
+                            ignore_kill_switch=True,
                         ),
                         db,
                     )
-                    # Only advance last_run on success so the step retries
-                    # next tick on failure (matching Step 1 pattern).
+                    # Only advance last_run on explicit success so the step
+                    # retries next tick on failure/skip/cancel.
+                    # NOTE: ignore_kill_switch=True above prevents the job's
+                    # internal kill-switch check from returning "skipped" after
+                    # the scheduler already verified the switch at loop top.
                     _s2_failed = (
-                        isinstance(_s2_result, dict)
-                        and (_s2_result.get("error") or _s2_result.get("status") == "failed")
+                        not isinstance(_s2_result, dict)
+                        or _s2_result.get("status") not in ("completed", "success")
+                        or _s2_result.get("error")
                     )
                     if _s2_failed:
                         logger.warning(
@@ -762,15 +767,17 @@ async def scheduler_loop():
                     _s3_result = await run_job_with_retry(
                         "fundamentals_sync",
                         lambda _db, _pid=_s2_run_id_for_s3, _cid=_s2_chain_run_id: run_fundamentals_changes_sync(
-                            _db, parent_run_id=_pid, chain_run_id=_cid
+                            _db, parent_run_id=_pid, chain_run_id=_cid,
+                            ignore_kill_switch=True,
                         ),
                         db,
                     )
-                    # Only advance last_run on success so the step retries
-                    # next tick on failure (matching Step 1 pattern).
+                    # Only advance last_run on explicit success so the step
+                    # retries next tick on failure/skip/cancel.
                     _s3_failed = (
-                        isinstance(_s3_result, dict)
-                        and (_s3_result.get("error") or _s3_result.get("status") == "failed")
+                        not isinstance(_s3_result, dict)
+                        or _s3_result.get("status") not in ("completed", "success")
+                        or _s3_result.get("error")
                     )
                     if _s3_failed:
                         logger.warning(
