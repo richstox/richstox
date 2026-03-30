@@ -8640,7 +8640,10 @@ async def startup_scheduler_daemon():
         if task.cancelled():
             logger.warning("Scheduler daemon task was cancelled")
         elif task.exception():
-            logger.error(f"Scheduler daemon crashed: {task.exception()}")
+            logger.error(
+                "Scheduler daemon crashed: %s", task.exception(),
+                exc_info=task.exception(),
+            )
 
     _scheduler_task.add_done_callback(_on_done)
     logger.info("✅ Scheduler daemon started as background task")
