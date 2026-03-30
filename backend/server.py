@@ -8632,6 +8632,9 @@ async def startup_pain_cache_guard(database):
 # MULTI-REPLICA SAFETY: scheduler_loop() acquires a distributed leader lock
 # (Mongo TTL on ops_locks) before entering its main loop.  If another replica
 # already holds the lock the coroutine returns immediately — no duplicate work.
+#
+# Default is ON — the leader lock is the primary multi-replica guard.
+# Set ENABLE_SCHEDULER_DAEMON=false to explicitly suppress on a given replica.
 # =============================================================================
 _scheduler_task: asyncio.Task | None = None
 
@@ -8640,13 +8643,13 @@ _scheduler_task: asyncio.Task | None = None
 async def startup_scheduler_daemon():
     """Launch the scheduler daemon as a background asyncio task.
 
-    Requires ENABLE_SCHEDULER_DAEMON=true in the environment.
-    Default is OFF so that plain web workers never start the scheduler.
+    Default is ON — the leader lock handles multi-replica safety.
+    Set ENABLE_SCHEDULER_DAEMON=false to explicitly disable.
     """
     global _scheduler_task
 
-    # ENV-VAR GUARD: scheduler is opt-in, not opt-out.
-    if os.environ.get("ENABLE_SCHEDULER_DAEMON", "").lower() not in ("true", "1", "yes"):
+    # ENV-VAR GUARD: default ON; set "false"/"0"/"no" to suppress.
+    if os.environ.get("ENABLE_SCHEDULER_DAEMON", "true").lower() not in ("true", "1", "yes"):
         logger.info(
             "Scheduler daemon DISABLED (set ENABLE_SCHEDULER_DAEMON=true to enable)"
         )
