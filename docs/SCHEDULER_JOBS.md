@@ -7,17 +7,16 @@
 | # | Job Name | Day | Time (Prague) | EODHD Endpoint | API Calls | Condition |
 |---|----------|-----|---------------|----------------|-----------|-----------|
 | 0 | Market Calendar | Mon-Sat | 02:00 | `/exchange-details/US` | 1 | `not run today` |
-| 1 | **Universe Seed** | Sunday | 03:00 | `/exchange-symbol-list/US` | 1 | `is_sunday() && not run today` |
-| 2 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
-| 3 | Price Sync | Mon-Sat | 03:00 | `/eod-bulk-last-day/US` | 1 (bulk) | `is_daily_job_day() && not run today` |
-| 4 | SP500TR Update | Mon-Sat | 04:15 | `/eod/SP500TR.INDX` | 1 | `is_daily_job_day() && not run today` |
-| 5 | Fundamentals Sync | Mon-Sat | 04:30 | `/fundamentals/{TICKER}.US` | 0-50 | `pending events exist` |
-| 6 | Backfill Gaps | Mon-Sat | 04:45 | `/eod/{TICKER}.US` | 0-50 | `tickers with gaps exist` |
-| 7 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `tickers without full history` |
-| 8 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 9 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
-| 10 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 11 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
+| 1 | **Universe Seed** | Mon-Sat | 03:00 | `/exchange-symbol-list/US` | 1 | `not run today` |
+| 2 | **Price Sync** | Mon-Sat | after Step 1 | `/eod-bulk-last-day/US` | 1 (bulk) | `universe_seed completed today` |
+| 3 | **Fundamentals Sync** | Mon-Sat | after Step 2 | `/fundamentals/{TICKER}.US` | 0-50 | `price_sync completed today` |
+| 4 | SP500TR Update | Mon-Sat | 04:15 | `/eod/SP500TR.INDX` | 1 | `not run today` |
+| 5 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `manual toggle enabled` |
+| 6 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 7 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 8 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
+| 9 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
+| 10 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
 
 ## Configuration Constants
 
@@ -25,13 +24,11 @@
 TIMEZONE = "Europe/Prague"
 UNIVERSE_SEED_HOUR = 3
 UNIVERSE_SEED_MINUTE = 0
-UNIVERSE_SEED_DAY = 6  # Sunday
-PRICE_SYNC_HOUR = 4
-PRICE_SYNC_MINUTE = 0
-FUNDAMENTALS_SYNC_HOUR = 4
-FUNDAMENTALS_SYNC_MINUTE = 30
-BACKFILL_HOUR = 4
-BACKFILL_MINUTE = 45
+UNIVERSE_SEED_DAY = 6  # Sunday (exclusion day — news-only)
+PRICE_SYNC_HOUR = 4          # legacy; price_sync uses dependency chain
+PRICE_SYNC_MINUTE = 0        # legacy; price_sync uses dependency chain
+FUNDAMENTALS_SYNC_HOUR = 4   # legacy; fundamentals uses dependency chain
+FUNDAMENTALS_SYNC_MINUTE = 30 # legacy; fundamentals uses dependency chain
 BACKFILL_ALL_HOUR = 5
 BACKFILL_ALL_MINUTE = 0
 NEWS_REFRESH_HOUR = 13
@@ -49,11 +46,11 @@ ADMIN_REPORT_MINUTE = 0
 
 ## Job Details
 
-### 1. Universe Seed (Sunday 03:00)
+### 1. Universe Seed (Mon-Sat 03:00)
 - **File**: `/app/backend/whitelist_service.py` → `sync_ticker_whitelist()`
 - **Purpose**: Refresh tracked_tickers from EODHD exchange-symbol-list (NYSE/NASDAQ, Common Stock only)
 - **API**: `GET https://eodhd.com/api/exchange-symbol-list/US`
-- **Cost**: 1 API call/week
+- **Cost**: 1 API call/day (Mon-Sat)
 
 ### 2. News Refresh (Daily 13:00, including Sunday)
 - **File**: `/app/backend/services/news_service.py` → `news_daily_refresh()` → `refresh_hot_tickers_news()`
@@ -62,7 +59,7 @@ ADMIN_REPORT_MINUTE = 0
 - **Cost**: N API calls/day (N = unique tickers across all users)
 - **Dedup**: `$setOnInsert` by article_id prevents duplicate storage
 
-### 3. Price Sync (Mon-Sat 03:00)
+### 3. Price Sync (Mon-Sat, after Step 1 completion)
 - **File**: `/app/backend/scheduler_service.py` → `run_daily_price_sync()`
 - **Purpose**: Sync latest daily prices for all tracked tickers (bulk endpoint)
 - **API**: `GET https://eodhd.com/api/eod-bulk-last-day/US`
@@ -78,19 +75,12 @@ ADMIN_REPORT_MINUTE = 0
   `BENCHMARK_SYMBOLS` registry in `benchmark_service.py`.
 - **Admin**: Can be triggered manually via `POST /api/v1/admin/job/benchmark_update/run`
 
-### 5. Fundamentals Sync (Mon-Sat 04:30)
+### 5. Fundamentals Sync (Mon-Sat, after Step 2 completion)
 - **File**: `/app/backend/scheduler_service.py` → `run_fundamentals_changes_sync()`
 - **Purpose**: Sync company fundamentals for tickers with pending events
 - **API**: `GET https://eodhd.com/api/fundamentals/{TICKER}.US`
 - **Cost**: 0-50 API calls/day (event-driven)
 - **Condition**: Only runs if `fundamentals_events.status = "pending"` exists
-
-### 6. Backfill Gaps (Mon-Sat 04:45)
-- **File**: `/app/backend/scheduler_service.py` → `run_price_backfill_gaps()`
-- **Purpose**: Fill missing price data gaps
-- **API**: `GET https://eodhd.com/api/eod/{TICKER}.US`
-- **Cost**: 0-50 API calls/day
-- **Condition**: Only runs if tickers have detected price gaps
 
 ### 7. Backfill All (Mon-Sat 05:00)
 - **File**: `/app/backend/parallel_batch_service.py` → `run_scheduled_backfill_all_prices()`
@@ -121,12 +111,11 @@ ADMIN_REPORT_MINUTE = 0
 
 | Job | Daily Calls |
 |-----|-------------|
-| Universe Seed | 0 (Sunday only: 1/week) |
+| Universe Seed | 1 (Mon-Sat) |
 | Price Sync | 1 |
 | SP500TR | 1 |
 | Fundamentals | ~0 (event-driven) |
-| Backfill Gaps | ~0 (after setup) |
-| Backfill All | ~0 (after setup) |
+| Backfill All | ~0 (manual toggle) |
 | News | ~50-100 (depends on unique tickers) |
 | **TOTAL** | **~55-105 calls/day** |
 

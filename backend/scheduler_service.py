@@ -15,10 +15,10 @@ Schedule (Europe/Prague timezone):
 - Step 2 auto-runs after Step 1 completion: price sync + event detectors
 - Step 3 auto-runs after Step 2 completion: fundamentals sync from pending events
 - 04:15: SP500TR benchmark update
-- 04:45: Price backfill (newly activated tickers, gaps, corporate actions)
 - 05:00: PAIN cache refresh (max drawdown for all visible tickers)
-- 05:00: Parallel backfill ALL (1,000 tickers/day)
+- 05:00: Parallel backfill ALL (1,000 tickers/day, manual toggle)
 - 05:30: Key metrics + peer medians
+- 06:00: Admin report
 - 13:00: News & sentiment refresh (followed/watchlisted tickers)
 
 Kill Switch:
@@ -3728,12 +3728,6 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
         sort=[("started_at", -1)]
     )
     
-    last_backfill = await db.ops_job_runs.find_one(
-        {"job_name": {"$in": ["price_backfill", "scheduled_price_backfill"]}},
-        {"_id": 0},
-        sort=[("started_at", -1)]
-    )
-    
     # Get pending work counts
     pending_fundamentals = await db.fundamentals_events.count_documents({"status": "pending"})
     
@@ -3786,12 +3780,10 @@ async def get_scheduler_status(db) -> Dict[str, Any]:
             "universe_seed": "03:00",
             "price_sync": "after universe_seed completion",
             "fundamentals_sync": "after price_sync completion",
-            "price_backfill": "04:45",
         },
         "last_runs": {
             "price_sync": _format_last_run(last_price_sync),
             "fundamentals_sync": _format_last_run(last_fundamentals_sync),
-            "price_backfill": _format_last_run(last_backfill),
         },
         "pending_work": {
             "pending_fundamentals_events": pending_fundamentals,

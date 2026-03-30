@@ -72,11 +72,11 @@ Schedule (Europe/Prague timezone):
 - MON-SAT after Step 1 completion: price sync (bulk API) + split/dividend detection
 - MON-SAT after Step 2 completion: fundamentals sync (changes + corporate actions)
 - MON-SAT 04:15: SP500TR benchmark update
-- MON-SAT 04:45: Price backfill (gaps + corporate actions)
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
-- MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day)
+- MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day, manual toggle)
 - MON-SAT 05:30: Key metrics + peer medians
-- MON-SAT 13:00: News & sentiment refresh (followed/watchlisted tickers)
+- MON-SAT 06:00: Admin report
+- DAILY  13:00: News & sentiment refresh (followed/watchlisted tickers)
 
 Run with: python scheduler.py
 """
@@ -105,8 +105,8 @@ logger = logging.getLogger("richstox.scheduler_daemon")
 # Configuration
 TIMEZONE = ZoneInfo("Europe/Prague")
 
-# SUNDAY ONLY - Universe seed
-UNIVERSE_SEED_DAY = 6  # Sunday
+# SUNDAY EXCLUSION — Universe Seed runs Mon-Sat; Sunday is news-only
+UNIVERSE_SEED_DAY = 6  # Sunday (used to identify the news-only day)
 UNIVERSE_SEED_HOUR = 3
 UNIVERSE_SEED_MINUTE = 0
 
