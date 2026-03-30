@@ -391,6 +391,9 @@ export default function StockDetail() {
   // Per-range cache so switching back to MAX (or any range) is instant after first load
   const chartCacheRef = useRef<Record<string, { prices: PriceHistoryPoint[]; benchmark: {date: string; normalized: number}[] }>>({});
 
+  // Per-range cache for mobile detail data (avoids ~2s re-fetch when switching periods)
+  const mobileDataCacheRef = useRef<Record<string, MobileDetailData>>({});
+
   // Talk posts state
   const [talkPosts, setTalkPosts] = useState<any[]>([]);
   const [talkLoading, setTalkLoading] = useState(false);
@@ -429,8 +432,16 @@ export default function StockDetail() {
   const swipeRef = useRef({ startX: 0, startY: 0 });
 
   const fetchMobileDetail = async (period: PriceRange = '1Y') => {
+    // Return cached data instantly if available (e.g. switching back to a previous period)
+    const cached = mobileDataCacheRef.current[period];
+    if (cached) {
+      setMobileData(cached);
+      return;
+    }
+
     try {
       const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/detail?period=${period}`);
+      mobileDataCacheRef.current[period] = response.data;
       setMobileData(response.data);
     } catch (err: any) {
       console.error('Error fetching mobile detail:', err.message || err);
@@ -550,6 +561,7 @@ export default function StockDetail() {
     if (!ticker) return;
     // Clear chart cache when ticker changes (data is ticker-specific)
     chartCacheRef.current = {};
+    mobileDataCacheRef.current = {};
     fetchStock(false);
     fetchDividends();
   }, [ticker]);
@@ -711,8 +723,10 @@ export default function StockDetail() {
     setRefreshing(true);
     // Clear chart cache on refresh so fresh data is fetched
     chartCacheRef.current = {};
+    mobileDataCacheRef.current = {};
     fetchStock(false); // P4: Always load full data for single vertical scroll
     fetchChartData(priceRange);
+    fetchMobileDetail(priceRange);
     fetchDividends();
     fetchTalkPosts();
   };
@@ -858,21 +872,18 @@ export default function StockDetail() {
   };
 
   /**
-   * P1 FINAL: Compute RRR (Upside/Downside Ratio) for a price series
+   * P1 FINAL: Compute RRR (Upside/Downside Ratio) for the current chart data
    * ALWAYS returns >= 0 or null (NEVER negative)
    * 
    * Formula:
    *   reward_hist = P_max - P_start (upside from start)
    *   risk_hist = P_start - P_min (downside from start)
    *   RRR = reward_hist / risk_hist
-   * 
-   * @param prices - Array of price points with adjusted_close
-   * @returns RRR value (>= 0) or null if insufficient data or no downside risk
    */
-  const computeRRR = (prices: { adjusted_close: number }[]): number | null => {
-    if (!prices || prices.length < 2) return null;
+  const computedRRR = useMemo((): number | null => {
+    if (!chartData || chartData.length < 2) return null;
     
-    const closes = prices.map(p => p.adjusted_close).filter(c => c != null && c > 0);
+    const closes = chartData.map(p => p.adjusted_close).filter(c => c != null && c > 0);
     if (closes.length < 2) return null;
     
     const P_start = closes[0];           // First price in period
@@ -889,7 +900,7 @@ export default function StockDetail() {
     const rrr = reward_hist / risk_hist;
     
     return rrr;
-  };
+  }, [chartData]);
 
   // P22: Global date formatter - DD/MM/YYYY format (e.g., 23/02/2026)
   const formatDateDMY = (dateStr: string | null | undefined): string => {
@@ -2300,31 +2311,26 @@ export default function StockDetail() {
                 )}
                 
                 {/* Reward / Risk (RRR) */}
-                {(() => {
-                  const rrr = computeRRR(chartData);
-                  if (rrr === null) return null;
-                  
-                  return (
-                    <TouchableOpacity 
-                      style={styles.perfCheckMetricRow}
-                      onPress={() => alert('RRR (Upside/Downside): how much upside the stock had vs how much it dropped, measured from the start of the period. The higher, the better.')}
-                      data-testid="rrr-performance-check"
-                    >
-                      <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
-                      <View style={styles.perfCheckMetricInlineRow}>
-                        <Text style={[
-                          styles.perfCheckMetricValue,
-                          rrr > 2 ? styles.positiveText :
-                          rrr >= 1 ? styles.neutralText :
-                          styles.rrrNegativeText
-                        ]}>
-                          {formatRRR(rrr)}
-                        </Text>
-                        <Ionicons name="help-circle-outline" size={11} color={COLORS.textMuted} />
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })()}
+                {computedRRR !== null && (
+                  <TouchableOpacity 
+                    style={styles.perfCheckMetricRow}
+                    onPress={() => alert('RRR (Upside/Downside): how much upside the stock had vs how much it dropped, measured from the start of the period. The higher, the better.')}
+                    data-testid="rrr-performance-check"
+                  >
+                    <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
+                    <View style={styles.perfCheckMetricInlineRow}>
+                      <Text style={[
+                        styles.perfCheckMetricValue,
+                        computedRRR > 2 ? styles.positiveText :
+                        computedRRR >= 1 ? styles.neutralText :
+                        styles.rrrNegativeText
+                      ]}>
+                        {formatRRR(computedRRR)}
+                      </Text>
+                      <Ionicons name="help-circle-outline" size={11} color={COLORS.textMuted} />
+                    </View>
+                  </TouchableOpacity>
+                )}
               </View>
               
               {/* RISK sub-card - RED */}
