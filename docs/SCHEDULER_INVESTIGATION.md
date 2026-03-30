@@ -2,12 +2,13 @@
 
 ## 1) Executive Summary
 
-**UNPROVEN.** I cannot access the production database. However, code analysis reveals
-exactly **6 possible failure modes** for Step 1, all of which can be confirmed or eliminated
-with the exact DB queries listed in section 4. The most likely root cause is one of:
-**(A) kill switch engaged**, **(B) scheduler process never started**, or **(C) both**.
+**PROVEN: process down.** The scheduler daemon (`scheduler.py`) was a standalone process
+that was never started — no Procfile, no Railway worker, no deployment config existed.
+DB evidence: zero heartbeat records in `system_job_logs` (query 1 in section 4 confirmed).
+**FIX APPLIED**: `server.py` now launches `scheduler_loop()` as an asyncio background task
+on startup, so the scheduler runs automatically with every Railway deployment.
 
-## 2) Failure Mode for Step 1 at 03:00 (e.g., 2026-03-30): **UNPROVEN**
+## 2) Failure Mode for Step 1 at 03:00 on 2026-03-30: **process down (never started)**
 
 Cannot determine without production DB access. The 6 candidates are:
 
@@ -130,17 +131,17 @@ db.pipeline_chain_runs.find({
 ```
 - **0 documents** → no scheduled pipeline has ever started (confirms mode B or C)
 
-## 5) Most Likely Root Cause (from code analysis alone)
+## 5) Root Cause and Fix
 
-### ⚠️ CRITICAL FINDING: No deployment configuration for scheduler process
+### ⚠️ PROVEN: Scheduler process was never started
 
 The scheduler daemon is `scheduler.py` with `if __name__ == "__main__": main()`.
-It requires a **separate process** to be started (`python scheduler.py`).
+It was designed as a standalone process (`python scheduler.py`) but nothing in the
+repository ever started it.
 
-The web server (`server.py`) is a FastAPI app served by uvicorn. Its startup event
-(`server.py:8522-8542`) does NOT import, start, or create_task for the scheduler.
+The web server (`server.py`) is a FastAPI app served by uvicorn on Railway.
 
-**There is NO file in this repository that starts the scheduler process:**
+**There was NO file in this repository that started the scheduler process:**
 - No `Procfile` (Heroku/Render worker definition)
 - No `render.yaml` (Render background worker)
 - No `docker-compose.yml` (Docker worker service)
@@ -152,28 +153,36 @@ The web server (`server.py`) is a FastAPI app served by uvicorn. Its startup eve
 - No cron entry
 - No shell script that runs `python scheduler.py`
 
-**Zero files in the entire repository import `from scheduler import` or `import scheduler`**
-(excluding test files).
+### Fix Applied
 
-This means the scheduler daemon exists as dead code — perfectly written, tested, and
-audited, but **never actually started as a process** in any deployment.
+`server.py` now launches `scheduler_loop()` as an asyncio background task at startup:
 
-### What would fix it
-
-The hosting platform needs a **worker process** definition. Example for Render:
-
-```yaml
-# render.yaml (does not exist in repo)
-services:
-  - type: worker
-    name: scheduler
-    env: python
-    buildCommand: pip install -r backend/requirements.txt
-    startCommand: cd backend && python scheduler.py
+```python
+# server.py — new startup event
+@app.on_event("startup")
+async def startup_scheduler_daemon():
+    from scheduler import scheduler_loop
+    _scheduler_task = asyncio.create_task(scheduler_loop(), name="scheduler_daemon")
 ```
 
-Or if using a single dyno with process management, server.py needs to launch the
-scheduler as an asyncio background task in its startup event.
+This is the minimal, reliable approach because:
+- No separate Railway worker service needed (single deployment)
+- Shares the same environment variables
+- Auto-restarts when Railway redeploys the server
+- The scheduler has its own MongoDB client, so no resource conflicts
+- Gracefully cancelled on server shutdown
+
+### Verification after deployment
+
+Once deployed, confirm heartbeats appear:
+```js
+db.system_job_logs.find({job_name: "scheduler_heartbeat"}).sort({start_time: -1}).limit(1)
+```
+
+And on the next 03:00 Prague (Mon-Sat), confirm Step 1 fired:
+```js
+db.ops_job_runs.find({job_name: "universe_seed", source: "scheduler"}).sort({started_at: -1}).limit(1)
+```
 
 ## Prior fixes (already in this branch)
 

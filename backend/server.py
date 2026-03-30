@@ -8617,6 +8617,43 @@ async def startup_pain_cache_guard(database):
         logger.info("✅ Startup PAIN cache guard passed - mega-caps have PAIN data")
 
 
+# =============================================================================
+# SCHEDULER DAEMON — launched as background task so it runs in the same process
+# =============================================================================
+# The scheduler is an infinite asyncio loop (scheduler.scheduler_loop).  It has
+# its own MongoDB client, heartbeat, and catch-up logic.  Launching it here
+# eliminates the need for a separate worker process / Procfile entry.
+# =============================================================================
+_scheduler_task: asyncio.Task | None = None
+
+
+@app.on_event("startup")
+async def startup_scheduler_daemon():
+    """Launch the scheduler daemon as a background asyncio task."""
+    global _scheduler_task
+    from scheduler import scheduler_loop
+
+    _scheduler_task = asyncio.create_task(scheduler_loop(), name="scheduler_daemon")
+
+    # Surface unexpected crashes in the task (otherwise they are silently eaten).
+    def _on_done(task: asyncio.Task):
+        if task.cancelled():
+            logger.warning("Scheduler daemon task was cancelled")
+        elif task.exception():
+            logger.error(f"Scheduler daemon crashed: {task.exception()}")
+
+    _scheduler_task.add_done_callback(_on_done)
+    logger.info("✅ Scheduler daemon started as background task")
+
+
 @app.on_event("shutdown")
 async def shutdown():
+    global _scheduler_task
+    if _scheduler_task and not _scheduler_task.done():
+        _scheduler_task.cancel()
+        try:
+            await _scheduler_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Scheduler daemon stopped")
     client.close()
