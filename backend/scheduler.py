@@ -64,7 +64,7 @@ Step 2: Price Sync (auto after Step 1 completion)
 
 Step 3: Fundamentals Sync (auto after Step 2 completion)
   - ONLY for has_price_data=true tickers + corporate action tickers
-  - Stores sector/industry (does NOT block visibility)
+  - Stores sector/industry → contributes to has_classification for visibility
 
 Schedule (Europe/Prague timezone):
 - MON-SAT 02:00: Market calendar refresh (EODHD exchange-details)
@@ -72,10 +72,11 @@ Schedule (Europe/Prague timezone):
 - MON-SAT after Step 1 completion: price sync (bulk API) + split/dividend detection
 - MON-SAT after Step 2 completion: fundamentals sync (changes + corporate actions)
 - MON-SAT 04:15: SP500TR benchmark update
-- MON-SAT 04:45: Price backfill (gaps + corporate actions)
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
-- MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day)
-- MON-SAT 05:30: Key metrics + peer medians
+- MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day, gated by ops_config)
+- MON-SAT 05:00: Key metrics
+- MON-SAT 05:30: Peer medians
+- MON-SAT 06:00: Admin report
 - MON-SAT 13:00: News & sentiment refresh (followed/watchlisted tickers)
 
 Run with: python scheduler.py
@@ -114,6 +115,8 @@ UNIVERSE_SEED_MINUTE = 0
 # MON-SAT - Daily jobs
 DAILY_SCHEDULE_DAYS = [0, 1, 2, 3, 4, 5]  # Mon=0, Sat=5 (excludes Sunday=6)
 
+# LEGACY — Steps 2/3 are dependency-driven (should_run_after_dependency),
+# NOT time-driven.  These constants are retained for documentation only.
 PRICE_SYNC_HOUR = 4
 PRICE_SYNC_MINUTE = 0
 
@@ -628,11 +631,14 @@ async def scheduler_loop():
     
     logger.info(f"Scheduler started - Timezone: Europe/Prague")
     logger.info(f"Schedule: Mon-Sat")
-    logger.info(f"  {PRICE_SYNC_HOUR:02d}:{PRICE_SYNC_MINUTE:02d} - Daily price sync (bulk)")
+    logger.info(f"  {MARKET_CALENDAR_HOUR:02d}:{MARKET_CALENDAR_MINUTE:02d} - Market calendar refresh")
+    logger.info(f"  {UNIVERSE_SEED_HOUR:02d}:{UNIVERSE_SEED_MINUTE:02d} - Universe seed (Step 1)")
+    logger.info(f"  Step 2 - Daily price sync (dependency: after Step 1)")
+    logger.info(f"  Step 3 - Fundamentals sync (dependency: after Step 2)")
     logger.info(f"  {BENCHMARK_UPDATE_HOUR:02d}:{BENCHMARK_UPDATE_MINUTE:02d} - Benchmark update (SP500TR + future benchmarks)")
-    logger.info(f"  {FUNDAMENTALS_SYNC_HOUR:02d}:{FUNDAMENTALS_SYNC_MINUTE:02d} - Fundamentals sync")
-    logger.info(f"  {KEY_METRICS_HOUR:02d}:{KEY_METRICS_MINUTE:02d} - Key Metrics + Peer Medians")
+    logger.info(f"  {KEY_METRICS_HOUR:02d}:{KEY_METRICS_MINUTE:02d} - Key Metrics")
     logger.info(f"  {PAIN_CACHE_HOUR:02d}:{PAIN_CACHE_MINUTE:02d} - PAIN cache refresh")
+    logger.info(f"  {PEER_MEDIANS_HOUR:02d}:{PEER_MEDIANS_MINUTE:02d} - Peer Medians")
     logger.info(f"  {ADMIN_REPORT_HOUR:02d}:{ADMIN_REPORT_MINUTE:02d} - Admin Report")
     logger.info(f"  {NEWS_REFRESH_HOUR:02d}:{NEWS_REFRESH_MINUTE:02d} - Daily news refresh")
     
@@ -780,6 +786,39 @@ async def scheduler_loop():
                 await asyncio.sleep(60)
                 continue
             
+            # ==================================================================
+            # MARKET CALENDAR REFRESH at 02:00 — idempotent, runs daily
+            # ==================================================================
+            # Fetches EODHD exchange-details/US and regenerates calendar rows.
+            # Upsert-based, safe to run daily.  Ensures indexes on first run.
+            # Wrapped in try/except so a failure here cannot crash the daemon
+            # and block Steps 1-2-3 at 03:00.
+            if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
+                _mc_started = datetime.now(timezone.utc)
+                try:
+                    from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
+                    async def _market_calendar_job(_db):
+                        await _mc_ensure_indexes(_db)
+                        return await refresh_market_calendar(_db)
+                    await run_job_with_retry("market_calendar", _market_calendar_job, db)
+                    last_run["market_calendar"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        f"[scheduler] market_calendar unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+                    try:
+                        await log_job_execution(
+                            db, "market_calendar", "error",
+                            _mc_started, datetime.now(timezone.utc),
+                            error_message=f"Scheduler unhandled: {exc}",
+                        )
+                    except Exception:
+                        pass  # best-effort observability
+
+
             # STEP 1: Universe Seed at 03:00 Mon-Sat
             #
             # DECISION LOG: Write one DB record per day so there is irrefutable
@@ -1003,37 +1042,6 @@ async def scheduler_loop():
                     except Exception:
                         pass  # best-effort observability
             
-            # ==================================================================
-            # MARKET CALENDAR REFRESH at 02:00 — idempotent, runs daily
-            # ==================================================================
-            # Fetches EODHD exchange-details/US and regenerates calendar rows.
-            # Upsert-based, safe to run daily.  Ensures indexes on first run.
-            # Wrapped in try/except so a failure here cannot crash the daemon
-            # and block Steps 1-2-3 at 03:00.
-            if should_run("market_calendar", MARKET_CALENDAR_HOUR, MARKET_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering market_calendar (hour={current_hour}, scheduled={MARKET_CALENDAR_HOUR}:{MARKET_CALENDAR_MINUTE:02d})")
-                _mc_started = datetime.now(timezone.utc)
-                try:
-                    from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
-                    async def _market_calendar_job(_db):
-                        await _mc_ensure_indexes(_db)
-                        return await refresh_market_calendar(_db)
-                    await run_job_with_retry("market_calendar", _market_calendar_job, db)
-                    last_run["market_calendar"] = today_str
-                    await set_last_run_state(last_run)
-                except Exception as exc:
-                    logger.error(
-                        f"[scheduler] market_calendar unhandled error "
-                        f"(will retry next minute): {exc}"
-                    )
-                    try:
-                        await log_job_execution(
-                            db, "market_calendar", "error",
-                            _mc_started, datetime.now(timezone.utc),
-                            error_message=f"Scheduler unhandled: {exc}",
-                        )
-                    except Exception:
-                        pass  # best-effort observability
 
             # ==================================================================
             # BENCHMARK UPDATE at 04:15 — standalone, NOT part of Steps 1-2-3

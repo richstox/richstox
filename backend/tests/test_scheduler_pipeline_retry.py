@@ -141,10 +141,10 @@ class TestStep3RetryOnFailure:
 
         source = inspect.getsource(scheduler.scheduler_loop)
 
-        # Find the Step 3 block (between STEP 3 comment and MARKET CALENDAR comment)
+        # Find the Step 3 block (between STEP 3 comment and BENCHMARK UPDATE comment)
         s3_start = source.index("# STEP 3: Fundamentals sync")
-        mc_start = source.index("# MARKET CALENDAR REFRESH")
-        step3_source = source[s3_start:mc_start]
+        bm_start = source.index("# BENCHMARK UPDATE")
+        step3_source = source[s3_start:bm_start]
 
         count = step3_source.count('last_run["fundamentals_sync"] = today_str')
         assert count == 1, (
@@ -290,8 +290,8 @@ class TestKillSwitchBypass:
 
         # Find the Step 3 block
         s3_start = source.index("# STEP 3: Fundamentals sync")
-        mc_start = source.index("# MARKET CALENDAR REFRESH")
-        step3_source = source[s3_start:mc_start]
+        bm_start = source.index("# BENCHMARK UPDATE")
+        step3_source = source[s3_start:bm_start]
 
         assert "ignore_kill_switch=True" in step3_source, (
             "Step 3 must pass ignore_kill_switch=True to "
