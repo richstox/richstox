@@ -3,6 +3,7 @@
 Validates that:
 - server.py has a startup event that launches scheduler_loop as a background task
 - The startup handler imports from scheduler (not scheduler_service)
+- The startup handler requires ENABLE_SCHEDULER_DAEMON env var (default OFF)
 - The shutdown handler cancels the scheduler task and closes the MongoDB client
 - _scheduler_task variable is defined at module level
 """
@@ -87,6 +88,54 @@ class TestSchedulerDaemonStartup:
         ).read()
         assert "if _scheduler_task and not _scheduler_task.done():" in source, (
             "startup_scheduler_daemon must have a double-start guard"
+        )
+
+
+class TestSchedulerDaemonEnvGuard:
+    """Verify the ENABLE_SCHEDULER_DAEMON env var guard."""
+
+    def test_env_var_guard_exists(self):
+        """startup_scheduler_daemon must check ENABLE_SCHEDULER_DAEMON env var."""
+        source = open(
+            os.path.join(os.path.dirname(__file__), "..", "server.py")
+        ).read()
+        assert "ENABLE_SCHEDULER_DAEMON" in source, (
+            "startup_scheduler_daemon must check ENABLE_SCHEDULER_DAEMON env var"
+        )
+
+    def test_default_is_disabled(self):
+        """Scheduler daemon must be OFF by default (env var not set = disabled)."""
+        source = open(
+            os.path.join(os.path.dirname(__file__), "..", "server.py")
+        ).read()
+        # The guard returns early when env var is NOT in the truthy set
+        assert 'os.environ.get("ENABLE_SCHEDULER_DAEMON"' in source, (
+            "Must use os.environ.get with ENABLE_SCHEDULER_DAEMON"
+        )
+        # Verify the import comes AFTER the env var check (i.e., default=disabled)
+        env_check_pos = source.index("ENABLE_SCHEDULER_DAEMON")
+        import_pos = source.index("from scheduler import scheduler_loop")
+        assert env_check_pos < import_pos, (
+            "Env var check must come BEFORE the scheduler import "
+            "(so default=disabled doesn't even import the module)"
+        )
+
+    def test_disabled_log_message(self):
+        """When disabled, a clear log line must be emitted."""
+        source = open(
+            os.path.join(os.path.dirname(__file__), "..", "server.py")
+        ).read()
+        assert "Scheduler daemon DISABLED" in source, (
+            "Must log 'Scheduler daemon DISABLED' when env var is not set"
+        )
+
+    def test_comment_documents_default_off(self):
+        """The block comment must state that the daemon is OFF by default."""
+        source = open(
+            os.path.join(os.path.dirname(__file__), "..", "server.py")
+        ).read()
+        assert "OFF by default" in source or "off by default" in source.lower(), (
+            "Block comment must document that daemon is OFF by default"
         )
 
 

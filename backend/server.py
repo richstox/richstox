@@ -8624,6 +8624,11 @@ async def startup_pain_cache_guard(database):
 # its own MongoDB client, heartbeat, and catch-up logic.  Launching it here
 # eliminates the need for a separate worker process / Procfile entry.
 #
+# GUARD: The daemon is OFF by default.  Set ENABLE_SCHEDULER_DAEMON=true in the
+# environment to activate it.  This prevents web-only replicas from accidentally
+# running scheduler jobs (the binding spec requires the scheduler to be an
+# explicit standalone orchestrator — not implicitly started by every API worker).
+#
 # MULTI-REPLICA SAFETY: scheduler_loop() acquires a distributed leader lock
 # (Mongo TTL on ops_locks) before entering its main loop.  If another replica
 # already holds the lock the coroutine returns immediately — no duplicate work.
@@ -8633,8 +8638,19 @@ _scheduler_task: asyncio.Task | None = None
 
 @app.on_event("startup")
 async def startup_scheduler_daemon():
-    """Launch the scheduler daemon as a background asyncio task."""
+    """Launch the scheduler daemon as a background asyncio task.
+
+    Requires ENABLE_SCHEDULER_DAEMON=true in the environment.
+    Default is OFF so that plain web workers never start the scheduler.
+    """
     global _scheduler_task
+
+    # ENV-VAR GUARD: scheduler is opt-in, not opt-out.
+    if os.environ.get("ENABLE_SCHEDULER_DAEMON", "").lower() not in ("true", "1", "yes"):
+        logger.info(
+            "Scheduler daemon DISABLED (set ENABLE_SCHEDULER_DAEMON=true to enable)"
+        )
+        return
 
     # Guard: don't start twice in the same process
     if _scheduler_task and not _scheduler_task.done():

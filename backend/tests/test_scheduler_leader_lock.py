@@ -135,7 +135,7 @@ class TestServerMultiReplicaComment:
         """Done callback should handle normal completion (lock not acquired → returns)."""
         source = _read(SERVER_PY)
         startup_idx = source.index("async def startup_scheduler_daemon")
-        snippet = source[startup_idx:startup_idx + 1000]
+        snippet = source[startup_idx:startup_idx + 2000]
         # The else branch (no exception, no cancellation) should exist
         assert "else:" in snippet or "task completed" in snippet.lower(), (
             "Done callback should handle normal completion when scheduler returns without lock"
