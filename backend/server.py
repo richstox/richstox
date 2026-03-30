@@ -8623,6 +8623,10 @@ async def startup_pain_cache_guard(database):
 # The scheduler is an infinite asyncio loop (scheduler.scheduler_loop).  It has
 # its own MongoDB client, heartbeat, and catch-up logic.  Launching it here
 # eliminates the need for a separate worker process / Procfile entry.
+#
+# MULTI-REPLICA SAFETY: scheduler_loop() acquires a distributed leader lock
+# (Mongo TTL on ops_locks) before entering its main loop.  If another replica
+# already holds the lock the coroutine returns immediately — no duplicate work.
 # =============================================================================
 _scheduler_task: asyncio.Task | None = None
 
@@ -8644,6 +8648,9 @@ async def startup_scheduler_daemon():
                 "Scheduler daemon crashed: %s", task.exception(),
                 exc_info=task.exception(),
             )
+        else:
+            # Normal completion — scheduler_loop returns if leader lock not acquired
+            logger.info("Scheduler daemon task completed (lock not acquired or loop exited)")
 
     _scheduler_task.add_done_callback(_on_done)
     logger.info("✅ Scheduler daemon started as background task")

@@ -95,6 +95,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -154,6 +155,122 @@ ADMIN_REPORT_MINUTE = 0
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 db_name = os.environ.get('DB_NAME', 'richstox')
+
+# =============================================================================
+# DISTRIBUTED LEADER LOCK — only one replica runs the scheduler
+# =============================================================================
+# Uses the existing ops_locks collection (shared with fundamentals_sync lock).
+# TTL index on expires_at auto-cleans stale locks if process dies.
+# =============================================================================
+SCHEDULER_LEADER_LOCK_ID = "scheduler_leader"
+SCHEDULER_LEADER_TTL_SECONDS = 90
+# owner_id is unique per process — used to distinguish replicas
+_SCHEDULER_OWNER_ID: str | None = None
+
+_SCHEDULER_LEADER_INDEX_DONE = False
+_SCHEDULER_LEADER_INDEX_LOCK: asyncio.Lock | None = None
+
+
+async def _ensure_ops_locks_ttl_index(db) -> None:
+    """Ensure TTL index for ops_locks.expires_at exists (idempotent)."""
+    global _SCHEDULER_LEADER_INDEX_DONE, _SCHEDULER_LEADER_INDEX_LOCK
+    if _SCHEDULER_LEADER_INDEX_LOCK is None:
+        _SCHEDULER_LEADER_INDEX_LOCK = asyncio.Lock()
+    async with _SCHEDULER_LEADER_INDEX_LOCK:
+        if _SCHEDULER_LEADER_INDEX_DONE:
+            return
+        await db.ops_locks.create_index(
+            [("expires_at", 1)],
+            name="ops_locks_expires_at_ttl",
+            expireAfterSeconds=0,
+        )
+        _SCHEDULER_LEADER_INDEX_DONE = True
+
+
+def _get_owner_id() -> str:
+    """Return a stable unique owner ID for this process instance."""
+    global _SCHEDULER_OWNER_ID
+    if _SCHEDULER_OWNER_ID is None:
+        import uuid
+        _SCHEDULER_OWNER_ID = f"scheduler_{os.getpid()}_{uuid.uuid4().hex[:8]}"
+    return _SCHEDULER_OWNER_ID
+
+
+async def try_acquire_scheduler_leader_lock(db) -> bool:
+    """
+    Try to acquire the distributed scheduler leader lock.
+
+    Returns True if this process is now the leader, False otherwise.
+    Safe under concurrent replicas: uses upsert-with-filter and DuplicateKeyError.
+    """
+    await _ensure_ops_locks_ttl_index(db)
+    now = datetime.now(timezone.utc)
+    owner_id = _get_owner_id()
+    lease_expires_at = now + timedelta(seconds=SCHEDULER_LEADER_TTL_SECONDS)
+
+    # Try to re-acquire our own lock or take over an expired lock
+    reusable = await db.ops_locks.update_one(
+        {
+            "_id": SCHEDULER_LEADER_LOCK_ID,
+            "$or": [
+                {"owner_id": owner_id},
+                {"expires_at": {"$lte": now}},
+            ],
+        },
+        {"$set": {
+            "owner_id": owner_id,
+            "acquired_at": now,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        }},
+    )
+    if reusable.matched_count:
+        return True
+
+    # Lock doc doesn't exist yet — try to create it
+    try:
+        await db.ops_locks.insert_one({
+            "_id": SCHEDULER_LEADER_LOCK_ID,
+            "owner_id": owner_id,
+            "acquired_at": now,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        })
+        return True
+    except DuplicateKeyError:
+        # Another replica beat us to it
+        return False
+
+
+async def renew_scheduler_leader_lock(db) -> bool:
+    """
+    Renew the leader lock lease.  Returns True if still the leader.
+
+    Called on each scheduler tick (~60 s).  If the lock was stolen or expired,
+    returns False so the loop can exit gracefully.
+    """
+    now = datetime.now(timezone.utc)
+    owner_id = _get_owner_id()
+    result = await db.ops_locks.update_one(
+        {"_id": SCHEDULER_LEADER_LOCK_ID, "owner_id": owner_id},
+        {"$set": {
+            "heartbeat_at": now,
+            "expires_at": now + timedelta(seconds=SCHEDULER_LEADER_TTL_SECONDS),
+        }},
+    )
+    return result.matched_count > 0
+
+
+async def release_scheduler_leader_lock(db) -> None:
+    """Release the leader lock (best-effort, called on shutdown)."""
+    owner_id = _get_owner_id()
+    try:
+        await db.ops_locks.delete_one({
+            "_id": SCHEDULER_LEADER_LOCK_ID,
+            "owner_id": owner_id,
+        })
+    except Exception as exc:
+        logger.warning(f"Failed to release scheduler leader lock (non-fatal): {exc}")
 
 
 def get_prague_time() -> datetime:
@@ -490,10 +607,24 @@ async def scheduler_loop():
     GUARDRAIL: Uses ops_config collection for state persistence (survives restarts).
     GUARDRAIL: Catch-up logic runs missed jobs if scheduler restarts after scheduled time.
     GUARDRAIL: Heartbeat logged every 15 minutes for observability.
+    GUARDRAIL: Distributed leader lock ensures only one replica runs the scheduler.
     """
     # Connect to MongoDB
     client = AsyncIOMotorClient(mongo_url)
     db = client[db_name]
+    
+    # ==========================================================================
+    # LEADER LOCK — bail out if another replica already holds the lock
+    # ==========================================================================
+    acquired = await try_acquire_scheduler_leader_lock(db)
+    if not acquired:
+        logger.warning(
+            "Another replica holds the scheduler leader lock — "
+            "this instance will NOT run the scheduler."
+        )
+        client.close()
+        return
+    logger.info(f"Acquired scheduler leader lock (owner={_get_owner_id()})")
     
     logger.info(f"Scheduler started - Timezone: Europe/Prague")
     logger.info(f"Schedule: Mon-Sat")
@@ -1004,6 +1135,17 @@ async def scheduler_loop():
                 except Exception as exc:
                     logger.error(f"[scheduler] news_refresh unhandled error (will retry next minute): {exc}")
             
+            # =================================================================
+            # RENEW LEADER LOCK (before sleeping — keeps lease alive)
+            # =================================================================
+            still_leader = await renew_scheduler_leader_lock(db)
+            if not still_leader:
+                logger.warning(
+                    "Scheduler leader lock lost — another replica took over. "
+                    "Exiting scheduler loop."
+                )
+                break
+            
             # Sleep until next minute
             await asyncio.sleep(60)
             
@@ -1013,6 +1155,8 @@ async def scheduler_loop():
         logger.error(f"Scheduler error: {e}")
         raise
     finally:
+        await release_scheduler_leader_lock(db)
+        logger.info("Scheduler leader lock released")
         client.close()
 
 
