@@ -8638,6 +8638,7 @@ async def startup_scheduler_daemon():
 
     # Guard: don't start twice in the same process
     if _scheduler_task and not _scheduler_task.done():
+        logger.info("Scheduler daemon already running — skipping duplicate launch")
         return
 
     from scheduler import scheduler_loop
