@@ -1,178 +1,189 @@
-# Scheduler Investigation
+# STEP 1 FORENSIC INVESTIGATION — WHY DID UNIVERSE SEED NEVER RUN?
 
 ## 1) Executive Summary
 
-Steps 2 and 3 in `scheduler_loop()` treated `{"status": "skipped"}` as success, advancing
-`last_run` and chain progress without fetching data — creating price/fundamental gaps.
+**UNPROVEN.** I cannot access the production database. However, code analysis reveals
+exactly **6 possible failure modes** for Step 1, all of which can be confirmed or eliminated
+with the exact DB queries listed in section 4. The most likely root cause is one of:
+**(A) kill switch engaged**, **(B) scheduler process never started**, or **(C) both**.
 
-## 2) PROVEN Gap-Creation Root Cause
+## 2) Failure Mode for Step 1 at 03:00 (e.g., 2026-03-30): **UNPROVEN**
 
-### Bug A — Missing `ignore_kill_switch=True` on Steps 2/3
+Cannot determine without production DB access. The 6 candidates are:
 
-The scheduler checks the kill switch once at the top of each tick (`scheduler.py:603-608`).
-Steps 2/3 then call `run_daily_price_sync` / `run_fundamentals_changes_sync` which **internally
-re-check** the kill switch:
+| # | Mode | What proves it | Likelihood |
+|---|------|---------------|------------|
+| A | **kill switch engaged** | `ops_config.scheduler_enabled.value == false` | HIGH — silent, no DB evidence before this PR |
+| B | **scheduler process never started** | Zero heartbeat records in `system_job_logs` ever | HIGH — no Procfile/render.yaml/docker-compose in repo |
+| C | **A+B combined** | Both queries empty | HIGH |
+| D | blocked by last_run | `ops_config.scheduler_last_run.value.universe_seed == "2026-03-30"` already | LOW |
+| E | fired+failed | `ops_job_runs.{job_name:"universe_seed", status:"failed"}` exists | LOW — would have logs |
+| F | timezone/day mismatch | heartbeats exist but Step 1 decision shows `weekday==6` (Sunday) | VERY LOW — code is correct |
 
-- `scheduler_service.py:1228-1239` — `run_daily_price_sync` checks `get_scheduler_enabled(db)` →
-  returns `{"status": "skipped", "reason": "kill_switch_engaged"}` when `ignore_kill_switch=False`
-- `scheduler_service.py:2934-2945` — `run_fundamentals_changes_sync` same pattern
+## 3) Exact Code Path (files + line ranges)
 
-The manual endpoint (`server.py:7481,7537`) correctly passes `ignore_kill_switch=True`.
-The scheduler did **not** — creating a race window where a kill-switch toggle between line 603
-and line 1229/2935 causes a silent skip.
+### 3a. Scheduler daemon entry point
+- **`scheduler.py:1019-1026`** — `main()` calls `asyncio.run(scheduler_loop())`
+- **`scheduler.py:1025`** — `if __name__ == "__main__": main()`
+- ⚠️ **CRITICAL**: This is a standalone daemon. `server.py` does NOT import or start it.
+  There is **no Procfile, no render.yaml, no docker-compose, no systemd service, no cron entry**
+  in this repository that would start `python scheduler.py` as a separate process.
 
-### Bug B — `_s2_failed` / `_s3_failed` did not catch `"skipped"` status
+### 3b. Scheduler loop — each tick (every 60s)
+- **`scheduler.py:588-591`** — `now = get_prague_time()`, compute `today_str`, `current_hour`, `current_minute`
 
-Original failure detection (before fix):
+### 3c. now/tz computation
+- **`scheduler.py:159-161`** — `get_prague_time()` → `datetime.now(ZoneInfo("Europe/Prague"))`
+- Correct — uses `ZoneInfo` which handles DST properly.
 
-```python
-# scheduler.py:706-708 (Step 2), scheduler.py:773-775 (Step 3)
-_s2_failed = (
-    isinstance(_s2_result, dict)
-    and (_s2_result.get("error") or _s2_result.get("status") == "failed")
-)
+### 3d. Kill switch check (BEFORE any job evaluation)
+- **`scheduler.py:600`** — `scheduler_enabled = await get_scheduler_enabled(db)` — reads `ops_config.scheduler_enabled`
+- **`scheduler.py:616-619`** — if `not scheduler_enabled`: `logger.warning(...)`, `sleep(60)`, `continue`
+- ⚠️ Before this PR, line 617 was `logger.debug(...)` — invisible at INFO level.
+  **No database record** was written when kill switch blocked. Zero evidence.
+
+### 3e. Sunday exclusion
+- **`scheduler.py:631-643`** — if `weekday == 6` (Sunday): only news runs, then `continue`
+- Step 1 only reaches evaluation on Mon-Sat (weekday 0-5).
+
+### 3f. should_run for universe_seed
+- **`scheduler.py:656`** — `_step1_should = should_run("universe_seed", 3, 0, last_run, today_str, hour, minute)`
+- **`scheduler.py:547-561`** — `should_run()` logic:
+  1. If `last_run.get("universe_seed") == today_str` → `False` (already ran)
+  2. If `current_hour > 3` → `True` (catch-up)
+  3. If `current_hour == 3 and current_minute >= 0` → `True` (scheduled time)
+  4. Otherwise → `False`
+
+### 3g. Where ops_job_runs for universe_seed is created (or not)
+- **`scheduler.py:692-708`** — if `_step1_should` is True:
+  - Calls `_run_universe_seed_scheduled(db)` at line 695
+  - **`scheduler.py:361-374`** — `_run_universe_seed_scheduled()` inserts an `ops_job_runs` document
+    with `job_name: "universe_seed"`, `status: "running"` BEFORE calling `sync_ticker_whitelist`
+  - If should_run returns False — **no document is ever created**. This is the "never fired" case.
+
+### 3h. Lock/in_progress check
+- **NONE.** Step 1 has no lock. If `should_run()` returns True, it fires immediately.
+  There is no check for a stuck "running" document blocking the next run.
+
+## 4) Exact DB Evidence Required
+
+I cannot access the production database. Run these queries in MongoDB to determine the exact failure mode.
+
+### Query 1: Is the scheduler process alive? (heartbeats)
+```js
+// If this returns 0, the scheduler process was NEVER RUNNING.
+db.system_job_logs.countDocuments({
+  job_name: "scheduler_heartbeat"
+})
+
+// For a specific date range (03:00 window on 2026-03-30):
+db.system_job_logs.find({
+  job_name: "scheduler_heartbeat",
+  start_time: {
+    $gte: ISODate("2026-03-30T01:00:00Z"),
+    $lte: ISODate("2026-03-30T03:00:00Z")
+  }
+}).sort({start_time: 1})
 ```
+- **0 documents ever** → Failure mode B: scheduler process never started
+- **Documents exist but gap at 03:00** → process crashed/restarted
+- **Documents exist at 03:00** → process was alive, check kill switch
 
-For `{"status": "skipped", "reason": "kill_switch_engaged"}`:
-- `isinstance(dict)` → `True`
-- `.get("error")` → `None` (falsy)
-- `.get("status") == "failed"` → `False` (it is `"skipped"`, not `"failed"`)
-- `True and (None or False)` → **`False`**
+### Query 2: Was the kill switch engaged?
+```js
+db.ops_config.findOne({key: "scheduler_enabled"})
+```
+- `value: false` → **Failure mode A: kill switch engaged** (all jobs blocked)
+- `value: true` or document missing → kill switch was NOT the blocker
 
-Result: `_s2_failed = False` — **scheduler treats `"skipped"` as success**.
+### Query 3: Did Step 1 ever run? (any date)
+```js
+db.ops_job_runs.find({
+  job_name: "universe_seed"
+}).sort({started_at: -1}).limit(5)
+```
+- **0 documents** → Step 1 has NEVER fired from the scheduler (mode A, B, or C)
+- Documents with `source: "scheduled"` → it did fire at least once
+- Documents with only `source: "manual"` → only admin-button runs, scheduler never triggered
 
-### Exact statuses wrongly treated as success
+### Query 4: What does the scheduler think already ran today?
+```js
+db.ops_config.findOne({key: "scheduler_last_run"})
+```
+- If `value.universe_seed == "2026-03-30"` → Step 1 was already marked as "ran today" (mode D)
+- If `value.universe_seed` is absent or an old date → scheduler hasn't run Step 1 recently
 
-| Status returned | Source | Caught by old check? |
-|---|---|---|
-| `"skipped"` | Internal kill-switch re-check | ❌ No |
-| `"cancelled"` | Cancel callback | ❌ No |
-| Non-dict | `run_job_with_retry` max retries | ❌ No |
-| `"failed"` | Job failure | ✅ Yes |
-
-### Exact code path where chain progress advances incorrectly
-
-1. `scheduler.py:603` — outer kill switch: **enabled** (passes)
-2. `scheduler.py:697-700` — Step 2 calls `run_daily_price_sync()` **without** `ignore_kill_switch=True`
-3. `scheduler_service.py:1229` — inner kill switch toggled **off** between step 603 and here
-4. `scheduler_service.py:1234-1237` — returns `{"status": "skipped", "reason": "kill_switch_engaged"}`
-5. `scheduler.py:706-708` — `_s2_failed` evaluates to `False` (bug B)
-6. `scheduler.py:719` — `last_run["price_sync"] = today_str` ← **advances without data**
-7. `scheduler.py:720` — `set_last_run_state(last_run)` ← **persisted to `ops_config`**
-8. `scheduler.py:725-732` — `pipeline_chain_runs` updated: `steps_done=[1,2]`, `current_step=3`
-9. `scheduler.py:753` — `should_run_after_dependency("fundamentals_sync","price_sync",...)` → `True`
-10. Steps 6-8 repeat for Step 3 (`scheduler.py:767-800`)
-11. `pipeline_chain_runs.status = "completed"` ← **pipeline falsely completed**
-
-### Why this creates price/fundamental gaps
-
-- `last_run["price_sync"]` and `last_run["fundamentals_sync"]` are set to today
-- Next day's run starts fresh — the missed day's data is never backfilled
-- `pipeline_chain_runs` shows `"completed"` — admin sees no failure
-- Gap persists in `stock_prices` and `company_fundamentals_cache` collections
-
-## 3) Step 1 Non-Run Root Cause: INVISIBLE KILL SWITCH + MISSING OBSERVABILITY
-
-### Status: IDENTIFIED AND FIXED
-
-The scheduler loop checks the kill switch at the top of each tick. When engaged,
-it skips ALL jobs including Step 1 — but the log was `logger.debug` (invisible at
-INFO level) and NO database record was written. The heartbeat (every 15 min) proved
-the process was alive, but there was ZERO evidence of the kill switch blocking.
-
-Additionally, the spec (SCHEDULER_JOBS.md), audit script, and code comment ALL said
-"Universe Seed: Sunday only". The actual code runs it **Mon-Sat** — Sunday is the
-exclusion day (news-only). This documentation mismatch has also been fixed.
-
-### Three observability gaps (all now fixed)
-
-| # | Gap | Before | After |
-|---|-----|--------|-------|
-| 1 | Kill switch log level | `logger.debug` (invisible at INFO) | `logger.warning` (visible) |
-| 2 | Kill switch in heartbeat | Not included | `details.kill_switch_engaged: true/false` in every heartbeat |
-| 3 | Step 1 decision log | No DB record | `system_job_logs.scheduler_step1_decision` once per day |
-
-### How to check Step 1 decisions going forward
-
-Query `system_job_logs` for the new decision record:
+### Query 5: Step 1 decision log (only exists after this PR deploys)
 ```js
 db.system_job_logs.find({
   job_name: "scheduler_step1_decision",
   "details.today_str": "2026-03-30"
 })
 ```
+- If present: shows `details.decision` (true/false) and `details.reason` explaining exactly why
 
-Response shows:
-- `details.decision`: `true` (will fire) or `false` (skipped)
-- `details.reason`: `"will_trigger_now"`, `"already_completed_today"`, or `"not_yet_scheduled_time"`
-- `details.last_run_universe_seed`: the value that blocked or allowed the run
-
-### How to check if kill switch was engaged
-
-Query heartbeats:
+### Query 6: Pipeline chain runs (did a full pipeline ever complete?)
 ```js
-db.system_job_logs.find({
-  job_name: "scheduler_heartbeat",
-  "details.kill_switch_engaged": true,
-  start_time: {$gte: ISODate("2026-03-30T00:00:00Z")}
-})
+db.pipeline_chain_runs.find({
+  source: "scheduled"
+}).sort({started_at: -1}).limit(5)
+```
+- **0 documents** → no scheduled pipeline has ever started (confirms mode B or C)
+
+## 5) Most Likely Root Cause (from code analysis alone)
+
+### ⚠️ CRITICAL FINDING: No deployment configuration for scheduler process
+
+The scheduler daemon is `scheduler.py` with `if __name__ == "__main__": main()`.
+It requires a **separate process** to be started (`python scheduler.py`).
+
+The web server (`server.py`) is a FastAPI app served by uvicorn. Its startup event
+(`server.py:8522-8542`) does NOT import, start, or create_task for the scheduler.
+
+**There is NO file in this repository that starts the scheduler process:**
+- No `Procfile` (Heroku/Render worker definition)
+- No `render.yaml` (Render background worker)
+- No `docker-compose.yml` (Docker worker service)
+- No `Dockerfile` (container build)
+- No `fly.toml` (Fly.io process)
+- No `railway.toml` (Railway worker)
+- No `supervisord.conf` (process manager)
+- No `systemd` service file
+- No cron entry
+- No shell script that runs `python scheduler.py`
+
+**Zero files in the entire repository import `from scheduler import` or `import scheduler`**
+(excluding test files).
+
+This means the scheduler daemon exists as dead code — perfectly written, tested, and
+audited, but **never actually started as a process** in any deployment.
+
+### What would fix it
+
+The hosting platform needs a **worker process** definition. Example for Render:
+
+```yaml
+# render.yaml (does not exist in repo)
+services:
+  - type: worker
+    name: scheduler
+    env: python
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && python scheduler.py
 ```
 
-If `kill_switch_engaged: true` appears in heartbeats around 03:00, that is why Step 1 did not run.
+Or if using a single dyno with process management, server.py needs to launch the
+scheduler as an asyncio background task in its startup event.
 
-## 4) Minimal Unified Diff (proven gap bug only)
+## Prior fixes (already in this branch)
 
-```diff
-diff --git a/backend/scheduler.py b/backend/scheduler.py
---- a/backend/scheduler.py
-+++ b/backend/scheduler.py
-@@ -695,15 +695,20 @@ async def scheduler_loop():
-                     _s2_result = await run_job_with_retry(
-                         "price_sync",
-                         lambda _db, _pid=_s1_excl_run_id, _cid=_s1_chain_run_id: run_daily_price_sync(
--                            _db, parent_run_id=_pid, chain_run_id=_cid
-+                            _db, parent_run_id=_pid, chain_run_id=_cid,
-+                            ignore_kill_switch=True,
-                         ),
-                         db,
-                     )
--                    # Only advance last_run on success so the step retries
--                    # next tick on failure (matching Step 1 pattern).
-+                    # Only advance last_run on explicit success so the step
-+                    # retries next tick on failure/skip/cancel.
-+                    # NOTE: ignore_kill_switch=True above prevents the job's
-+                    # internal kill-switch check from returning "skipped" after
-+                    # the scheduler already verified the switch at loop top.
-                     _s2_failed = (
--                        isinstance(_s2_result, dict)
--                        and (_s2_result.get("error") or _s2_result.get("status") == "failed")
-+                        not isinstance(_s2_result, dict)
-+                        or _s2_result.get("status") not in ("completed", "success")
-+                        or _s2_result.get("error")
-                     )
-                     if _s2_failed:
-                         logger.warning(
-@@ -762,15 +767,17 @@ async def scheduler_loop():
-                     _s3_result = await run_job_with_retry(
-                         "fundamentals_sync",
-                         lambda _db, _pid=_s2_run_id_for_s3, _cid=_s2_chain_run_id: run_fundamentals_changes_sync(
--                            _db, parent_run_id=_pid, chain_run_id=_cid
-+                            _db, parent_run_id=_pid, chain_run_id=_cid,
-+                            ignore_kill_switch=True,
-                         ),
-                         db,
-                     )
--                    # Only advance last_run on success so the step retries
--                    # next tick on failure (matching Step 1 pattern).
-+                    # Only advance last_run on explicit success so the step
-+                    # retries next tick on failure/skip/cancel.
-                     _s3_failed = (
--                        isinstance(_s3_result, dict)
--                        and (_s3_result.get("error") or _s3_result.get("status") == "failed")
-+                        not isinstance(_s3_result, dict)
-+                        or _s3_result.get("status") not in ("completed", "success")
-+                        or _s3_result.get("error")
-                     )
-                     if _s3_failed:
-                         logger.warning(
-```
+### Steps 2/3 kill switch bypass (already applied)
+- `scheduler.py:749` — Step 2 now passes `ignore_kill_switch=True`
+- `scheduler.py:821` — Step 3 now passes `ignore_kill_switch=True`
+- `scheduler.py:758-762` — `_s2_failed` uses whitelist: `status not in ("completed","success")`
+- `scheduler.py:827-831` — `_s3_failed` same pattern
+
+### Step 1 observability (already applied)
+- `scheduler.py:617` — Kill switch log changed from `logger.debug` to `logger.warning`
+- `scheduler.py:531-545` — Heartbeat now includes `kill_switch_engaged` in details
+- `scheduler.py:652-690` — Step 1 decision logged to `system_job_logs` once per day
