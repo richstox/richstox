@@ -142,7 +142,7 @@ function statusIcon(status?: string): string {
 }
 
 function formatHours(h?: number | null): string {
-  if (h == null || typeof h !== 'number' || !isFinite(h)) return '—';
+  if (h == null || !isFinite(h)) return '—';
   if (h < 1) return `${Math.round(h * 60)}m ago`;
   return `${h.toFixed(1)}h ago`;
 }

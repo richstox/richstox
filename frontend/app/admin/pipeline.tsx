@@ -154,7 +154,7 @@ function formatElapsed(seconds: number): string {
 }
 
 function formatDuration(sec?: number): string {
-  if (sec === undefined || sec === null || !isFinite(sec)) return '';
+  if (sec == null || !isFinite(sec)) return '';
   const total = Math.round(sec);
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
@@ -187,7 +187,7 @@ function formatTime(iso?: string): string {
       hour: '2-digit',
       minute: '2-digit',
     })} Prague`;
-  } catch { return iso; }
+  } catch { return '—'; }
 }
 
 function getStatusColor(status?: string): string {
@@ -271,8 +271,8 @@ function getLatestChainRun(jobLastRuns?: Record<string, any> | null): { chainRun
 
 function normaliseRun(run: any): any {
   if (!run) return run;
-  const start = run.started_at || run.start_time || undefined;
-  const finish = run.finished_at || run.end_time || run.last_run_finished || undefined;
+  const start = run.started_at || run.start_time;
+  const finish = run.finished_at || run.end_time || run.last_run_finished;
   const details = run.details || {};
   const seededTotal = run.progress_total ?? details.seeded_total ?? details.tickers_seeded_total;
   const processedCount =
@@ -303,7 +303,7 @@ function normaliseRun(run: any): any {
     progress_processed: processedCount,
     progress_pct: run.progress_pct ?? (seededTotal ? Math.min(Math.round((processedCount ?? 0) / seededTotal * 100), 100) : undefined),
     records_processed: processedCount,
-    last_run_finished: finish ?? run.last_run_finished ?? undefined,
+    last_run_finished: finish ?? run.last_run_finished,
     phase,
     details: {
       ...details,
@@ -1450,8 +1450,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {/* Last Run Info */}
               {run ? (() => {
-                const runStart = run.started_at_prague || run.start_time || run.started_at || undefined;
-                const runEnd = run.finished_at_prague || run.end_time || run.finished_at || undefined;
+                const runStart = run.started_at_prague || run.start_time || run.started_at;
+                const runEnd = run.finished_at_prague || run.end_time || run.finished_at;
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
@@ -1664,8 +1664,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     const substepTs: string | undefined =
                       priceSyncRun?.last_run_finished ||
                       priceSyncRun?.end_time ||
-                      priceSyncRun?.start_time ||
-                      undefined;
+                      priceSyncRun?.start_time;
                     const substepLastRunLabel = substepTs
                       ? `Last run: ${formatTime(substepTs)}`
                       : null;
