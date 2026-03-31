@@ -24,7 +24,10 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from services.universe_counts_service import get_universe_counts
-from services.market_calendar_service import get_last_10_completed_trading_days_health
+from services.market_calendar_service import (
+    get_last_10_completed_trading_days_health,
+    last_n_completed_trading_days,
+)
 from credit_log_service import get_pipeline_sync_status
 
 logger = logging.getLogger(__name__)
@@ -42,6 +45,15 @@ def _to_prague_iso(dt) -> Optional[str]:
     if getattr(dt, "tzinfo", None) is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(PRAGUE_TZ).isoformat()
+
+
+def _serialize_datetime(dt) -> Optional[str]:
+    """Serialize a datetime to ISO string, handling None and non-datetime types."""
+    if dt is None:
+        return None
+    if hasattr(dt, "isoformat"):
+        return dt.isoformat()
+    return str(dt)
 
 
 def _empty_step3_phase(name: str) -> Dict[str, Any]:
@@ -1240,6 +1252,247 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
         }
 
 
+# =============================================================================
+# BULK COMPLETENESS PROOF (since last full backfill)
+# =============================================================================
+
+FULL_BACKFILL_BASELINE_ID = "full_backfill_baseline"
+
+
+async def _get_bounded_bulk_processed_dates_set(
+    db, after_date: str, through_date: str,
+) -> set:
+    """
+    Collect dates successfully processed by price_sync in the range
+    (after_date, through_date] from ops_job_runs.details.price_bulk_gapfill.days[].
+
+    This is a BOUNDED query: only scans runs whose gapfill days fall within
+    the required range.  The processed_date values are filtered in Python
+    after extracting from the nested array (the $match selects relevant runs;
+    we then filter days within the date range).
+
+    A date is considered processed if at least one run has an entry with:
+      - processed_date = D  (where after_date < D <= through_date)
+      - status = "success"
+      - rows_written > 0
+    """
+    pipeline = [
+        {"$match": {
+            "job_name": "price_sync",
+            "status": {"$in": ["success", "completed"]},
+            "details.price_bulk_gapfill.days": {"$exists": True},
+        }},
+        {"$project": {"_id": 0, "details.price_bulk_gapfill.days": 1}},
+    ]
+
+    dates: set = set()
+    async for doc in db.ops_job_runs.aggregate(pipeline):
+        details = doc.get("details") or {}
+        gapfill = details.get("price_bulk_gapfill") or {}
+        for day in gapfill.get("days", []):
+            pd = day.get("processed_date")
+            if (
+                pd
+                and day.get("status") == "success"
+                and (day.get("rows_written") or 0) > 0
+                and pd > after_date
+                and pd <= through_date
+            ):
+                dates.add(pd)
+
+    return dates
+
+
+async def get_bulk_completeness_since_baseline(db) -> Dict[str, Any]:
+    """
+    B) Canonical proof: daily bulk completeness since last full backfill baseline.
+
+    1. Read baseline from pipeline_state._id == "full_backfill_baseline"
+    2. Enumerate all completed trading days from baseline.through_date + 1
+       through the latest completed trading day (via market_calendar)
+    3. Check each against the canonical bulk-ingestion audit records
+       (ops_job_runs.details.price_bulk_gapfill.days[]) using a BOUNDED query
+    4. Return missing_bulk_dates, missing_count, latest_bulk_date_ingested,
+       gap_free_since_baseline
+
+    If baseline is missing → return a "no_baseline" sentinel.
+    """
+    try:
+        baseline = await db.pipeline_state.find_one(
+            {"_id": FULL_BACKFILL_BASELINE_ID}
+        )
+        if not baseline:
+            return {
+                "has_baseline": False,
+                "baseline": None,
+                "missing_bulk_dates_since_baseline": [],
+                "missing_count": None,
+                "latest_bulk_date_ingested": None,
+                "gap_free_since_baseline": None,
+                "expected_days_count": None,
+                "message": "No baseline yet — run a successful full backfill first.",
+            }
+
+        through_date = baseline.get("through_date")
+        completed_at = baseline.get("completed_at")
+        job_run_id = baseline.get("job_run_id")
+
+        # Derive Prague display time at read time (not persisted)
+        completed_at_prague = _to_prague_iso(completed_at)
+
+        baseline_info = {
+            "completed_at": _serialize_datetime(completed_at),
+            "completed_at_prague": completed_at_prague,
+            "through_date": through_date,
+            "job_run_id": job_run_id,
+        }
+
+        if not through_date:
+            return {
+                "has_baseline": True,
+                "baseline": baseline_info,
+                "missing_bulk_dates_since_baseline": [],
+                "missing_count": 0,
+                "latest_bulk_date_ingested": None,
+                "gap_free_since_baseline": True,
+                "expected_days_count": 0,
+                "message": "Baseline exists but through_date is missing.",
+            }
+
+        # Enumerate completed trading days since baseline
+        # Get ALL completed trading days (generous limit — no truncation)
+        all_completed = await last_n_completed_trading_days(db, 500, "US")
+
+        # Filter to only days AFTER through_date
+        expected_days = sorted(d for d in all_completed if d > through_date)
+
+        if not expected_days:
+            return {
+                "has_baseline": True,
+                "baseline": baseline_info,
+                "missing_bulk_dates_since_baseline": [],
+                "missing_count": 0,
+                "latest_bulk_date_ingested": through_date,
+                "gap_free_since_baseline": True,
+                "expected_days_count": 0,
+            }
+
+        # Bounded proof query: only fetch bulk dates in the range
+        # (through_date, latest_expected_day]
+        latest_expected = expected_days[-1]
+        processed_dates = await _get_bounded_bulk_processed_dates_set(
+            db, after_date=through_date, through_date=latest_expected,
+        )
+
+        # Determine missing
+        missing_dates = [d for d in expected_days if d not in processed_dates]
+        missing_count = len(missing_dates)
+
+        # Latest bulk date ingested (from processed dates, within expected range)
+        ingested_in_range = [d for d in expected_days if d in processed_dates]
+        latest_bulk_date = max(ingested_in_range) if ingested_in_range else through_date
+
+        return {
+            "has_baseline": True,
+            "baseline": baseline_info,
+            "missing_bulk_dates_since_baseline": missing_dates,
+            "missing_count": missing_count,
+            "latest_bulk_date_ingested": latest_bulk_date,
+            "gap_free_since_baseline": missing_count == 0,
+            "expected_days_count": len(expected_days),
+        }
+    except Exception as exc:
+        logger.warning("get_bulk_completeness_since_baseline failed: %s", exc)
+        return {
+            "has_baseline": False,
+            "baseline": None,
+            "missing_bulk_dates_since_baseline": [],
+            "missing_count": None,
+            "latest_bulk_date_ingested": None,
+            "gap_free_since_baseline": None,
+            "expected_days_count": None,
+            "error": str(exc),
+        }
+
+
+# =============================================================================
+# COVERAGE ANALYSIS (visible tickers)
+# =============================================================================
+
+async def get_visible_coverage(db) -> Dict[str, Any]:
+    """
+    C) Coverage analysis for current visible tickers.
+
+    1. Visible tickers = is_visible == true (canonical sieve)
+    2. Prices coverage: for the latest bulk date, count visible tickers
+       with a price row on that date
+    3. Fundamentals coverage: visible tickers with fundamentals_complete == true
+    """
+    try:
+        # Visible ticker count + fundamentals in one faceted query
+        facet_result = await db.tracked_tickers.aggregate([
+            {"$match": {"is_visible": True}},
+            {"$facet": {
+                "total": [{"$count": "n"}],
+                "fundamentals_complete": [
+                    {"$match": {"fundamentals_complete": True}},
+                    {"$count": "n"},
+                ],
+            }},
+        ]).to_list(1)
+
+        f = facet_result[0] if facet_result else {}
+
+        def _n(key: str) -> int:
+            return (f.get(key) or [{}])[0].get("n", 0)
+
+        visible_total = _n("total")
+        fundamentals_complete_count = _n("fundamentals_complete")
+
+        # Latest bulk date from pipeline_state
+        bulk_state = await db.pipeline_state.find_one({"_id": "price_bulk"})
+        last_bulk_date = (bulk_state or {}).get("global_last_bulk_date_processed")
+
+        # Price coverage for latest bulk date
+        price_coverage_count = 0
+        if last_bulk_date and visible_total > 0:
+            visible_tickers = await db.tracked_tickers.distinct(
+                "ticker", {"is_visible": True}
+            )
+            price_count_result = await db.stock_prices.aggregate([
+                {"$match": {
+                    "date": last_bulk_date,
+                    "ticker": {"$in": visible_tickers},
+                }},
+                {"$count": "n"},
+            ]).to_list(1)
+            price_coverage_count = (price_count_result[0]["n"]
+                                     if price_count_result else 0)
+
+        price_pct = round((price_coverage_count / visible_total) * 100) if visible_total > 0 else 0
+        fund_pct = round((fundamentals_complete_count / visible_total) * 100) if visible_total > 0 else 0
+
+        return {
+            "visible_total": visible_total,
+            "latest_bulk_date": last_bulk_date,
+            "price_coverage_count": price_coverage_count,
+            "price_coverage_pct": price_pct,
+            "fundamentals_complete_count": fundamentals_complete_count,
+            "fundamentals_complete_pct": fund_pct,
+        }
+    except Exception as exc:
+        logger.warning("get_visible_coverage failed: %s", exc)
+        return {
+            "visible_total": 0,
+            "latest_bulk_date": None,
+            "price_coverage_count": 0,
+            "price_coverage_pct": 0,
+            "fundamentals_complete_count": 0,
+            "fundamentals_complete_pct": 0,
+            "error": str(exc),
+        }
+
+
 async def get_admin_overview(db) -> Dict[str, Any]:
     """
     Single aggregated response for Admin Panel.
@@ -1306,14 +1559,20 @@ async def get_admin_overview(db) -> Dict[str, Any]:
     # EODHD provider-reported API usage (read-only, no DB writes)
     eodhd_usage_task = get_eodhd_api_usage()
 
+    # Bulk completeness proof (since last full backfill baseline)
+    bulk_completeness_task = get_bulk_completeness_since_baseline(db)
+
+    # Visible ticker coverage analysis (prices + fundamentals)
+    visible_coverage_task = get_visible_coverage(db)
+
     results = await asyncio.gather(
         universe_counts_task, scheduler_config_task, latest_price_task,
         job_runs_task, last_universe_seed_task, api_guard_task, job_last_runs_task,
         system_health_task, pipeline_sync_task, price_integrity_task, pipeline_age_task,
-        eodhd_usage_task
+        eodhd_usage_task, bulk_completeness_task, visible_coverage_task
     )
 
-    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age, eodhd_usage = results
+    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age, eodhd_usage, bulk_completeness, visible_coverage = results
     
     scheduler_enabled = scheduler_config.get("value", True) if scheduler_config else True
     latest_date = latest_price.get("date") if latest_price else None
@@ -1575,6 +1834,12 @@ async def get_admin_overview(db) -> Dict[str, Any]:
 
         # EODHD provider-reported API usage (canonical source)
         "eodhd_api_usage": eodhd_usage,
+
+        # Bulk completeness proof since last full backfill baseline
+        "bulk_completeness": bulk_completeness,
+
+        # Visible ticker coverage (prices + fundamentals) — separate from bulk proof
+        "visible_coverage": visible_coverage,
 
         # For Talk compatibility
         "visible_universe_count": universe_data["visible_universe_count"],

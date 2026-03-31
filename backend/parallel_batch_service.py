@@ -546,6 +546,85 @@ async def get_tickers_without_full_prices(db, limit: int = None) -> List[str]:
     return result  # Return all if no limit
 
 
+# ─── Full Backfill Baseline ──────────────────────────────────────────────────
+# The "full_backfill_baseline" document in pipeline_state is the canonical
+# marker for the last successful full price-history backfill.  It is written
+# ONLY by run_scheduled_backfill_all_prices() on a fully successful (not
+# killed, not skipped) completion.  Failed / partial / interrupted runs MUST
+# NOT update this baseline.
+#
+# Fields:
+#   _id:           "full_backfill_baseline"
+#   completed_at:  datetime (UTC) when the backfill finished
+#   through_date:  min(latest_completed_trading_day, latest_bulk_date_ingested)
+#   job_run_id:    ops_job_runs _id for this run
+#
+# through_date is derived from the canonical sources:
+#   - pipeline_state.price_bulk.global_last_bulk_date_processed
+#   - market_calendar latest completed trading day
+# Prague display time is derived at read time; not persisted.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FULL_BACKFILL_BASELINE_ID = "full_backfill_baseline"
+
+
+async def _compute_canonical_through_date(db) -> Optional[str]:
+    """
+    Compute the canonical through_date as:
+      min(latest_completed_trading_day, latest_bulk_date_ingested)
+    Returns None if either source is missing (baseline cannot be proven).
+    """
+    from services.market_calendar_service import last_n_completed_trading_days
+
+    bulk_state = await db.pipeline_state.find_one({"_id": "price_bulk"})
+    latest_bulk = (bulk_state or {}).get("global_last_bulk_date_processed")
+    if not latest_bulk:
+        return None
+
+    completed_days = await last_n_completed_trading_days(db, 1, "US")
+    if not completed_days:
+        return None
+    latest_completed = completed_days[0]
+
+    return min(latest_bulk, latest_completed)
+
+
+async def _write_full_backfill_baseline(db, finished_at: datetime, job_run_id: str) -> bool:
+    """
+    Persist the canonical baseline marker after a fully successful backfill.
+
+    through_date = min(latest_completed_trading_day, latest_bulk_date_ingested).
+    Returns True if baseline was written, False if through_date could not be
+    proven (baseline NOT written).
+    """
+    through_date = await _compute_canonical_through_date(db)
+    if not through_date:
+        logger.warning(
+            "Full backfill baseline NOT written: through_date could not be proven "
+            "(missing bulk date or calendar data)",
+        )
+        return False
+
+    if finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=timezone.utc)
+
+    await db.pipeline_state.update_one(
+        {"_id": FULL_BACKFILL_BASELINE_ID},
+        {"$set": {
+            "_id": FULL_BACKFILL_BASELINE_ID,
+            "completed_at": finished_at,
+            "through_date": through_date,
+            "job_run_id": job_run_id,
+        }},
+        upsert=True,
+    )
+    logger.info(
+        "Full backfill baseline written: through_date=%s, job_run_id=%s",
+        through_date, job_run_id,
+    )
+    return True
+
+
 async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
     """
     Scheduled job: Backfill ALL prices until completion.
@@ -589,14 +668,22 @@ async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
     
     if not tickers:
         logger.info(f"{job_type}: All tickers have full price history ✅")
-        await db.ops_job_runs.insert_one({
+        finished_at = datetime.now(timezone.utc)
+        job_run_doc = {
             "job_type": job_type,
             "source": "scheduler",
             "status": "completed",
             "started_at": started_at,
-            "finished_at": datetime.now(timezone.utc),
+            "finished_at": finished_at,
             "details": {"message": "All tickers have full price history", "processed": 0},
-        })
+        }
+        insert_result = await db.ops_job_runs.insert_one(job_run_doc)
+        # A) Baseline: all tickers already complete — write only if
+        # through_date can be canonically derived from market_calendar +
+        # pipeline_state.price_bulk.  If it cannot, skip (no-op).
+        await _write_full_backfill_baseline(
+            db, finished_at, str(insert_result.inserted_id),
+        )
         return {
             "job_type": job_type,
             "status": "completed",
@@ -615,5 +702,16 @@ async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
         job_name=job_type,
         check_kill_switch=check_kill,
     )
+    
+    # A) Baseline: write only on fully successful completion (not killed)
+    if not result.killed and result.finished_at:
+        # Retrieve the job_run_id just inserted by run_parallel_price_backfill
+        job_run_doc = await db.ops_job_runs.find_one(
+            {"job_type": job_type, "finished_at": result.finished_at},
+            {"_id": 1},
+            sort=[("finished_at", -1)],
+        )
+        job_run_id = str(job_run_doc["_id"]) if job_run_doc else "unknown"
+        await _write_full_backfill_baseline(db, result.finished_at, job_run_id)
     
     return result.to_dict()
