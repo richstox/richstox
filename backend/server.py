@@ -149,13 +149,15 @@ async def startup_api_call_guard():
         
         passed = result.returncode == 0
         
+        from utils.redact import redact_secrets
+        
         audit_result = {
             "audit_type": "api_call_guard",
             "ran_at": datetime.now(timezone.utc),
             "exit_code": result.returncode,
             "passed": passed,
-            "stdout": result.stdout[:2000] if result.stdout else None,
-            "stderr": result.stderr[:500] if result.stderr else None,
+            "stdout": redact_secrets(result.stdout)[:2000] if result.stdout else None,
+            "stderr": redact_secrets(result.stderr)[:500] if result.stderr else None,
         }
         
         # Store to ops collection for Admin Panel
@@ -169,7 +171,7 @@ async def startup_api_call_guard():
             logger.info("✅ API Call Guard: PASS - All EODHD calls in allowlist")
         else:
             combined = (result.stdout or "") + (result.stderr or "")
-            detail = combined.strip()[:1000] if combined.strip() else (
+            detail = redact_secrets(combined.strip())[:1000] if combined.strip() else (
                 f"Script exited with code {result.returncode} but produced no output"
             )
             logger.critical(f"🚨 API Call Guard: FAIL - Violations found!\n{detail}")
