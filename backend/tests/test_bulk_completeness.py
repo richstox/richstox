@@ -24,7 +24,6 @@ from zoneinfo import ZoneInfo
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
-NY_TZ = ZoneInfo("America/New_York")
 
 
 def _make_cursor(docs):

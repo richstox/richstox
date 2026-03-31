@@ -1257,7 +1257,6 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
 # =============================================================================
 
 FULL_BACKFILL_BASELINE_ID = "full_backfill_baseline"
-MARKET_CALENDAR_COLLECTION = "market_calendar"
 
 
 async def _get_bounded_bulk_processed_dates_set(
