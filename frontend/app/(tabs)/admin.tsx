@@ -229,6 +229,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const cp = pi?.coverage_checkpoints || {};
   const eodhd = overview?.eodhd_api_usage;
 
+  // ── Bulk Completeness (since last full backfill) ──
+  const bc = overview?.bulk_completeness;
+  const bcHasBaseline = bc?.has_baseline === true;
+  const bcMissing = bc?.missing_count ?? 0;
+  const bcGapFree = bc?.gap_free_since_baseline === true;
+
   // Build alerts
   const alerts: { color: string; icon: string; text: string }[] = [];
   if (failedCount > 0) alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${failedCount} pipeline job${failedCount > 1 ? 's' : ''} failed` });
@@ -287,12 +293,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const eodhLimit = eodhd?.eodhd_daily_limit ?? 100000;
   const eodhDisplay = eodhCallsToday != null ? `${eodhCallsToday} / ${eodhLimit}` : '—';
 
-  // ── Bulk Completeness (since last full backfill) ──
-  const bc = overview?.bulk_completeness;
-  const bcHasBaseline = bc?.has_baseline === true;
+  // ── Bulk Completeness derived display values ──
   const bcBaseline = bc?.baseline;
-  const bcMissing = bc?.missing_count ?? 0;
-  const bcGapFree = bc?.gap_free_since_baseline === true;
   const bcStatusColor: 'green' | 'yellow' | 'red' =
     !bcHasBaseline ? 'yellow' : bcGapFree ? 'green' : 'red';
   const bcStatusLabel = !bcHasBaseline ? 'NO BASELINE' : bcGapFree ? 'GAP-FREE' : 'GAPS PRESENT';
