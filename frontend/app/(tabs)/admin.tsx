@@ -294,11 +294,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const eodhDisplay = eodhCallsToday != null ? `${eodhCallsToday} / ${eodhLimit}` : '—';
 
   // ── Bulk Completeness derived display values ──
-  const bcBaseline = bc?.baseline;
+  // Guard: baseline-dependent derivations must not run when has_baseline !== true
+  const bcBaseline = bcHasBaseline ? bc?.baseline ?? null : null;
   const bcStatusColor: 'green' | 'yellow' | 'red' =
     !bcHasBaseline ? 'yellow' : bcGapFree ? 'green' : 'red';
   const bcStatusLabel = !bcHasBaseline ? 'NO BASELINE' : bcGapFree ? 'GAP-FREE' : 'GAPS PRESENT';
-  const bcMissingDates = bc?.missing_bulk_dates_since_baseline ?? [];
+  const bcMissingDates = bcHasBaseline ? (bc?.missing_bulk_dates_since_baseline ?? []) : [];
 
   // ── Visible Coverage ──
   const vc = overview?.visible_coverage;
