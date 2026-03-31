@@ -29,6 +29,9 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass, field
 import httpx
+from zoneinfo import ZoneInfo
+
+PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 logger = logging.getLogger("richstox.parallel_batch")
 
@@ -546,6 +549,51 @@ async def get_tickers_without_full_prices(db, limit: int = None) -> List[str]:
     return result  # Return all if no limit
 
 
+# ─── Full Backfill Baseline ──────────────────────────────────────────────────
+# The "full_backfill_baseline" document in pipeline_state is the canonical
+# marker for the last successful full price-history backfill.  It is written
+# ONLY by run_scheduled_backfill_all_prices() on a fully successful (not
+# killed, not skipped) completion.  Failed / partial / interrupted runs MUST
+# NOT update this baseline.
+#
+# Fields:
+#   _id:           "full_backfill_baseline"
+#   completed_at:  datetime (UTC) when the backfill finished
+#   completed_at_prague: ISO string in Europe/Prague
+#   through_date:  latest trading day covered (from pipeline_state.price_bulk)
+#   job_run_id:    reference to the ops_job_runs document for this run
+# ─────────────────────────────────────────────────────────────────────────────
+
+FULL_BACKFILL_BASELINE_ID = "full_backfill_baseline"
+
+
+async def _write_full_backfill_baseline(db, finished_at: datetime, job_run_id: str) -> None:
+    """
+    Persist the canonical baseline marker after a fully successful backfill.
+    Reads through_date from pipeline_state.price_bulk.
+    """
+    bulk_state = await db.pipeline_state.find_one({"_id": "price_bulk"})
+    through_date = (bulk_state or {}).get("global_last_bulk_date_processed")
+
+    prague_iso = finished_at.astimezone(PRAGUE_TZ).isoformat() if finished_at.tzinfo else finished_at.replace(tzinfo=timezone.utc).astimezone(PRAGUE_TZ).isoformat()
+
+    await db.pipeline_state.update_one(
+        {"_id": FULL_BACKFILL_BASELINE_ID},
+        {"$set": {
+            "_id": FULL_BACKFILL_BASELINE_ID,
+            "completed_at": finished_at,
+            "completed_at_prague": prague_iso,
+            "through_date": through_date,
+            "job_run_id": job_run_id,
+        }},
+        upsert=True,
+    )
+    logger.info(
+        "Full backfill baseline written: through_date=%s, job_run_id=%s",
+        through_date, job_run_id,
+    )
+
+
 async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
     """
     Scheduled job: Backfill ALL prices until completion.
@@ -589,14 +637,18 @@ async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
     
     if not tickers:
         logger.info(f"{job_type}: All tickers have full price history ✅")
-        await db.ops_job_runs.insert_one({
+        finished_at = datetime.now(timezone.utc)
+        job_run_doc = {
             "job_type": job_type,
             "source": "scheduler",
             "status": "completed",
             "started_at": started_at,
-            "finished_at": datetime.now(timezone.utc),
+            "finished_at": finished_at,
             "details": {"message": "All tickers have full price history", "processed": 0},
-        })
+        }
+        insert_result = await db.ops_job_runs.insert_one(job_run_doc)
+        # A) Baseline: all tickers already complete → successful full backfill
+        await _write_full_backfill_baseline(db, finished_at, str(insert_result.inserted_id))
         return {
             "job_type": job_type,
             "status": "completed",
@@ -615,5 +667,16 @@ async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
         job_name=job_type,
         check_kill_switch=check_kill,
     )
+    
+    # A) Baseline: write only on fully successful completion (not killed)
+    if not result.killed and result.finished_at:
+        # Retrieve the job_run_id just inserted by run_parallel_price_backfill
+        job_run_doc = await db.ops_job_runs.find_one(
+            {"job_type": job_type, "finished_at": result.finished_at},
+            {"_id": 1},
+            sort=[("finished_at", -1)],
+        )
+        job_run_id = str(job_run_doc["_id"]) if job_run_doc else "unknown"
+        await _write_full_backfill_baseline(db, result.finished_at, job_run_id)
     
     return result.to_dict()

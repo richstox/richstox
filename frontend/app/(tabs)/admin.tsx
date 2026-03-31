@@ -65,6 +65,33 @@ interface PipelineAge {
   morning_refresh_status?: string;
 }
 
+interface BulkCompletenessBaseline {
+  completed_at?: string | null;
+  completed_at_prague?: string | null;
+  through_date?: string | null;
+  job_run_id?: string | null;
+}
+
+interface BulkCompleteness {
+  has_baseline?: boolean;
+  baseline?: BulkCompletenessBaseline | null;
+  missing_bulk_dates_since_baseline?: string[];
+  missing_count?: number | null;
+  latest_bulk_date_ingested?: string | null;
+  gap_free_since_baseline?: boolean | null;
+  expected_days_count?: number | null;
+  message?: string;
+}
+
+interface VisibleCoverage {
+  visible_total?: number;
+  latest_bulk_date?: string | null;
+  price_coverage_count?: number;
+  price_coverage_pct?: number;
+  fundamentals_complete_count?: number;
+  fundamentals_complete_pct?: number;
+}
+
 interface OverviewData {
   health?: {
     scheduler_active?: boolean;
@@ -88,6 +115,8 @@ interface OverviewData {
     eodhd_api_calls_today?: number | null;
     eodhd_daily_limit?: number;
   };
+  bulk_completeness?: BulkCompleteness;
+  visible_coverage?: VisibleCoverage;
 }
 
 interface StatsData {
@@ -210,6 +239,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   if (ctdh?.calendar_stale) alerts.push({ color: '#F59E0B', icon: 'calendar-outline', text: ctdhStaleMsg });
   if (ctdh && (ctdh.missing_count ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'alert-circle', text: `${ctdh.missing_count} of last 10 completed trading ${ctdh.missing_count === 1 ? 'day' : 'days'} missing price data` });
   if (pi && (pi.needs_price_redownload ?? 0) > 0) alerts.push({ color: '#F59E0B', icon: 'refresh-circle', text: `${pi.needs_price_redownload} ticker(s) need price re-download` });
+  if (bcHasBaseline && !bcGapFree) alerts.push({ color: '#EF4444', icon: 'alert-circle', text: `${bcMissing} bulk day${bcMissing === 1 ? '' : 's'} missing since last full backfill` });
+  if (!bcHasBaseline && bc) alerts.push({ color: '#F59E0B', icon: 'information-circle', text: 'No full backfill baseline — run a successful full backfill' });
 
   // Format count/total with percentage
   const fmtRatio = (count: number, total: number) => {
@@ -255,6 +286,25 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const eodhCallsToday = eodhd?.eodhd_api_calls_today;
   const eodhLimit = eodhd?.eodhd_daily_limit ?? 100000;
   const eodhDisplay = eodhCallsToday != null ? `${eodhCallsToday} / ${eodhLimit}` : '—';
+
+  // ── Bulk Completeness (since last full backfill) ──
+  const bc = overview?.bulk_completeness;
+  const bcHasBaseline = bc?.has_baseline === true;
+  const bcBaseline = bc?.baseline;
+  const bcMissing = bc?.missing_count ?? 0;
+  const bcGapFree = bc?.gap_free_since_baseline === true;
+  const bcStatusColor: 'green' | 'yellow' | 'red' =
+    !bcHasBaseline ? 'yellow' : bcGapFree ? 'green' : 'red';
+  const bcStatusLabel = !bcHasBaseline ? 'NO BASELINE' : bcGapFree ? 'GAP-FREE' : 'GAPS PRESENT';
+  const bcMissingDates = bc?.missing_bulk_dates_since_baseline ?? [];
+
+  // ── Visible Coverage ──
+  const vc = overview?.visible_coverage;
+  const vcTotal = vc?.visible_total ?? 0;
+  const vcPriceCount = vc?.price_coverage_count ?? 0;
+  const vcPricePct = vc?.price_coverage_pct ?? 0;
+  const vcFundCount = vc?.fundamentals_complete_count ?? 0;
+  const vcFundPct = vc?.fundamentals_complete_pct ?? 0;
 
   // Coverage checkpoint helper
   const renderCheckpoint = (label: string, key: string) => {
@@ -421,6 +471,92 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           value={gfValue}
           status={gfStatus}
         />
+      </View>
+
+      {/* D) Bulk Completeness (since last full backfill) */}
+      <View style={d.card}>
+        <Text style={d.sectionTitle}>Bulk Completeness (since last full backfill)</Text>
+        {!bcHasBaseline ? (
+          <>
+            <Text style={[d.cpHint, { color: '#F59E0B', fontStyle: 'normal', fontSize: 11 }]}>
+              ⚠ No baseline yet
+            </Text>
+            <Text style={d.cpHint}>
+              A successful full backfill must be run first to establish a baseline.
+              Until then, bulk completeness cannot be proven.
+            </Text>
+          </>
+        ) : (
+          <>
+            <View style={d.integrityGrid}>
+              <IntegrityMetric
+                label="Status"
+                value={bcStatusLabel}
+                status={bcStatusColor}
+              />
+              <IntegrityMetric
+                label="Missing Bulk Days"
+                value={String(bcMissing)}
+                status={bcMissing === 0 ? 'green' : 'red'}
+              />
+            </View>
+            <View style={d.cpRow}>
+              <Text style={d.cpLabel}>Last Full Backfill</Text>
+              <Text style={d.cpDate}>
+                {bcBaseline?.completed_at_prague
+                  ? bcBaseline.completed_at_prague.replace('T', ' ').slice(0, 19)
+                  : '—'}
+              </Text>
+            </View>
+            <View style={d.cpRow}>
+              <Text style={d.cpLabel}>Through Date</Text>
+              <Text style={d.cpDate}>{bcBaseline?.through_date ?? '—'}</Text>
+            </View>
+            <View style={d.cpRow}>
+              <Text style={d.cpLabel}>Latest Bulk Ingested</Text>
+              <Text style={d.cpDate}>{bc?.latest_bulk_date_ingested ?? '—'}</Text>
+            </View>
+            <View style={d.cpRow}>
+              <Text style={d.cpLabel}>Expected Days</Text>
+              <Text style={d.cpDate}>{bc?.expected_days_count ?? '—'}</Text>
+            </View>
+            {bcBaseline?.job_run_id && (
+              <View style={d.cpRow}>
+                <Text style={d.cpLabel}>Job Run ID</Text>
+                <Text style={[d.cpDate, { fontSize: 9 }]}>{bcBaseline.job_run_id}</Text>
+              </View>
+            )}
+            {bcMissingDates.length > 0 && (
+              <>
+                <Text style={[d.cpHint, { color: '#EF4444', marginTop: 8 }]}>
+                  Missing dates: {bcMissingDates.join(', ')}
+                </Text>
+              </>
+            )}
+          </>
+        )}
+      </View>
+
+      {/* E) Coverage (visible tickers) */}
+      <View style={d.card}>
+        <Text style={d.sectionTitle}>Coverage (visible tickers)</Text>
+        <View style={d.integrityGrid}>
+          <IntegrityMetric
+            label="Visible Tickers"
+            value={String(vcTotal)}
+            status={vcTotal > 0 ? 'green' : 'yellow'}
+          />
+          <IntegrityMetric
+            label={`Price Coverage${vc?.latest_bulk_date ? ` (${vc.latest_bulk_date})` : ''}`}
+            value={vcTotal > 0 ? `${vcPriceCount}/${vcTotal} (${vcPricePct}%)` : '—'}
+            status={vcTotal > 0 && vcPricePct === 100 ? 'green' : vcTotal > 0 ? 'yellow' : undefined}
+          />
+          <IntegrityMetric
+            label="Fundamentals Complete"
+            value={vcTotal > 0 ? `${vcFundCount}/${vcTotal} (${vcFundPct}%)` : '—'}
+            status={vcTotal > 0 && vcFundPct === 100 ? 'green' : vcTotal > 0 ? 'yellow' : undefined}
+          />
+        </View>
       </View>
 
       <View style={{ height: 40 }} />
