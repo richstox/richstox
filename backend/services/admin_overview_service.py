@@ -47,6 +47,15 @@ def _to_prague_iso(dt) -> Optional[str]:
     return dt.astimezone(PRAGUE_TZ).isoformat()
 
 
+def _serialize_datetime(dt) -> Optional[str]:
+    """Serialize a datetime to ISO string, handling None and non-datetime types."""
+    if dt is None:
+        return None
+    if hasattr(dt, "isoformat"):
+        return dt.isoformat()
+    return str(dt)
+
+
 def _empty_step3_phase(name: str) -> Dict[str, Any]:
     return {
         "name": name,
@@ -1325,7 +1334,7 @@ async def get_bulk_completeness_since_baseline(db) -> Dict[str, Any]:
         job_run_id = baseline.get("job_run_id")
 
         baseline_info = {
-            "completed_at": completed_at.isoformat() if hasattr(completed_at, "isoformat") else str(completed_at) if completed_at else None,
+            "completed_at": _serialize_datetime(completed_at),
             "completed_at_prague": completed_at_prague,
             "through_date": through_date,
             "job_run_id": job_run_id,

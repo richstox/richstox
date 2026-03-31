@@ -575,7 +575,9 @@ async def _write_full_backfill_baseline(db, finished_at: datetime, job_run_id: s
     bulk_state = await db.pipeline_state.find_one({"_id": "price_bulk"})
     through_date = (bulk_state or {}).get("global_last_bulk_date_processed")
 
-    prague_iso = finished_at.astimezone(PRAGUE_TZ).isoformat() if finished_at.tzinfo else finished_at.replace(tzinfo=timezone.utc).astimezone(PRAGUE_TZ).isoformat()
+    if finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=timezone.utc)
+    prague_iso = finished_at.astimezone(PRAGUE_TZ).isoformat()
 
     await db.pipeline_state.update_one(
         {"_id": FULL_BACKFILL_BASELINE_ID},
