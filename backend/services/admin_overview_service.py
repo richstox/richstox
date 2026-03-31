@@ -1260,17 +1260,20 @@ FULL_BACKFILL_BASELINE_ID = "full_backfill_baseline"
 MARKET_CALENDAR_COLLECTION = "market_calendar"
 
 
-async def _get_all_bulk_processed_dates_set(db) -> set:
+async def _get_bounded_bulk_processed_dates_set(
+    db, after_date: str, through_date: str,
+) -> set:
     """
-    Collect ALL dates successfully processed by price_sync from
-    ops_job_runs.details.price_bulk_gapfill.days[].
+    Collect dates successfully processed by price_sync in the range
+    (after_date, through_date] from ops_job_runs.details.price_bulk_gapfill.days[].
 
-    Unlike market_calendar_service._get_bulk_processed_dates_set (which
-    limits to 50 runs for the 10-day health metric), this version scans
-    ALL successful runs to provide an unbounded proof since baseline.
+    This is a BOUNDED query: only scans runs whose gapfill days fall within
+    the required range.  The processed_date values are filtered in Python
+    after extracting from the nested array (the $match selects relevant runs;
+    we then filter days within the date range).
 
     A date is considered processed if at least one run has an entry with:
-      - processed_date = D
+      - processed_date = D  (where after_date < D <= through_date)
       - status = "success"
       - rows_written > 0
     """
@@ -1288,12 +1291,15 @@ async def _get_all_bulk_processed_dates_set(db) -> set:
         details = doc.get("details") or {}
         gapfill = details.get("price_bulk_gapfill") or {}
         for day in gapfill.get("days", []):
+            pd = day.get("processed_date")
             if (
-                day.get("status") == "success"
-                and day.get("processed_date")
+                pd
+                and day.get("status") == "success"
                 and (day.get("rows_written") or 0) > 0
+                and pd > after_date
+                and pd <= through_date
             ):
-                dates.add(day["processed_date"])
+                dates.add(pd)
 
     return dates
 
@@ -1306,7 +1312,7 @@ async def get_bulk_completeness_since_baseline(db) -> Dict[str, Any]:
     2. Enumerate all completed trading days from baseline.through_date + 1
        through the latest completed trading day (via market_calendar)
     3. Check each against the canonical bulk-ingestion audit records
-       (ops_job_runs.details.price_bulk_gapfill.days[])
+       (ops_job_runs.details.price_bulk_gapfill.days[]) using a BOUNDED query
     4. Return missing_bulk_dates, missing_count, latest_bulk_date_ingested,
        gap_free_since_baseline
 
@@ -1330,8 +1336,10 @@ async def get_bulk_completeness_since_baseline(db) -> Dict[str, Any]:
 
         through_date = baseline.get("through_date")
         completed_at = baseline.get("completed_at")
-        completed_at_prague = baseline.get("completed_at_prague")
         job_run_id = baseline.get("job_run_id")
+
+        # Derive Prague display time at read time (not persisted)
+        completed_at_prague = _to_prague_iso(completed_at)
 
         baseline_info = {
             "completed_at": _serialize_datetime(completed_at),
@@ -1359,10 +1367,23 @@ async def get_bulk_completeness_since_baseline(db) -> Dict[str, Any]:
         # Filter to only days AFTER through_date
         expected_days = sorted(d for d in all_completed if d > through_date)
 
-        # Get canonical bulk-processed dates set (from ops_job_runs)
-        # NOTE: We use an unbounded scan (no $limit) because the proof must
-        # cover the full range since baseline, which may span months.
-        processed_dates = await _get_all_bulk_processed_dates_set(db)
+        if not expected_days:
+            return {
+                "has_baseline": True,
+                "baseline": baseline_info,
+                "missing_bulk_dates_since_baseline": [],
+                "missing_count": 0,
+                "latest_bulk_date_ingested": through_date,
+                "gap_free_since_baseline": True,
+                "expected_days_count": 0,
+            }
+
+        # Bounded proof query: only fetch bulk dates in the range
+        # (through_date, latest_expected_day]
+        latest_expected = expected_days[-1]
+        processed_dates = await _get_bounded_bulk_processed_dates_set(
+            db, after_date=through_date, through_date=latest_expected,
+        )
 
         # Determine missing
         missing_dates = [d for d in expected_days if d not in processed_dates]

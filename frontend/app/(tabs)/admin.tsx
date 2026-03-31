@@ -476,6 +476,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       {/* D) Bulk Completeness (since last full backfill) */}
       <View style={d.card}>
         <Text style={d.sectionTitle}>Bulk Completeness (since last full backfill)</Text>
+        <Text style={d.cpHint}>Daily bulk snapshots since last full backfill baseline</Text>
         {!bcHasBaseline ? (
           <>
             <Text style={[d.cpHint, { color: '#F59E0B', fontStyle: 'normal', fontSize: 11 }]}>
@@ -540,6 +541,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       {/* E) Coverage (visible tickers) */}
       <View style={d.card}>
         <Text style={d.sectionTitle}>Coverage (visible tickers)</Text>
+        <Text style={d.cpHint}>Current visible tickers coverage on latest bulk day + fundamentals completeness</Text>
         <View style={d.integrityGrid}>
           <IntegrityMetric
             label="Visible Tickers"

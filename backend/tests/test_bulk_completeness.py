@@ -5,8 +5,10 @@ Covers:
   A) Baseline marker written on successful full backfill only
      - Not written when killed / skipped / no tickers
      - Written when completed (both "already complete" and "ran to completion")
+     - through_date derived from canonical sources (not "today")
+     - No baseline if through_date cannot be canonically proven
   B) Completed trading day enumeration via market_calendar
-  C) Missing bulk date detection since baseline
+  C) Missing bulk date detection since baseline (bounded query)
   D) Visible ticker coverage calculations
   E) Baseline-missing state
 """
@@ -126,14 +128,17 @@ class TestBaselineMarker:
 
     @pytest.mark.asyncio
     async def test_baseline_written_when_all_tickers_complete(self, mock_db):
-        """When no tickers need backfill → baseline is written."""
+        """When no tickers need backfill and canonical through_date is provable → baseline is written."""
         from parallel_batch_service import run_scheduled_backfill_all_prices
 
         with patch("parallel_batch_service.get_tickers_without_full_prices",
                    new_callable=AsyncMock, return_value=[]):
             with patch("scheduler_service.get_scheduler_enabled",
                        new_callable=AsyncMock, return_value=True):
-                result = await run_scheduled_backfill_all_prices(mock_db)
+                # Patch _compute_canonical_through_date to return canonical value
+                with patch("parallel_batch_service._compute_canonical_through_date",
+                           new_callable=AsyncMock, return_value="2026-03-28"):
+                    result = await run_scheduled_backfill_all_prices(mock_db)
 
         assert result["status"] == "completed"
         # Verify baseline was written via pipeline_state.update_one
@@ -145,7 +150,8 @@ class TestBaselineMarker:
         assert set_doc["through_date"] == "2026-03-28"
         assert set_doc["job_run_id"] == "abc123"
         assert "completed_at" in set_doc
-        assert "completed_at_prague" in set_doc
+        # No completed_at_prague in persisted doc
+        assert "completed_at_prague" not in set_doc
 
     @pytest.mark.asyncio
     async def test_baseline_not_written_when_killed(self, mock_db):
@@ -210,13 +216,33 @@ class TestBaselineMarker:
                        new_callable=AsyncMock, return_value=True):
                 with patch("parallel_batch_service.run_parallel_price_backfill",
                            new_callable=AsyncMock, return_value=success_result):
-                    result = await run_scheduled_backfill_all_prices(mock_db)
+                    with patch("parallel_batch_service._compute_canonical_through_date",
+                               new_callable=AsyncMock, return_value="2026-03-28"):
+                        result = await run_scheduled_backfill_all_prices(mock_db)
 
         assert result["killed"] is False
         # Baseline SHOULD have been written
         mock_db.pipeline_state.update_one.assert_called_once()
         call_args = mock_db.pipeline_state.update_one.call_args
         assert call_args[0][0] == {"_id": "full_backfill_baseline"}
+
+    @pytest.mark.asyncio
+    async def test_no_baseline_when_through_date_not_provable(self, mock_db):
+        """When through_date cannot be canonically derived → no baseline written."""
+        from parallel_batch_service import run_scheduled_backfill_all_prices
+
+        with patch("parallel_batch_service.get_tickers_without_full_prices",
+                   new_callable=AsyncMock, return_value=[]):
+            with patch("scheduler_service.get_scheduler_enabled",
+                       new_callable=AsyncMock, return_value=True):
+                # _compute_canonical_through_date returns None → can't prove
+                with patch("parallel_batch_service._compute_canonical_through_date",
+                           new_callable=AsyncMock, return_value=None):
+                    result = await run_scheduled_backfill_all_prices(mock_db)
+
+        assert result["status"] == "completed"
+        # Baseline should NOT have been written (through_date unproven)
+        mock_db.pipeline_state.update_one.assert_not_called()
 
 
 # =============================================================================
@@ -299,7 +325,6 @@ class TestBulkCompletenessSinceBaseline:
         baseline = {
             "_id": "full_backfill_baseline",
             "completed_at": datetime(2026, 3, 20, tzinfo=timezone.utc),
-            "completed_at_prague": "2026-03-20T10:00:00+01:00",
             "through_date": "2026-03-20",
             "job_run_id": "run123",
         }
@@ -334,7 +359,6 @@ class TestBulkCompletenessSinceBaseline:
         baseline = {
             "_id": "full_backfill_baseline",
             "completed_at": datetime(2026, 3, 20, tzinfo=timezone.utc),
-            "completed_at_prague": "2026-03-20T10:00:00+01:00",
             "through_date": "2026-03-20",
             "job_run_id": "run123",
         }
@@ -369,7 +393,6 @@ class TestBulkCompletenessSinceBaseline:
         baseline = {
             "_id": "full_backfill_baseline",
             "completed_at": datetime(2026, 3, 25, tzinfo=timezone.utc),
-            "completed_at_prague": "2026-03-25T10:00:00+01:00",
             "through_date": "2026-03-25",
             "job_run_id": "run123",
         }
@@ -402,7 +425,6 @@ class TestBulkCompletenessSinceBaseline:
         baseline = {
             "_id": "full_backfill_baseline",
             "completed_at": datetime(2026, 3, 20, 10, 0, 0, tzinfo=timezone.utc),
-            "completed_at_prague": "2026-03-20T11:00:00+01:00",
             "through_date": "2026-03-20",
             "job_run_id": "abc123",
         }
@@ -426,7 +448,9 @@ class TestBulkCompletenessSinceBaseline:
         bl = result["baseline"]
         assert bl["through_date"] == "2026-03-20"
         assert bl["job_run_id"] == "abc123"
-        assert bl["completed_at_prague"] == "2026-03-20T11:00:00+01:00"
+        # completed_at_prague is derived at read time (not persisted)
+        assert bl["completed_at_prague"] is not None
+        assert "2026-03-20" in bl["completed_at_prague"]
 
     @pytest.mark.asyncio
     async def test_no_through_date_in_baseline(self):
@@ -575,8 +599,12 @@ class TestWriteFullBackfillBaseline:
         db.pipeline_state.update_one = AsyncMock()
 
         finished = datetime(2026, 3, 28, 15, 0, 0, tzinfo=timezone.utc)
-        await _write_full_backfill_baseline(db, finished, "run_abc")
+        # Patch _compute_canonical_through_date to return canonical value
+        with patch("parallel_batch_service._compute_canonical_through_date",
+                   new_callable=AsyncMock, return_value="2026-03-28"):
+            written = await _write_full_backfill_baseline(db, finished, "run_abc")
 
+        assert written is True
         db.pipeline_state.update_one.assert_called_once()
         call_args = db.pipeline_state.update_one.call_args
         assert call_args[0][0] == {"_id": "full_backfill_baseline"}
@@ -584,43 +612,39 @@ class TestWriteFullBackfillBaseline:
         assert set_doc["through_date"] == "2026-03-28"
         assert set_doc["job_run_id"] == "run_abc"
         assert set_doc["completed_at"] == finished
-        # Verify Prague timezone ISO string (offset varies with DST)
-        prague_str = set_doc["completed_at_prague"]
-        assert isinstance(prague_str, str)
-        assert "2026-03-28" in prague_str  # Date is preserved
-        assert "+" in prague_str  # Has timezone offset
+        # No completed_at_prague in persisted doc (derived at read time)
+        assert "completed_at_prague" not in set_doc
         # upsert=True
         assert call_args[1].get("upsert") is True or (len(call_args[0]) > 2 and call_args[0][2] is True)
 
     @pytest.mark.asyncio
-    async def test_reads_through_date_from_price_bulk(self):
-        """through_date is read from pipeline_state.price_bulk."""
+    async def test_returns_false_when_through_date_unproven(self):
+        """through_date cannot be proven → returns False, no write."""
         from parallel_batch_service import _write_full_backfill_baseline
 
         db = MagicMock()
-        db.pipeline_state.find_one = AsyncMock(
-            return_value={"_id": "price_bulk", "global_last_bulk_date_processed": "2026-03-15"}
-        )
         db.pipeline_state.update_one = AsyncMock()
 
         finished = datetime(2026, 3, 28, 15, 0, 0, tzinfo=timezone.utc)
-        await _write_full_backfill_baseline(db, finished, "run_xyz")
+        with patch("parallel_batch_service._compute_canonical_through_date",
+                   new_callable=AsyncMock, return_value=None):
+            written = await _write_full_backfill_baseline(db, finished, "run_xyz")
 
-        set_doc = db.pipeline_state.update_one.call_args[0][1]["$set"]
-        assert set_doc["through_date"] == "2026-03-15"
+        assert written is False
+        db.pipeline_state.update_one.assert_not_called()
 
 
 # =============================================================================
-# E) GET ALL BULK PROCESSED DATES SET
+# E) BOUNDED BULK PROCESSED DATES SET
 # =============================================================================
 
-class TestGetAllBulkProcessedDatesSet:
-    """Test the unbounded bulk processed dates set function."""
+class TestBoundedBulkProcessedDatesSet:
+    """Test the bounded bulk processed dates set function."""
 
     @pytest.mark.asyncio
-    async def test_collects_successful_dates(self):
-        """Successfully processed dates are collected."""
-        from services.admin_overview_service import _get_all_bulk_processed_dates_set
+    async def test_collects_successful_dates_in_range(self):
+        """Successfully processed dates within range are collected."""
+        from services.admin_overview_service import _get_bounded_bulk_processed_dates_set
 
         ops_runs = [{
             "job_name": "price_sync",
@@ -631,6 +655,8 @@ class TestGetAllBulkProcessedDatesSet:
                         {"processed_date": "2026-03-23", "status": "success", "rows_written": 100},
                         {"processed_date": "2026-03-24", "status": "success", "rows_written": 50},
                         {"processed_date": "2026-03-25", "status": "failed", "rows_written": 0},
+                        # Outside range: should be excluded
+                        {"processed_date": "2026-03-15", "status": "success", "rows_written": 100},
                     ]
                 }
             },
@@ -639,15 +665,18 @@ class TestGetAllBulkProcessedDatesSet:
         db = MagicMock()
         db.ops_job_runs.aggregate = MagicMock(return_value=_make_cursor(ops_runs))
 
-        dates = await _get_all_bulk_processed_dates_set(db)
+        dates = await _get_bounded_bulk_processed_dates_set(
+            db, after_date="2026-03-20", through_date="2026-03-25",
+        )
         assert "2026-03-23" in dates
         assert "2026-03-24" in dates
         assert "2026-03-25" not in dates  # failed
+        assert "2026-03-15" not in dates  # outside range
 
     @pytest.mark.asyncio
     async def test_zero_rows_written_not_included(self):
         """Dates with rows_written=0 are not included."""
-        from services.admin_overview_service import _get_all_bulk_processed_dates_set
+        from services.admin_overview_service import _get_bounded_bulk_processed_dates_set
 
         ops_runs = [{
             "job_name": "price_sync",
@@ -664,23 +693,131 @@ class TestGetAllBulkProcessedDatesSet:
         db = MagicMock()
         db.ops_job_runs.aggregate = MagicMock(return_value=_make_cursor(ops_runs))
 
-        dates = await _get_all_bulk_processed_dates_set(db)
+        dates = await _get_bounded_bulk_processed_dates_set(
+            db, after_date="2026-03-20", through_date="2026-03-25",
+        )
         assert "2026-03-23" not in dates
 
     @pytest.mark.asyncio
     async def test_empty_runs_returns_empty(self):
         """No runs → empty set."""
-        from services.admin_overview_service import _get_all_bulk_processed_dates_set
+        from services.admin_overview_service import _get_bounded_bulk_processed_dates_set
 
         db = MagicMock()
         db.ops_job_runs.aggregate = MagicMock(return_value=_make_cursor([]))
 
-        dates = await _get_all_bulk_processed_dates_set(db)
+        dates = await _get_bounded_bulk_processed_dates_set(
+            db, after_date="2026-03-20", through_date="2026-03-25",
+        )
         assert len(dates) == 0
+
+    @pytest.mark.asyncio
+    async def test_dates_outside_range_excluded(self):
+        """Dates before after_date and after through_date are excluded."""
+        from services.admin_overview_service import _get_bounded_bulk_processed_dates_set
+
+        ops_runs = [{
+            "job_name": "price_sync",
+            "status": "success",
+            "details": {
+                "price_bulk_gapfill": {
+                    "days": [
+                        {"processed_date": "2026-03-19", "status": "success", "rows_written": 100},
+                        {"processed_date": "2026-03-20", "status": "success", "rows_written": 100},
+                        {"processed_date": "2026-03-23", "status": "success", "rows_written": 100},
+                        {"processed_date": "2026-03-26", "status": "success", "rows_written": 100},
+                    ]
+                }
+            },
+        }]
+
+        db = MagicMock()
+        db.ops_job_runs.aggregate = MagicMock(return_value=_make_cursor(ops_runs))
+
+        dates = await _get_bounded_bulk_processed_dates_set(
+            db, after_date="2026-03-20", through_date="2026-03-25",
+        )
+        # Only 2026-03-23 is in (2026-03-20, 2026-03-25]
+        assert "2026-03-19" not in dates  # before range
+        assert "2026-03-20" not in dates  # == after_date (exclusive)
+        assert "2026-03-23" in dates      # in range
+        assert "2026-03-26" not in dates  # after through_date
 
 
 # =============================================================================
-# F) BASELINE CONSTANT IMPORT
+# F) COMPUTE CANONICAL THROUGH DATE
+# =============================================================================
+
+class TestComputeCanonicalThroughDate:
+    """Test _compute_canonical_through_date."""
+
+    @pytest.mark.asyncio
+    async def test_returns_min_of_bulk_and_calendar(self):
+        """through_date = min(latest_bulk, latest_completed_trading_day)."""
+        from parallel_batch_service import _compute_canonical_through_date
+
+        db = MagicMock()
+        db.pipeline_state.find_one = AsyncMock(
+            return_value={"_id": "price_bulk", "global_last_bulk_date_processed": "2026-03-25"}
+        )
+
+        with patch("services.market_calendar_service.last_n_completed_trading_days",
+                   new_callable=AsyncMock, return_value=["2026-03-28"]):
+            result = await _compute_canonical_through_date(db)
+
+        # min("2026-03-25", "2026-03-28") = "2026-03-25"
+        assert result == "2026-03-25"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_bulk_date(self):
+        """No bulk date → None (cannot prove)."""
+        from parallel_batch_service import _compute_canonical_through_date
+
+        db = MagicMock()
+        db.pipeline_state.find_one = AsyncMock(return_value=None)
+
+        with patch("services.market_calendar_service.last_n_completed_trading_days",
+                   new_callable=AsyncMock, return_value=["2026-03-28"]):
+            result = await _compute_canonical_through_date(db)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_when_no_calendar(self):
+        """No calendar data → None (cannot prove)."""
+        from parallel_batch_service import _compute_canonical_through_date
+
+        db = MagicMock()
+        db.pipeline_state.find_one = AsyncMock(
+            return_value={"_id": "price_bulk", "global_last_bulk_date_processed": "2026-03-25"}
+        )
+
+        with patch("services.market_calendar_service.last_n_completed_trading_days",
+                   new_callable=AsyncMock, return_value=[]):
+            result = await _compute_canonical_through_date(db)
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_calendar_before_bulk(self):
+        """Calendar latest < bulk latest → returns calendar value."""
+        from parallel_batch_service import _compute_canonical_through_date
+
+        db = MagicMock()
+        db.pipeline_state.find_one = AsyncMock(
+            return_value={"_id": "price_bulk", "global_last_bulk_date_processed": "2026-03-28"}
+        )
+
+        with patch("services.market_calendar_service.last_n_completed_trading_days",
+                   new_callable=AsyncMock, return_value=["2026-03-25"]):
+            result = await _compute_canonical_through_date(db)
+
+        # min("2026-03-28", "2026-03-25") = "2026-03-25"
+        assert result == "2026-03-25"
+
+
+# =============================================================================
+# G) BASELINE CONSTANT IMPORT
 # =============================================================================
 
 class TestBaselineConstantConsistency:
