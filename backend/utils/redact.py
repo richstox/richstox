@@ -1,6 +1,7 @@
 """Redaction helpers for secret-bearing values in log output."""
 
 import re
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Secret-bearing parameter/field names (case-insensitive)
@@ -37,11 +38,11 @@ _HEADER_RES = [
 # JWT-like: three base64url segments separated by dots
 # Each segment: at least 4 chars of [A-Za-z0-9_-], optionally ending with =
 _JWT_RE = re.compile(
-    r"\b[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}=*\b"
+    r"\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}=*\b"
 )
 
 
-def redact_secrets(text: str) -> str:
+def redact_secrets(text: Optional[str]) -> Optional[str]:
     """Redact secret values from *text* while preserving structure.
 
     Designed to be called on combined stdout+stderr output before it is

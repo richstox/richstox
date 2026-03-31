@@ -156,8 +156,8 @@ async def startup_api_call_guard():
             "ran_at": datetime.now(timezone.utc),
             "exit_code": result.returncode,
             "passed": passed,
-            "stdout": redact_secrets(result.stdout[:2000]) if result.stdout else None,
-            "stderr": redact_secrets(result.stderr[:500]) if result.stderr else None,
+            "stdout": redact_secrets(result.stdout)[:2000] if result.stdout else None,
+            "stderr": redact_secrets(result.stderr)[:500] if result.stderr else None,
         }
         
         # Store to ops collection for Admin Panel

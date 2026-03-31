@@ -254,6 +254,12 @@ class TestRedactSecretsFunction:
         assert "[REDACTED]" not in result
         assert "[REDACTED_JWT]" not in result
 
+    def test_does_not_redact_version_numbers(self):
+        """Dotted version strings like 1234.5678.9012 must NOT be redacted."""
+        text = "Running version 1234.5678.9012 on server"
+        result = self._redact(text)
+        assert result == text
+
     # ---- Empty / None handling ----
 
     def test_empty_string(self):
