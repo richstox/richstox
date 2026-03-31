@@ -168,8 +168,11 @@ async def startup_api_call_guard():
         if passed:
             logger.info("✅ API Call Guard: PASS - All EODHD calls in allowlist")
         else:
-            logger.critical(f"🚨 API Call Guard: FAIL - Violations found!")
-            logger.critical(result.stdout[:500] if result.stdout else "No output")
+            combined = (result.stdout or "") + (result.stderr or "")
+            detail = combined.strip()[:1000] if combined.strip() else (
+                f"Script exited with code {result.returncode} but produced no output"
+            )
+            logger.critical(f"🚨 API Call Guard: FAIL - Violations found!\n{detail}")
             
     except subprocess.TimeoutExpired:
         logger.warning("⚠️ API Call Guard: Timeout (script took >30s)")

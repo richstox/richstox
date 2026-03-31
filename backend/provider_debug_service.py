@@ -135,7 +135,7 @@ async def upsert_provider_debug_snapshot(
             {"ticker": snapshot["ticker"]},
             {
                 "$set": snapshot,
-                "$setOnInsert": {"first_captured_at": now, "capture_count": 0},
+                "$setOnInsert": {"first_captured_at": now},
                 "$inc": {"capture_count": 1},
             },
             upsert=True,
