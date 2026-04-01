@@ -706,7 +706,7 @@ async def _get_bulk_processed_dates_set(db) -> set:
     """
     pipeline = [
         {"$match": {
-            "job_name": "price_sync",
+            "job_name": {"$in": ["price_sync", "bulk_gapfill_remediation"]},
             "status": {"$in": ["success", "completed"]},
             "details.price_bulk_gapfill.days": {"$exists": True},
         }},
