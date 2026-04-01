@@ -49,7 +49,19 @@ function WebRailsInner({
   subscriptionTier,
 }: WebRailsProps) {
   const { width: windowWidth } = useWindowDimensions();
-  const showRails = windowWidth >= RAIL_BREAKPOINT;
+
+  // Hydration safety: during SSG / static export, useWindowDimensions()
+  // returns width=0 (no browser window), so showRails would be false.
+  // On the client the real viewport width is available immediately, which
+  // can flip showRails to true and produce a different DOM tree — a
+  // structural mismatch that triggers React error #418.
+  //
+  // Fix: always render the "no rails" layout on the first (server-matching)
+  // render, then allow rails after the component has mounted on the client.
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => { setMounted(true); }, []);
+
+  const showRails = mounted && windowWidth >= RAIL_BREAKPOINT;
   const isPaid = subscriptionTier === 'pro' || subscriptionTier === 'pro_plus';
 
   if (!showRails) {
