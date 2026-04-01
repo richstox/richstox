@@ -3926,3 +3926,214 @@ async def sync_fundamentals_delta(db, batch_size: int = 50) -> Dict[str, Any]:
                f"{result['tickers_failed']} failed, {result['api_calls']} API calls")
     
     return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BULK GAPFILL REMEDIATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
+MAX_REMEDIATION_DAYS_PER_RUN = 3
+
+
+async def _get_remediation_processed_dates_set(db) -> set:
+    """
+    Collect all dates successfully processed by price_sync OR
+    bulk_gapfill_remediation from ops_job_runs.details.price_bulk_gapfill.days[].
+
+    Mirrors the dashboard reader logic (_get_bulk_processed_dates_set in
+    market_calendar_service.py) so detection uses the same truth source.
+    """
+    pipeline = [
+        {"$match": {
+            "job_name": {"$in": ["price_sync", "bulk_gapfill_remediation"]},
+            "status": {"$in": ["success", "completed"]},
+            "details.price_bulk_gapfill.days": {"$exists": True},
+        }},
+        {"$sort": {"finished_at": -1}},
+        {"$limit": 50},
+        {"$project": {"_id": 0, "details.price_bulk_gapfill.days": 1}},
+    ]
+
+    dates: set = set()
+    async for doc in db.ops_job_runs.aggregate(pipeline):
+        details = doc.get("details") or {}
+        gapfill = details.get("price_bulk_gapfill") or {}
+        for day in gapfill.get("days", []):
+            if (
+                day.get("status") == "success"
+                and day.get("processed_date")
+                and (day.get("rows_written") or 0) > 0
+            ):
+                dates.add(day["processed_date"])
+
+    return dates
+
+
+async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
+    """
+    Detect missing dates among the last 10 completed trading days and
+    remediate up to MAX_REMEDIATION_DAYS_PER_RUN using per-ticker
+    fetch_eod_history fallback.
+
+    Writes audit proof to ops_job_runs under job_name="bulk_gapfill_remediation"
+    using the same details.price_bulk_gapfill.days[] structure the dashboard
+    readers already understand.
+
+    Does NOT advance the global watermark (pipeline_state._id="price_bulk").
+    """
+    from services.market_calendar_service import last_n_completed_trading_days
+    from price_ingestion_service import fetch_eod_history, parse_eod_record
+
+    started_at = datetime.now(timezone.utc)
+    job_name = "bulk_gapfill_remediation"
+
+    # Insert running sentinel
+    run_doc_id = (await db.ops_job_runs.insert_one({
+        "job_name": job_name,
+        "status": "running",
+        "started_at": started_at,
+        "started_at_prague": _to_prague_iso(started_at),
+        "source": "scheduler",
+        "details": {},
+    })).inserted_id
+
+    days: list = []
+    overall_status = "success"
+
+    try:
+        # 1) Detect completed trading days
+        completed_days = await last_n_completed_trading_days(db, 10, "US")
+        logger.info(f"[GAPFILL REMEDIATION] completed_days={completed_days}")
+
+        # 2) Get already-processed dates
+        processed_set = await _get_remediation_processed_dates_set(db)
+        logger.info(f"[GAPFILL REMEDIATION] processed_set has {len(processed_set)} dates")
+
+        # 3) Compute missing, oldest-first
+        missing_dates = sorted([d for d in completed_days if d not in processed_set])
+        logger.info(f"[GAPFILL REMEDIATION] missing_dates={missing_dates}")
+
+        # Store detection inputs
+        await db.ops_job_runs.update_one(
+            {"_id": run_doc_id},
+            {"$set": {
+                "details.completed_days": completed_days,
+                "details.missing_dates": missing_dates,
+                "details.processed_set_size": len(processed_set),
+            }},
+        )
+
+        # 4) Remediate up to MAX_REMEDIATION_DAYS_PER_RUN
+        dates_to_fix = missing_dates[:MAX_REMEDIATION_DAYS_PER_RUN]
+
+        if not dates_to_fix:
+            logger.info("[GAPFILL REMEDIATION] No missing dates to remediate")
+        else:
+            # Load seeded ticker set
+            seeded_docs = await db.tracked_tickers.find(
+                SEED_QUERY, {"_id": 0, "ticker": 1}
+            ).to_list(None)
+            seeded_tickers = sorted({d["ticker"] for d in seeded_docs if d.get("ticker")})
+            logger.info(f"[GAPFILL REMEDIATION] {len(seeded_tickers)} seeded tickers loaded")
+
+            for target_date in dates_to_fix:
+                day_entry: Dict[str, Any] = {
+                    "processed_date": target_date,
+                    "status": "error",
+                    "rows_written": 0,
+                    "advanced_watermark": False,
+                    "error": None,
+                    "source": "per_ticker_fallback",
+                }
+
+                try:
+                    rows_written = 0
+                    batch_ops = []
+
+                    for ticker in seeded_tickers:
+                        try:
+                            records = await fetch_eod_history(
+                                ticker, from_date=target_date, to_date=target_date
+                            )
+                            for record in records:
+                                parsed = parse_eod_record(ticker, record)
+                                if not parsed.get("date"):
+                                    continue
+                                batch_ops.append(
+                                    UpdateOne(
+                                        {"ticker": parsed["ticker"], "date": parsed["date"]},
+                                        {"$set": parsed},
+                                        upsert=True,
+                                    )
+                                )
+                        except Exception as ticker_err:
+                            logger.warning(
+                                f"[GAPFILL REMEDIATION] Ticker {ticker} date {target_date} "
+                                f"error: {ticker_err}"
+                            )
+
+                    # Bulk-write collected operations
+                    if batch_ops:
+                        write_result = await db.stock_prices.bulk_write(
+                            batch_ops, ordered=False
+                        )
+                        rows_written = (
+                            write_result.upserted_count + write_result.modified_count
+                        )
+
+                    day_entry["rows_written"] = rows_written
+                    day_entry["status"] = "success"
+                    logger.info(
+                        f"[GAPFILL REMEDIATION] {target_date}: {rows_written} rows written"
+                    )
+
+                except Exception as day_err:
+                    day_entry["status"] = "error"
+                    day_entry["error"] = str(day_err)[:500]
+                    overall_status = "error"
+                    logger.error(
+                        f"[GAPFILL REMEDIATION] {target_date} failed: {day_err}"
+                    )
+
+                days.append(day_entry)
+
+                # Persist after each day so partial progress is visible
+                await db.ops_job_runs.update_one(
+                    {"_id": run_doc_id},
+                    {"$set": {"details.price_bulk_gapfill.days": days}},
+                )
+
+    except Exception as exc:
+        overall_status = "error"
+        logger.error(f"[GAPFILL REMEDIATION] Unhandled error: {exc}")
+        # Record the top-level error in the run document
+        await db.ops_job_runs.update_one(
+            {"_id": run_doc_id},
+            {"$set": {"details.error": str(exc)[:500]}},
+        )
+
+    # Finalize the ops_job_runs document
+    finished_at = datetime.now(timezone.utc)
+    await db.ops_job_runs.update_one(
+        {"_id": run_doc_id},
+        {"$set": {
+            "status": overall_status,
+            "finished_at": finished_at,
+            "finished_at_prague": _to_prague_iso(finished_at),
+            "log_timezone": "Europe/Prague",
+            "details.price_bulk_gapfill.days": days,
+        }},
+    )
+
+    logger.info(
+        f"[GAPFILL REMEDIATION] Finished: status={overall_status}, "
+        f"days_attempted={len(days)}"
+    )
+
+    return {
+        "job_name": job_name,
+        "status": overall_status,
+        "days_attempted": len(days),
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+    }

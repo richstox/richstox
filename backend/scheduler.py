@@ -151,6 +151,10 @@ PEER_MEDIANS_MINUTE = 30
 PAIN_CACHE_HOUR = 5
 PAIN_CACHE_MINUTE = 0
 
+# GAPFILL REMEDIATION: Detect & fill missing bulk dates at 05:00
+GAPFILL_REMEDIATION_HOUR = 5
+GAPFILL_REMEDIATION_MINUTE = 0
+
 # ADMIN REPORT: Daily admin report at 06:00 (after all morning jobs)
 ADMIN_REPORT_HOUR = 6
 ADMIN_REPORT_MINUTE = 0
@@ -1142,6 +1146,17 @@ async def scheduler_loop():
                     await set_last_run_state(last_run)
                 except Exception as exc:
                     logger.error(f"[scheduler] pain_cache unhandled error (will retry next minute): {exc}")
+            
+            # GAPFILL REMEDIATION at 05:00 (catch-up enabled)
+            if should_run("bulk_gapfill_remediation", GAPFILL_REMEDIATION_HOUR, GAPFILL_REMEDIATION_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering bulk_gapfill_remediation (hour={current_hour}, scheduled={GAPFILL_REMEDIATION_HOUR}:{GAPFILL_REMEDIATION_MINUTE:02d})")
+                try:
+                    from scheduler_service import run_bulk_gapfill_remediation
+                    await run_job_with_retry("bulk_gapfill_remediation", run_bulk_gapfill_remediation, db)
+                    last_run["bulk_gapfill_remediation"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] bulk_gapfill_remediation unhandled error (will retry next minute): {exc}")
             
             # ADMIN REPORT at 06:00 (catch-up enabled)
             if should_run("admin_report", ADMIN_REPORT_HOUR, ADMIN_REPORT_MINUTE, last_run, today_str, current_hour, current_minute):
