@@ -154,7 +154,7 @@ function formatElapsed(seconds: number): string {
 }
 
 function formatDuration(sec?: number): string {
-  if (sec === undefined || sec === null) return '';
+  if (sec == null || !isFinite(sec)) return '';
   const total = Math.round(sec);
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
@@ -177,7 +177,9 @@ function parseUtcIso(iso?: string | null): number {
 function formatTime(iso?: string): string {
   if (!iso) return 'Never';
   try {
-    const d = new Date(parseUtcIso(iso));
+    const ms = parseUtcIso(iso);
+    if (isNaN(ms)) return '—';
+    const d = new Date(ms);
     return `${d.toLocaleString('en-GB', {
       timeZone: 'Europe/Prague',
       month: 'short',
@@ -185,7 +187,7 @@ function formatTime(iso?: string): string {
       hour: '2-digit',
       minute: '2-digit',
     })} Prague`;
-  } catch { return iso; }
+  } catch { return '—'; }
 }
 
 function getStatusColor(status?: string): string {
