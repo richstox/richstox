@@ -1229,7 +1229,7 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
         def _finished_ts(doc):
             if not doc:
                 return None
-            return doc.get("finished_at") or doc.get("started_at")
+            return doc.get("finished_at")
 
         # Pick whichever finished more recently
         nr_ts = _finished_ts(news_refresh_run)

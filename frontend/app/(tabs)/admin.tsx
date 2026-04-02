@@ -165,7 +165,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const newsRefreshPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [liveNewsRun, setLiveNewsRun] = useState<Record<string, any> | null>(null);
 
-  const authHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+  const authHeaders: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
 
   const fetchAll = useCallback(async () => {
     try {
@@ -199,6 +199,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       if (newsRefreshPollRef.current) {
         clearTimeout(newsRefreshPollRef.current);
         newsRefreshPollRef.current = null;
+      }
+      if (!sessionToken) {
+        setLiveNewsRun(null);
       }
       // When job finishes, refresh the full overview to update pipeline_age
       if (liveNewsRun && newsRunStatus && newsRunStatus !== 'running') {
@@ -471,10 +474,10 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             )}
             {!isNewsRefreshRunning && (
               <TouchableOpacity
-                style={{ marginLeft: 4, backgroundColor: '#06B6D4', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 }}
+                style={d.opsRunBtn}
                 onPress={handleRunNewsRefresh}
               >
-                <Text style={{ color: '#fff', fontSize: 9, fontWeight: '700' }}>Run</Text>
+                <Text style={d.opsRunBtnText}>Run</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -729,6 +732,8 @@ const d = StyleSheet.create({
   opsItem: { width: '47%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border },
   opsLabel: { flex: 1, fontSize: 11, color: COLORS.text },
   opsValue: { fontSize: 11, fontWeight: '700' },
+  opsRunBtn: { marginLeft: 4, backgroundColor: '#06B6D4', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
+  opsRunBtnText: { color: '#fff', fontSize: 9, fontWeight: '700' },
 
   // C) Price Integrity
   integrityGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
