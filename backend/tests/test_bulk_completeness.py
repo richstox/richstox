@@ -114,9 +114,15 @@ class TestBaselineMarker:
         db.ops_job_runs.find_one = AsyncMock(
             return_value={"_id": "job_run_xyz"}
         )
-        db.pipeline_state.find_one = AsyncMock(
-            return_value={"_id": "price_bulk", "global_last_bulk_date_processed": "2026-03-28"}
-        )
+
+        async def _pipeline_find_one(query, *args, **kwargs):
+            if query.get("_id") == "full_backfill_baseline":
+                return None  # baseline missing — tests assume no prior baseline
+            if query.get("_id") == "price_bulk":
+                return {"_id": "price_bulk", "global_last_bulk_date_processed": "2026-03-28"}
+            return None
+
+        db.pipeline_state.find_one = AsyncMock(side_effect=_pipeline_find_one)
         db.pipeline_state.update_one = AsyncMock()
         db.ops_config.find_one = AsyncMock(
             return_value={"key": "scheduler_enabled", "value": True}
