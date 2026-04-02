@@ -1138,7 +1138,8 @@ async def scheduler_loop():
                         {"_id": "full_backfill_baseline"}
                     )
                     _baseline_missing = _baseline_doc is None
-                except Exception:
+                except Exception as _bl_exc:
+                    logger.error(f"[scheduler] backfill_all baseline check failed (fail-closed, skipping): {_bl_exc}")
                     _baseline_missing = False  # fail-closed: don't trigger on DB errors
 
                 if _baseline_missing:
