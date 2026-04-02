@@ -629,7 +629,9 @@ async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
     """
     Scheduled job: Backfill ALL prices until completion.
     
-    Runs at 05:00 Prague time. Continues until all tickers complete.
+    Runs at 01:00 Prague time, Mon-Sat, ONLY when baseline is missing.
+    Idempotent: re-checks baseline immediately before starting; skips if
+    baseline was created since the scheduler decided to invoke this job.
     Uses parallel fetching with safety stops.
     
     Safety stops:
@@ -647,6 +649,19 @@ async def run_scheduled_backfill_all_prices(db) -> Dict[str, Any]:
     
     started_at = datetime.now(timezone.utc)
     job_type = "scheduled_backfill_all_prices"
+    
+    # Idempotent guard: re-check baseline right before doing any work.
+    # Another replica or a manual run may have created it since the
+    # scheduler decided to invoke us.
+    baseline = await db.pipeline_state.find_one({"_id": FULL_BACKFILL_BASELINE_ID})
+    if baseline is not None:
+        logger.info(f"{job_type} skipped: baseline already exists (idempotent guard)")
+        return {
+            "job_type": job_type,
+            "status": "skipped",
+            "reason": "baseline_already_exists",
+            "started_at": started_at.isoformat(),
+        }
     
     # Job configuration
     CONCURRENCY = 10  # parallel API requests

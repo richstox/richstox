@@ -123,8 +123,8 @@ PRICE_SYNC_MINUTE = 0
 FUNDAMENTALS_SYNC_HOUR = 4
 FUNDAMENTALS_SYNC_MINUTE = 30
 
-# NEW: Parallel backfill all prices at 05:00
-BACKFILL_ALL_HOUR = 5
+# Automatic baseline backfill at 01:00 (runs only when baseline is missing)
+BACKFILL_ALL_HOUR = 1
 BACKFILL_ALL_MINUTE = 0
 
 # NEWS: Daily news refresh at 13:00
@@ -1131,21 +1131,31 @@ async def scheduler_loop():
                     except Exception:
                         pass  # best-effort observability
             
-            # BACKFILL_ALL: MANUAL ONLY by default
-            try:
-                backfill_all_enabled = await db.ops_config.find_one({"key": "job_backfill_all_enabled"})
-                backfill_all_auto = backfill_all_enabled.get("value", False) if backfill_all_enabled else False
-            except Exception:
-                backfill_all_auto = False
-            
-            if backfill_all_auto and should_run("backfill_all", BACKFILL_ALL_HOUR, BACKFILL_ALL_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering backfill_all (hour={current_hour}, scheduled={BACKFILL_ALL_HOUR}:{BACKFILL_ALL_MINUTE:02d})")
+            # BACKFILL_ALL: automatic one-time when baseline is missing
+            if should_run("backfill_all", BACKFILL_ALL_HOUR, BACKFILL_ALL_MINUTE, last_run, today_str, current_hour, current_minute):
                 try:
-                    await run_job_with_retry("backfill_all", run_scheduled_backfill_all_prices, db)
+                    _baseline_doc = await db.pipeline_state.find_one(
+                        {"_id": "full_backfill_baseline"}
+                    )
+                    _baseline_missing = _baseline_doc is None
+                except Exception:
+                    _baseline_missing = False  # fail-closed: don't trigger on DB errors
+
+                if _baseline_missing:
+                    logger.info(
+                        f"Triggering backfill_all — baseline missing "
+                        f"(hour={current_hour}, scheduled={BACKFILL_ALL_HOUR}:{BACKFILL_ALL_MINUTE:02d})"
+                    )
+                    try:
+                        await run_job_with_retry("backfill_all", run_scheduled_backfill_all_prices, db)
+                        last_run["backfill_all"] = today_str
+                        await set_last_run_state(last_run)
+                    except Exception as exc:
+                        logger.error(f"[scheduler] backfill_all unhandled error (will retry next minute): {exc}")
+                else:
+                    # Baseline exists — mark as done so we don't re-check every minute
                     last_run["backfill_all"] = today_str
                     await set_last_run_state(last_run)
-                except Exception as exc:
-                    logger.error(f"[scheduler] backfill_all unhandled error (will retry next minute): {exc}")
             
             # KEY METRICS at 05:00 (catch-up enabled)
             if should_run("key_metrics", KEY_METRICS_HOUR, KEY_METRICS_MINUTE, last_run, today_str, current_hour, current_minute):
