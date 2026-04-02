@@ -362,6 +362,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [benchmarkUpdating, setBenchmarkUpdating] = useState(false);
   const benchmarkPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── News refresh (Morning Fresh) state ─────────────────────────────────────
+  const [newsRefreshRunning, setNewsRefreshRunning] = useState(false);
+
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
   const [auditLive, setAuditLive] = useState(false);
@@ -738,6 +741,29 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
+  const handleRunNewsRefresh = async () => {
+    setNewsRefreshRunning(true);
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/job/news_refresh/run`,
+        { method: 'POST' },
+        sessionToken,
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
+        throw new Error(msg);
+      }
+      Alert.alert('Morning Fresh', 'News refresh started in background.');
+      await fetchSnapshotOnce();
+    } catch (e: any) {
+      Alert.alert('Morning Fresh', e?.message || 'Could not start news refresh');
+    } finally {
+      setNewsRefreshRunning(false);
+    }
+  };
+
   const handleRunAudit = async () => {
     const raw = auditTicker.trim().toUpperCase();
     if (!raw) return;
@@ -917,6 +943,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // Derive benchmark running state from real backend status
   const benchmarkRunStatus = jobRuns['benchmark_update']?.status;
   const isBenchmarkRunning = benchmarkUpdating || benchmarkRunStatus === 'running';
+
+  // Derive news refresh running state from real backend status
+  const newsRefreshStatus = jobRuns['news_refresh']?.status;
+  const isNewsRefreshRunning = newsRefreshRunning || newsRefreshStatus === 'running';
 
   // Poll benchmark status while it is running so UI updates when the job finishes
   useEffect(() => {
@@ -2161,6 +2191,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               <Text style={s.stepTitle}>Morning Fresh</Text>
               {(() => {
                 const run = jobRuns['news_refresh'];
+                if (isNewsRefreshRunning) {
+                  return <ActivityIndicator size="small" color="#06B6D4" style={{ marginLeft: 4 }} />;
+                }
                 return run ? (
                   <Ionicons name={getStatusIcon(run.status) as any} size={14} color={getStatusColor(run.status)} style={{ marginLeft: 4 }} />
                 ) : null;
@@ -2168,8 +2201,24 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             </View>
             <Text style={s.stepSchedule}>Daily 13:00 Prague</Text>
           </View>
+          <TouchableOpacity
+            style={[
+              { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: '#06B6D4' },
+              isNewsRefreshRunning && { opacity: 0.5 },
+            ]}
+            onPress={handleRunNewsRefresh}
+            disabled={isNewsRefreshRunning}
+          >
+            {isNewsRefreshRunning
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
+          </TouchableOpacity>
         </View>
-        {jobRuns['news_refresh'] ? (
+        {isNewsRefreshRunning ? (
+          <View style={s.runInfo}>
+            <Text style={[s.runValue, { color: '#06B6D4' }]}>Running…</Text>
+          </View>
+        ) : jobRuns['news_refresh'] ? (
           <View style={s.runInfo}>
             <Text style={s.runValue}>
               Last: {formatTime(jobRuns['news_refresh'].start_time)} · {formatDuration(jobRuns['news_refresh'].duration_seconds)}

@@ -5248,6 +5248,7 @@ async def admin_run_job_now(
     from scheduler_service import save_step3_visibility_exclusion_report as _save_step3_vis_report
     from benchmark_service import update_all_benchmarks
     from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
+    from services.news_service import refresh_hot_tickers_news
 
     async def _market_calendar_refresh(database):
         await _mc_ensure_indexes(database)
@@ -5272,12 +5273,39 @@ async def admin_run_job_now(
         "recompute_visibility_with_zombies": recompute_visibility_with_zombie_cleanup,
         "benchmark_update": update_all_benchmarks,
         "market_calendar": _market_calendar_refresh,
+        "news_refresh": refresh_hot_tickers_news,
     }
     
     if job_name not in JOB_RUNNERS:
         raise HTTPException(
             status_code=400, 
             detail=f"Unknown or non-runnable job: {job_name}. Available: {list(JOB_RUNNERS.keys())}"
+        )
+
+    # Kill-switch guard: refuse to start any manual job while the scheduler
+    # kill switch is engaged (same DB flag the scheduler loop checks).
+    if not await get_scheduler_enabled(db):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "kill_switch_engaged",
+                "message": "Global kill switch is engaged. Disable it before running jobs.",
+            },
+        )
+
+    # Already-running guard: prevent concurrent execution of the same job.
+    existing_running = await db.ops_job_runs.find_one(
+        {"job_name": job_name, "status": "running"},
+        sort=[("started_at", -1)],
+    )
+    if existing_running:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "already_running",
+                "message": f"{job_name} is already running (started {existing_running.get('started_at_prague', 'unknown')}).",
+                "audit_id": str(existing_running["_id"]),
+            },
         )
     
     job_func = JOB_RUNNERS[job_name]
