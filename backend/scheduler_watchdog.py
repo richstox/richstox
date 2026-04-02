@@ -15,6 +15,8 @@ import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
 logger = logging.getLogger("richstox.scheduler_watchdog")
 
 TIMEZONE = ZoneInfo("Europe/Prague")
@@ -24,7 +26,7 @@ def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, str(default)))
 
 
-async def watchdog_loop(db) -> None:  # noqa: C901
+async def watchdog_loop(db: AsyncIOMotorDatabase) -> None:  # noqa: C901
     """Monitor scheduler heartbeats and kill the process if they go stale.
 
     Parameters
