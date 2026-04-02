@@ -159,6 +159,45 @@ GAPFILL_REMEDIATION_MINUTE = 0
 ADMIN_REPORT_HOUR = 6
 ADMIN_REPORT_MINUTE = 0
 
+# =============================================================================
+# RUNTIME BUILD IDENTITY — persisted into ops_job_runs for deployment debugging
+# =============================================================================
+# KNOWN_JOBS: every job_name this build can schedule.  If production heartbeats
+# omit a job that appears here, the running build is stale.
+# NOTE: kept in sync manually — verified by audit_scheduler.py and by the
+# KNOWN_JOBS consistency test.  Deriving programmatically is infeasible
+# because jobs are inline should_run() calls, not a dynamic registry.
+KNOWN_JOBS = sorted([
+    "market_calendar",
+    "universe_seed",
+    "price_sync",
+    "fundamentals_sync",
+    "benchmark_update",
+    "backfill_all",
+    "key_metrics",
+    "peer_medians",
+    "pain_cache",
+    "bulk_gapfill_remediation",
+    "admin_report",
+    "news_refresh",
+])
+
+
+def _get_build_sha() -> str:
+    """Return the git commit SHA of the running build.
+
+    Checks (in order):
+    1. RAILWAY_GIT_COMMIT_SHA  — set automatically by Railway on every deploy
+    2. GIT_COMMIT_SHA          — manual override / other CI systems
+    3. Falls back to 'unknown'
+    """
+    return (
+        os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("GIT_COMMIT_SHA")
+        or "unknown"
+    )
+
+
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 db_name = os.environ.get('DB_NAME', 'richstox')
@@ -645,6 +684,8 @@ async def scheduler_loop():
     logger.info(f"  {PEER_MEDIANS_HOUR:02d}:{PEER_MEDIANS_MINUTE:02d} - Peer Medians")
     logger.info(f"  {ADMIN_REPORT_HOUR:02d}:{ADMIN_REPORT_MINUTE:02d} - Admin Report")
     logger.info(f"  {NEWS_REFRESH_HOUR:02d}:{NEWS_REFRESH_MINUTE:02d} - Daily news refresh")
+    logger.info(f"  Build SHA: {_get_build_sha()}")
+    logger.info(f"  Known jobs ({len(KNOWN_JOBS)}): {', '.join(KNOWN_JOBS)}")
 
     # Best-effort: record scheduler_started in ops_job_runs (Prague timestamp)
     try:
@@ -658,7 +699,11 @@ async def scheduler_loop():
             "completed_at_prague": _prague_started.isoformat(),
             "log_timezone": "Europe/Prague",
             "duration_seconds": 0,
-            "details": {"owner_id": _get_owner_id()},
+            "details": {
+                "owner_id": _get_owner_id(),
+                "build_commit_sha": _get_build_sha(),
+                "known_jobs": KNOWN_JOBS,
+            },
         })
     except Exception:
         logger.warning("Failed to log scheduler_started to ops_job_runs (non-fatal)")
@@ -702,6 +747,8 @@ async def scheduler_loop():
                 "details": {
                     "last_run_state": last_run,
                     "kill_switch_engaged": kill_switch_engaged,
+                    "build_commit_sha": _get_build_sha(),
+                    "known_jobs": KNOWN_JOBS,
                 },
             })
         except Exception:
