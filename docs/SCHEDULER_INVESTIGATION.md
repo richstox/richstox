@@ -196,3 +196,136 @@ db.ops_job_runs.find({job_name: "universe_seed", source: "scheduler"}).sort({sta
 - `scheduler.py:617` — Kill switch log changed from `logger.debug` to `logger.warning`
 - `scheduler.py:531-545` — Heartbeat now includes `kill_switch_engaged` in details
 - `scheduler.py:652-690` — Step 1 decision logged to `system_job_logs` once per day
+
+## Railway vs Repo Claim Classification Report (2026-04-02)
+
+### 1) Corrected Classification Table — All Major Claims
+
+| # | Claim | Classification | Evidence |
+|---|-------|---------------|----------|
+| 1 | "Railway runs a SINGLE service" | **RAILWAY-UI-ONLY** | Repo has no `railway.toml`, `Procfile`, `Dockerfile`, `docker-compose.yml` (verified: zero matches for all four glob patterns). But Railway UI can define multiple services independent of repo files. `OPERATIONS.md:54-57` says "Backend → Railway" as a single row but does NOT explicitly state "only one Railway service exists". Cannot prove service count from repo alone. |
+| 2 | "Railway auto-detects `uvicorn server:app --host 0.0.0.0 --port $PORT`" | **RAILWAY-UI-ONLY** | `OPERATIONS.md:23` shows `uvicorn server:app --host 0.0.0.0 --port 8000` as the _local dev_ command. No repo file specifies Railway's production start command. Railway infers it via Nixpacks/Railpack — the actual command is only visible in Railway UI → service → **Settings** → **Deploy** → **Start Command**. |
+| 3 | "Scheduler runs as an in-process asyncio background task inside the uvicorn process" | **REPO-PROVEN** | `server.py:8644-8683` — `startup_scheduler_daemon()` calls `asyncio.create_task(scheduler_loop())` inside a FastAPI `@app.on_event("startup")` handler. |
+| 4 | "Scheduler is gated by `ENABLE_SCHEDULER_DAEMON=true` env var" | **REPO-PROVEN** | `server.py:8654` — `if os.environ.get("ENABLE_SCHEDULER_DAEMON", "").lower() not in ("true", "1", "yes"): return` |
+| 5 | "`ENABLE_SCHEDULER_DAEMON=true` is set in Railway production env" | **RAILWAY-UI-ONLY** | No `.env` file is committed. Whether this env var is set is only verifiable in Railway UI → service → **Settings** → **Variables**. |
+| 6 | "No Procfile, railway.toml, Dockerfile, or docker-compose exists in the repo" | **REPO-PROVEN** | Glob searches for `**/Procfile*`, `**/railway.{toml,json,yaml,yml}`, `**/Dockerfile*`, `**/docker-compose*` all returned zero results. |
+| 7 | "Frontend deploys to Netlify" | **REPO-PROVEN** | `netlify.toml:1-8` — build config with `base = "frontend"`, `command = "npx expo export -p web"`. |
+| 8 | "Backend deploys to Railway, triggered by push to `main`" | **REPO-PROVEN** (partial) | `OPERATIONS.md:54-57` — deploy targets table says "Backend → Railway → Push to `main`". But auto-deploy on `main` is a Railway UI setting — repo docs _describe_ it, they don't _enforce_ it. |
+| 9 | "`bulk_gapfill_remediation` job exists in the scheduler loop" | **REPO-PROVEN** | `scheduler.py:1197-1206` — `should_run("bulk_gapfill_remediation", ...)` → `run_job_with_retry(...)`. Constants at `scheduler.py:155-156`. |
+| 10 | "The running Railway deployment predates the `bulk_gapfill_remediation` commit" | **RAILWAY-UI-ONLY** | Observable symptom (heartbeats lack `bulk_gapfill_remediation` in `last_run_state`). Which commit is deployed is only verifiable in Railway UI → service → **Deployments** → active deploy SHA. |
+| 11 | "Build identity (KNOWN_JOBS + build_commit_sha) is persisted in scheduler_started and scheduler_heartbeat" | **IMPLEMENTED-IN-CODE** | See section 4 below. |
+| 12 | "Railway service is connected to the correct repo and branch" | **RAILWAY-UI-ONLY** | Only verifiable in Railway UI → service → **Settings** → **Source**. |
+| 13 | "Auto-deploy is enabled" | **RAILWAY-UI-ONLY** | `OPERATIONS.md:61` describes manual redeploy. Whether auto-deploy is actually enabled is only verifiable in Railway UI → service → **Settings** → **Deploy**. |
+
+### 2) Claims That Are Truly REPO-PROVEN
+
+| Claim | File + Line Range |
+|-------|-------------------|
+| Scheduler embedded as background task | `backend/server.py:8644-8683` (`startup_scheduler_daemon` creates asyncio task) |
+| Scheduler gated by `ENABLE_SCHEDULER_DAEMON` env var | `backend/server.py:8654` (env var check, default OFF) |
+| No Procfile/railway.toml/Dockerfile/docker-compose in repo | Glob search: zero results for all four patterns |
+| `bulk_gapfill_remediation` exists in scheduler loop | `backend/scheduler.py:1197-1206` (should_run + run_job_with_retry) |
+| `bulk_gapfill_remediation` constants defined | `backend/scheduler.py:155-156` (GAPFILL_REMEDIATION_HOUR=5, GAPFILL_REMEDIATION_MINUTE=0) |
+| Frontend deploys to Netlify | `netlify.toml:1-8` |
+| Repo docs describe "Backend → Railway, push to main" | `docs/OPERATIONS.md:54-57` |
+| Python runtime pinned to 3.12.7 | `backend/.python-version:1` |
+| Historical fix: scheduler was standalone, now embedded in server.py | `docs/SCHEDULER_INVESTIGATION.md:5-9, 156-166` |
+| `scheduler.py` still has standalone `if __name__ == "__main__": main()` | `backend/scheduler.py:1261-1262` (NOT used in production; the production path is via server.py startup) |
+
+### 3) Claims Requiring Manual Railway UI Verification
+
+| What to Check | Railway UI Click-Path |
+|---|---|
+| How many Railway services exist for this project | **railway.app** → project **richstox** → count services in the project dashboard |
+| Which commit SHA is currently deployed | Service → **Deployments** tab → look at the **active** (green) deployment → note the commit SHA |
+| What start command Railway is using | Service → **Settings** → **Deploy** section → **Start Command** field |
+| Whether `ENABLE_SCHEDULER_DAEMON=true` is set | Service → **Settings** → **Variables** → search for `ENABLE_SCHEDULER_DAEMON` |
+| Whether auto-deploy is enabled on `main` | Service → **Settings** → **Deploy** → **Auto Deploy** toggle |
+| Whether the service is connected to `richstox/richstox` repo on `main` branch | Service → **Settings** → **Source** → verify repo and branch |
+| Whether the root directory is empty or set to `backend/` | Service → **Settings** → **Deploy** → **Root Directory** |
+| Whether a rollback was performed to an old deployment | Service → **Deployments** tab → check deployment history for rollback markers |
+
+### 4) Build Identity Instrumentation — IMPLEMENTED-IN-CODE (Exact Proof)
+
+All three components are present in the repo on this branch:
+
+#### 4a. `KNOWN_JOBS` constant
+**File:** `backend/scheduler.py:170-183`
+```
+KNOWN_JOBS = sorted([
+    "market_calendar", "universe_seed", "price_sync", "fundamentals_sync",
+    "benchmark_update", "backfill_all", "key_metrics", "peer_medians",
+    "pain_cache", "bulk_gapfill_remediation", "admin_report", "news_refresh",
+])
+```
+12 jobs, alphabetically sorted.
+
+#### 4b. `_get_build_sha()` helper
+**File:** `backend/scheduler.py:186-198`
+```
+Reads RAILWAY_GIT_COMMIT_SHA (auto-set by Railway) → GIT_COMMIT_SHA fallback → "unknown"
+```
+
+#### 4c. `scheduler_started` writes build identity
+**File:** `backend/scheduler.py:693-707`
+```
+Lines 702-706: "details": {
+    "owner_id": _get_owner_id(),
+    "build_commit_sha": _get_build_sha(),
+    "known_jobs": KNOWN_JOBS,
+}
+```
+
+#### 4d. `scheduler_heartbeat` writes build identity
+**File:** `backend/scheduler.py:738-753`
+```
+Lines 747-752: "details": {
+    "last_run_state": last_run,
+    "kill_switch_engaged": kill_switch_engaged,
+    "build_commit_sha": _get_build_sha(),
+    "known_jobs": KNOWN_JOBS,
+}
+```
+
+#### 4e. Startup log includes build SHA
+**File:** `backend/scheduler.py:687-688`
+```
+logger.info(f"  Build SHA: {_get_build_sha()}")
+logger.info(f"  Known jobs ({len(KNOWN_JOBS)}): {', '.join(KNOWN_JOBS)}")
+```
+
+**Verification query (run after deploy):**
+```js
+db.ops_job_runs.findOne(
+  {job_name: "scheduler_heartbeat"},
+  {sort: {started_at: -1}}
+).details
+// Expected: { build_commit_sha: "<sha>", known_jobs: [...12 items including "bulk_gapfill_remediation"...] }
+```
+
+### 5) Final Minimal Action Plan (5 bullets)
+
+1. **Railway UI → project richstox → count services.** If there is more than one service, identify which one runs the scheduler (has `ENABLE_SCHEDULER_DAEMON=true`). Check its **Deployments** tab → verify the active deploy SHA matches or postdates the merge commit that added `bulk_gapfill_remediation`. If stale → click **Redeploy** on the latest commit.
+
+2. **Railway UI → service → Settings → Variables.** Confirm `ENABLE_SCHEDULER_DAEMON=true` is present. If missing, the scheduler will never start regardless of which commit is deployed.
+
+3. **Railway UI → service → Settings → Source.** Confirm the service is connected to `richstox/richstox`, branch `main`, with auto-deploy enabled.
+
+4. **After redeploy, verify via MongoDB:**
+   ```js
+   db.ops_job_runs.findOne({job_name: "scheduler_heartbeat"}, {sort: {started_at: -1}}).details.known_jobs
+   ```
+   Must include `"bulk_gapfill_remediation"`. If `details.build_commit_sha` is present and not `"unknown"`, it should match the expected commit SHA.
+
+5. **Wait for 05:00 Prague (next Mon-Sat), then verify:**
+   ```js
+   db.ops_job_runs.findOne({job_name: "bulk_gapfill_remediation"}, {sort: {started_at: -1}})
+   ```
+   Must return a document. If it does, the stale-build issue is resolved.
+
+### Conclusion
+- This report is documentation only.
+- It does not change production behavior.
+- Production truth for service count, env vars, start command, and deployed SHA is Railway UI.
+- Repo-proven facts are limited to code and committed files.
+- Next engineering work item is separate: implement scheduler watchdog/fail-fast or split scheduler into its own service.
