@@ -1219,7 +1219,9 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
             if not run_doc:
                 return None
             # Admin path writes finished_at; scheduler path writes completed_at.
-            finished = run_doc.get("finished_at") or run_doc.get("completed_at")
+            finished = run_doc.get("finished_at")
+            if finished is None:
+                finished = run_doc.get("completed_at")
             if not finished:
                 return None
             if getattr(finished, "tzinfo", None) is None:

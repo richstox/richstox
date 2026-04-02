@@ -202,6 +202,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       }
       if (!sessionToken) {
         setLiveNewsRun(null);
+        return;
       }
       // When job finishes, refresh the full overview to update pipeline_age
       if (liveNewsRun && newsRunStatus && newsRunStatus !== 'running') {
