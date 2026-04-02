@@ -355,6 +355,10 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     }
 
 
+# Backward-compat alias — the scheduler imports this name.
+news_daily_refresh = refresh_hot_tickers_news
+
+
 async def create_news_indexes(db):
     """Create necessary indexes for news collections."""
     # news_articles indexes
