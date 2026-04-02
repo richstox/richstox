@@ -90,6 +90,14 @@ async def watchdog_loop(db: AsyncIOMotorDatabase) -> None:  # noqa: C901
             now_utc = datetime.now(timezone.utc)
             staleness_minutes = (now_utc - started_at).total_seconds() / 60.0
 
+        if staleness_minutes <= max_staleness_minutes:
+            logger.debug(
+                "Watchdog HEALTHY: staleness=%.1f min (threshold=%d min) | now_prague=%s",
+                staleness_minutes,
+                max_staleness_minutes,
+                now_prague.isoformat(),
+            )
+
         if staleness_minutes > max_staleness_minutes:
             consecutive_unhealthy += 1
             logger.warning(

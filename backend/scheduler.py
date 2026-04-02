@@ -178,8 +178,12 @@ KNOWN_JOBS = sorted([
 
 
 def _get_build_sha() -> str:
-    """Return the Railway git commit SHA, or 'unknown' if not set."""
-    return os.environ.get("RAILWAY_GIT_COMMIT_SHA", "unknown")
+    """Return the git commit SHA (RAILWAY_GIT_COMMIT_SHA → GIT_COMMIT_SHA → 'unknown')."""
+    return (
+        os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("GIT_COMMIT_SHA")
+        or "unknown"
+    )
 
 
 # MongoDB connection
