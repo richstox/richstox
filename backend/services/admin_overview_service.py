@@ -1187,11 +1187,12 @@ async def get_eodhd_api_usage() -> Dict[str, Any]:
 async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
     """
     Return hours since last successful full pipeline run (Step 3 = fundamentals_sync)
-    and last successful *standalone* morning refresh (price_sync WITHOUT a chain_run_id).
+    and last successful morning refresh.
 
-    Morning Refresh semantics: only standalone price_sync runs count.
-    Chain runs (details.chain_run_id exists and is not null) are excluded.
-    If no standalone run exists, morning_refresh_hours_since_success = None → UI shows "—".
+    Morning Refresh semantics: the latest completed/success run whose job_name is
+    either ``news_refresh`` (the canonical scheduled/manual job) **or** a standalone
+    ``price_sync`` (no chain_run_id) — whichever finished more recently.
+    If no qualifying run exists, morning_refresh_hours_since_success = None → UI shows "—".
     """
     try:
         now_utc = datetime.now(timezone.utc)
@@ -1201,9 +1202,18 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
             {"finished_at": 1, "_id": 0},
             sort=[("finished_at", -1)],
         )
-        # Morning Refresh = standalone price_sync only (no chain_run_id).
-        # Filter: details.chain_run_id must be absent or null.
-        morning_refresh_run = await db.ops_job_runs.find_one(
+        # Morning Refresh: pick the most-recent completed run from two sources:
+        #  1) news_refresh  (scheduled 13:00 or manual Run Now)
+        #  2) standalone price_sync (no chain_run_id)
+        news_refresh_run = await db.ops_job_runs.find_one(
+            {
+                "job_name": "news_refresh",
+                "status": {"$in": ["success", "completed"]},
+            },
+            {"finished_at": 1, "started_at": 1, "_id": 0},
+            sort=[("finished_at", -1)],
+        )
+        standalone_price_sync_run = await db.ops_job_runs.find_one(
             {
                 "job_name": "price_sync",
                 "status": {"$in": ["success", "completed"]},
@@ -1212,9 +1222,26 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
                     {"details.chain_run_id": None},
                 ],
             },
-            {"finished_at": 1, "_id": 0},
+            {"finished_at": 1, "started_at": 1, "_id": 0},
             sort=[("finished_at", -1)],
         )
+
+        def _finished_ts(doc):
+            if not doc:
+                return None
+            return doc.get("finished_at") or doc.get("started_at")
+
+        # Pick whichever finished more recently
+        nr_ts = _finished_ts(news_refresh_run)
+        sp_ts = _finished_ts(standalone_price_sync_run)
+        if nr_ts and sp_ts:
+            morning_refresh_run = news_refresh_run if nr_ts >= sp_ts else standalone_price_sync_run
+        elif nr_ts:
+            morning_refresh_run = news_refresh_run
+        elif sp_ts:
+            morning_refresh_run = standalone_price_sync_run
+        else:
+            morning_refresh_run = None
 
         def _hours_since(run_doc):
             if not run_doc or not run_doc.get("finished_at"):
