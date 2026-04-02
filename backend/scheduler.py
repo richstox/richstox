@@ -159,6 +159,33 @@ GAPFILL_REMEDIATION_MINUTE = 0
 ADMIN_REPORT_HOUR = 6
 ADMIN_REPORT_MINUTE = 0
 
+# Build identity — included in scheduler_started and scheduler_heartbeat details
+# so that operators can verify which build is running and which jobs it knows about.
+KNOWN_JOBS = sorted([
+    "admin_report",
+    "backfill_all",
+    "benchmark_update",
+    "bulk_gapfill_remediation",
+    "fundamentals_sync",
+    "key_metrics",
+    "market_calendar",
+    "news_refresh",
+    "pain_cache",
+    "peer_medians",
+    "price_sync",
+    "universe_seed",
+])
+
+
+def _get_build_sha() -> str:
+    """Return the git commit SHA (RAILWAY_GIT_COMMIT_SHA → GIT_COMMIT_SHA → 'unknown')."""
+    return (
+        os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+        or os.environ.get("GIT_COMMIT_SHA")
+        or "unknown"
+    )
+
+
 # MongoDB connection
 mongo_url = os.environ.get('MONGO_URL', 'mongodb://localhost:27017')
 db_name = os.environ.get('DB_NAME', 'richstox')
@@ -658,7 +685,11 @@ async def scheduler_loop():
             "completed_at_prague": _prague_started.isoformat(),
             "log_timezone": "Europe/Prague",
             "duration_seconds": 0,
-            "details": {"owner_id": _get_owner_id()},
+            "details": {
+                "owner_id": _get_owner_id(),
+                "build_commit_sha": _get_build_sha(),
+                "known_jobs": KNOWN_JOBS,
+            },
         })
     except Exception:
         logger.warning("Failed to log scheduler_started to ops_job_runs (non-fatal)")
@@ -702,6 +733,8 @@ async def scheduler_loop():
                 "details": {
                     "last_run_state": last_run,
                     "kill_switch_engaged": kill_switch_engaged,
+                    "build_commit_sha": _get_build_sha(),
+                    "known_jobs": KNOWN_JOBS,
                 },
             })
         except Exception:

@@ -8639,6 +8639,7 @@ async def startup_pain_cache_guard(database):
 # already holds the lock the coroutine returns immediately — no duplicate work.
 # =============================================================================
 _scheduler_task: asyncio.Task | None = None
+_watchdog_task: asyncio.Task | None = None
 
 
 @app.on_event("startup")
@@ -8648,7 +8649,7 @@ async def startup_scheduler_daemon():
     Requires ENABLE_SCHEDULER_DAEMON=true in the environment.
     Default is OFF so that plain web workers never start the scheduler.
     """
-    global _scheduler_task
+    global _scheduler_task, _watchdog_task
 
     # ENV-VAR GUARD: scheduler is opt-in, not opt-out.
     if os.environ.get("ENABLE_SCHEDULER_DAEMON", "").lower() not in ("true", "1", "yes"):
@@ -8682,10 +8683,48 @@ async def startup_scheduler_daemon():
     _scheduler_task.add_done_callback(_on_done)
     logger.info("✅ Scheduler daemon started as background task")
 
+    # --- Scheduler watchdog (optional, default OFF) ---
+    if os.environ.get("ENABLE_SCHEDULER_WATCHDOG", "").lower() in ("true", "1", "yes"):
+        from scheduler_watchdog import watchdog_loop
+
+        _watchdog_task = asyncio.create_task(watchdog_loop(db), name="scheduler_watchdog")
+
+        # Fail-fast: if the watchdog itself crashes, the process MUST die so
+        # Railway restarts it.  Cancellation during shutdown is OK.
+        def _on_watchdog_done(task: asyncio.Task):
+            if task.cancelled():
+                logger.info("Scheduler watchdog task was cancelled (shutdown)")
+                return
+            exc = task.exception()
+            if exc:
+                logger.critical(
+                    "Scheduler watchdog crashed — terminating process: %s",
+                    exc,
+                    exc_info=exc,
+                )
+                os._exit(1)
+            # Unexpected normal exit (watchdog_loop is an infinite loop, should never return)
+            logger.critical(
+                "Scheduler watchdog exited unexpectedly — terminating process"
+            )
+            os._exit(1)
+
+        _watchdog_task.add_done_callback(_on_watchdog_done)
+        logger.info("✅ Scheduler watchdog started as background task")
+    else:
+        logger.info("Scheduler watchdog DISABLED (set ENABLE_SCHEDULER_WATCHDOG=true to enable)")
+
 
 @app.on_event("shutdown")
 async def shutdown():
-    global _scheduler_task
+    global _scheduler_task, _watchdog_task
+    if _watchdog_task and not _watchdog_task.done():
+        _watchdog_task.cancel()
+        try:
+            await _watchdog_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Scheduler watchdog stopped")
     if _scheduler_task and not _scheduler_task.done():
         _scheduler_task.cancel()
         try:
