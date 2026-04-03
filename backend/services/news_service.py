@@ -85,7 +85,7 @@ async def _write_news_telemetry(
             {"$set": update_fields},
         )
     except Exception:
-        pass  # non-fatal: never let telemetry writes block the job
+        logger.debug("_write_news_telemetry: update failed", exc_info=True)
 
 
 def generate_article_id(source_link: str, title: str = "", published_at: str = "") -> str:
@@ -330,7 +330,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         if running_doc:
             _run_id = str(running_doc["_id"])
     except Exception:
-        pass
+        logger.debug("news_refresh: could not discover running audit doc", exc_info=True)
 
     await _write_news_telemetry(db, _run_id, phase="init", message="Initialising news refresh")
 
