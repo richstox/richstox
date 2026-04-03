@@ -24,6 +24,7 @@ Tables:
 """
 
 import os
+import asyncio
 import hashlib
 import logging
 import time
@@ -338,17 +339,22 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
 
     # Self-discover running audit doc for heartbeat telemetry (admin Run Now path
     # creates it before calling this function; scheduler path has none yet).
+    # Retry up to 3 times with a short delay to handle any discovery lag.
     _run_id: Optional[str] = None
-    try:
-        running_doc = await db.ops_job_runs.find_one(
-            {"job_name": "news_refresh", "status": "running"},
-            {"_id": 1},
-            sort=[("started_at", -1)],
-        )
-        if running_doc:
-            _run_id = str(running_doc["_id"])
-    except Exception:
-        logger.debug("news_refresh: could not discover running audit doc", exc_info=True)
+    for _attempt in range(3):
+        try:
+            running_doc = await db.ops_job_runs.find_one(
+                {"job_name": "news_refresh", "status": "running"},
+                {"_id": 1},
+                sort=[("started_at", -1)],
+            )
+            if running_doc:
+                _run_id = str(running_doc["_id"])
+                break
+        except Exception:
+            logger.debug("news_refresh: could not discover running audit doc", exc_info=True)
+        if _attempt < 2:
+            await asyncio.sleep(1)
 
     await _write_news_telemetry(db, _run_id, phase="init", message="Initialising news refresh")
 
