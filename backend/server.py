@@ -5294,43 +5294,18 @@ async def admin_run_job_now(
         )
 
     # Already-running guard: prevent concurrent execution of the same job.
-    # If a previous run has been "running" for more than 60 minutes, treat it as
-    # orphaned (e.g. server restart mid-job) and expire it so a new run can start.
-    _STALE_RUNNING_MINUTES = 60
     existing_running = await db.ops_job_runs.find_one(
         {"job_name": job_name, "status": "running"},
         sort=[("started_at", -1)],
     )
     if existing_running:
-        _started = existing_running.get("started_at")
-        _age_minutes = (
-            (datetime.now(timezone.utc) - _started).total_seconds() / 60
-            if _started else float("inf")
-        )
-        if _age_minutes < _STALE_RUNNING_MINUTES:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "already_running",
-                    "message": f"{job_name} is already running (started {existing_running.get('started_at_prague', 'unknown')}).",
-                    "audit_id": str(existing_running["_id"]),
-                },
-            )
-        # Expire the orphaned "running" doc so a fresh run can proceed.
-        logger.warning(
-            f"Expiring stale running doc for {job_name} "
-            f"(audit_id={existing_running['_id']}, age={_age_minutes:.0f}m)"
-        )
-        _expire_now = datetime.now(timezone.utc)
-        _PRAGUE = ZoneInfo("Europe/Prague")
-        await db.ops_job_runs.update_one(
-            {"_id": existing_running["_id"]},
-            {"$set": {
-                "status": "error",
-                "finished_at": _expire_now,
-                "finished_at_prague": _expire_now.astimezone(_PRAGUE).isoformat(),
-                "error_message": f"Auto-expired: stuck in running state for {_age_minutes:.0f} minutes",
-            }},
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "already_running",
+                "message": f"{job_name} is already running (started {existing_running.get('started_at_prague', 'unknown')}).",
+                "audit_id": str(existing_running["_id"]),
+            },
         )
     
     job_func = JOB_RUNNERS[job_name]
@@ -5376,15 +5351,6 @@ async def admin_run_job_now(
     
     # C2: Create audit entry with inventory snapshot BEFORE
     audit_id = await create_job_audit_entry(db, job_name)
-
-    # News-refresh: pass audit_id so telemetry writes go to the correct doc.
-    if job_name == "news_refresh":
-        _base_news_func = job_func
-
-        async def _news_refresh_with_audit(database):
-            return await _base_news_func(database, audit_id=audit_id)
-
-        job_func = _news_refresh_with_audit
     
     if wait:
         try:
