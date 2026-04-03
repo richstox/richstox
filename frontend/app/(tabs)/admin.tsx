@@ -469,7 +469,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             )}
             <Text style={d.opsLabel}>Morning Refresh</Text>
             {isNewsRefreshRunning ? (
-              <Text style={[d.opsValue, { color: '#F59E0B' }]}>Running…</Text>
+              <Text style={[d.opsValue, { color: '#F59E0B' }]}>
+                {(newsRun as any)?.details?.news_refresh_telemetry?.message || 'Running…'}
+              </Text>
             ) : !newsRun && pAge?.morning_refresh_hours_since_success == null ? (
               <Text style={[d.opsValue, { color: COLORS.textMuted }]}>Never run</Text>
             ) : (

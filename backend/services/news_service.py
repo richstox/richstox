@@ -27,7 +27,8 @@ import os
 import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Callable, Coroutine, List, Optional
+from zoneinfo import ZoneInfo
 import httpx
 
 logger = logging.getLogger("richstox.news")
@@ -39,6 +40,52 @@ BATCH_SIZE = 50  # Tickers per API request
 GLOBAL_FEED_LIMIT = 3  # Max articles per ticker in global feed (Talk, Markets)
 TICKER_DETAIL_LIMIT = 100  # Max articles per ticker in detail view
 EODHD_FETCH_LIMIT = 10  # Articles to fetch per ticker from EODHD (balance cost vs coverage)
+
+_PRAGUE = ZoneInfo("Europe/Prague")
+
+
+async def _write_news_telemetry(
+    db,
+    audit_id: Optional[str],
+    *,
+    phase: str,
+    message: str,
+    tickers_total: int = 0,
+    tickers_done: int = 0,
+    tickers_failed: int = 0,
+    api_calls: int = 0,
+    last_ticker: Optional[str] = None,
+    last_error: Optional[str] = None,
+) -> None:
+    """Write heartbeat telemetry into the existing ops_job_runs document."""
+    if not audit_id:
+        return
+    from bson import ObjectId
+
+    now = datetime.now(timezone.utc)
+    telemetry = {
+        "phase": phase,
+        "message": message,
+        "updated_at_prague": now.astimezone(_PRAGUE).isoformat(),
+        "tickers_total": tickers_total,
+        "tickers_done": tickers_done,
+        "tickers_failed": tickers_failed,
+        "api_calls": api_calls,
+        "last_ticker": last_ticker,
+        "last_error": last_error,
+    }
+    update_fields: dict = {"details.news_refresh_telemetry": telemetry}
+    if tickers_total:
+        update_fields["tickers_targeted"] = tickers_total
+    if api_calls:
+        update_fields["api_calls"] = api_calls
+    try:
+        await db.ops_job_runs.update_one(
+            {"_id": ObjectId(audit_id)},
+            {"$set": update_fields},
+        )
+    except Exception:
+        pass  # non-fatal: never let telemetry writes block the job
 
 
 def generate_article_id(source_link: str, title: str = "", published_at: str = "") -> str:
@@ -54,7 +101,8 @@ async def fetch_news_batch_from_eodhd(
     from_date: str,
     to_date: str,
     limit: int = 200,
-    offset: int = 0
+    offset: int = 0,
+    on_ticker_done: Optional[Callable[[str, int], Coroutine]] = None,
 ) -> tuple[List[Dict[str, Any]], str]:
     """
     P53: Fetch news for multiple tickers.
@@ -102,7 +150,17 @@ async def fetch_news_batch_from_eodhd(
                     
             except Exception as e:
                 logger.warning(f"Error fetching news for {symbol}: {e}")
+                if on_ticker_done:
+                    try:
+                        await on_ticker_done(symbol, 0, str(e))
+                    except Exception:
+                        pass
                 continue
+            if on_ticker_done:
+                try:
+                    await on_ticker_done(symbol, len(articles) if isinstance(articles, list) else 0, None)
+                except Exception:
+                    pass
     
     logger.info(f"Fetched {len(all_articles)} articles for {len(symbols)} symbols")
     return all_articles, api_url_template
@@ -257,7 +315,7 @@ async def update_ticker_last_synced(db, tickers: List[str], sync_date: str):
         )
 
 
-async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
+async def refresh_hot_tickers_news(db, audit_id: Optional[str] = None) -> Dict[str, Any]:
     """
     P53 BINDING: Daily news refresh with batch API calls and delta sync.
     
@@ -267,14 +325,29 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     3. For each date group, batch tickers (50 per request)
     4. Fetch from EODHD with s=TICKER1,TICKER2,...&from={last_synced}&to={today}
     5. Dedup articles, create ticker mappings (max 3 per ticker)
+    
+    Args:
+        db: MongoDB database
+        audit_id: Optional ops_job_runs document id for heartbeat telemetry
     """
     started_at = datetime.now(timezone.utc)
     today = started_at.strftime("%Y-%m-%d")
-    
+
+    # -- Shared mutable state for telemetry --
+    _tickers_done = 0
+    _tickers_failed = 0
+    _api_calls_done = 0
+    _last_ticker: Optional[str] = None
+    _last_error: Optional[str] = None
+
+    await _write_news_telemetry(db, audit_id, phase="init", message="Initialising news refresh")
+
     # Step 1: Get hot symbols
+    await _write_news_telemetry(db, audit_id, phase="select_tickers", message="Selecting hot tickers…")
     hot_symbols = await get_hot_symbols(db, n=100)
     if not hot_symbols:
         logger.warning("No hot symbols found")
+        await _write_news_telemetry(db, audit_id, phase="finalize", message="No hot symbols found")
         return {
             "job_type": "news_daily_refresh",
             "status": "completed",
@@ -296,35 +369,108 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     # Step 3: Process tickers (EODHD requires one call per ticker)
     # Format symbols for EODHD: AAPL -> AAPL.US
     formatted_symbols = [f"{s}.US" for s in hot_symbols if "-" not in s]  # Skip tickers with dashes
-    
+    tickers_total = len(formatted_symbols)
+
+    await _write_news_telemetry(
+        db, audit_id, phase="select_tickers",
+        message=f"Selected {tickers_total} tickers",
+        tickers_total=tickers_total,
+    )
+
     # Step 4: Fetch and store
     total_articles_fetched = 0
     total_new_articles = 0
     total_new_mappings = 0
     api_calls = len(formatted_symbols)  # One call per ticker
     errors = 0
-    
+
+    # Per-ticker callback for heartbeat during fetch phase
+    async def _on_ticker_done(symbol: str, article_count: int, error: Optional[str]) -> None:
+        nonlocal _tickers_done, _tickers_failed, _api_calls_done, _last_ticker, _last_error
+        _api_calls_done += 1
+        _last_ticker = symbol.replace(".US", "")
+        if error:
+            _tickers_failed += 1
+            _last_error = str(error)[:200]
+        else:
+            _tickers_done += 1
+        await _write_news_telemetry(
+            db, audit_id, phase="fetch_news",
+            message=f"Fetching news: {_tickers_done + _tickers_failed}/{tickers_total}",
+            tickers_total=tickers_total,
+            tickers_done=_tickers_done,
+            tickers_failed=_tickers_failed,
+            api_calls=_api_calls_done,
+            last_ticker=_last_ticker,
+            last_error=_last_error,
+        )
+
     try:
+        await _write_news_telemetry(
+            db, audit_id, phase="fetch_news",
+            message=f"Fetching news for {tickers_total} tickers…",
+            tickers_total=tickers_total,
+        )
         articles, api_url_template = await fetch_news_batch_from_eodhd(
             symbols=formatted_symbols,
             from_date=from_date,
             to_date=today,
             limit=3,  # 3 per ticker
-            offset=0
+            offset=0,
+            on_ticker_done=_on_ticker_done if audit_id else None,
         )
         total_articles_fetched = len(articles)
         
         # Store with mappings
+        await _write_news_telemetry(
+            db, audit_id, phase="compute_sentiment",
+            message=f"Storing {total_articles_fetched} articles & computing sentiment…",
+            tickers_total=tickers_total, tickers_done=_tickers_done,
+            tickers_failed=_tickers_failed, api_calls=_api_calls_done,
+            last_ticker=_last_ticker, last_error=_last_error,
+        )
         result = await store_articles_with_mapping(db, articles)
         total_new_articles = result["new_articles"]
         total_new_mappings = result["new_mappings"]
         
         # Update last_synced for these tickers
+        await _write_news_telemetry(
+            db, audit_id, phase="write_results",
+            message=f"Writing sync state ({total_new_articles} new articles, {total_new_mappings} mappings)…",
+            tickers_total=tickers_total, tickers_done=_tickers_done,
+            tickers_failed=_tickers_failed, api_calls=_api_calls_done,
+            last_ticker=_last_ticker, last_error=_last_error,
+        )
         await update_ticker_last_synced(db, hot_symbols, today)
         
     except Exception as e:
         logger.error(f"Error processing news fetch: {e}")
         errors = 1
+        _last_error = str(e)[:200]
+        # Write error telemetry + finalize the audit doc
+        await _write_news_telemetry(
+            db, audit_id, phase="finalize",
+            message=f"Failed: {str(e)[:100]}",
+            tickers_total=tickers_total, tickers_done=_tickers_done,
+            tickers_failed=_tickers_failed, api_calls=_api_calls_done,
+            last_ticker=_last_ticker, last_error=_last_error,
+        )
+        if audit_id:
+            from bson import ObjectId
+            now = datetime.now(timezone.utc)
+            try:
+                await db.ops_job_runs.update_one(
+                    {"_id": ObjectId(audit_id)},
+                    {"$set": {
+                        "status": "error",
+                        "error_message": str(e)[:1000],
+                        "finished_at": now,
+                        "finished_at_prague": now.astimezone(_PRAGUE).isoformat(),
+                    }},
+                )
+            except Exception:
+                pass
+            raise
     
     # Update global sync state
     await db.news_sync_state.update_one(
@@ -334,6 +480,15 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     )
     
     finished_at = datetime.now(timezone.utc)
+
+    # Final success telemetry
+    await _write_news_telemetry(
+        db, audit_id, phase="finalize",
+        message=f"Completed: {total_new_articles} articles, {total_new_mappings} mappings",
+        tickers_total=tickers_total, tickers_done=_tickers_done,
+        tickers_failed=_tickers_failed, api_calls=_api_calls_done,
+        last_ticker=_last_ticker, last_error=_last_error,
+    )
     
     return {
         "job_type": "news_daily_refresh",
