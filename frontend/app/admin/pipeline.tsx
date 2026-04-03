@@ -364,6 +364,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   // ── News refresh (Morning Fresh) state ─────────────────────────────────────
   const [newsRefreshRunning, setNewsRefreshRunning] = useState(false);
+  const newsRefreshPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
@@ -986,6 +987,45 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       }
     };
   }, [benchmarkRunStatus, sessionToken]);
+
+  // Poll news_refresh status while it is running so UI updates when the job finishes
+  useEffect(() => {
+    if (newsRefreshStatus !== 'running' || !sessionToken) {
+      if (newsRefreshPollRef.current) {
+        clearTimeout(newsRefreshPollRef.current);
+        newsRefreshPollRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/job/news_refresh/status`,
+          {},
+          sessionToken,
+        );
+        if (res.ok && !cancelled) {
+          const payload = await res.json();
+          const lr = normaliseRun(payload.last_run);
+          if (lr) {
+            setLiveLastRuns(prev => ({ ...prev, news_refresh: lr }));
+          }
+        }
+      } catch { /* non-fatal */ }
+      if (!cancelled) {
+        newsRefreshPollRef.current = setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (newsRefreshPollRef.current) {
+        clearTimeout(newsRefreshPollRef.current);
+        newsRefreshPollRef.current = null;
+      }
+    };
+  }, [newsRefreshStatus, sessionToken]);
 
   useEffect(() => {
     const lr = jobRuns['price_sync'];
