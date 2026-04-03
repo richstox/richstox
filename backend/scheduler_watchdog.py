@@ -78,6 +78,31 @@ async def watchdog_loop(db: AsyncIOMotorDatabase) -> None:  # noqa: C901
             )
             staleness_minutes = elapsed_since_start
             last_heartbeat_prague = None
+        elif elapsed_since_start < startup_grace_minutes:
+            # During startup grace, ignore stale heartbeats left over from
+            # a previous process.  The background heartbeat writer needs a
+            # few seconds after startup to write its first heartbeat; until
+            # then the latest doc in the DB may be arbitrarily old.
+            started_at = doc["started_at"]
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            else:
+                started_at = started_at.astimezone(timezone.utc)
+
+            now_utc = datetime.now(timezone.utc)
+            staleness_minutes = (now_utc - started_at).total_seconds() / 60.0
+
+            if staleness_minutes > max_staleness_minutes:
+                logger.info(
+                    "Watchdog: stale heartbeat (%.1f min) but within startup grace "
+                    "(%.1f/%.0f min elapsed) — skipping",
+                    staleness_minutes,
+                    elapsed_since_start,
+                    startup_grace_minutes,
+                )
+                continue
+            # Heartbeat is fresh — fall through to normal healthy/unhealthy logic
+            last_heartbeat_prague = started_at.astimezone(TIMEZONE)
         else:
             # started_at is stored as UTC by MongoDB regardless of input tz
             started_at = doc["started_at"]
