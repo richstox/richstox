@@ -767,9 +767,11 @@ def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
 async def serve_logo(ticker: str):
     """Serve a company logo from ``company_fundamentals_cache.logo_data``.
 
-    Read-only — no external fetches.  Logos are populated by the
-    fundamentals pipeline (fundamentals_service.py).  Returns 404 if
-    the logo has not been downloaded yet.
+    If the binary logo has not been cached yet (e.g. the fundamentals
+    pipeline has not run for this ticker), the endpoint will attempt a
+    one-time server-side download from the EODHD CDN, store the result,
+    and serve it.  Returns 404 only when the logo genuinely cannot be
+    obtained.
     """
     ticker_upper = ticker.upper().replace(".US", "")
     # Strip any file extension (e.g. ".PNG", ".JPG") that may be in the URL
@@ -781,7 +783,7 @@ async def serve_logo(ticker: str):
 
     doc = await db.company_fundamentals_cache.find_one(
         {"ticker": ticker_full},
-        {"_id": 0, "logo_data": 1, "logo_content_type": 1},
+        {"_id": 0, "logo_data": 1, "logo_content_type": 1, "logo_url": 1},
     )
     if doc and doc.get("logo_data"):
         return Response(
@@ -789,6 +791,41 @@ async def serve_logo(ticker: str):
             media_type=doc.get("logo_content_type", "image/png"),
             headers={"Cache-Control": "public, max-age=604800"},  # 7 days
         )
+
+    # ------------------------------------------------------------------
+    # Fetch-on-miss: download logo server-side and cache for next time
+    # ------------------------------------------------------------------
+    eodhd_logo_cdn = "https://eodhistoricaldata.com"
+    raw_logo_url = (doc.get("logo_url") if doc else None) or ""
+
+    # Ignore already-transformed internal paths (/api/logo/…)
+    if raw_logo_url.startswith("/api/"):
+        raw_logo_url = ""
+
+    logo_path = raw_logo_url or f"/img/logos/US/{ticker_upper}.png"
+
+    if logo_path.startswith("http"):
+        source_url = logo_path
+    else:
+        source_url = f"{eodhd_logo_cdn}{logo_path}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(source_url)
+        if resp.status_code == 200 and resp.content:
+            content_type = resp.headers.get("content-type", "image/png")
+            # Cache the binary so future requests are instant
+            await db.company_fundamentals_cache.update_one(
+                {"ticker": ticker_full},
+                {"$set": {"logo_data": resp.content, "logo_content_type": content_type}},
+            )
+            return Response(
+                content=resp.content,
+                media_type=content_type,
+                headers={"Cache-Control": "public, max-age=604800"},
+            )
+    except Exception:
+        logger.debug("Logo fetch-on-miss failed for %s", ticker_full)
 
     raise HTTPException(status_code=404, detail="Logo not found")
 
