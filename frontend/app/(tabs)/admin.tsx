@@ -164,6 +164,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const [newsRefreshTriggered, setNewsRefreshTriggered] = useState(false);
   const newsRefreshPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [liveNewsRun, setLiveNewsRun] = useState<Record<string, any> | null>(null);
+  const wasPollingNewsRef = useRef(false);
 
   const authHeaders: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
 
@@ -202,15 +203,18 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       }
       if (!sessionToken) {
         setLiveNewsRun(null);
+        wasPollingNewsRef.current = false;
         return;
       }
-      // When job finishes, refresh the full overview to update pipeline_age
-      if (liveNewsRun && newsRunStatus && newsRunStatus !== 'running') {
+      // When job finishes after we were polling, refresh overview for pipeline_age
+      if (wasPollingNewsRef.current && newsRunStatus && newsRunStatus !== 'running') {
         fetchAll();
         setLiveNewsRun(null);
       }
+      wasPollingNewsRef.current = false;
       return;
     }
+    wasPollingNewsRef.current = true;
     let cancelled = false;
     const poll = async () => {
       try {
