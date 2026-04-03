@@ -809,6 +809,13 @@ async def serve_logo(ticker: str):
     else:
         source_url = f"{eodhd_logo_cdn}{logo_path}"
 
+    # SSRF guard: only allow requests to the known EODHD CDN domain
+    from urllib.parse import urlparse
+
+    parsed = urlparse(source_url)
+    if parsed.hostname not in ("eodhistoricaldata.com", "www.eodhistoricaldata.com"):
+        raise HTTPException(status_code=404, detail="Logo not found")
+
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(source_url)
@@ -824,8 +831,8 @@ async def serve_logo(ticker: str):
                 media_type=content_type,
                 headers={"Cache-Control": "public, max-age=604800"},
             )
-    except Exception:
-        logger.debug("Logo fetch-on-miss failed for %s", ticker_full)
+    except Exception as exc:
+        logger.debug("Logo fetch-on-miss failed for %s: %s", ticker_full, exc)
 
     raise HTTPException(status_code=404, detail="Logo not found")
 
