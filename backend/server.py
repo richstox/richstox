@@ -5294,19 +5294,49 @@ async def admin_run_job_now(
         )
 
     # Already-running guard: prevent concurrent execution of the same job.
+    # Auto-expire docs stuck in "running" for more than 120 minutes (deployment
+    # or crash that bypassed all finalization guards).
+    _STALE_RUNNING_THRESHOLD_MINUTES = 120
     existing_running = await db.ops_job_runs.find_one(
         {"job_name": job_name, "status": "running"},
         sort=[("started_at", -1)],
     )
     if existing_running:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "already_running",
-                "message": f"{job_name} is already running (started {existing_running.get('started_at_prague', 'unknown')}).",
-                "audit_id": str(existing_running["_id"]),
-            },
+        _started = existing_running.get("started_at")
+        _age_minutes = (
+            (datetime.now(timezone.utc) - _started).total_seconds() / 60.0
+            if _started else float("inf")
         )
+        if _age_minutes > _STALE_RUNNING_THRESHOLD_MINUTES:
+            # Auto-expire: the old run is stuck — mark it so a new one can start.
+            from zoneinfo import ZoneInfo as _StaleZI
+            _expire_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": existing_running["_id"]},
+                {"$set": {
+                    "status": "error",
+                    "finished_at": _expire_at,
+                    "finished_at_prague": _expire_at.astimezone(_StaleZI("Europe/Prague")).isoformat(),
+                    "error_message": (
+                        f"Auto-expired: job was still 'running' after "
+                        f"{int(_age_minutes)} min (threshold={_STALE_RUNNING_THRESHOLD_MINUTES} min). "
+                        f"Likely killed by a deployment or process restart."
+                    ),
+                }},
+            )
+            logger.warning(
+                f"Auto-expired stale '{job_name}' audit doc {existing_running['_id']} "
+                f"(running for {int(_age_minutes)} min)"
+            )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "already_running",
+                    "message": f"{job_name} is already running (started {existing_running.get('started_at_prague', 'unknown')}).",
+                    "audit_id": str(existing_running["_id"]),
+                },
+            )
     
     job_func = JOB_RUNNERS[job_name]
     
@@ -8614,11 +8644,47 @@ async def startup():
     await create_talk_indexes(db)
     await create_notification_indexes(db)
     
+    # ⚠️ Expire orphaned "running" manual_ad_hoc job docs from previous process.
+    await _expire_orphaned_running_jobs(db)
+
     # ⚠️ STARTUP VISIBILITY GUARD - Prevents silent data integrity breaches
     await startup_mega_caps_visibility_guard(db)
     
     # ⚠️ P55: STARTUP PAIN CACHE GUARD - Warns if mega-caps missing PAIN data
     await startup_pain_cache_guard(db)
+
+
+async def _expire_orphaned_running_jobs(database):
+    """
+    Expire any manual_ad_hoc job docs still in "running" status at startup.
+
+    When the server restarts (deployment, crash), background tasks are killed
+    and their finally-block DB writes may fail because the connection pool is
+    already torn down.  This leaves orphaned "running" docs that permanently
+    block future manual runs of the same job.  We clean them up here.
+    """
+    from zoneinfo import ZoneInfo as _OrphanZI
+    try:
+        _now = datetime.now(timezone.utc)
+        result = await database.ops_job_runs.update_many(
+            {"job_type": "manual_ad_hoc", "status": "running"},
+            {"$set": {
+                "status": "error",
+                "finished_at": _now,
+                "finished_at_prague": _now.astimezone(_OrphanZI("Europe/Prague")).isoformat(),
+                "error_message": (
+                    "Auto-expired at server startup: job was still 'running' when the "
+                    "process restarted. Likely killed by a deployment or crash."
+                ),
+            }},
+        )
+        if result.modified_count:
+            logger.warning(
+                f"Startup cleanup: expired {result.modified_count} orphaned "
+                f"'running' manual_ad_hoc job doc(s)"
+            )
+    except Exception as e:
+        logger.warning(f"Startup cleanup: failed to expire orphaned running jobs: {e}")
 
 
 async def startup_mega_caps_visibility_guard(database):
