@@ -329,7 +329,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const bcGapFree = bc?.gap_free_since_baseline === true;
 
   // Build alerts
-  const failedJobs: any[] = overview?.jobs?.failed ?? [];
+  const failedJobs: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
   const alerts: { color: string; icon: string; text: string }[] = [];
   if (failedCount > 0) {
     // Show each failed job name + error reason individually
@@ -473,38 +473,43 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={pAge?.pipeline_status}
           />
           {/* Morning Refresh — enhanced tile with Run Now + running state */}
-          <View style={mrDisplayStatus === 'red' && newsRun?.error_message ? d.opsItemCol : d.opsItem}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, width: '100%' }}>
-              {isNewsRefreshRunning ? (
-                <ActivityIndicator size={14} color="#F59E0B" />
-              ) : (
-                <Ionicons name={statusIcon(mrDisplayStatus) as any} size={14} color={statusColor(mrDisplayStatus)} />
-              )}
-              <Text style={d.opsLabel}>Morning Refresh</Text>
-              {isNewsRefreshRunning ? (
-                <Text style={[d.opsValue, { color: '#F59E0B' }]}>
-                  {(newsRun as any)?.details?.news_refresh_telemetry?.message || 'Running…'}
-                </Text>
-              ) : !newsRun && pAge?.morning_refresh_hours_since_success == null ? (
-                <Text style={[d.opsValue, { color: COLORS.textMuted }]}>Never run</Text>
-              ) : (
-                <Text style={[d.opsValue, { color: statusColor(mrDisplayStatus) }]}>
-                  {formatHours(pAge?.morning_refresh_hours_since_success)}
-                </Text>
-              )}
-              {!isNewsRefreshRunning && (
-                <TouchableOpacity
-                  style={d.opsRunBtn}
-                  onPress={handleRunNewsRefresh}
-                >
-                  <Text style={d.opsRunBtnText}>Run</Text>
-                </TouchableOpacity>
+          {(() => {
+            const hasError = mrDisplayStatus === 'red' && !!newsRun?.error_message;
+            return (
+            <View style={hasError ? d.opsItemCol : d.opsItem}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, width: '100%' }}>
+                {isNewsRefreshRunning ? (
+                  <ActivityIndicator size={14} color="#F59E0B" />
+                ) : (
+                  <Ionicons name={statusIcon(mrDisplayStatus) as any} size={14} color={statusColor(mrDisplayStatus)} />
+                )}
+                <Text style={d.opsLabel}>Morning Refresh</Text>
+                {isNewsRefreshRunning ? (
+                  <Text style={[d.opsValue, { color: '#F59E0B' }]}>
+                    {(newsRun as any)?.details?.news_refresh_telemetry?.message || 'Running…'}
+                  </Text>
+                ) : !newsRun && pAge?.morning_refresh_hours_since_success == null ? (
+                  <Text style={[d.opsValue, { color: COLORS.textMuted }]}>Never run</Text>
+                ) : (
+                  <Text style={[d.opsValue, { color: statusColor(mrDisplayStatus) }]}>
+                    {formatHours(pAge?.morning_refresh_hours_since_success)}
+                  </Text>
+                )}
+                {!isNewsRefreshRunning && (
+                  <TouchableOpacity
+                    style={d.opsRunBtn}
+                    onPress={handleRunNewsRefresh}
+                  >
+                    <Text style={d.opsRunBtnText}>Run</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              {hasError && (
+                <Text style={d.opsErrorDetail} numberOfLines={2}>⚠️ {newsRun.error_message}</Text>
               )}
             </View>
-            {mrDisplayStatus === 'red' && newsRun?.error_message && (
-              <Text style={d.opsErrorDetail} numberOfLines={2}>⚠️ {newsRun.error_message}</Text>
-            )}
-          </View>
+            );
+          })()}
           <OpsItem
             label="Scheduler"
             value={schedulerActive ? 'Running' : 'Paused'}
