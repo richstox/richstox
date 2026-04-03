@@ -471,7 +471,10 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
     except Exception:
         logger.error(f"{job_name}: failed to log failure to ops_job_runs")
     
-    return {"status": "failed", "error": error_msg}
+    # Raise so callers do NOT mark `last_run[job_name] = today_str`.
+    # The scheduler's per-job `except Exception` blocks will catch this and
+    # retry on the next tick.
+    raise RuntimeError(f"{job_name}: {error_msg}")
 
 
 async def _run_universe_seed_scheduled(db):

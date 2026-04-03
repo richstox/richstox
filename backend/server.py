@@ -8653,7 +8653,13 @@ async def startup():
     await create_notification_indexes(db)
     
     # ⚠️ Expire orphaned "running" manual_ad_hoc job docs from previous process.
-    await _expire_orphaned_running_jobs(db)
+    expired_jobs = await _expire_orphaned_running_jobs(db)
+
+    # ⚠️ Auto-retry news_refresh if it was killed by a deployment/crash.
+    # Fire-and-forget: the background task creates its own audit trail.
+    if "news_refresh" in expired_jobs:
+        import asyncio as _startup_aio
+        _startup_aio.create_task(_auto_retry_news_refresh(db))
 
     # ⚠️ STARTUP VISIBILITY GUARD - Prevents silent data integrity breaches
     await startup_mega_caps_visibility_guard(db)
@@ -8670,9 +8676,26 @@ async def _expire_orphaned_running_jobs(database):
     and their finally-block DB writes may fail because the connection pool is
     already torn down.  This leaves orphaned "running" docs that permanently
     block future manual runs of the same job.  We clean them up here.
+
+    Returns:
+        set[str]: Job names that were expired (empty set on no-op or error).
     """
     from zoneinfo import ZoneInfo as _OrphanZI
+    expired_job_names: set = set()
     try:
+        # First, discover which job_names are about to be expired so we can
+        # report them back to the caller for auto-retry decisions.
+        orphaned_cursor = database.ops_job_runs.find(
+            {"job_type": "manual_ad_hoc", "status": "running"},
+            {"job_name": 1},
+        )
+        async for doc in orphaned_cursor:
+            if doc.get("job_name"):
+                expired_job_names.add(doc["job_name"])
+
+        if not expired_job_names:
+            return expired_job_names
+
         _now = datetime.now(timezone.utc)
         result = await database.ops_job_runs.update_many(
             {"job_type": "manual_ad_hoc", "status": "running"},
@@ -8689,10 +8712,51 @@ async def _expire_orphaned_running_jobs(database):
         if result.modified_count:
             logger.warning(
                 f"Startup cleanup: expired {result.modified_count} orphaned "
-                f"'running' manual_ad_hoc job doc(s)"
+                f"'running' manual_ad_hoc job doc(s): {expired_job_names}"
             )
     except Exception as e:
         logger.warning(f"Startup cleanup: failed to expire orphaned running jobs: {e}")
+    return expired_job_names
+
+
+async def _auto_retry_news_refresh(database):
+    """
+    Background auto-retry of news_refresh after an orphaned run was expired.
+
+    Waits briefly for the server to finish starting, then re-runs the news
+    refresh with a proper audit trail.  Errors are logged but never propagated
+    — this must not crash the server.
+    """
+    import asyncio as _retry_aio
+    await _retry_aio.sleep(15)  # let the rest of startup settle
+
+    logger.info("Auto-retry: re-running news_refresh after orphaned run was expired at startup")
+    try:
+        audit_id = await create_job_audit_entry(database, "news_refresh", triggered_by="startup_auto_retry")
+        from services.news_service import refresh_hot_tickers_news
+        result = await refresh_hot_tickers_news(database)
+        await finalize_job_audit_entry(database, audit_id, result=result)
+        logger.info(f"Auto-retry: news_refresh completed successfully: {result.get('status', 'unknown')}")
+    except Exception as exc:
+        logger.error(f"Auto-retry: news_refresh failed: {exc}")
+        try:
+            await finalize_job_audit_entry(database, audit_id, error=str(exc))
+        except Exception:
+            # Last resort: make sure the record doesn't stay "running"
+            try:
+                from bson import ObjectId as _RetryOID
+                await database.ops_job_runs.update_one(
+                    {"_id": _RetryOID(audit_id)},
+                    {"$set": {
+                        "status": "error",
+                        "finished_at": datetime.now(timezone.utc),
+                        "error_message": f"Auto-retry failed: {exc}"[:1000],
+                    }},
+                )
+            except Exception:
+                logger.exception(
+                    f"Auto-retry: last-resort finalization failed for news_refresh audit_id={audit_id}"
+                )
 
 
 async def startup_mega_caps_visibility_guard(database):
