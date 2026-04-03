@@ -329,8 +329,20 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const bcGapFree = bc?.gap_free_since_baseline === true;
 
   // Build alerts
+  const failedJobs: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
   const alerts: { color: string; icon: string; text: string }[] = [];
-  if (failedCount > 0) alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${failedCount} pipeline job${failedCount > 1 ? 's' : ''} failed` });
+  if (failedCount > 0) {
+    // Show each failed job name + error reason individually
+    if (failedJobs.length > 0) {
+      for (const fj of failedJobs) {
+        const name = fj.name ?? 'unknown';
+        const err = fj.error_summary ?? 'Unknown error';
+        alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${name} failed: ${err}` });
+      }
+    } else {
+      alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${failedCount} pipeline job${failedCount > 1 ? 's' : ''} failed` });
+    }
+  }
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
   const ctdh = pi?.completed_trading_days_health;
@@ -461,33 +473,43 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={pAge?.pipeline_status}
           />
           {/* Morning Refresh — enhanced tile with Run Now + running state */}
-          <View style={d.opsItem}>
-            {isNewsRefreshRunning ? (
-              <ActivityIndicator size={14} color="#F59E0B" />
-            ) : (
-              <Ionicons name={statusIcon(mrDisplayStatus) as any} size={14} color={statusColor(mrDisplayStatus)} />
-            )}
-            <Text style={d.opsLabel}>Morning Refresh</Text>
-            {isNewsRefreshRunning ? (
-              <Text style={[d.opsValue, { color: '#F59E0B' }]}>
-                {(newsRun as any)?.details?.news_refresh_telemetry?.message || 'Running…'}
-              </Text>
-            ) : !newsRun && pAge?.morning_refresh_hours_since_success == null ? (
-              <Text style={[d.opsValue, { color: COLORS.textMuted }]}>Never run</Text>
-            ) : (
-              <Text style={[d.opsValue, { color: statusColor(mrDisplayStatus) }]}>
-                {formatHours(pAge?.morning_refresh_hours_since_success)}
-              </Text>
-            )}
-            {!isNewsRefreshRunning && (
-              <TouchableOpacity
-                style={d.opsRunBtn}
-                onPress={handleRunNewsRefresh}
-              >
-                <Text style={d.opsRunBtnText}>Run</Text>
-              </TouchableOpacity>
-            )}
-          </View>
+          {(() => {
+            const hasError = mrDisplayStatus === 'red' && !!newsRun?.error_message;
+            return (
+            <View style={hasError ? d.opsItemCol : d.opsItem}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, width: '100%' }}>
+                {isNewsRefreshRunning ? (
+                  <ActivityIndicator size={14} color="#F59E0B" />
+                ) : (
+                  <Ionicons name={statusIcon(mrDisplayStatus) as any} size={14} color={statusColor(mrDisplayStatus)} />
+                )}
+                <Text style={d.opsLabel}>Morning Refresh</Text>
+                {isNewsRefreshRunning ? (
+                  <Text style={[d.opsValue, { color: '#F59E0B' }]}>
+                    {(newsRun as any)?.details?.news_refresh_telemetry?.message || 'Running…'}
+                  </Text>
+                ) : !newsRun && pAge?.morning_refresh_hours_since_success == null ? (
+                  <Text style={[d.opsValue, { color: COLORS.textMuted }]}>Never run</Text>
+                ) : (
+                  <Text style={[d.opsValue, { color: statusColor(mrDisplayStatus) }]}>
+                    {formatHours(pAge?.morning_refresh_hours_since_success)}
+                  </Text>
+                )}
+                {!isNewsRefreshRunning && (
+                  <TouchableOpacity
+                    style={d.opsRunBtn}
+                    onPress={handleRunNewsRefresh}
+                  >
+                    <Text style={d.opsRunBtnText}>Run</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+              {hasError && (
+                <Text style={d.opsErrorDetail} numberOfLines={2}>⚠️ {newsRun.error_message}</Text>
+              )}
+            </View>
+            );
+          })()}
           <OpsItem
             label="Scheduler"
             value={schedulerActive ? 'Running' : 'Paused'}
@@ -495,7 +517,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           />
           <OpsItem
             label="Failed Jobs"
-            value={String(failedCount)}
+            value={failedCount > 0 && failedJobs.length > 0
+              ? failedJobs.map(fj => fj.name ?? '?').join(', ')
+              : String(failedCount)}
             status={failedCount > 0 ? 'red' : 'green'}
           />
           <OpsItem
@@ -737,8 +761,10 @@ const d = StyleSheet.create({
   // B) Ops Health
   opsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   opsItem: { width: '47%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border },
+  opsItemCol: { width: '47%', flexDirection: 'column', gap: 4, backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border },
   opsLabel: { flex: 1, fontSize: 11, color: COLORS.text },
   opsValue: { fontSize: 11, fontWeight: '700' },
+  opsErrorDetail: { fontSize: 9, color: '#DC2626', marginTop: 2 },
   opsRunBtn: { marginLeft: 4, backgroundColor: '#06B6D4', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
   opsRunBtnText: { color: '#fff', fontSize: 9, fontWeight: '700' },
 

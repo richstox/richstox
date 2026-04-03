@@ -5087,6 +5087,9 @@ async def admin_get_job_status(job_name: str):
             "progress": raw_last_run.get("progress"),
             "phase": phase,
             "duration_seconds": duration_seconds,
+            "error_message": (
+                details.get("error") or raw_last_run.get("error_message") or None
+            ) if raw_last_run.get("status") in ("failed", "error") else None,
             "details": {
                 **details,
                 "seeded_total": seeded_total,
