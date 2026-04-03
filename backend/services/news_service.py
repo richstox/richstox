@@ -167,7 +167,7 @@ async def fetch_news_batch_from_eodhd(
                 try:
                     await _on_ticker_progress(symbol, _done, _failed, _err_msg)
                 except Exception:
-                    pass  # heartbeat must never break fetch
+                    logger.debug("_on_ticker_progress callback failed", exc_info=True)
     
     logger.info(f"Fetched {len(all_articles)} articles for {len(symbols)} symbols")
     return all_articles, api_url_template
