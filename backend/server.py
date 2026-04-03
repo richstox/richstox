@@ -8658,8 +8658,7 @@ async def startup():
     # ⚠️ Auto-retry news_refresh if it was killed by a deployment/crash.
     # Fire-and-forget: the background task creates its own audit trail.
     if "news_refresh" in expired_jobs:
-        import asyncio as _startup_aio
-        _startup_aio.create_task(_auto_retry_news_refresh(db))
+        asyncio.create_task(_auto_retry_news_refresh(db))
 
     # ⚠️ STARTUP VISIBILITY GUARD - Prevents silent data integrity breaches
     await startup_mega_caps_visibility_guard(db)
@@ -8750,8 +8749,7 @@ async def _auto_retry_news_refresh(database):
     must not crash the server.
     """
     global _startup_auto_retry_fired
-    import asyncio as _retry_aio
-    await _retry_aio.sleep(15)  # let the rest of startup settle
+    await asyncio.sleep(15)  # let the rest of startup settle
 
     # ── Guard 1: in-memory rate limit ──
     if _startup_auto_retry_fired:
@@ -8810,7 +8808,7 @@ async def _auto_retry_news_refresh(database):
         )
 
         from services.news_service import refresh_hot_tickers_news
-        result = await _retry_aio.wait_for(
+        result = await asyncio.wait_for(
             refresh_hot_tickers_news(database),
             timeout=_AUTO_RETRY_TIMEOUT_SECONDS,
         )
@@ -8819,7 +8817,7 @@ async def _auto_retry_news_refresh(database):
             "Auto-retry: news_refresh completed successfully: %s",
             result.get("status", "unknown"),
         )
-    except _retry_aio.TimeoutError:
+    except asyncio.TimeoutError:
         logger.error(
             "Auto-retry: news_refresh timed out after %d s",
             _AUTO_RETRY_TIMEOUT_SECONDS,
@@ -8842,9 +8840,12 @@ async def _auto_retry_news_refresh(database):
 
 
 def _fallback_expire_audit(database, audit_id, error_text):
-    """Last-resort: make sure the audit record doesn't stay 'running' forever."""
-    import asyncio as _fb_aio
+    """Last-resort fire-and-forget: ensure audit record doesn't stay 'running'.
 
+    Schedules a DB update via asyncio.ensure_future.  This is intentionally
+    sync (not awaited) because it is called inside except blocks where we
+    cannot reliably await further DB operations.
+    """
     async def _do():
         try:
             from bson import ObjectId as _FbOID
@@ -8861,7 +8862,7 @@ def _fallback_expire_audit(database, audit_id, error_text):
                 "Auto-retry: last-resort finalization failed for "
                 "news_refresh audit_id=%s", audit_id,
             )
-    _fb_aio.ensure_future(_do())
+    asyncio.ensure_future(_do())
 
 
 async def startup_mega_caps_visibility_guard(database):
