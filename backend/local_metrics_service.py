@@ -75,10 +75,15 @@ async def calculate_reality_check_max(db, ticker: str) -> Dict[str, Any]:
     if len(prices) < 2:
         return None
     
+    # Filter to rows with valid adjusted_close (number > 0); drop 0 and None
+    prices = [p for p in prices if isinstance(p.get("adjusted_close"), (int, float)) and p["adjusted_close"] > 0]
+    if len(prices) < 2:
+        return None
+    
     start_date = prices[0]["date"]
     end_date = prices[-1]["date"]
-    start_price = prices[0].get("adjusted_close") or prices[0]["close"]
-    end_price = prices[-1].get("adjusted_close") or prices[-1]["close"]
+    start_price = prices[0]["adjusted_close"]
+    end_price = prices[-1]["adjusted_close"]
     
     # Calculate years
     try:
@@ -92,19 +97,19 @@ async def calculate_reality_check_max(db, ticker: str) -> Dict[str, Any]:
         years = 0.1  # Minimum to avoid division issues
     
     # Total Return (using adjusted_close which includes dividends)
-    if start_price and start_price > 0:
+    if start_price > 0:
         total_return_pct = ((end_price / start_price) - 1) * 100
     else:
         total_return_pct = 0
     
     # CAGR (Compound Annual Growth Rate)
-    if start_price and start_price > 0 and years > 0:
+    if start_price > 0 and years > 0:
         cagr_pct = (pow(end_price / start_price, 1 / years) - 1) * 100
     else:
         cagr_pct = 0
     
-    # Max Drawdown (Worst Drop)
-    max_drawdown_pct = calculate_max_drawdown([p.get("adjusted_close") or p["close"] for p in prices])
+    # Max Drawdown (Worst Drop) — adjusted_close only, sanitized by calculate_max_drawdown
+    max_drawdown_pct = calculate_max_drawdown([p["adjusted_close"] for p in prices])
     
     # ==========================================================================
     # BENCHMARK COMPARISON (SP500TR.INDX)
@@ -189,20 +194,25 @@ async def calculate_reality_check_max(db, ticker: str) -> Dict[str, Any]:
 
 
 def calculate_max_drawdown(prices: List[float]) -> float:
-    """Calculate maximum drawdown from a list of prices."""
-    if not prices or len(prices) < 2:
-        return 0
-    
-    peak = prices[0]
-    max_dd = 0
-    
-    for price in prices:
+    """Calculate maximum drawdown from a list of prices.
+
+    Input sanitization: keeps only values that are numeric AND > 0.
+    Returns 0.0 when fewer than 2 valid prices remain (never raises).
+    """
+    valid = [p for p in prices if isinstance(p, (int, float)) and p > 0]
+    if len(valid) < 2:
+        return 0.0
+
+    peak = valid[0]
+    max_dd = 0.0
+
+    for price in valid:
         if price > peak:
             peak = price
-        dd = ((peak - price) / peak) * 100 if peak > 0 else 0
+        dd = ((peak - price) / peak) * 100
         if dd > max_dd:
             max_dd = dd
-    
+
     return max_dd
 
 
@@ -313,10 +323,15 @@ async def calculate_period_stats(db, ticker: str, period: str) -> Dict[str, Any]
     if len(prices) < 2:
         return None
     
+    # Filter to rows with valid adjusted_close (number > 0); drop 0 and None
+    prices = [p for p in prices if isinstance(p.get("adjusted_close"), (int, float)) and p["adjusted_close"] > 0]
+    if len(prices) < 2:
+        return None
+    
     actual_start_date = prices[0]["date"]
     actual_end_date = prices[-1]["date"]
-    start_price = prices[0].get("adjusted_close") or prices[0]["close"]
-    end_price = prices[-1].get("adjusted_close") or prices[-1]["close"]
+    start_price = prices[0]["adjusted_close"]
+    end_price = prices[-1]["adjusted_close"]
     
     # Profit (Total Return)
     profit_pct = ((end_price / start_price) - 1) * 100 if start_price > 0 else 0
@@ -328,8 +343,8 @@ async def calculate_period_stats(db, ticker: str, period: str) -> Dict[str, Any]
         if total_return > 0:
             cagr_pct = (pow(total_return, 1.0 / years) - 1) * 100
     
-    # Max Drawdown
-    max_dd = calculate_max_drawdown([p.get("adjusted_close") or p["close"] for p in prices])
+    # Max Drawdown — adjusted_close only, sanitized by calculate_max_drawdown
+    max_dd = calculate_max_drawdown([p["adjusted_close"] for p in prices])
     
     # ==========================================================================
     # BENCHMARK (SP500TR.INDX) - SAME period, return TOTAL % (not CAGR)
