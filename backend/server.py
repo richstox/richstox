@@ -3,7 +3,7 @@
 # The ONLY runtime filter for ticker visibility is: is_visible == True
 # NO ad-hoc filters allowed (exchange, suffix, sector, industry, asset_type, etc.)
 # Violation = data integrity breach = users see wrong tickers
-# 
+#
 # Use VISIBLE_UNIVERSE_QUERY constant defined in server.py line 60
 # or whitelist_service.py line 710
 #
@@ -116,7 +116,7 @@ logger = logging.getLogger("richstox")
 async def verify_sp500tr_benchmark():
     """Verify SP500TR.INDX benchmark data exists. DB-only, no EODHD calls."""
     ticker = "SP500TR.INDX"
-    
+
     count = await db.stock_prices.count_documents({"ticker": ticker})
     if count >= 9000:
         logger.info(f"SP500TR.INDX benchmark data OK: {count} records")
@@ -138,7 +138,7 @@ async def startup_api_call_guard():
     """
     import subprocess
     from datetime import datetime, timezone
-    
+
     try:
         result = subprocess.run(
             ["python", "/app/scripts/audit_external_calls.py"],
@@ -146,11 +146,11 @@ async def startup_api_call_guard():
             text=True,
             timeout=30
         )
-        
+
         passed = result.returncode == 0
-        
+
         from utils.redact import redact_secrets
-        
+
         audit_result = {
             "audit_type": "api_call_guard",
             "ran_at": datetime.now(timezone.utc),
@@ -159,14 +159,14 @@ async def startup_api_call_guard():
             "stdout": redact_secrets(result.stdout)[:2000] if result.stdout else None,
             "stderr": redact_secrets(result.stderr)[:500] if result.stderr else None,
         }
-        
+
         # Store to ops collection for Admin Panel
         await db.ops_audit_runs.update_one(
             {"audit_type": "api_call_guard"},
             {"$set": audit_result},
             upsert=True
         )
-        
+
         if passed:
             logger.info("✅ API Call Guard: PASS - All EODHD calls in allowlist")
         else:
@@ -175,7 +175,7 @@ async def startup_api_call_guard():
                 f"Script exited with code {result.returncode} but produced no output"
             )
             logger.critical(f"🚨 API Call Guard: FAIL - Violations found!\n{detail}")
-            
+
     except subprocess.TimeoutExpired:
         logger.warning("⚠️ API Call Guard: Timeout (script took >30s)")
     except FileNotFoundError:
@@ -200,16 +200,16 @@ async def startup_visibility_guard():
     - STATUS: is_delisted != true
     """
     from visibility_rules import get_canonical_sieve_query, VISIBLE_TICKERS_QUERY
-    
+
     canonical_count = await db.tracked_tickers.count_documents(get_canonical_sieve_query())
     is_visible_count = await db.tracked_tickers.count_documents(VISIBLE_TICKERS_QUERY)
-    
+
     mismatch = abs(canonical_count - is_visible_count)
-    
+
     if mismatch > 0:
         error_msg = f"🚨 VISIBILITY MISMATCH: canonical_sieve={canonical_count}, is_visible={is_visible_count}, diff={mismatch}"
         logger.error(error_msg)
-        
+
         # Log audit failure
         await db.ops_audit_runs.update_one(
             {"audit_type": "visibility_guard"},
@@ -224,13 +224,13 @@ async def startup_visibility_guard():
             }},
             upsert=True
         )
-        
+
         # WARNING: Do not fail startup - just log critical error
         # User must run visibility cleanup job to fix
         logger.warning("⚠️ Run 'recompute_visibility_all' job from Admin Panel to fix mismatch")
     else:
         logger.info(f"✅ Visibility Guard: {is_visible_count} tickers (canonical sieve match)")
-        
+
         # Log audit success
         await db.ops_audit_runs.update_one(
             {"audit_type": "visibility_guard"},
@@ -485,19 +485,19 @@ class TimezoneUpdate(BaseModel):
 async def auth_me(request: Request):
     """
     Get current user data from session.
-    
+
     Validates session token from cookie or Authorization header.
     """
     session_token = get_session_token_from_request(request)
-    
+
     if not session_token:
         raise HTTPException(401, "Not authenticated")
-    
+
     user = await validate_session(db, session_token)
-    
+
     if not user:
         raise HTTPException(401, "Session expired or invalid")
-    
+
     user_data = serialize_user(user)
     return User(**user_data).dict()
 
@@ -590,7 +590,7 @@ async def auth_google_callback(code: str, request: Request, response: Response):
     base_url = str(request.base_url).rstrip("/").replace("http://", "https://")
     redirect_uri = f"{base_url}/api/auth/google/callback"
     frontend_url = os.environ.get("FRONTEND_URL", "https://jocular-faun-27ea7b.netlify.app")
-    
+
     auth_data = await exchange_google_code(code, redirect_uri)
     if not auth_data:
         return RedirectResponse(url=f"{frontend_url}/?error=auth_failed")
@@ -647,17 +647,17 @@ async def auth_update_timezone(request: Request, data: TimezoneUpdate):
     Update user's timezone (onboarding step).
     """
     session_token = get_session_token_from_request(request)
-    
+
     if not session_token:
         raise HTTPException(401, "Not authenticated")
-    
+
     user = await validate_session(db, session_token)
-    
+
     if not user:
         raise HTTPException(401, "Session expired or invalid")
-    
+
     updated_user = await update_user_timezone(db, user["user_id"], data.timezone, data.country)
-    
+
     user_data = serialize_user(updated_user)
     return User(**user_data).dict()
 
@@ -665,7 +665,7 @@ async def auth_update_timezone(request: Request, data: TimezoneUpdate):
 async def admin_seed_admin():
     """
     Seed admin user (kurtarichard@gmail.com).
-    
+
     This creates or updates the admin user with role='admin'.
     """
     admin = await seed_admin_user(db)
@@ -675,23 +675,23 @@ async def admin_seed_admin():
 async def auth_dev_login(response: Response):
     """
     Dev Login - Quick admin login for development/testing.
-    
+
     Bypasses OAuth to log in as admin user directly.
     Creates session and returns user data.
-    
+
     SECURITY: Only enabled when DEV_LOGIN_ENABLED=1 in environment.
     Must be OFF in production.
     """
     import uuid
-    
+
     # Check if dev login is enabled via environment variable
     dev_login_enabled = os.environ.get("DEV_LOGIN_ENABLED", "0") == "1"
     if not dev_login_enabled:
         raise HTTPException(403, "Dev login is disabled. Set DEV_LOGIN_ENABLED=1 to enable.")
-    
+
     # Seed or get admin user
     admin = await seed_admin_user(db)
-    
+
     if not admin:
         raise HTTPException(500, "Failed to get admin user")
 
@@ -799,18 +799,18 @@ async def search_stocks(q: str = Query(..., min_length=1)):
     """
     Search for stocks by ticker or company name.
     Searches in local database (tracked_tickers) for visible tickers.
-    
+
     Priority:
     1. Exact ticker match (e.g., "BRK" matches "BRK-A.US", "BRK-B.US")
     2. Ticker starts with query
     3. Company name contains query
     """
     query = q.upper().strip()
-    
+
     # Build regex for flexible matching
     # Remove .US suffix if user included it
     search_term = query.replace(".US", "").replace("-", "[-.]?")
-    
+
     # Search in tracked_tickers for visible stocks
     # Match: ticker contains query OR name contains query (case-insensitive)
     pipeline = [
@@ -859,9 +859,9 @@ async def search_stocks(q: str = Query(..., min_length=1)):
             }
         }
     ]
-    
+
     results = await db.tracked_tickers.aggregate(pipeline).to_list(length=30)
-    
+
     return {"query": q, "count": len(results), "results": results}
 
 # ----- Stock Detail (Vizitka) -----
@@ -872,39 +872,39 @@ async def get_stock_detail(ticker: str):
     Includes: current price, fundamentals, performance metrics, dividend info.
     """
     ticker = ticker.upper()
-    
+
     # Get price history (1 year) from MongoDB
     prices = await _get_prices_from_db(ticker, days=365)
-    
+
     if not prices:
         raise HTTPException(404, f"No data found for {ticker}")
-    
+
     # Get fundamentals from MongoDB
     fundamentals = await _get_fundamentals_from_db(ticker)
-    
+
     # Get dividends from MongoDB
     dividends = await _get_dividends_from_db(ticker)
-    
+
     # Calculate metrics
     latest_price = prices[-1] if prices else {}
     current_price = latest_price.get("adjusted_close", latest_price.get("close", 0))
-    
+
     # 1-year return
     if len(prices) > 1:
         start_price = prices[0].get("adjusted_close", prices[0].get("close", 1))
         year_return = ((current_price - start_price) / start_price * 100) if start_price > 0 else 0
     else:
         year_return = 0
-    
+
     # 52-week high/low
     high_52w, low_52w = calculate_52w_high_low(prices)
-    
+
     # Max drawdown
     max_drawdown = calculate_max_drawdown(prices)
-    
+
     # Volatility
     volatility = calculate_volatility(prices)
-    
+
     # CAGR (based on available data)
     years = len(prices) / 252  # Trading days to years
     if years > 0 and len(prices) > 1:
@@ -912,16 +912,16 @@ async def get_stock_detail(ticker: str):
         cagr = calculate_cagr(start_price, current_price, years)
     else:
         cagr = 0
-    
+
     # Dividend yield
     total_dividends = sum(d.get("value", d.get("dividend", 0)) for d in dividends[:4])  # Last 4 quarters
     dividend_yield = (total_dividends / current_price * 100) if current_price > 0 else 0
-    
+
     # General info from fundamentals
     general = fundamentals.get("General", {})
     highlights = fundamentals.get("Highlights", {})
     technicals = fundamentals.get("Technicals", {})
-    
+
     return {
         "ticker": ticker,
         "name": general.get("Name", ticker),
@@ -929,14 +929,14 @@ async def get_stock_detail(ticker: str):
         "sector": general.get("Sector", "Unknown"),
         "industry": general.get("Industry", "Unknown"),
         "description": general.get("Description", "")[:500] if general.get("Description") else "",
-        
+
         # Price data
         "current_price": round(current_price, 2),
         "price_date": latest_price.get("date", ""),
         "previous_close": round(prices[-2].get("close", current_price), 2) if len(prices) > 1 else current_price,
         "daily_change": round(current_price - (prices[-2].get("close", current_price) if len(prices) > 1 else current_price), 2),
         "daily_change_pct": round(((current_price / prices[-2].get("close", current_price)) - 1) * 100, 2) if len(prices) > 1 and prices[-2].get("close", 0) > 0 else 0,
-        
+
         # Performance metrics
         "return_1y": round(year_return, 2),
         "cagr": round(cagr, 2),
@@ -944,18 +944,18 @@ async def get_stock_detail(ticker: str):
         "volatility": round(volatility, 2),
         "high_52w": round(high_52w, 2),
         "low_52w": round(low_52w, 2),
-        
+
         # Fundamentals
         "market_cap": highlights.get("MarketCapitalization", 0),
         "pe_ratio": highlights.get("PERatio", 0),
         "eps": highlights.get("EarningsShare", 0),
         "beta": technicals.get("Beta", 0),
-        
+
         # Dividends
         "dividend_yield": round(dividend_yield, 2),
         "last_dividend": dividends[0].get("value", 0) if dividends else 0,
         "dividend_count_year": len([d for d in dividends if d.get("date", "")[:4] == str(datetime.now().year)]),
-        
+
         # Meta
         "data_source": "MongoDB",
         "last_updated": datetime.utcnow().isoformat()
@@ -971,7 +971,7 @@ async def get_stock_prices(
     """Get historical prices for a stock."""
     ticker = ticker.upper()
     prices = await _get_prices_from_db(ticker, days=days, from_date=from_date)
-    
+
     return {
         "ticker": ticker,
         "count": len(prices),
@@ -985,21 +985,21 @@ async def get_stock_prices(
 async def get_benchmark(days: int = Query(365, ge=1, le=3650)):
     """Get S&P 500 benchmark data for comparison."""
     prices = await _get_prices_from_db(SP500_TR_TICKER, days=days)
-    
+
     if not prices:
         raise HTTPException(404, "Benchmark data not available")
-    
+
     # Calculate benchmark metrics
     start_price = prices[0].get("adjusted_close", prices[0].get("close", 1))
     end_price = prices[-1].get("adjusted_close", prices[-1].get("close", 1))
-    
+
     total_return = ((end_price - start_price) / start_price * 100) if start_price > 0 else 0
     max_dd = calculate_max_drawdown(prices)
     volatility = calculate_volatility(prices)
-    
+
     years = len(prices) / 252
     cagr = calculate_cagr(start_price, end_price, years) if years > 0 else 0
-    
+
     return {
         "name": "S&P 500 (SPY)",
         "ticker": SP500_TR_TICKER,
@@ -1027,25 +1027,25 @@ async def calculate_buy_hold(
     Shows what would happen if you invested a lump sum and held.
     """
     ticker = ticker.upper()
-    
+
     # Get price history from MongoDB
     prices = await _get_prices_from_db(ticker, days=days, from_date=start_date)
-    
+
     if not prices:
         raise HTTPException(404, f"No price data for {ticker}")
-    
+
     # Get benchmark for comparison from MongoDB
     benchmark_prices = await _get_prices_from_db(SP500_TR_TICKER, days=days, from_date=start_date)
-    
+
     # Calculate for stock
     start_price = prices[0].get("adjusted_close", prices[0].get("close", 1))
     end_price = prices[-1].get("adjusted_close", prices[-1].get("close", 1))
-    
+
     shares_bought = initial_investment / start_price if start_price > 0 else 0
     final_value = shares_bought * end_price
     total_return = final_value - initial_investment
     total_return_pct = (total_return / initial_investment * 100) if initial_investment > 0 else 0
-    
+
     # Calculate for benchmark
     if benchmark_prices:
         bench_start = benchmark_prices[0].get("adjusted_close", benchmark_prices[0].get("close", 1))
@@ -1053,11 +1053,11 @@ async def calculate_buy_hold(
         bench_return_pct = ((bench_end - bench_start) / bench_start * 100) if bench_start > 0 else 0
     else:
         bench_return_pct = 0
-    
+
     # Calculate CAGR
     years = len(prices) / 252
     cagr = calculate_cagr(start_price, end_price, years) if years > 0 else 0
-    
+
     # Build equity curve
     equity_curve = []
     for p in prices:
@@ -1067,7 +1067,7 @@ async def calculate_buy_hold(
             "date": p.get("date"),
             "value": round(value, 2)
         })
-    
+
     return {
         "ticker": ticker,
         "strategy": "Buy & Hold",
@@ -1100,34 +1100,34 @@ async def calculate_dca(
     Shows what would happen with regular monthly investments.
     """
     ticker = ticker.upper()
-    
+
     # Get price history from MongoDB
     prices = await _get_prices_from_db(ticker, days=days)
-    
+
     if not prices:
         raise HTTPException(404, f"No price data for {ticker}")
-    
+
     # Group prices by month and take first trading day of each month
     monthly_prices = {}
     for p in prices:
         month_key = p.get("date", "")[:7]  # YYYY-MM
         if month_key not in monthly_prices:
             monthly_prices[month_key] = p
-    
+
     # Calculate DCA
     total_invested = 0
     total_shares = 0
     investment_history = []
-    
+
     for month_key in sorted(monthly_prices.keys()):
         price_data = monthly_prices[month_key]
         price = price_data.get("adjusted_close", price_data.get("close", 0))
-        
+
         if price > 0:
             shares_this_month = monthly_investment / price
             total_shares += shares_this_month
             total_invested += monthly_investment
-            
+
             investment_history.append({
                 "date": price_data.get("date"),
                 "price": round(price, 2),
@@ -1136,16 +1136,16 @@ async def calculate_dca(
                 "total_invested": round(total_invested, 2),
                 "current_value": round(total_shares * price, 2)
             })
-    
+
     # Final calculations
     final_price = prices[-1].get("adjusted_close", prices[-1].get("close", 0))
     final_value = total_shares * final_price
     total_return = final_value - total_invested
     total_return_pct = (total_return / total_invested * 100) if total_invested > 0 else 0
-    
+
     # Average cost basis
     avg_cost = total_invested / total_shares if total_shares > 0 else 0
-    
+
     return {
         "ticker": ticker,
         "strategy": "Dollar Cost Averaging (DCA)",
@@ -1176,14 +1176,14 @@ async def calculate_portfolio_value(
     """
     ticker_list = [t.strip().upper() for t in tickers.split(",")]
     weight_list = [float(w.strip()) for w in weights.split(",")]
-    
+
     if len(ticker_list) != len(weight_list):
         raise HTTPException(400, "Number of tickers must match number of weights")
-    
+
     # Normalize weights to sum to 100
     total_weight = sum(weight_list)
     weight_list = [w / total_weight * 100 for w in weight_list]
-    
+
     # Get prices for each ticker from MongoDB
     all_prices = {}
     for ticker in ticker_list:
@@ -1194,14 +1194,14 @@ async def calculate_portfolio_value(
                 if date not in all_prices:
                     all_prices[date] = {}
                 all_prices[date][ticker] = p.get("adjusted_close", p.get("close", 0))
-    
+
     if not all_prices:
         raise HTTPException(404, "No price data found")
-    
+
     # Get current (latest) prices
     latest_date = max(all_prices.keys())
     current_prices = all_prices[latest_date]
-    
+
     # Calculate shares for each ticker based on target value
     shares = {}
     composition = []
@@ -1216,7 +1216,7 @@ async def calculate_portfolio_value(
             "shares": round(shares[ticker], 4),
             "current_price": round(current_price, 2)
         })
-    
+
     # Calculate historical portfolio values
     equity_curve = []
     for date in sorted(all_prices.keys()):
@@ -1229,11 +1229,11 @@ async def calculate_portfolio_value(
             "date": date,
             "value": round(portfolio_value, 2)
         })
-    
+
     # Calculate metrics
     start_value = equity_curve[0]["value"] if equity_curve else target_value
     total_return_pct = ((target_value - start_value) / start_value * 100) if start_value > 0 else 0
-    
+
     # Max drawdown on portfolio
     peak = equity_curve[0]["value"]
     max_dd = 0
@@ -1242,7 +1242,7 @@ async def calculate_portfolio_value(
             peak = point["value"]
         dd = (peak - point["value"]) / peak if peak > 0 else 0
         max_dd = max(max_dd, dd)
-    
+
     return {
         "target_value": target_value,
         "tickers": ticker_list,
@@ -1496,39 +1496,39 @@ async def get_watchlist(request: Request):
         {"user_id": user["user_id"]},
         {"_id": 0}
     ).sort("followed_at", -1).to_list(length=None)
-    
+
     enriched = []
-    
+
     for doc in watchlist_docs:
         ticker = doc.get("ticker")
         ticker_full = f"{ticker}.US"
-        
+
         # Get fundamentals for name/logo
         fundamentals = await db.company_fundamentals_cache.find_one(
             {"ticker": ticker_full},
             {"logo_data": 0, "logo_content_type": 0},
         )
-        
+
         # Get current price
         latest_price = await db.stock_prices.find_one(
             {"ticker": ticker_full},
             sort=[("date", -1)]
         )
-        
+
         current_price = None
         change_since_follow = None
-        
+
         if latest_price:
             current_price = latest_price.get("adjusted_close") or latest_price.get("close")
             follow_price = doc.get("follow_price_close")
             if follow_price and current_price and follow_price > 0:
                 change_since_follow = round(((current_price - follow_price) / follow_price) * 100, 2)
-        
+
         # Build internal logo URL (no external CDN)
         logo_url = _internal_logo_url(
             (fundamentals.get("logo_url") if fundamentals else None) or ticker_full
         )
-        
+
         # Format followed_at to DD/MM/YYYY
         followed_at_str = doc.get("followed_at", "")
         followed_at_display = None
@@ -1541,7 +1541,7 @@ async def get_watchlist(request: Request):
                     followed_at_display = followed_at_str
             except:
                 followed_at_display = followed_at_str
-        
+
         enriched.append({
             "ticker": ticker,
             "name": fundamentals.get("name", ticker) if fundamentals else ticker,
@@ -1552,7 +1552,7 @@ async def get_watchlist(request: Request):
             "current_price": round(current_price, 2) if current_price else None,
             "change_since_follow": change_since_follow
         })
-    
+
     return {
         "count": len(enriched),
         "watchlist": enriched
@@ -1564,12 +1564,12 @@ async def get_watchlist(request: Request):
 async def get_homepage_data():
     """
     P33 (BINDING): Homepage data with union of Watchlist + Portfolio.
-    
+
     ==========================================================================
     P33: MY STOCKS = union(Watchlist, Portfolio)
     DO NOT CHANGE WITHOUT RICHARD APPROVAL (kurtarichard@gmail.com)
     ==========================================================================
-    
+
     Rules:
     - Watchlist: from user_watchlist collection
     - Portfolio: from positions with shares > 0
@@ -1756,7 +1756,7 @@ async def get_homepage_data():
             "change_since_added": change_since_added,
             "follow_price": round(follow_price, 2) if follow_price else None
         })
-    
+
     return {
         "last_updated": datetime.utcnow().isoformat(),
         "market_status": "closed" if datetime.utcnow().hour < 14 or datetime.utcnow().hour >= 21 else "open",
@@ -1854,25 +1854,25 @@ async def admin_report_today():
     Returns the daily report generated at 06:00 Prague time.
     """
     report = await get_today_report(db)
-    
+
     if not report:
         return {"status": "not_generated", "message": "Today's report not yet generated. Runs at 06:00 Prague."}
-    
+
     return report
 
 @api_router.get("/admin/report/{date}")
 async def admin_report_by_date(date: str):
     """
     P45: Get admin report for a specific date.
-    
+
     Args:
         date: Date in YYYY-MM-DD format
     """
     report = await get_report_by_date(db, date)
-    
+
     if not report:
         raise HTTPException(404, f"No report found for {date}")
-    
+
     return report
 
 @api_router.get("/admin/reports/recent")
@@ -1895,13 +1895,13 @@ async def admin_report_generate_now():
         logger.info("Starting admin report generation (manual)")
         report = await generate_admin_daily_report(db, source="manual")
         logger.info(f"Report generated in {report.get('generation_duration_ms', 0)}ms")
-        
+
         if not report or "report_date" not in report:
             raise HTTPException(500, "Failed to generate report - empty result")
-        
+
         save_result = await save_daily_report(db, report)
         logger.info(f"Report saved: {save_result}")
-        
+
         return {
             "status": "generated",
             "report_date": report["report_date"],
@@ -1975,7 +1975,7 @@ from price_ingestion_service import (
 async def whitelist_stats():
     """
     Get whitelist statistics.
-    
+
     Returns counts by status:
     - active: Tickers with fundamentals (usable in app)
     - pending_fundamentals: Waiting for fundamentals fetch
@@ -2025,11 +2025,11 @@ async def admin_backfill_asset_type():
         {},
         {"$set": {"asset_type": "Common Stock"}}
     )
-    
+
     # Verify
     total = await db.company_fundamentals_cache.count_documents({})
     with_asset_type = await db.company_fundamentals_cache.count_documents({"asset_type": "Common Stock"})
-    
+
     return {
         "modified_count": result.modified_count,
         "total_tickers": total,
@@ -2062,10 +2062,10 @@ async def admin_backfill_full_price_history():
 async def admin_whitelist_sync(dry_run: bool = Query(True)):
     """
     Sync the whitelist with EODHD exchange-symbol-list.
-    
+
     This creates CANDIDATES with status='pending_fundamentals'.
     Tickers become 'active' only after fundamentals are fetched.
-    
+
     Pipeline:
     1. This job creates candidates + queues fundamentals_events
     2. /admin/fundamentals/process fetches fundamentals and activates tickers
@@ -2195,11 +2195,11 @@ async def admin_process_fundamentals(
 ):
     """
     Process pending fundamentals events.
-    
+
     Fetches fundamentals for tickers with status='pending_fundamentals'.
     If successful: activates ticker, caches fundamentals.
     If no data: marks ticker as 'no_fundamentals' (not active).
-    
+
     NOTE: Each ticker costs 10 EODHD API calls!
     batch_size=50 = 500 API calls
     """
@@ -2238,16 +2238,16 @@ async def admin_fundamentals_stats():
 async def admin_sync_pilot(dry_run: bool = Query(False)):
     """
     Sync fundamentals for pilot batch (15 tickers).
-    
-    Tickers: AAPL, MSFT, JNJ, NVDA, TSLA, GOOGL, AMZN, META, NFLX, 
+
+    Tickers: AAPL, MSFT, JNJ, NVDA, TSLA, GOOGL, AMZN, META, NFLX,
              AVGO, COST, ADBE, ASML, LRCX, CDNS
-    
+
     Creates normalized data in:
     - company_fundamentals_cache (identity + metrics)
     - financials_cache (income/balance/cashflow per period)
     - earnings_history_cache (quarterly EPS)
     - insider_activity_cache (6m aggregated)
-    
+
     Cost: 150 EODHD credits (15 × 10)
     """
     result = await sync_pilot_fundamentals(db, dry_run=dry_run)
@@ -2602,22 +2602,22 @@ async def admin_batch_sync_fundamentals(
 ):
     """
     Start batch fundamentals sync for specified number of tickers.
-    
+
     Args:
         limit: Number of tickers to sync (default 500, max 2000)
         batch_size: Tickers per batch (default 50)
-    
+
     Returns immediately with job info. Check /admin/batch/status for progress.
     """
     # Get tickers to sync (excluding already synced)
     tickers = await get_tickers_for_sync(db, limit=limit)
-    
+
     if not tickers:
         return {
             "message": "No tickers pending sync",
             "already_synced": (await get_fundamentals_stats(db))["company_fundamentals_cache"]["tickers"]
         }
-    
+
     # Run sync (this will take time)
     result = await run_fundamentals_batch_job(
         db,
@@ -2626,7 +2626,7 @@ async def admin_batch_sync_fundamentals(
         delay_between_batches=0.5,
         job_name=f"fundamentals_batch_{len(tickers)}"
     )
-    
+
     return result
 
 # ----- Industry Benchmarks Endpoints -----
@@ -2635,10 +2635,10 @@ async def admin_batch_sync_fundamentals(
 async def admin_compute_benchmarks():
     """
     Compute industry benchmarks from all company fundamentals.
-    
+
     Creates/updates industry_benchmarks collection with median values
     for P/E, P/S, P/B, EV/EBITDA, Net Margin, etc. per industry.
-    
+
     Requires at least 5 companies per industry.
     """
     result = await compute_industry_benchmarks(db)
@@ -2670,20 +2670,20 @@ async def admin_sync_ticker_dividends(ticker: str):
 async def admin_sync_batch_dividends(limit: int = Query(100, ge=1, le=500)):
     """
     Sync dividend history for multiple tickers.
-    
+
     Syncs dividends for tickers that have fundamentals but no dividend history yet.
     Cost: 1 EODHD credit per ticker.
     """
     # Get tickers with fundamentals but no dividend history yet
     all_tickers = await db.company_fundamentals_cache.distinct("ticker")
     synced_tickers = await db.dividend_history.distinct("ticker")
-    
+
     pending = [t for t in all_tickers if t not in synced_tickers][:limit]
-    
+
     if not pending:
         # Try to get any tickers
         pending = all_tickers[:limit]
-    
+
     result = await sync_batch_dividends(db, pending)
     return result
 
@@ -2705,7 +2705,7 @@ async def get_ticker_dividends(ticker: str):
 async def admin_update_ttm_batch(limit: int = Query(500, ge=1, le=2000)):
     """
     Update TTM metrics (Net Margin TTM, etc.) for all tickers.
-    
+
     Calculates from quarterly financials and updates company_fundamentals_cache.
     """
     result = await batch_update_ttm_metrics(db, limit=limit)
@@ -2736,23 +2736,23 @@ async def admin_backfill_batch_prices(
 ):
     """
     Backfill price history for multiple tickers.
-    
+
     Processes tickers that have fundamentals but no price data.
     Cost: 1 API credit per ticker.
     """
     # Get tickers with fundamentals but no/few prices
     all_tickers = await db.company_fundamentals_cache.distinct("ticker")
-    
+
     # Check which already have prices
     tickers_with_prices = await db.stock_prices.distinct("ticker")
     tickers_with_prices_set = set(tickers_with_prices)
-    
+
     # Find tickers missing prices
     missing_prices = [t for t in all_tickers if t not in tickers_with_prices_set][:limit]
-    
+
     if not missing_prices:
         return {"message": "All tickers have price data", "tickers_checked": len(all_tickers)}
-    
+
     result = await backfill_batch_prices(db, missing_prices)
     return result
 
@@ -2774,35 +2774,35 @@ async def admin_backfill_parallel(
 ):
     """
     Run parallel price backfill for tickers without full price history.
-    
+
     Args:
         limit: Max tickers to process (default 100, max 500 for sync, unlimited for background)
         concurrency: Concurrent API requests (default 10)
         sync: If True, run synchronously and return results (use for small batches)
-    
+
     Runs in background by default. Check /api/admin/scheduler/status for results.
     """
     from parallel_batch_service import (
         get_tickers_without_full_prices,
         run_parallel_price_backfill,
     )
-    
+
     # Validate params
     concurrency = min(max(concurrency, 1), 10)
-    
+
     if sync:
         limit = min(limit, 500)  # Cap for sync mode
-    
+
     # Get tickers needing backfill
     tickers = await get_tickers_without_full_prices(db, limit=limit if limit > 0 else None)
-    
+
     if not tickers:
         return {
             "status": "no_work",
             "message": "All tickers have full price history",
             "tickers_checked": 0,
         }
-    
+
     # Run synchronously if requested or small batch
     if sync or len(tickers) <= 20:
         result = await run_parallel_price_backfill(
@@ -2812,7 +2812,7 @@ async def admin_backfill_parallel(
             job_name="manual_parallel_backfill",
         )
         return result.to_dict()
-    
+
     # Run in background for larger batches
     async def run_backfill():
         await run_parallel_price_backfill(
@@ -2821,7 +2821,7 @@ async def admin_backfill_parallel(
             concurrency=concurrency,
             job_name="manual_parallel_backfill",
         )
-    
+
     background_tasks.add_task(run_backfill)
     return {
         "status": "started",
@@ -2843,31 +2843,31 @@ async def admin_backfill_full(
 ):
     """
     Run FULL price backfill - all remaining tickers until completion.
-    
+
     Safety stops:
     - Rate-limit backoff >30s
     - Error rate >5%
     - Max runtime: 4 hours
-    
+
     Use for nightly full runs. Progress logged every 500 tickers.
     """
     from parallel_batch_service import (
         get_tickers_without_full_prices,
         run_parallel_price_backfill,
     )
-    
+
     CONCURRENCY = 10
-    
+
     # Get ALL tickers needing backfill (no limit)
     tickers = await get_tickers_without_full_prices(db, limit=None)
-    
+
     if not tickers:
         return {
             "status": "no_work",
             "message": "All tickers have full price history ✅",
             "tickers_remaining": 0,
         }
-    
+
     # Run in background
     async def run_full_backfill():
         await run_parallel_price_backfill(
@@ -2877,7 +2877,7 @@ async def admin_backfill_full(
             job_name="manual_full_backfill",
             max_runtime_hours=4,
         )
-    
+
     background_tasks.add_task(run_full_backfill)
     return {
         "status": "started",
@@ -2925,11 +2925,11 @@ async def admin_get_data_gaps(
 ):
     """
     Get data gaps report.
-    
+
     Args:
         field: Optional filter by specific field
         limit: Maximum tickers to return per field
-    
+
     Returns:
         If field specified: gaps for that field
         Otherwise: complete summary across all fields
@@ -2944,7 +2944,7 @@ async def admin_scan_data_gaps(
 ):
     """
     Scan all tickers and identify data gaps.
-    
+
     This is a comprehensive scan that checks all tickers against all data sources.
     Use sparingly as it can be slow for large datasets.
     """
@@ -2963,7 +2963,7 @@ async def admin_daily_data_gaps_report():
 async def get_stock_overview(ticker: str, lite: bool = Query(True)):
     """
     Get complete stock overview from cached data (no EODHD calls).
-    
+
     Includes:
     - Company fundamentals (identity, metrics)
     - TTM calculations (Net Margin TTM, local P/E)
@@ -2971,34 +2971,34 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
     - Industry benchmark data
     - Gradient colors for UI
     - Financials, earnings, insider data (if lite=False)
-    
+
     Args:
         ticker: Stock ticker (e.g., AAPL)
         lite: If True (default), skip financials/earnings/insiders for faster load
-    
+
     Returns:
         Complete stock overview with all P0 metrics.
     """
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
-    
+
     # LOVABLE LOGIC: Validate ticker visibility before showing data
     # Use the is_visible field which is set by the universe cleanup script
     tracked = await db.tracked_tickers.find_one(
         {"ticker": ticker_full},
         {"_id": 0}
     )
-    
+
     if tracked:
         # Check visibility using the persisted is_visible field
         if not tracked.get("is_visible", False):
             raise HTTPException(404, f"Ticker {ticker} is not available")
-    
+
     # 1. Company fundamentals - Read from EMBEDDED tracked_tickers.fundamentals first,
     # then fall back to company_fundamentals_cache if embedded data is missing.
     embedded_fundamentals = tracked.get("fundamentals", {}) if tracked else {}
     general = embedded_fundamentals.get("General", {}) if embedded_fundamentals else {}
-    
+
     # Fallback: check company_fundamentals_cache when embedded fundamentals are empty
     cache_doc = None
     if not general:
@@ -3010,7 +3010,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
                 general = cache_doc["General"]
             elif cache_doc.get("name"):
                 general = _cache_doc_to_general(cache_doc)
-    
+
     # Build company dict from fundamentals (embedded or cache)
     fundamentals_pending = False
     addr_data = (general.get("AddressData") or {}) if general else {}
@@ -3050,10 +3050,10 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
     else:
         # No fundamentals in embedded or cache - check if ticker has price data
         has_prices = await db.stock_prices.count_documents({"ticker": ticker_full}) > 0
-        
+
         if not tracked and not has_prices:
             raise HTTPException(404, f"No data for {ticker}")
-        
+
         # Create placeholder company data from tracked_tickers with best-effort fallbacks
         fundamentals_pending = True
         company = {
@@ -3086,27 +3086,27 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "revenue_ttm": None,
             "_fundamentals_pending": True,
         }
-    
+
     # 2. Get latest price from stock_prices (DB-only, no EODHD fallback)
     latest_price = await db.stock_prices.find_one(
         {"ticker": ticker_full},
         {"_id": 0},
         sort=[("date", -1)]
     )
-    
+
     current_price = None
     price_data = None
-    
+
     if latest_price:
         prev_price = await db.stock_prices.find_one(
             {"ticker": ticker_full, "date": {"$lt": latest_price.get("date")}},
             {"_id": 0},
             sort=[("date", -1)]
         )
-        
+
         current_price = latest_price.get("adjusted_close") or latest_price.get("close_price") or 0
         previous = (prev_price.get("adjusted_close") or prev_price.get("close_price") or current_price) if prev_price else current_price
-        
+
         price_data = {
             "last_close": round(current_price, 2) if current_price else None,
             "previous_close": round(previous, 2) if previous else None,
@@ -3114,7 +3114,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "change_pct": round(((current_price - previous) / previous * 100), 2) if previous and previous != 0 else 0,
             "date": latest_price.get("date"),
         }
-    
+
     # ZERO OUTBOUND RULE: No live EODHD calls - use only cached data
     # If no price in DB, log as data gap and use company fundamentals data if available
     if not current_price:
@@ -3133,19 +3133,19 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             }
         # Log data gap for missing price
         await log_data_gap(db, ticker_full, DataField.PRICE, "No price in stock_prices collection")
-    
+
     # 3. Calculate TTM metrics
     ttm_metrics = await calculate_ttm_metrics(db, ticker_full)
-    
+
     # Use TTM values for calculations
     eps_ttm = ttm_metrics.get("eps_ttm") or company.get("eps_ttm")
     net_margin_ttm = ttm_metrics.get("net_margin_ttm") or company.get("net_margin_ttm")
-    
+
     # Calculate local P/E ratio
     local_pe = None
     if current_price and eps_ttm and eps_ttm > 0:
         local_pe = round(current_price / eps_ttm, 2)
-    
+
     # 4. Get industry benchmark
     industry = company.get("industry")
     benchmark = None
@@ -3154,12 +3154,12 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             {"industry": industry},
             {"_id": 0}
         )
-    
+
     # 5. Calculate Dividend Yield TTM
     dividend_yield_ttm = None
     if current_price:
         dividend_yield_ttm = await calculate_dividend_yield_ttm(db, ticker_full, current_price)
-    
+
     # 6. Compute Valuation Score if we have benchmark
     valuation_result = None
     if benchmark:
@@ -3173,7 +3173,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "net_margin_ttm": net_margin_ttm,
             "profit_margin": company.get("profit_margin"),
         }
-        
+
         benchmark_metrics = {
             "pe_ratio_median": benchmark.get("pe_ratio_median"),
             "ps_ratio_median": benchmark.get("ps_ratio_median"),
@@ -3184,9 +3184,9 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "net_margin_ttm_median": benchmark.get("net_margin_ttm_median"),
             "profit_margin_median": benchmark.get("profit_margin_median"),
         }
-        
+
         valuation_result = compute_valuation_score(company_metrics, benchmark_metrics)
-    
+
     # 7. Compute gradient colors for key metrics
     gradient_colors = {}
     if benchmark:
@@ -3200,57 +3200,57 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             ("net_margin_ttm", net_margin_ttm, benchmark.get("net_margin_ttm_median"), "higher_better"),
             ("profit_margin", company.get("profit_margin"), benchmark.get("profit_margin_median"), "higher_better"),
         ]
-        
+
         for metric_name, company_val, benchmark_val, direction in metrics_for_gradient:
             if company_val is not None:
                 gradient_colors[metric_name] = compute_gradient_color(company_val, benchmark_val, direction)
-    
+
     # 8. Compute 52W high/low from stock_prices (on-demand)
     week_52_data = await compute_52w_high_low(db, ticker_full)
-    
+
     # 9. Build key metrics with peer comparison
     key_metrics = {
         "market_cap": company.get("market_cap"),
         "enterprise_value": company.get("enterprise_value"),
-        
+
         # P/E (local calculation preferred)
         "pe_ratio": local_pe or company.get("pe_ratio"),
         "pe_ratio_source": "local" if local_pe else "eodhd",
         "pe_benchmark": benchmark.get("pe_ratio_median") if benchmark else None,
-        
+
         # EPS
         "eps_ttm": round(eps_ttm, 2) if eps_ttm else None,
-        
+
         # Other valuation ratios
         "ps_ratio": company.get("ps_ratio"),
         "ps_benchmark": benchmark.get("ps_ratio_median") if benchmark else None,
-        
+
         "pb_ratio": company.get("pb_ratio"),
         "pb_benchmark": benchmark.get("pb_ratio_median") if benchmark else None,
-        
+
         "ev_ebitda": company.get("ev_ebitda"),
         "ev_ebitda_benchmark": benchmark.get("ev_ebitda_median") if benchmark else None,
-        
+
         "ev_revenue": company.get("ev_revenue"),
         "ev_revenue_benchmark": benchmark.get("ev_revenue_median") if benchmark else None,
-        
+
         # Profitability
         "net_margin_ttm": round(net_margin_ttm, 2) if net_margin_ttm else None,
         "net_margin_benchmark": benchmark.get("net_margin_ttm_median") if benchmark else None,
-        
+
         "profit_margin": company.get("profit_margin"),
         "profit_margin_benchmark": benchmark.get("profit_margin_median") if benchmark else None,
-        
+
         "roe": company.get("roe"),
         "roa": company.get("roa"),
-        
+
         # Dividends
         "dividend_yield": company.get("dividend_yield"),
         "dividend_yield_ttm": round(dividend_yield_ttm, 2) if dividend_yield_ttm else None,
         "dividend_benchmark": benchmark.get("dividend_yield_median") if benchmark else None,
         "payout_ratio": company.get("payout_ratio"),
         "ex_dividend_date": company.get("ex_dividend_date"),
-        
+
         # Risk - 52W computed on-demand from stock_prices
         "beta": company.get("beta"),
         "fifty_two_week_high": week_52_data.get("fifty_two_week_high"),
@@ -3259,12 +3259,12 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
         "fifty_two_week_low_date": week_52_data.get("low_date"),
         "fifty_two_week_source": week_52_data.get("source"),
         "fifty_two_week_days_of_data": week_52_data.get("days_of_data"),
-        
+
         # Ownership
         "pct_insiders": company.get("pct_insiders"),
         "pct_institutions": company.get("pct_institutions"),
     }
-    
+
     # 10. Build peer comparison context
     peer_context = None
     if benchmark:
@@ -3274,7 +3274,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "company_count": benchmark.get("company_count"),
             "has_sufficient_peers": (benchmark.get("company_count") or 0) >= 5,
         }
-    
+
     # 10. Financials (if full mode)
     financials = None
     if not lite:
@@ -3283,12 +3283,12 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             {"ticker": ticker_full, "period_type": "annual", "statement_type": "Income_Statement"},
             {"_id": 0}
         ).sort("date", -1).limit(5).to_list(5)
-        
+
         quarterly_raw = await db.financials_cache.find(
             {"ticker": ticker_full, "period_type": "quarterly", "statement_type": "Income_Statement"},
             {"_id": 0}
         ).sort("date", -1).limit(8).to_list(8)
-        
+
         # Transform to frontend expected format
         def transform_financial(f):
             data = f.get("data", {})
@@ -3301,14 +3301,14 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
                 "operating_income": float(data.get("operatingIncome") or 0) if data.get("operatingIncome") else None,
                 "ebitda": float(data.get("ebitda") or 0) if data.get("ebitda") else None,
             }
-        
+
         annual = [transform_financial(f) for f in annual_raw if f.get("data")]
         quarterly = [transform_financial(f) for f in quarterly_raw if f.get("data")]
-        
+
         # Filter out records with no meaningful data
         annual = [a for a in annual if a.get("revenue") or a.get("net_income")]
         quarterly = [q for q in quarterly if q.get("revenue") or q.get("net_income")]
-        
+
         if annual or quarterly:
             financials = {
                 "annual": annual,
@@ -3323,7 +3323,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
                     "quarters_used": ttm_metrics.get("quarters_used", []),
                 }
             }
-    
+
     # 11. Earnings history (if full mode)
     earnings = None
     if not lite:
@@ -3331,7 +3331,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             {"ticker": ticker_full},
             {"_id": 0}
         ).sort("quarter_date", -1).limit(12).to_list(12)
-    
+
     # 12. Insider activity (if full mode)
     insider = None
     if not lite:
@@ -3339,15 +3339,15 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             {"ticker": ticker_full},
             {"_id": 0}
         )
-    
+
     # 13. Dividend history (if full mode)
     dividends = None
     if not lite:
         dividends = await get_dividend_history_for_ticker(db, ticker_full)
-    
+
     return {
         "ticker": ticker_full,
-        
+
         # Company identity
         "company": {
             "name": company.get("name"),
@@ -3364,28 +3364,28 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "state": company.get("state"),
             "country_name": company.get("country_name"),
         },
-        
+
         # Price data
         "price": price_data,
-        
+
         # Key metrics with benchmark comparison
         "key_metrics": key_metrics,
-        
+
         # Valuation Score (0-100)
         "valuation": valuation_result,
-        
+
         # Gradient colors for UI
         "gradient_colors": gradient_colors,
-        
+
         # Peer comparison context
         "peer_context": peer_context,
-        
+
         # Detailed data (null if lite mode)
         "financials": financials,
         "earnings": earnings,
         "insider_activity": insider,
         "dividends": dividends,
-        
+
         # Metadata
         "lite_mode": lite,
         "data_source": "cache",
@@ -3421,7 +3421,7 @@ async def get_ticker_detail_mobile(
 ):
     """
     Get ticker detail for mobile app redesign.
-    
+
     Returns:
     - company: Basic company info (name, sector, industry, logo, etc.)
     - price: Current price + daily change
@@ -3431,7 +3431,7 @@ async def get_ticker_detail_mobile(
     - key_metrics: Hybrid 7 metrics (Market Cap, Shares, Net Margin, FCF Yield, etc.)
     - peer_transparency: Total peers + valid metric counts
     - company_details: Collapsible section data
-    
+
     RAW FACTS ONLY - all metrics computed locally from raw financial statements.
     NO 52W High/Low (removed per P0 spec).
     """
@@ -3442,25 +3442,25 @@ async def get_ticker_detail_mobile(
         calculate_hybrid_7_metrics_v2,  # BINDING: Use V2 for Key Metrics
         get_peer_transparency,
     )
-    
+
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     symbol = ticker_upper.replace(".US", "")
-    
+
     # Validate ticker visibility
     tracked = await db.tracked_tickers.find_one(
         {"ticker": ticker_full, "is_visible": True},
         {"_id": 0}
     )
-    
+
     if not tracked:
         raise HTTPException(404, f"Ticker {ticker} is not available")
-    
+
     # Get company fundamentals from EMBEDDED tracked_tickers.fundamentals first,
     # then fall back to company_fundamentals_cache if embedded data is missing.
     embedded_fundamentals = tracked.get("fundamentals", {})
     general = embedded_fundamentals.get("General", {}) if embedded_fundamentals else {}
-    
+
     # Fallback: check company_fundamentals_cache when embedded fundamentals are empty
     if not general:
         cache_doc = await db.company_fundamentals_cache.find_one(
@@ -3471,7 +3471,7 @@ async def get_ticker_detail_mobile(
                 general = cache_doc["General"]
             elif cache_doc.get("name"):
                 general = _cache_doc_to_general(cache_doc)
-    
+
     # Build company dict from fundamentals (embedded or cache) - ALWAYS return a dict, never None
     addr_data = (general.get("AddressData") or {}) if general else {}
     company = {
@@ -3492,7 +3492,7 @@ async def get_ticker_detail_mobile(
         "isin": general.get("ISIN"),
         "cusip": general.get("CUSIP"),
     }
-    
+
     # Phase 1: Parallel lightweight cache/index lookups
     (
         latest_price,
@@ -3514,24 +3514,24 @@ async def get_ticker_detail_mobile(
             {"ticker": ticker_full}, {"_id": 0}
         ),
     )
-    
+
     valuation_cache = valuation_cache_raw if _is_local_valuation_cache_doc(valuation_cache_raw) else None
-    
+
     # Phase 2: Heavy full-history queries run sequentially to avoid
     # resource contention (both scan entire stock_prices for MAX period)
     reality_check = await calculate_reality_check_max(db, ticker_full)
     period_stats = await calculate_period_stats(db, ticker_full, period)
-    
+
     current_price = latest_price["close"] if latest_price else None
     prev_close = prev_price["close"] if prev_price else current_price
-    
+
     # Calculate daily change
     daily_change = None
     daily_change_pct = None
     if current_price and prev_close:
         daily_change = current_price - prev_close
         daily_change_pct = (daily_change / prev_close) * 100 if prev_close > 0 else 0
-    
+
     # Also get peer benchmarks for the ticker's industry
     peer_bench_doc = None
     if tracked.get("industry"):
@@ -3544,16 +3544,16 @@ async def get_ticker_detail_mobile(
             {"sector": tracked.get("sector"), "industry": None},
             {"_id": 0}
         )
-    
+
     # Build valuation response from cache
     if valuation_cache:
         cached_metrics = valuation_cache.get("current_metrics", {})
-        
+
         # BINDING: Use peer_count_used (USD-only) for vs_peers comparison
         peer_count_used = peer_bench_doc.get("peer_count_used", peer_bench_doc.get("peer_count", 0)) if peer_bench_doc else 0
         peer_count_total = peer_bench_doc.get("peer_count_total", peer_bench_doc.get("peer_count", 0)) if peer_bench_doc else 0
         currency_filter = peer_bench_doc.get("currency_filter") if peer_bench_doc else None
-        
+
         # =====================================================================
         # P0 FIX: EXCLUDE-SELF SIMPLE MEDIAN (not weighted)
         # For each metric, exclude the current ticker from peer list,
@@ -3563,19 +3563,19 @@ async def get_ticker_detail_mobile(
             """Compute simple median excluding self ticker."""
             if not metric_values:
                 return None, 0, None
-            
+
             tickers = metric_values.get("tickers", [])
             values = metric_values.get("values", [])
-            
+
             if not tickers or not values or len(tickers) != len(values):
                 return None, 0, None
-            
+
             # Exclude self
             filtered = [(t, v) for t, v in zip(tickers, values) if t != exclude_ticker]
-            
+
             if len(filtered) < 3:
                 return None, len(filtered), "insufficient_peers"
-            
+
             # Values are pre-sorted, compute simple median
             filtered_values = [v for _, v in filtered]
             n = len(filtered_values)
@@ -3583,9 +3583,9 @@ async def get_ticker_detail_mobile(
                 median_val = filtered_values[n // 2]
             else:
                 median_val = (filtered_values[n // 2 - 1] + filtered_values[n // 2]) / 2
-            
+
             return round(median_val, 2), n, "industry"
-        
+
         # Get sector fallback doc
         sector_bench_doc = None
         if tracked.get("sector"):
@@ -3593,26 +3593,26 @@ async def get_ticker_detail_mobile(
                 {"sector": tracked.get("sector"), "industry": None},
                 {"_id": 0, "metric_values": 1, "peer_count": 1}
             )
-        
+
         # Compute exclude-self medians for each metric
         metric_medians = {}
         for metric in ["pe", "ps", "pb", "ev_ebitda", "ev_revenue"]:
             median_val, peer_count, source = None, 0, None
-            
+
             # Try industry first
             if peer_bench_doc:
                 industry_metrics = peer_bench_doc.get("metric_values", {}).get(metric, {})
                 median_val, peer_count, source = compute_exclude_self_median(industry_metrics, ticker_full)
-            
+
             # Fallback to sector if insufficient industry peers
             if median_val is None and sector_bench_doc:
                 sector_metrics = sector_bench_doc.get("metric_values", {}).get(metric, {})
                 median_val, peer_count, source = compute_exclude_self_median(sector_metrics, ticker_full)
                 if source:
                     source = "sector"
-            
+
             metric_medians[metric] = {"median": median_val, "count": peer_count, "source": source}
-        
+
         # Reclassify vs_peers using new medians
         def classify_vs(current, median):
             if current is None or median is None:
@@ -3623,7 +3623,7 @@ async def get_ticker_detail_mobile(
             elif ratio > 1.15:
                 return "more_expensive"
             return "around"
-        
+
         # P0 FIX: Recompute overall_vs_peers from metric-level vs_peers (60% majority rule)
         def compute_overall_from_metrics(metrics_dict):
             """Recompute header status from metric-level vs_peers values."""
@@ -3637,14 +3637,14 @@ async def get_ticker_detail_mobile(
                     vs = classify_vs(current, median)
                     if vs:
                         classifications.append(vs)
-            
+
             if not classifications:
                 return None
-            
+
             total = len(classifications)
             cheaper_count = sum(1 for c in classifications if c == "cheaper")
             expensive_count = sum(1 for c in classifications if c == "more_expensive")
-            
+
             # 60% majority rule
             if expensive_count / total >= 0.6:
                 return "more_expensive"
@@ -3652,9 +3652,9 @@ async def get_ticker_detail_mobile(
                 return "cheaper"
             else:
                 return "around"
-        
+
         recomputed_overall = compute_overall_from_metrics(metric_medians)
-        
+
         # =====================================================================
         # P0 UX TRANSPARENCY: Evidence-based N/A reason codes
         # =====================================================================
@@ -3663,7 +3663,7 @@ async def get_ticker_detail_mobile(
         # - non_positive_value: value present but <= 0 (e.g., EPS <= 0)
         # - insufficient_peers: peer_count < 3 after exclusion
         # =====================================================================
-        
+
         NA_REASONS_DISPLAY = {
             "missing_raw_data": "Missing financial data",
             "non_positive_value_earnings": "Negative earnings (loss-making)",
@@ -3672,7 +3672,7 @@ async def get_ticker_detail_mobile(
             "non_positive_value_book": "Negative book value",
             "insufficient_peers": "Insufficient peer data (<3)",
         }
-        
+
         def get_na_reason(metric_key, current_val, peer_count, valuation_cache_metrics):
             """
             Determine N/A reason based on evidence.
@@ -3680,7 +3680,7 @@ async def get_ticker_detail_mobile(
             """
             if current_val is not None:
                 return None, None
-            
+
             # Check if metric is in cache - if not, it's missing raw data OR non-positive
             if metric_key not in valuation_cache_metrics:
                 # For PE/EV_EBITDA, check if it's due to negative values
@@ -3694,22 +3694,22 @@ async def get_ticker_detail_mobile(
                     return "non_positive_value_book", NA_REASONS_DISPLAY["non_positive_value_book"]
                 else:
                     return "missing_raw_data", NA_REASONS_DISPLAY["missing_raw_data"]
-            
+
             # Check peer count
             if peer_count is not None and peer_count < 3:
                 return "insufficient_peers", NA_REASONS_DISPLAY["insufficient_peers"]
-            
+
             return "missing_raw_data", NA_REASONS_DISPLAY["missing_raw_data"]
-        
+
         # Build excluded metrics list and summary
         excluded_metrics = []
         excluded_reasons_map = {}
         metrics_used_count = 0
-        
+
         for metric_key in ["pe", "ps", "pb", "ev_ebitda", "ev_revenue"]:
             current = cached_metrics.get(metric_key)
             peer_count = metric_medians[metric_key]["count"]
-            
+
             if current is not None:
                 metrics_used_count += 1
             else:
@@ -3720,7 +3720,7 @@ async def get_ticker_detail_mobile(
                     if na_code not in excluded_reasons_map:
                         excluded_reasons_map[na_code] = {"display": na_display, "metrics": []}
                     excluded_reasons_map[na_code]["metrics"].append(metric_display)
-        
+
         # Generate human-readable excluded summary
         excluded_summary = None
         if excluded_metrics:
@@ -3729,7 +3729,7 @@ async def get_ticker_detail_mobile(
                 metrics_str = " & ".join(info["metrics"])
                 parts.append(f"{metrics_str}: {info['display']}")
             excluded_summary = " • ".join(parts)
-        
+
         valuation = {
             "available": True,
             "source": "local_raw_facts_timeseries",
@@ -3805,25 +3805,25 @@ async def get_ticker_detail_mobile(
             "reason": "Local valuation cache not pre-computed yet",
             "local_only_enforced": True,
         }
-    
+
     # ==========================================================================
     # P0 BLOCKER FIX: Hybrid 7 Key Metrics - Full implementation with all fields
     # ==========================================================================
-    
+
     # Get shares from embedded fundamentals
     shares_stats = embedded_fundamentals.get("SharesStats", {})
     shares_outstanding = shares_stats.get("SharesOutstanding")
-    
+
     # Get current price for market cap calculation
     current_price_val = None
     if latest_price:
         current_price_val = latest_price.get("close") or latest_price.get("adjusted_close")
-    
+
     # Calculate market cap
     market_cap = None
     if shares_outstanding and current_price_val and current_price_val > 0:
         market_cap = shares_outstanding * current_price_val
-    
+
     # Format helpers for large numbers
     def format_large_num(val):
         if val is None: return None
@@ -3831,20 +3831,20 @@ async def get_ticker_detail_mobile(
         if val >= 1e9: return f"${val/1e9:.2f}B"
         if val >= 1e6: return f"${val/1e6:.2f}M"
         return f"${val:,.0f}"
-    
+
     def format_shares(val):
         if val is None: return None
         if val >= 1e9: return f"{val/1e9:.2f}B"
         if val >= 1e6: return f"{val/1e6:.1f}M"
         return f"{val:,.0f}"
-    
+
     # Extract embedded Financials for TTM calculations
     embedded_financials_data = embedded_fundamentals.get("Financials", {})
-    
+
     # Get TTM data from Income Statement (need to calculate from quarterly)
     income_stmt = embedded_financials_data.get("Income_Statement", {})
     quarterly_income = income_stmt.get("quarterly", {})
-    
+
     # Calculate TTM Revenue and Net Income from last 4 quarters
     ttm_revenue = None
     ttm_net_income = None
@@ -3862,7 +3862,7 @@ async def get_ticker_detail_mobile(
                 ttm_net_income = sum(float(ni) for ni in net_incomes[:4])
             if len(ebitdas) >= 4:
                 ttm_ebitda = sum(float(e) for e in ebitdas[:4])
-    
+
     # Get TTM FCF from Cash Flow Statement
     ttm_fcf = None
     cash_flow = embedded_financials_data.get("Cash_Flow", {})
@@ -3877,7 +3877,7 @@ async def get_ticker_detail_mobile(
                 fcfs.append(ocf - capex)
             if fcfs:
                 ttm_fcf = sum(fcfs)
-    
+
     # Get Cash and Debt from latest Balance Sheet
     ttm_cash = None
     ttm_debt = None
@@ -3891,17 +3891,17 @@ async def get_ticker_detail_mobile(
             short_debt = float(latest_bs.get("shortLongTermDebt") or latest_bs.get("shortTermDebt") or 0)
             long_debt = float(latest_bs.get("longTermDebt") or 0)
             ttm_debt = short_debt + long_debt
-    
+
     # Calculate Net Margin TTM
     net_margin_ttm = None
     if ttm_revenue and ttm_revenue > 0 and ttm_net_income is not None:
         net_margin_ttm = (ttm_net_income / ttm_revenue) * 100
-    
+
     # Calculate FCF Yield
     fcf_yield = None
     if ttm_fcf is not None and market_cap and market_cap > 0:
         fcf_yield = (ttm_fcf / market_cap) * 100
-    
+
     # Calculate Net Debt/EBITDA
     # P0 FIX: Use ttm_ebitda calculated from quarterly data, fallback to valuation_cache
     net_debt_ebitda = None
@@ -3912,7 +3912,7 @@ async def get_ticker_detail_mobile(
     if ttm_debt is not None and ttm_cash is not None and ebitda_ttm and ebitda_ttm > 0:
         net_debt = ttm_debt - ttm_cash
         net_debt_ebitda = net_debt / ebitda_ttm
-    
+
     # Get Dividend Yield from fundamentals
     splits_dividends = embedded_fundamentals.get("SplitsDividends", {})
     dividend_yield_ttm = splits_dividends.get("ForwardAnnualDividendYield")
@@ -3921,7 +3921,7 @@ async def get_ticker_detail_mobile(
             dividend_yield_ttm = float(dividend_yield_ttm) * 100  # Convert to percentage
         except (ValueError, TypeError):
             dividend_yield_ttm = None
-    
+
     # FIX-2: Read PRECOMPUTED dividend data from peer_benchmarks
     # All fallback logic is already computed by compute_peer_benchmarks_v3
     # API only reads the pre-computed values + counts + levels
@@ -3934,7 +3934,7 @@ async def get_ticker_detail_mobile(
         "dividend_median_level_payers": None
     }
     industry = general.get("Industry") if general else None
-    
+
     if industry:
         peer_bench = await db.peer_benchmarks.find_one({"industry": industry})
         if peer_bench:
@@ -3947,7 +3947,7 @@ async def get_ticker_detail_mobile(
                 "dividend_median_level_all": peer_bench.get("dividend_median_level_all"),
                 "dividend_median_level_payers": peer_bench.get("dividend_median_level_payers")
             }
-    
+
     # Build key_metrics with all 7 fields
     key_metrics = {
         "market_cap": {
@@ -4011,18 +4011,18 @@ async def get_ticker_detail_mobile(
             "dividend_median_level_payers": industry_dividend_data.get("dividend_median_level_payers")
         },
     }
-    
+
     # Peer Transparency (P0 requirement: total_industry_peers + valid_metric_peers)
     peer_transparency = await get_peer_transparency(db, ticker_full)
-    
+
     # P8 FIX: Add Financials data (5 essential metrics: Revenue, Net Income, FCF, Cash, Debt)
     # P9: Extended with YoY comparisons and Core 5 for all periods
     # BINDING: Read from EMBEDDED tracked_tickers.fundamentals.Financials, not financials_cache
     financials = None
-    
+
     # Extract embedded financials
     embedded_financials = embedded_fundamentals.get("Financials", {})
-    
+
     # Helper to convert embedded format to list of {date, data} dicts
     def convert_embedded_to_list(statements_dict, limit=12):
         """Convert embedded quarterly/yearly dict to sorted list by date desc."""
@@ -4035,26 +4035,26 @@ async def get_ticker_detail_mobile(
         # Sort by date descending
         result.sort(key=lambda x: x.get("date", ""), reverse=True)
         return result[:limit]
-    
+
     # Get Income Statement data from embedded
     income_stmt = embedded_financials.get("Income_Statement", {})
     annual_income = convert_embedded_to_list(income_stmt.get("yearly", {}), 6)
     quarterly_income = convert_embedded_to_list(income_stmt.get("quarterly", {}), 12)
-    
+
     # Get Balance Sheet data from embedded
     balance_sheet = embedded_financials.get("Balance_Sheet", {})
     quarterly_balance = convert_embedded_to_list(balance_sheet.get("quarterly", {}), 12)
     annual_balance = convert_embedded_to_list(balance_sheet.get("yearly", {}), 6)
-    
+
     # Get Cash Flow data from embedded
     cash_flow = embedded_financials.get("Cash_Flow", {})
     quarterly_cashflow = convert_embedded_to_list(cash_flow.get("quarterly", {}), 12)
     annual_cashflow = convert_embedded_to_list(cash_flow.get("yearly", {}), 6)
-    
+
     # FIX 1: Calculate Revenue Growth 3Y CAGR from annual revenue history
     revenue_growth_3y_value = None
     revenue_growth_3y_na_reason = "insufficient_annual_history"
-    
+
     # Get annual revenues from annual_income (already sorted by date desc)
     annual_revenues = []
     for inc in annual_income[:4]:
@@ -4065,12 +4065,12 @@ async def get_ticker_detail_mobile(
                 annual_revenues.append(float(rev))
             except (ValueError, TypeError):
                 pass
-    
+
     # Need exactly 4 annual revenue points for 3-year CAGR
     if len(annual_revenues) >= 4:
         end_revenue = annual_revenues[0]      # Most recent year
         start_revenue = annual_revenues[3]    # 3 years ago
-        
+
         if start_revenue is None or start_revenue <= 0:
             revenue_growth_3y_na_reason = "negative_or_zero_base_revenue"
         elif end_revenue is None or end_revenue <= 0:
@@ -4080,7 +4080,7 @@ async def get_ticker_detail_mobile(
             cagr = ((end_revenue / start_revenue) ** (1/3) - 1) * 100
             revenue_growth_3y_value = round(cagr, 1)
             revenue_growth_3y_na_reason = None
-    
+
     # Update key_metrics with calculated revenue_growth_3y
     key_metrics["revenue_growth_3y"] = {
         "name": "Revenue Growth (3Y CAGR)",
@@ -4088,7 +4088,7 @@ async def get_ticker_detail_mobile(
         "formatted": f"{revenue_growth_3y_value:.1f}%" if revenue_growth_3y_value is not None else None,
         "na_reason": revenue_growth_3y_na_reason
     }
-    
+
     # P9: Helper to extract Core 5 metrics from financial statements
     def get_core5_from_period(income_data, balance_data, cashflow_data, period_date):
         """Extract Core 5 metrics for a single period"""
@@ -4097,12 +4097,12 @@ async def get_ticker_detail_mobile(
         fcf = None
         cash = None
         total_debt = None
-        
+
         # Income statement metrics
         if income_data:
             revenue = float(income_data.get("totalRevenue") or 0) if income_data.get("totalRevenue") else None
             net_income = float(income_data.get("netIncome") or 0) if income_data.get("netIncome") else None
-        
+
         # Balance sheet metrics
         if balance_data:
             cash = float(balance_data.get("cash") or balance_data.get("cashAndCashEquivalentsAtCarryingValue") or 0) \
@@ -4110,13 +4110,13 @@ async def get_ticker_detail_mobile(
             short_debt = float(balance_data.get("shortLongTermDebt") or balance_data.get("shortTermDebt") or 0)
             long_debt = float(balance_data.get("longTermDebt") or 0)
             total_debt = short_debt + long_debt if (short_debt or long_debt) else None
-        
+
         # Cash flow metrics
         if cashflow_data:
             ocf = float(cashflow_data.get("totalCashFromOperatingActivities") or cashflow_data.get("operatingCashFlow") or 0)
             capex = float(cashflow_data.get("capitalExpenditures") or 0)
             fcf = ocf - abs(capex) if capex else ocf
-        
+
         return {
             "period_date": period_date,
             "revenue": revenue,
@@ -4125,19 +4125,19 @@ async def get_ticker_detail_mobile(
             "cash": cash,
             "total_debt": total_debt,
         }
-    
+
     # P9: Build period-indexed maps for quick lookup
     def build_period_map(statements):
         """Create dict of date -> data for quick YoY lookup"""
         return {s.get("date"): s.get("data", {}) for s in statements if s.get("date")}
-    
+
     income_q_map = build_period_map(quarterly_income)
     income_a_map = build_period_map(annual_income)
     balance_q_map = build_period_map(quarterly_balance)
     balance_a_map = build_period_map(annual_balance)
     cashflow_q_map = build_period_map(quarterly_cashflow)
     cashflow_a_map = build_period_map(annual_cashflow)
-    
+
     # P9: Transform quarterly data with Core 5
     quarterly = []
     for inc in quarterly_income[:8]:
@@ -4147,11 +4147,11 @@ async def get_ticker_detail_mobile(
         inc_data = inc.get("data", {})
         bal_data = balance_q_map.get(period, {})
         cf_data = cashflow_q_map.get(period, {})
-        
+
         core5 = get_core5_from_period(inc_data, bal_data, cf_data, period)
         if core5.get("revenue") or core5.get("net_income"):
             quarterly.append(core5)
-    
+
     # P9: Transform annual data with Core 5
     annual = []
     for inc in annual_income[:5]:
@@ -4161,11 +4161,11 @@ async def get_ticker_detail_mobile(
         inc_data = inc.get("data", {})
         bal_data = balance_a_map.get(period, {})
         cf_data = cashflow_a_map.get(period, {})
-        
+
         core5 = get_core5_from_period(inc_data, bal_data, cf_data, period)
         if core5.get("revenue") or core5.get("net_income"):
             annual.append(core5)
-    
+
     # P9: Calculate TTM (current) and Prior TTM (for YoY comparison)
     ttm_revenue = None
     ttm_net_income = None
@@ -4173,14 +4173,14 @@ async def get_ticker_detail_mobile(
     prior_ttm_revenue = None
     prior_ttm_net_income = None
     prior_ttm_fcf = None
-    
+
     if len(quarterly) >= 4:
         ttm_revenue = sum(q.get("revenue") or 0 for q in quarterly[:4])
         ttm_net_income = sum(q.get("net_income") or 0 for q in quarterly[:4])
         ttm_fcf = sum(q.get("free_cash_flow") or 0 for q in quarterly[:4] if q.get("free_cash_flow") is not None)
         if not any(q.get("free_cash_flow") is not None for q in quarterly[:4]):
             ttm_fcf = None
-    
+
     # Prior TTM (quarters 5-8, i.e., the 4 quarters before current TTM)
     if len(quarterly) >= 8:
         prior_ttm_revenue = sum(q.get("revenue") or 0 for q in quarterly[4:8])
@@ -4188,14 +4188,14 @@ async def get_ticker_detail_mobile(
         prior_ttm_fcf = sum(q.get("free_cash_flow") or 0 for q in quarterly[4:8] if q.get("free_cash_flow") is not None)
         if not any(q.get("free_cash_flow") is not None for q in quarterly[4:8]):
             prior_ttm_fcf = None
-    
+
     # Get Cash & Debt from latest balance sheet
     cash = None
     total_debt = None
     if quarterly and quarterly[0]:
         cash = quarterly[0].get("cash")
         total_debt = quarterly[0].get("total_debt")
-    
+
     if annual or quarterly:
         financials = {
             "annual": annual,
@@ -4214,15 +4214,15 @@ async def get_ticker_detail_mobile(
                 "free_cash_flow": prior_ttm_fcf,
             } if prior_ttm_revenue is not None else None
         }
-    
+
     # Build response
     # Get safety type for badge display
     safety_type = tracked.get("safety_type", "standard")
-    
+
     return {
         "ticker": ticker_full,
         "symbol": symbol,
-        
+
         # Safety badge info
         "safety": {
             "type": safety_type,  # "standard" | "spac_shell" | "recent_ipo"
@@ -4242,7 +4242,7 @@ async def get_ticker_detail_mobile(
                 "recent_ipo": "This company recently went public. Historical data and valuation metrics may be limited."
             }.get(safety_type),
         },
-        
+
         # Company identity (header row)
         "company": {
             "name": company.get("name") if company else tracked.get("name"),
@@ -4252,7 +4252,7 @@ async def get_ticker_detail_mobile(
             "logo_url": _internal_logo_url((company.get("logo_url") if company else tracked.get("logo_url")) or ticker_full),
             "country": company.get("country") if company else None,
         },
-        
+
         # Price block
         "price": {
             "current": current_price,
@@ -4260,27 +4260,27 @@ async def get_ticker_detail_mobile(
             "daily_change": round(daily_change, 2) if daily_change else None,
             "daily_change_pct": round(daily_change_pct, 2) if daily_change_pct else None,
         },
-        
+
         # Reality Check (ALL-TIME, fixed)
         "reality_check": reality_check,
-        
+
         # P25/P26: PAIN details (exact max drawdown from full daily series, cached)
         "pain": pain_cache,
-        
+
         # Period stats (for chart period)
         "period_stats": period_stats,
-        
+
         # Valuation (locally computed)
         "valuation": valuation,
-        
+
         # Hybrid 7 Key Metrics (P0)
         # NO 52W High/Low - removed per P0 spec
         "key_metrics": key_metrics,
-        
+
         # Peer Transparency (P0)
         # Format: "vs 12 industry peers / 6 with valid data"
         "peer_transparency": peer_transparency,
-        
+
         # Company details (for collapsible accordion)
         "company_details": {
             "description": company.get("description") if company else None,
@@ -4293,7 +4293,7 @@ async def get_ticker_detail_mobile(
             "state": company.get("state") if company else None,
             "country_name": company.get("country") if company else None,
         },
-        
+
         # P8: Financials data (5 essential metrics)
         "financials": financials,
     }
@@ -4307,18 +4307,18 @@ async def get_ticker_chart_data(
 ):
     """
     Get chart data for ticker with optional benchmark overlay.
-    
+
     Returns price data for the specified period, normalized to 100 at start.
     If include_benchmark=true, also returns SP500TR.INDX data for comparison.
     """
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     SP500TR_TICKER = "SP500TR.INDX"
-    
+
     # Calculate start date based on period
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
-    
+
     if period == "3M":
         start_dt = now - timedelta(days=90)
     elif period == "6M":
@@ -4335,9 +4335,9 @@ async def get_ticker_chart_data(
         start_dt = datetime(1950, 1, 1, tzinfo=timezone.utc)  # All history
     else:
         start_dt = now - timedelta(days=365)
-    
+
     start_date = start_dt.strftime("%Y-%m-%d")
-    
+
     # Sanitize adjusted_close: if it is wildly different from close (>100x),
     # the EODHD adjustment is suspect (e.g. FUBO reverse-split data quality
     # issue). Fall back to close in that case so the chart stays sane.
@@ -4347,7 +4347,7 @@ async def get_ticker_chart_data(
         if adj and close and close > 0 and adj / close > 100:
             return close
         return adj or close
-    
+
     # B: MAX Chart Fix - Smart Downsampling
     # For MAX period, get ALL data (no artificial limit) and downsample intelligently
     if period == "MAX":
@@ -4356,9 +4356,9 @@ async def get_ticker_chart_data(
             {"ticker": ticker_full, "date": {"$gte": start_date}},
             {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1, "volume": 1}
         ).sort("date", 1).to_list(length=None)
-        
+
         logger.info(f"[CHART] MAX: {ticker_full} has {len(all_prices)} total records")
-        
+
         # Smart downsample: evenly distribute across ENTIRE date range
         # FIXED: Use proper sampling to cover all years
         target_points = 2000
@@ -4369,7 +4369,7 @@ async def get_ticker_chart_data(
             indices = np.linspace(0, len(all_prices) - 1, target_points, dtype=int)
             indices = sorted(set(indices))  # Remove any duplicates from rounding
             prices = [all_prices[i] for i in indices]
-            
+
             # Force-include true adjusted_close extrema so displayed HIGH/LOW
             # always reflect the true max/min of the full series.
             sampled_dates = set(p["date"] for p in prices)
@@ -4387,7 +4387,7 @@ async def get_ticker_chart_data(
                 prices.sort(key=lambda p: p["date"])
         else:
             prices = all_prices
-        
+
         logger.info(f"[CHART] MAX: {ticker_full} downsampled to {len(prices)} points (first={prices[0]['date'] if prices else 'N/A'}, last={prices[-1]['date'] if prices else 'N/A'})")
     else:
         # For non-MAX periods, use standard limit
@@ -4396,9 +4396,9 @@ async def get_ticker_chart_data(
             {"ticker": ticker_full, "date": {"$gte": start_date}},
             {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1, "volume": 1}
         ).sort("date", 1).to_list(length=data_limit)
-        
+
         logger.info(f"[CHART] {period}: {ticker_full} has {len(prices)} records")
-    
+
     # Downsample for large datasets (keep ~500 points for chart, but all for calculations)
     def downsample(data, target_points=500):
         if len(data) <= target_points:
@@ -4406,18 +4406,18 @@ async def get_ticker_chart_data(
         step = len(data) // target_points
         # Always include first, last, and evenly spaced points
         return [data[i] for i in range(0, len(data), step)] + ([data[-1]] if data else [])
-    
+
     # Get benchmark prices if requested
     benchmark_prices = []
     if include_benchmark and prices:
         # Use the actual first date from ticker prices to ensure alignment
         actual_start_date = prices[0]["date"] if prices else start_date
-        
+
         benchmark_raw = await db.stock_prices.find(
             {"ticker": SP500TR_TICKER, "date": {"$gte": actual_start_date}},
             {"_id": 0, "date": 1, "close": 1}
         ).sort("date", 1).to_list(length=2000)
-        
+
         # Normalize benchmark to 100 at start
         if benchmark_raw:
             start_value = benchmark_raw[0]["close"]
@@ -4426,7 +4426,7 @@ async def get_ticker_chart_data(
                     "date": p["date"],
                     "normalized": round((p["close"] / start_value) * 100, 2) if start_value else 100
                 })
-    
+
     # Normalize ticker prices to 100 at start
     normalized_prices = []
     if prices:
@@ -4440,7 +4440,7 @@ async def get_ticker_chart_data(
                 "normalized": round((price_val / start_value) * 100, 2) if start_value else 100,
                 "volume": p.get("volume")
             })
-    
+
     return {
         "ticker": ticker_full,
         "period": period,
@@ -4467,35 +4467,35 @@ async def get_news(
 ):
     """
     P38.4 (BINDING): News & Sentiment = 3 newest articles per ticker.
-    
+
     ==========================================================================
     P38.4: NEWS SELECTION LOGIC — IMMUTABLE WITHOUT RICHARD APPROVAL (kurtarichard@gmail.com)
     ==========================================================================
-    
+
     1. UNIVERSE:
        - Portfolio toggle ON: tickers = Watchlist ∪ Portfolio
        - Portfolio toggle OFF: tickers = Watchlist only
        - Always apply is_visible=true
-    
+
     2. SELECTION RULE (HARD):
        - For each ticker: fetch up to 3 newest articles from news_article_symbols → news_articles
        - No title heuristics, no guessing
-    
+
     3. OUTPUT SIZE:
        - Total = min(3 * N, available_articles)
        - If N=16, target up to 48 items
-    
+
     4. ORDERING: Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
-    
+
     ==========================================================================
     LOGO GUARANTEE — DO NOT REMOVE WITHOUT RICHARD APPROVAL
     ==========================================================================
     """
-    
+
     # ==========================================================================
     # P38.4 Step 1: BUILD TICKER UNIVERSE (portfolio toggle support)
     # ==========================================================================
-    
+
     if tickers:
         # If explicitly provided, use those (for ticker-specific pages)
         ticker_list = [t.strip().upper().replace(".US", "") for t in tickers.split(",")]
@@ -4504,7 +4504,7 @@ async def get_news(
         # Step 1: Get watchlist tickers (always included)
         watchlist_raw = await db.user_watchlist.distinct("ticker")
         watchlist_tickers = set(t.upper().replace(".US", "") for t in watchlist_raw if t)
-        
+
         # Step 2: Get portfolio tickers (only if include_portfolio=True)
         if include_portfolio:
             portfolio_docs = await db.positions.find(
@@ -4512,16 +4512,16 @@ async def get_news(
                 {"_id": 0, "ticker": 1}
             ).to_list(length=None)
             portfolio_tickers = set(
-                doc["ticker"].upper().replace(".US", "") 
-                for doc in portfolio_docs 
+                doc["ticker"].upper().replace(".US", "")
+                for doc in portfolio_docs
                 if doc.get("ticker")
             )
         else:
             portfolio_tickers = set()
-        
+
         # Step 3: Union based on toggle
         all_followed = watchlist_tickers | portfolio_tickers
-        
+
         if not all_followed:
             return {
                 "news": [],
@@ -4538,16 +4538,16 @@ async def get_news(
                     "color": "#F59E0B",
                 }
             }
-        
+
         # Step 4: Filter to only is_visible=true tickers
         all_full = [f"{t}.US" for t in all_followed]
         visible_docs = await db.tracked_tickers.find(
             {"ticker": {"$in": all_full}, "is_visible": True},
             {"_id": 0, "ticker": 1}
         ).to_list(length=None)
-        
+
         visible_and_followed = [doc["ticker"].replace(".US", "") for doc in visible_docs]
-        
+
         # P38.4: NO FALLBACK - if no followed+visible tickers, return empty
         if not visible_and_followed:
             return {
@@ -4565,9 +4565,9 @@ async def get_news(
                     "color": "#F59E0B",
                 }
             }
-        
+
         ticker_list = visible_and_followed
-    
+
     # ==========================================================================
     # P38.4 Step 2: FETCH COMPANY INFO FOR LOGOS
     # ==========================================================================
@@ -4576,7 +4576,7 @@ async def get_news(
         {"ticker": {"$in": ticker_full_list}},
         {"_id": 0, "ticker": 1, "logo_url": 1, "name": 1}
     ).to_list(length=None)
-    
+
     ticker_info = {}
     for doc in company_docs:
         ticker = doc.get("ticker", "").replace(".US", "").upper()
@@ -4584,7 +4584,7 @@ async def get_news(
             "logo_url": _internal_logo_url(doc.get("logo_url") or ticker),
             "name": doc.get("name", ticker),
         }
-    
+
     # ==========================================================================
     # P53 Step 3: FETCH NEWS FROM article_ticker_mapping JOIN TABLE
     # ==========================================================================
@@ -4594,7 +4594,7 @@ async def get_news(
         {"ticker": {"$in": ticker_list}},
         {"_id": 0, "article_id": 1, "ticker": 1, "rank": 1}
     ).sort([("ticker", 1), ("rank", 1)]).to_list(length=None)
-    
+
     # Fallback to old table if new one is empty (migration period)
     if not article_mappings:
         article_mappings = await db.news_article_symbols.find(
@@ -4605,7 +4605,7 @@ async def get_news(
         for m in article_mappings:
             if "symbol" in m and "ticker" not in m:
                 m["ticker"] = m["symbol"]
-    
+
     # Build article_id -> tickers map (article can have multiple tickers)
     article_to_tickers = {}
     for mapping in article_mappings:
@@ -4615,7 +4615,7 @@ async def get_news(
             if aid not in article_to_tickers:
                 article_to_tickers[aid] = []
             article_to_tickers[aid].append(ticker)
-    
+
     # P53: Fetch articles if we have mappings
     if article_to_tickers:
         article_ids = list(article_to_tickers.keys())
@@ -4625,13 +4625,13 @@ async def get_news(
         ).sort("published_at", -1).to_list(length=None)
     else:
         all_articles = []
-    
+
     # ==========================================================================
     # P38.4 Step 4: APPLY "3 PER TICKER" RULE (HARD)
     # ==========================================================================
     # P38.4: For each ticker, fetch up to 3 newest articles - NO EXCEPTIONS
     PER_TICKER_CAP = 3
-    
+
     # Group articles by their primary ticker (first mapped ticker)
     articles_by_ticker = {}
     for article in all_articles:
@@ -4640,46 +4640,46 @@ async def get_news(
             link = article.get("link", "")
             import hashlib
             aid = hashlib.md5(link.encode()).hexdigest()[:16] if link else None
-        
+
         # P53: Use article_to_tickers from mapping table
         tickers_for_article = article_to_tickers.get(aid, [])
         if not tickers_for_article:
             continue
-        
+
         # Use first ticker that's in our followed list
         primary_ticker = None
         for t in tickers_for_article:
             if t in ticker_list:
                 primary_ticker = t
                 break
-        
+
         if not primary_ticker:
             continue
-        
+
         article["_display_ticker"] = primary_ticker
-        
+
         if primary_ticker not in articles_by_ticker:
             articles_by_ticker[primary_ticker] = []
         # P38.4: HARD CAP of 3 per ticker
         if len(articles_by_ticker[primary_ticker]) < PER_TICKER_CAP:
             articles_by_ticker[primary_ticker].append(article)
-    
+
     # P38.4: Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
     final_articles = []
     ticker_indices = {t: 0 for t in articles_by_ticker}
     max_rounds = max(len(arts) for arts in articles_by_ticker.values()) if articles_by_ticker else 0
-    
+
     for round_num in range(max_rounds):
         for ticker in sorted(articles_by_ticker.keys()):  # Alphabetical for consistency
             idx = ticker_indices[ticker]
             if idx < len(articles_by_ticker[ticker]):
                 final_articles.append(articles_by_ticker[ticker][idx])
                 ticker_indices[ticker] += 1
-    
+
     # Apply pagination
     total_count = len(final_articles)
     paginated = final_articles[offset:offset + limit]
-    
+
     # ==========================================================================
     # P38.3 Step 5: BUILD RESPONSE WITH LOGOS
     # ==========================================================================
@@ -4690,12 +4690,12 @@ async def get_news(
         info = ticker_info.get(ticker, {})
         logo_url = info.get("logo_url")
         company_name = info.get("name", ticker)
-        
+
         # Logo guarantee — always use internal logo endpoint
         fallback_logo_key = ticker[0].upper() if ticker else "N"
         if not logo_url and ticker:
             logo_url = f"/api/logo/{ticker}"
-        
+
         # Calculate time_ago
         published_at = article.get("date") or article.get("published_at")
         time_ago = "Unknown"
@@ -4709,7 +4709,7 @@ async def get_news(
                     pub_dt = now
             else:
                 pub_dt = published_at
-            
+
             delta = now - pub_dt
             hours = delta.total_seconds() / 3600
             if hours < 1:
@@ -4718,12 +4718,12 @@ async def get_news(
                 time_ago = f"{int(hours)}h ago"
             else:
                 time_ago = f"{int(hours / 24)}d ago"
-        
+
         # Generate article ID from link
         import hashlib
         link = article.get("link", "") or article.get("source_link", "")
         article_id = hashlib.md5(link.encode()).hexdigest()[:16] if link else str(len(cached_news))
-        
+
         # Extract source name from URL
         source_name = "Unknown"
         if link:
@@ -4748,7 +4748,7 @@ async def get_news(
                 source_name = source_map.get(domain, domain.split('.')[0].capitalize())
             except:
                 pass
-        
+
         cached_news.append({
             "id": article_id,
             "title": article.get("title"),
@@ -4765,10 +4765,10 @@ async def get_news(
             "tags": article.get("tags", []),
             "time_ago": time_ago,
         })
-    
+
     # Calculate has_more
     has_more = (offset + len(cached_news)) < total_count
-    
+
     # Calculate aggregate sentiment
     sentiment_scores = []
     for news_item in cached_news:
@@ -4779,9 +4779,9 @@ async def get_news(
             sentiment_scores.append(-1)
         else:
             sentiment_scores.append(0)
-    
+
     aggregate_sentiment_score = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
-    
+
     if aggregate_sentiment_score > 0.3:
         aggregate_sentiment_label = "positive"
         aggregate_sentiment_color = "#10B981"
@@ -4791,10 +4791,10 @@ async def get_news(
     else:
         aggregate_sentiment_label = "neutral"
         aggregate_sentiment_color = "#F59E0B"
-    
+
     # P38.4: Count unique tickers appearing in results
     tickers_in_results = set(n.get("ticker") for n in cached_news if n.get("ticker"))
-    
+
     return {
         "news": cached_news,
         "offset": offset,
@@ -4825,7 +4825,7 @@ async def get_news(
 async def refresh_news_cache_for_tickers(ticker_list: list):
     """
     DEPRECATED (P30): Use news_service.refresh_hot_tickers_news() instead.
-    
+
     This function is kept for backward compatibility but is no longer used.
     News is now stored in news_articles collection by the scheduler job.
     """
@@ -4838,23 +4838,23 @@ def format_time_ago(dt: datetime) -> str:
     # Ensure dt is naive (remove timezone info if present)
     if dt.tzinfo is not None:
         dt = dt.replace(tzinfo=None)
-    
+
     now = datetime.utcnow()
     diff = now - dt
-    
+
     if diff.days > 0:
         if diff.days == 1:
             return "1d ago"
         return f"{diff.days}d ago"
-    
+
     hours = diff.seconds // 3600
     if hours > 0:
         return f"{hours}h ago"
-    
+
     minutes = diff.seconds // 60
     if minutes > 0:
         return f"{minutes}m ago"
-    
+
     return "just now"
 
 
@@ -4862,7 +4862,7 @@ def extract_source(url: str) -> str:
     """Extract source name from URL."""
     if not url:
         return "News"
-    
+
     # Common news sources
     sources = {
         "yahoo": "Yahoo Finance",
@@ -4878,12 +4878,12 @@ def extract_source(url: str) -> str:
         "investopedia": "Investopedia",
         "barrons": "Barron's",
     }
-    
+
     url_lower = url.lower()
     for key, name in sources.items():
         if key in url_lower:
             return name
-    
+
     return "News"
 
 
@@ -4896,14 +4896,14 @@ async def get_ticker_news(
 ):
     """
     P53: Get news for a specific ticker (detail view).
-    
+
     - Returns up to 100 articles for the ticker (pagination with limit/offset)
     - PRO users: can see all 100
     - Free users: only first 10 (then "Upgrade to PRO")
     """
     db = request.app.state.db
     ticker = ticker.upper()
-    
+
     # Get user subscription tier
     user = None
     is_pro = False
@@ -4913,14 +4913,14 @@ async def get_ticker_news(
             is_pro = user.get("subscription_tier") in ["pro", "pro_plus"]
     except:
         pass
-    
+
     # Free users limited to 10 articles
     FREE_LIMIT = 10
     PRO_LIMIT = 100
-    
+
     max_limit = PRO_LIMIT if is_pro else FREE_LIMIT
     effective_limit = min(limit, max_limit - offset)
-    
+
     if effective_limit <= 0:
         return {
             "ticker": ticker,
@@ -4931,15 +4931,15 @@ async def get_ticker_news(
             "has_more": False,
             "upgrade_required": not is_pro,
         }
-    
+
     # Get mappings for this ticker (sorted by published_at desc)
     mappings = await db.article_ticker_mapping.find(
         {"ticker": ticker},
         {"_id": 0, "article_id": 1, "rank": 1}
     ).sort("published_at", -1).skip(offset).limit(effective_limit).to_list(length=effective_limit)
-    
+
     total_count = await db.article_ticker_mapping.count_documents({"ticker": ticker})
-    
+
     if not mappings:
         return {
             "ticker": ticker,
@@ -4950,17 +4950,17 @@ async def get_ticker_news(
             "has_more": False,
             "upgrade_required": False,
         }
-    
+
     # Fetch articles
     article_ids = [m["article_id"] for m in mappings]
     articles = await db.news_articles.find(
         {"article_id": {"$in": article_ids}},
         {"_id": 0}
     ).to_list(length=None)
-    
+
     # Map articles by ID for ordering
     articles_by_id = {a["article_id"]: a for a in articles}
-    
+
     # Build response with articles in order
     result_articles = []
     for m in mappings:
@@ -4975,11 +4975,11 @@ async def get_ticker_news(
                 "sentiment_label": article.get("sentiment_label"),
                 "eodhd_symbols_raw": article.get("eodhd_symbols_raw", []),
             })
-    
+
     # Determine if there are more articles
     has_more = (offset + len(result_articles)) < min(total_count, max_limit)
     upgrade_required = not is_pro and total_count > FREE_LIMIT and (offset + limit) >= FREE_LIMIT
-    
+
     return {
         "ticker": ticker,
         "articles": result_articles,
@@ -4995,8 +4995,8 @@ async def get_ticker_news(
 async def get_news_article(article_id: str):
     """
     Get full article content by ID.
-    
-    Note: For now, we don't cache articles. 
+
+    Note: For now, we don't cache articles.
     Frontend should store the article data when fetching the list.
     """
     # In future, we could cache articles in MongoDB
@@ -5020,7 +5020,7 @@ from scheduler_service import (
 async def admin_scheduler_status():
     """
     Get comprehensive scheduler status.
-    
+
     Returns:
         - scheduler_enabled: Whether scheduler is running
         - kill_switch_engaged: Inverse of enabled
@@ -5035,14 +5035,14 @@ async def admin_scheduler_status():
 async def admin_scheduler_kill_switch(enabled: bool = Query(..., description="True to enable scheduler, False to engage kill switch")):
     """
     Enable or disable the scheduler (kill switch).
-    
+
     When kill switch is engaged (enabled=False):
     - Scheduled jobs will NOT run
     - Manual admin API calls still work
-    
+
     Args:
         enabled: True to enable scheduler, False to stop scheduled jobs
-    
+
     Returns:
         Updated config
     """
@@ -5059,25 +5059,25 @@ async def admin_toggle_job(job_name: str):
     """
     Toggle job enabled/disabled state for scheduled runs.
     Uses ops_config collection to persist state.
-    
+
     Manual jobs (like backfill_all) are disabled by default.
     Toggling to "enabled" allows them to run on their schedule.
-    
+
     Args:
         job_name: Name of the job (e.g., "backfill_all")
-    
+
     Returns:
         Updated config with new enabled state
     """
     from datetime import timezone
-    
+
     config_key = f"job_{job_name}_enabled"
     current = await db.ops_config.find_one({"key": config_key})
-    
+
     # Default is False for manual jobs, True for others
     current_value = current.get("value", False) if current else False
     new_value = not current_value
-    
+
     await db.ops_config.update_one(
         {"key": config_key},
         {"$set": {
@@ -5088,7 +5088,7 @@ async def admin_toggle_job(job_name: str):
         }},
         upsert=True
     )
-    
+
     logger.info(f"Job {job_name} toggled: enabled={new_value}")
     return {"job": job_name, "enabled": new_value, "config_key": config_key}
 
@@ -5105,7 +5105,7 @@ async def admin_get_job_status(job_name: str):
 
     config_key = f"job_{job_name}_enabled"
     config = await db.ops_config.find_one({"key": config_key}, {"_id": 0})
-    
+
     def _iso(dt):
         if not dt:
             return None
@@ -5197,7 +5197,7 @@ async def create_job_audit_entry(database, job_name: str, triggered_by: str = "a
     from zoneinfo import ZoneInfo
     PRAGUE = ZoneInfo("Europe/Prague")
     started_at = datetime.now(timezone.utc)
-    
+
     # Get inventory snapshot BEFORE
     inventory_before = {
         "stock_prices_total": await database.stock_prices.count_documents({}),
@@ -5205,7 +5205,7 @@ async def create_job_audit_entry(database, job_name: str, triggered_by: str = "a
         "fundamentals_total": await database.company_fundamentals_cache.count_documents({}),
         "financials_total": await database.financials_cache.count_documents({}),
     }
-    
+
     audit_doc = {
         "job_name": job_name,
         "job_type": "manual_ad_hoc",
@@ -5227,7 +5227,7 @@ async def create_job_audit_entry(database, job_name: str, triggered_by: str = "a
         "status": "running",
         "error_message": None,
     }
-    
+
     result = await database.ops_job_runs.insert_one(audit_doc)
     return str(result.inserted_id)
 
@@ -5239,7 +5239,7 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
     from zoneinfo import ZoneInfo
     PRAGUE = ZoneInfo("Europe/Prague")
     finished_at = datetime.now(timezone.utc)
-    
+
     # Get inventory snapshot AFTER — best-effort; never let snapshot
     # failures prevent the critical status/finished_at update.
     try:
@@ -5252,21 +5252,21 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
     except Exception as snap_err:
         logger.warning(f"finalize_job_audit_entry: inventory snapshot failed: {snap_err}")
         inventory_after = None
-    
+
     update_doc = {
         "finished_at": finished_at,
         "finished_at_prague": finished_at.astimezone(PRAGUE).isoformat(),
         "inventory_snapshot_after": inventory_after,
         "status": "error" if error else "completed",
     }
-    
+
     if error:
         update_doc["error_message"] = str(error)[:1000]
-    
+
     if result:
         update_doc["tickers_updated"] = result.get("tickers_updated", 0)
         update_doc["api_calls"] = result.get("api_calls", 0)
-    
+
     await database.ops_job_runs.update_one(
         {"_id": ObjectId(audit_id)},
         {"$set": update_doc}
@@ -5285,11 +5285,11 @@ async def admin_run_job_now(
     """
     Manually trigger a job immediately (bypasses schedule).
     Creates full audit trail with inventory snapshots.
-    
+
     Args:
         job_name: Name of the job to run
         wait: If True, wait for completion (may timeout)
-    
+
     Returns:
         Job execution result or started status
     """
@@ -5338,10 +5338,10 @@ async def admin_run_job_now(
         "market_calendar": _market_calendar_refresh,
         "news_refresh": refresh_hot_tickers_news,
     }
-    
+
     if job_name not in JOB_RUNNERS:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail=f"Unknown or non-runnable job: {job_name}. Available: {list(JOB_RUNNERS.keys())}"
         )
 
@@ -5403,9 +5403,9 @@ async def admin_run_job_now(
                     "audit_id": str(existing_running["_id"]),
                 },
             )
-    
+
     job_func = JOB_RUNNERS[job_name]
-    
+
     # Benchmark-specific: always wrap to provide live progress reporting.
     # Optional date-range / full-history params are forwarded when present.
     if job_name == "benchmark_update":
@@ -5442,12 +5442,12 @@ async def admin_run_job_now(
             )
 
         job_func = _benchmark_with_progress
-    
+
     logger.info(f"Admin manually triggering job: {job_name}")
-    
+
     # C2: Create audit entry with inventory snapshot BEFORE
     audit_id = await create_job_audit_entry(db, job_name)
-    
+
     if wait:
         _wait_finalized = False
         try:
@@ -5497,7 +5497,7 @@ async def admin_run_job_now(
                         )
                     except Exception:
                         logger.exception(f"finally-block finalization failed for {job_name} audit_id={audit_id}")
-    
+
     # Background execution with audit trail
     async def run_with_audit():
         _bg_finalized = False
@@ -5549,7 +5549,7 @@ async def admin_run_job_now(
                         )
                     except Exception:
                         logger.exception(f"finally-block finalization failed for {job_name} audit_id={audit_id}")
-    
+
     # Run in background with audit trail
     background_tasks.add_task(run_with_audit)
     return {
@@ -5826,10 +5826,10 @@ async def admin_step3_telemetry():
 async def compute_pain_cache_for_ticker(ticker: str) -> dict:
     """
     Compute PAIN details for a single ticker from full daily price series.
-    
+
     Args:
         ticker: Full ticker symbol (e.g., "NVDA.US")
-    
+
     Returns:
         dict with PAIN details or None if no data
     """
@@ -5838,13 +5838,13 @@ async def compute_pain_cache_for_ticker(ticker: str) -> dict:
         {"ticker": ticker},
         {"_id": 0, "date": 1, "adjusted_close": 1, "close": 1}
     ).sort("date", 1).to_list(length=None)  # No limit - full series
-    
+
     if not prices or len(prices) < 2:
         return None
-    
+
     # Calculate PAIN using full series
     pain_data = calculate_pain_details(prices)
-    
+
     return {
         "ticker": ticker,
         "pain_pct": pain_data["pain_pct"],
@@ -5862,7 +5862,7 @@ async def compute_pain_cache_for_ticker(ticker: str) -> dict:
 async def run_pain_cache_refresh(database, batch_size: int = 100) -> dict:
     """
     P25: Refresh PAIN cache for all visible tickers.
-    
+
     This job:
     1. Gets all is_visible=true tickers
     2. Computes PAIN from full daily series (all data points)
@@ -5871,28 +5871,28 @@ async def run_pain_cache_refresh(database, batch_size: int = 100) -> dict:
     """
     job_id = str(uuid.uuid4())[:8]
     started_at = datetime.now(timezone.utc)
-    
+
     logger.info(f"[PAIN_CACHE:{job_id}] Starting PAIN cache refresh")
-    
+
     # Get all visible tickers
     visible_tickers = await database.tracked_tickers.find(
         VISIBLE_UNIVERSE_QUERY,
         {"_id": 0, "ticker": 1}
     ).to_list(length=None)
-    
+
     total_tickers = len(visible_tickers)
     logger.info(f"[PAIN_CACHE:{job_id}] Found {total_tickers} visible tickers")
-    
+
     processed = 0
     success = 0
     errors = 0
     error_list = []
-    
+
     for ticker_doc in visible_tickers:
         ticker = ticker_doc["ticker"]
         try:
             pain_data = await compute_pain_cache_for_ticker(ticker)
-            
+
             if pain_data:
                 # Upsert to cache
                 await database.ticker_pain_cache.update_one(
@@ -5901,23 +5901,23 @@ async def run_pain_cache_refresh(database, batch_size: int = 100) -> dict:
                     upsert=True
                 )
                 success += 1
-            
+
             processed += 1
-            
+
             # Log progress and yield to event loop every 100 tickers so
             # background tasks (heartbeat writer, watchdog) stay scheduled.
             if processed % 100 == 0:
                 logger.info(f"[PAIN_CACHE:{job_id}] Progress: {processed}/{total_tickers}")
                 await asyncio.sleep(0)
-                
+
         except Exception as e:
             errors += 1
             error_list.append({"ticker": ticker, "error": str(e)})
             logger.error(f"[PAIN_CACHE:{job_id}] Error for {ticker}: {e}")
-    
+
     finished_at = datetime.now(timezone.utc)
     duration_sec = (finished_at - started_at).total_seconds()
-    
+
     result = {
         "job_id": job_id,
         "job_type": "pain_cache_refresh",
@@ -5932,13 +5932,13 @@ async def run_pain_cache_refresh(database, batch_size: int = 100) -> dict:
         "error_list": error_list[:10] if error_list else [],
         "status": "completed" if errors == 0 else "completed_with_errors"
     }
-    
+
     # Log to ops_job_runs
     log_doc = {k: v for k, v in result.items() if k != '_id'}
     await database.ops_job_runs.insert_one(log_doc)
-    
+
     logger.info(f"[PAIN_CACHE:{job_id}] Completed: {success}/{total_tickers} in {duration_sec:.1f}s")
-    
+
     return result
 
 
@@ -5954,12 +5954,12 @@ async def admin_get_job_runs(
 ):
     """
     Get recent job runs from ops_job_runs.
-    
+
     Args:
         job_type: Optional filter by job type
         limit: Max results to return
         source: Filter by 'scheduler' or 'manual'
-    
+
     Returns:
         List of recent job runs
     """
@@ -5968,10 +5968,10 @@ async def admin_get_job_runs(
         query["job_type"] = {"$regex": job_type, "$options": "i"}
     if source:
         query["source"] = source
-    
+
     cursor = db.ops_job_runs.find(query, {"_id": 0}).sort("started_at", -1).limit(limit)
     runs = await cursor.to_list(length=limit)
-    
+
     # Convert datetime objects to ISO strings
     for run in runs:
         if run.get("started_at"):
@@ -5980,7 +5980,7 @@ async def admin_get_job_runs(
             run["finished_at"] = run["finished_at"].isoformat() if hasattr(run["finished_at"], 'isoformat') else str(run["finished_at"])
         if run.get("created_at"):
             run["created_at"] = run["created_at"].isoformat() if hasattr(run["created_at"], 'isoformat') else str(run["created_at"])
-    
+
     return {
         "count": len(runs),
         "runs": runs
@@ -6027,35 +6027,35 @@ async def market_open_closed(market: str = "US"):
 async def fundamentals_whitelist_audit():
     """
     BINDING: Audit fundamentals whitelist compliance.
-    
+
     Returns:
     - forbidden_keys_count: MUST always be 0
     - whitelist_version: Current approved version
     - sample_violations: First 10 violating tickers (if any)
     - compliance_status: PASS/FAIL
-    
+
     Any non-zero forbidden_keys_count is a CRITICAL data integrity breach.
     """
     from whitelist_mapper import WHITELIST_VERSION, WHITELIST_STATUS, FORBIDDEN_SECTIONS
-    
+
     # Top-level forbidden keys to check
     FORBIDDEN_TOP_LEVEL_KEYS = {
-        "Highlights", "Valuation", "Technicals", 
+        "Highlights", "Valuation", "Technicals",
         "ETF_Data", "MutualFund_Data", "AnalystRatings", "ESGScores"
     }
-    
+
     # Build query for any forbidden key
     forbidden_conditions = []
     for key in FORBIDDEN_TOP_LEVEL_KEYS:
         forbidden_conditions.append({f"fundamentals.{key}": {"$exists": True}})
-    
+
     # Count violations
     violations_count = 0
     if forbidden_conditions:
         violations_count = await db.tracked_tickers.count_documents({
             "$or": forbidden_conditions
         })
-    
+
     # Get sample violations if any
     sample_violations = []
     if violations_count > 0:
@@ -6063,7 +6063,7 @@ async def fundamentals_whitelist_audit():
             {"$or": forbidden_conditions},
             {"ticker": 1, "fundamentals": 1, "_id": 0}
         ).limit(10)
-        
+
         async for doc in cursor:
             ticker = doc.get("ticker", "unknown")
             fund = doc.get("fundamentals", {})
@@ -6072,15 +6072,15 @@ async def fundamentals_whitelist_audit():
                 "ticker": ticker,
                 "forbidden_keys": found_keys
             })
-    
+
     # Total tickers with fundamentals
     total_with_fundamentals = await db.tracked_tickers.count_documents({
         "fundamentals": {"$exists": True, "$ne": None}
     })
-    
+
     # Compliance status
     compliance_status = "PASS" if violations_count == 0 else "FAIL"
-    
+
     return {
         "audit_type": "fundamentals_whitelist",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -6091,7 +6091,7 @@ async def fundamentals_whitelist_audit():
         "forbidden_keys_count": violations_count,
         "compliance_status": compliance_status,
         "sample_violations": sample_violations,
-        "message": "All fundamentals comply with whitelist" if violations_count == 0 
+        "message": "All fundamentals comply with whitelist" if violations_count == 0
                    else f"CRITICAL: {violations_count} tickers have forbidden keys!"
     }
 
@@ -6142,7 +6142,7 @@ async def get_visibility_audit():
     Shows exact API calls, exclude patterns, and funnel breakdown.
     """
     from visibility_rules import get_canonical_sieve_query, VisibilityFailedReason, VISIBLE_TICKERS_QUERY
-    
+
     # =================================================================
     # API CALLS DOCUMENTATION
     # =================================================================
@@ -6174,7 +6174,7 @@ async def get_visibility_audit():
             "description": "Dividend history"
         }
     }
-    
+
     # =================================================================
     # EXCLUDE PATTERNS
     # =================================================================
@@ -6184,33 +6184,33 @@ async def get_visibility_audit():
         "PREFERRED": ["-P-", "-PA", "-PB", "-PC", "-PD", "-PE", "-PF", "-PG", "-PH", "-PI", "-PJ"],
         "RIGHTS": ["-R", "-RI"]
     }
-    
+
     # =================================================================
     # DATABASE COUNTS
     # =================================================================
-    
+
     # Exchange breakdown
     nyse_count = await db.tracked_tickers.count_documents({"exchange": "NYSE"})
     nasdaq_count = await db.tracked_tickers.count_documents({"exchange": "NASDAQ"})
     nyse_mkt_count = await db.tracked_tickers.count_documents({"exchange": "NYSE MKT"})
     nyse_arca_count = await db.tracked_tickers.count_documents({"exchange": "NYSE ARCA"})
-    
+
     # Funnel steps
     step1_nyse_nasdaq = await db.tracked_tickers.count_documents({
         "exchange": {"$in": ["NYSE", "NASDAQ"]}
     })
-    
+
     step2_common_stock = await db.tracked_tickers.count_documents({
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
         "asset_type": "Common Stock"
     })
-    
+
     step3_has_price = await db.tracked_tickers.count_documents({
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
         "asset_type": "Common Stock",
         "has_price_data": True
     })
-    
+
     step4_has_classification = await db.tracked_tickers.count_documents({
         "exchange": {"$in": ["NYSE", "NASDAQ"]},
         "asset_type": "Common Stock",
@@ -6218,11 +6218,11 @@ async def get_visibility_audit():
         "sector": {"$nin": [None, ""]},
         "industry": {"$nin": [None, ""]}
     })
-    
+
     step5_not_delisted = await db.tracked_tickers.count_documents(get_canonical_sieve_query())
-    
+
     step6_visible = await db.tracked_tickers.count_documents(VISIBLE_TICKERS_QUERY)
-    
+
     # Failed reasons breakdown
     failed_reasons = {}
     for reason in VisibilityFailedReason:
@@ -6231,7 +6231,7 @@ async def get_visibility_audit():
         })
         if count > 0:
             failed_reasons[reason.value] = count
-    
+
     # Sample tickers per reason
     samples = {}
     for reason in VisibilityFailedReason:
@@ -6241,10 +6241,10 @@ async def get_visibility_audit():
         ).limit(5).to_list(5)
         if sample_docs:
             samples[reason.value] = [{"ticker": d["ticker"], "name": d.get("name", "")} for d in sample_docs]
-    
+
     # Last audit status
     last_audit = await db.ops_audit_runs.find_one({"audit_type": "visibility_guard"})
-    
+
     return {
         "api_calls": api_calls,
         "exclude_patterns": exclude_patterns,
@@ -6327,17 +6327,17 @@ async def admin_health_report():
     """
     from datetime import datetime, timezone, timedelta
     import asyncio
-    
+
     # VISIBLE UNIVERSE QUERY (PERMANENT)
     visible_filter = VISIBLE_UNIVERSE_QUERY
-    
+
     # Run fast queries in parallel
     async def count_distinct_tickers(collection, field="ticker"):
         """Count distinct tickers using aggregation (faster than distinct)."""
         pipeline = [{"$group": {"_id": f"${field}"}}, {"$count": "count"}]
         result = await collection.aggregate(pipeline).to_list(1)
         return result[0]["count"] if result else 0
-    
+
     # Batch 1: Simple counts (fast)
     total_tickers_task = db.tracked_tickers.count_documents({})
     visible_tickers_task = db.tracked_tickers.count_documents(visible_filter)
@@ -6346,12 +6346,12 @@ async def admin_health_report():
     fundamentals_count_task = db.company_fundamentals_cache.count_documents({})
     insiders_tickers_task = db.insider_activity_cache.count_documents({})
     total_price_records_task = db.stock_prices.count_documents({})
-    
+
     # Batch 2: Distinct counts (slower - use aggregation)
     financials_tickers_task = count_distinct_tickers(db.financials_cache)
     earnings_tickers_task = count_distinct_tickers(db.earnings_history_cache)
     unique_price_tickers_task = count_distinct_tickers(db.stock_prices)
-    
+
     # Execute batch 1 & 2 in parallel
     (total_tickers, visible_tickers, with_fundamentals, pending_fundamentals,
      fundamentals_count, insiders_tickers, total_price_records,
@@ -6360,7 +6360,7 @@ async def admin_health_report():
         fundamentals_count_task, insiders_tickers_task, total_price_records_task,
         financials_tickers_task, earnings_tickers_task, unique_price_tickers_task
     )
-    
+
     # Batch 3: Other queries
     five_days_ago = datetime.now(timezone.utc) - timedelta(days=5)
     recent_price_pipeline = [
@@ -6370,11 +6370,11 @@ async def admin_health_report():
     ]
     recent_price_result = await db.stock_prices.aggregate(recent_price_pipeline).to_list(length=1)
     tickers_with_recent_prices = recent_price_result[0]["count"] if recent_price_result else 0
-    
+
     # Latest price date
     latest_price = await db.stock_prices.find_one({}, {"date": 1}, sort=[("date", -1)])
     latest_price_date = latest_price.get("date") if latest_price else None
-    
+
     # Last scheduler runs - parallel
     last_price_sync_task = db.ops_job_runs.find_one(
         {"job_type": {"$in": ["daily_price_sync", "scheduled_price_sync"]}},
@@ -6389,20 +6389,20 @@ async def admin_health_report():
         {"_id": 0}, sort=[("started_at", -1)]
     )
     scheduler_config_task = db.ops_config.find_one({"key": "scheduler_enabled"}, {"_id": 0})
-    
+
     last_price_sync, last_fundamentals_sync, last_backfill, scheduler_config = await asyncio.gather(
         last_price_sync_task, last_fundamentals_sync_task, last_backfill_task, scheduler_config_task
     )
-    
+
     scheduler_enabled = scheduler_config.get("value", True) if scheduler_config else True
-    
+
     # Data gaps - simplified count (skip top 20 aggregation for speed)
     gaps_by_field = {}
     gap_fields = ["fundamentals", "price", "financials", "earnings", "benchmark"]
     for field in gap_fields:
         count = await db.data_gaps.count_documents({f"missing_{field}": True, "resolved": {"$ne": True}})
         gaps_by_field[field] = count
-    
+
     def format_job_run(run):
         if not run:
             return None
@@ -6412,7 +6412,7 @@ async def admin_health_report():
             "records": run.get("records_upserted") or run.get("details", {}).get("processed"),
             "api_calls": run.get("api_calls") or run.get("details", {}).get("api_calls_used"),
         }
-    
+
     # Pipeline anchor run = Step 1 Universe Seed (03:00 Mon-Sat, Prague).
     PRAGUE = ZoneInfo("Europe/Prague")
     now_prague = datetime.now(PRAGUE)
@@ -6423,7 +6423,7 @@ async def admin_health_report():
     while next_run_prague.weekday() == 6:
         next_run_prague += timedelta(days=1)
     next_run_utc = next_run_prague.astimezone(timezone.utc)
-    
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "scheduler": {
@@ -6484,14 +6484,14 @@ async def admin_audit_missing_sector(
 ):
     """
     Audit: Find tickers in visible universe that are missing sector/industry.
-    
+
     If any are found, it's a BUG in the data ingestion pipeline.
-    
+
     Uses VISIBLE_UNIVERSE_QUERY (is_visible=true) as the only filter.
     """
     # Universe filter - SINGLE SOURCE OF TRUTH
     universe_filter = VISIBLE_UNIVERSE_QUERY
-    
+
     # Missing sector query
     missing_sector_query = {
         **universe_filter,
@@ -6501,7 +6501,7 @@ async def admin_audit_missing_sector(
             {"sector": {"$exists": False}}
         ]
     }
-    
+
     # Missing industry query
     missing_industry_query = {
         **universe_filter,
@@ -6511,35 +6511,35 @@ async def admin_audit_missing_sector(
             {"industry": {"$exists": False}}
         ]
     }
-    
+
     # Counts
     universe_count = await db.tracked_tickers.count_documents(universe_filter)
     missing_sector_count = await db.tracked_tickers.count_documents(missing_sector_query)
     missing_industry_count = await db.tracked_tickers.count_documents(missing_industry_query)
-    
+
     # Sample tickers missing sector (sorted by market_cap desc)
     missing_sector_sample = []
     cursor = db.tracked_tickers.find(
         missing_sector_query,
         {"ticker": 1, "name": 1, "exchange": 1, "sector": 1, "industry": 1, "market_cap": 1, "fundamentals_status": 1, "status": 1, "_id": 0}
     ).sort("market_cap", -1).limit(limit)
-    
+
     async for doc in cursor:
         missing_sector_sample.append(doc)
-    
+
     # Sample tickers missing industry
     missing_industry_sample = []
     cursor = db.tracked_tickers.find(
         missing_industry_query,
         {"ticker": 1, "name": 1, "exchange": 1, "sector": 1, "industry": 1, "market_cap": 1, "fundamentals_status": 1, "status": 1, "_id": 0}
     ).sort("market_cap", -1).limit(limit)
-    
+
     async for doc in cursor:
         missing_industry_sample.append(doc)
-    
+
     # Status
     is_ok = missing_sector_count == 0 and missing_industry_count == 0
-    
+
     return {
         "status": "OK" if is_ok else "BUG - Missing data in universe",
         "universe_count": universe_count,
@@ -6566,7 +6566,7 @@ async def admin_audit_missing_sector_export():
     # Universe filter
     # Universe filter - SINGLE SOURCE OF TRUTH
     universe_filter = VISIBLE_UNIVERSE_QUERY
-    
+
     # Missing sector query
     missing_query = {
         **universe_filter,
@@ -6576,17 +6576,17 @@ async def admin_audit_missing_sector_export():
             {"sector": {"$exists": False}}
         ]
     }
-    
+
     # Get ALL missing
     all_missing = []
     cursor = db.tracked_tickers.find(
         missing_query,
         {"ticker": 1, "name": 1, "exchange": 1, "sector": 1, "industry": 1, "asset_type": 1, "type": 1, "status": 1, "_id": 0}
     ).sort("ticker", 1)
-    
+
     async for doc in cursor:
         all_missing.append(doc)
-    
+
     return {
         "count": len(all_missing),
         "tickers": all_missing,
@@ -6601,7 +6601,7 @@ async def admin_audit_missing_sector_csv():
     from fastapi.responses import StreamingResponse
     import io
     import csv
-    
+
     # Universe filter
     universe_filter = {
         "$or": [
@@ -6610,7 +6610,7 @@ async def admin_audit_missing_sector_csv():
         ],
         **VISIBLE_UNIVERSE_QUERY,
     }
-    
+
     # Missing sector query
     missing_query = {
         **universe_filter,
@@ -6620,17 +6620,17 @@ async def admin_audit_missing_sector_csv():
             {"sector": {"$exists": False}}
         ]
     }
-    
+
     # Build CSV in memory
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(['ticker', 'exchange', 'name', 'asset_type', 'type', 'sector', 'industry', 'status'])
-    
+
     cursor = db.tracked_tickers.find(
         missing_query,
         {"ticker": 1, "name": 1, "exchange": 1, "sector": 1, "industry": 1, "asset_type": 1, "type": 1, "status": 1, "_id": 0}
     ).sort("ticker", 1)
-    
+
     async for doc in cursor:
         writer.writerow([
             doc.get('ticker', ''),
@@ -6642,9 +6642,9 @@ async def admin_audit_missing_sector_csv():
             doc.get('industry', ''),
             doc.get('status', ''),
         ])
-    
+
     output.seek(0)
-    
+
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
@@ -6659,11 +6659,11 @@ async def admin_download_master_verification_csv():
     """
     from fastapi.responses import FileResponse
     import os
-    
+
     csv_path = "/app/backend/scripts/master_verification_table.csv"
     if not os.path.exists(csv_path):
         raise HTTPException(status_code=404, detail="CSV file not found. Run audit first.")
-    
+
     return FileResponse(
         csv_path,
         media_type="text/csv",
@@ -6678,11 +6678,11 @@ async def admin_download_master_verification_summary():
     """
     from fastapi.responses import FileResponse
     import os
-    
+
     json_path = "/app/backend/scripts/master_verification_summary.json"
     if not os.path.exists(json_path):
         raise HTTPException(status_code=404, detail="JSON file not found. Run audit first.")
-    
+
     return FileResponse(
         json_path,
         media_type="application/json",
@@ -6697,20 +6697,20 @@ async def admin_run_fundamentals_backfill(
 ):
     """
     Run fundamentals backfill for universe tickers missing sector/industry.
-    
+
     This is the ONLY endpoint to trigger fundamentals backfill.
     Rate limited to 5 req/sec.
-    
+
     Args:
         limit: Max tickers to process (default 100, max 1000)
         dry_run: If True, don't write to DB
     """
     import httpx
-    
+
     EODHD_API_KEY = os.environ.get("EODHD_API_KEY", "")
     if not EODHD_API_KEY:
         raise HTTPException(status_code=500, detail="EODHD_API_KEY not configured")
-    
+
     # Universe query - SINGLE SOURCE OF TRUTH
     universe_filter = {
         "$or": [
@@ -6719,7 +6719,7 @@ async def admin_run_fundamentals_backfill(
         ],
         **VISIBLE_UNIVERSE_QUERY,
     }
-    
+
     # Find tickers missing sector
     missing_query = {
         **universe_filter,
@@ -6729,18 +6729,18 @@ async def admin_run_fundamentals_backfill(
             {"sector": {"$exists": False}}
         ]
     }
-    
+
     # Get tickers
     cursor = db.tracked_tickers.find(
         missing_query,
         {"ticker": 1, "_id": 0}
     ).sort("ticker", 1).limit(limit)
-    
+
     tickers = [doc["ticker"] for doc in await cursor.to_list(length=limit)]
-    
+
     if not tickers:
         return {"status": "nothing_to_do", "message": "No tickers missing sector/industry"}
-    
+
     stats = {
         "total": len(tickers),
         "processed": 0,
@@ -6749,30 +6749,30 @@ async def admin_run_fundamentals_backfill(
         "failed": 0,
         "dry_run": dry_run,
     }
-    
+
     async with httpx.AsyncClient() as http_client:
         for i, ticker in enumerate(tickers):
             # Rate limiting
             if i > 0 and i % 5 == 0:
                 await asyncio.sleep(1)
-            
+
             try:
                 # Ensure .US suffix
                 ticker_full = ticker if ticker.endswith(".US") else f"{ticker}.US"
-                
+
                 url = f"https://eodhd.com/api/fundamentals/{ticker_full}"
                 params = {"api_token": EODHD_API_KEY, "fmt": "json"}
-                
+
                 response = await http_client.get(url, params=params, timeout=30)
                 stats["processed"] += 1
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     general = data.get("General", {})
-                    
+
                     sector = general.get("Sector", "")
                     industry = general.get("Industry", "")
-                    
+
                     if sector and not dry_run:
                         await db.tracked_tickers.update_one(
                             {"ticker": ticker},
@@ -6787,16 +6787,16 @@ async def admin_run_fundamentals_backfill(
                         stats["updated"] += 1
                     elif not sector:
                         stats["not_found"] += 1
-                        
+
                 elif response.status_code == 404:
                     stats["not_found"] += 1
                 else:
                     stats["failed"] += 1
-                    
+
             except Exception as e:
                 stats["failed"] += 1
                 logger.error(f"Error fetching {ticker}: {e}")
-    
+
     return {
         "status": "completed",
         "stats": stats,
@@ -6852,7 +6852,7 @@ async def admin_verify_fundamentals_backfill():
 async def admin_get_fundamentals_whitelist():
     """
     Get the LOCKED fundamentals whitelist document.
-    
+
     This document is IMMUTABLE and cannot be edited or deleted.
     Any changes require explicit Richard approval.
     """
@@ -8428,7 +8428,7 @@ async def admin_get_excluded_tickers(
 ):
     """
     Get list of excluded tickers with reasons.
-    
+
     Reasons:
     - NOT_IN_SEED_LIST: Not in NYSE/NASDAQ seed
     - NOT_COMMON_STOCK: asset_type != "Common Stock"
@@ -8440,16 +8440,16 @@ async def admin_get_excluded_tickers(
     query = {}
     if reason:
         query["excluded_reason"] = reason
-    
+
     total = await db.excluded_tickers.count_documents(query)
-    
+
     cursor = db.excluded_tickers.find(
         query,
         {"_id": 0}
     ).sort("excluded_reason", 1).skip(offset).limit(limit)
-    
+
     tickers = await cursor.to_list(length=limit)
-    
+
     # Get counts by reason
     reason_counts = {}
     pipeline = [
@@ -8457,7 +8457,7 @@ async def admin_get_excluded_tickers(
     ]
     async for doc in db.excluded_tickers.aggregate(pipeline):
         reason_counts[doc["_id"]] = doc["count"]
-    
+
     return {
         "total_excluded": total,
         "by_reason": reason_counts,
@@ -8471,7 +8471,7 @@ async def admin_get_excluded_tickers(
 async def admin_visible_universe_stats():
     """
     Get Visible Universe statistics.
-    
+
     Shows counts for each stage:
     - Total tracked
     - Seeded (NYSE/NASDAQ Common Stock)
@@ -8486,7 +8486,7 @@ async def admin_visible_universe_stats():
     has_price = await db.tracked_tickers.count_documents({"has_price_data": True})
     has_classification = await db.tracked_tickers.count_documents({"has_classification": True})
     visible = await db.tracked_tickers.count_documents(VISIBLE_UNIVERSE_QUERY)
-    
+
     # Excluded counts by reason
     excluded_pipeline = [
         {"$group": {"_id": "$excluded_reason", "count": {"$sum": 1}}}
@@ -8494,9 +8494,9 @@ async def admin_visible_universe_stats():
     excluded_by_reason = {}
     async for doc in db.excluded_tickers.aggregate(excluded_pipeline):
         excluded_by_reason[doc["_id"]] = doc["count"]
-    
+
     total_excluded = await db.excluded_tickers.count_documents({})
-    
+
     return {
         "stages": {
             "total_tracked": total_tracked,
@@ -8700,10 +8700,10 @@ app.add_middleware(
 async def startup():
     # FORK_RULES loaded — external calls blocked in frontend; user-facing endpoints DB-only
     logger.info("FORK_RULES loaded — external calls blocked in frontend; user-facing endpoints DB-only")
-    
+
     # Store db in app state for access from route handlers
     app.state.db = db
-    
+
     # Create indexes for news and talk collections
     from services.news_service import create_news_indexes
     from services.talk_service import create_indexes as create_talk_indexes
@@ -8711,7 +8711,7 @@ async def startup():
     await create_news_indexes(db)
     await create_talk_indexes(db)
     await create_notification_indexes(db)
-    
+
     # ⚠️ Expire orphaned "running" manual_ad_hoc job docs from previous process.
     expired_jobs = await _expire_orphaned_running_jobs(db)
 
@@ -8722,7 +8722,7 @@ async def startup():
 
     # ⚠️ STARTUP VISIBILITY GUARD - Prevents silent data integrity breaches
     await startup_mega_caps_visibility_guard(db)
-    
+
     # ⚠️ P55: STARTUP PAIN CACHE GUARD - Warns if mega-caps missing PAIN data
     await startup_pain_cache_guard(db)
 
@@ -8977,12 +8977,12 @@ async def startup_pain_cache_guard(database):
     """
     P55 BINDING: Verify that PAIN cache contains top tickers.
     Warns if mega-caps are missing from pain cache.
-    
+
     This guard runs at startup to detect missing PAIN data.
     """
     mega_caps = ["AAPL.US", "MSFT.US", "GOOGL.US", "AMZN.US", "NVDA.US"]
     missing = []
-    
+
     for ticker in mega_caps:
         pain = await database.ticker_pain_cache.find_one(
             {"ticker": ticker},
@@ -8993,7 +8993,7 @@ async def startup_pain_cache_guard(database):
             logger.warning(f"⚠️ PAIN cache missing for {ticker}")
         else:
             logger.info(f"✅ PAIN cache OK: {ticker} = {pain.get('pain_percentage')}%")
-    
+
     if missing:
         logger.error(f"❌ PAIN cache missing for: {missing}. Run pain_cache job!")
     else:
