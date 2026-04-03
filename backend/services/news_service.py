@@ -102,13 +102,19 @@ async def fetch_news_batch_from_eodhd(
     from_date: str,
     to_date: str,
     limit: int = 200,
-    offset: int = 0
+    offset: int = 0,
+    *,
+    _on_ticker_progress: Optional[Any] = None,
 ) -> tuple[List[Dict[str, Any]], str]:
     """
     P53: Fetch news for multiple tickers.
     
     NOTE: EODHD API does NOT support comma-separated symbols in single call.
     We must call separately for each ticker, but we batch the requests efficiently.
+    
+    Args:
+        _on_ticker_progress: Optional async callback(symbol, done, failed, error_msg)
+            called after each ticker fetch for heartbeat/progress telemetry.
     
     Returns:
         tuple: (articles list, api_url template used)
@@ -121,11 +127,14 @@ async def fetch_news_batch_from_eodhd(
         return [], ""
     
     all_articles = []
+    _done = 0
+    _failed = 0
     api_url_template = f"https://eodhd.com/api/news?s={{SYMBOL}}&from={from_date}&to={to_date}&limit=3&offset=0&fmt=json"
     
     # Fetch for each symbol (EODHD doesn't support batch)
     async with httpx.AsyncClient(timeout=30.0) as client:
         for symbol in symbols:
+            _err_msg: Optional[str] = None
             try:
                 params = {
                     "api_token": EODHD_API_KEY,
@@ -147,10 +156,18 @@ async def fetch_news_batch_from_eodhd(
                 
                 if isinstance(articles, list):
                     all_articles.extend(articles)
+                _done += 1
                     
             except Exception as e:
                 logger.warning(f"Error fetching news for {symbol}: {e}")
-                continue
+                _failed += 1
+                _err_msg = str(e)[:200]
+
+            if _on_ticker_progress is not None:
+                try:
+                    await _on_ticker_progress(symbol, _done, _failed, _err_msg)
+                except Exception:
+                    pass  # heartbeat must never break fetch
     
     logger.info(f"Fetched {len(all_articles)} articles for {len(symbols)} symbols")
     return all_articles, api_url_template
@@ -370,7 +387,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         tickers_total=tickers_total,
     )
 
-    # Step 4: Fetch and store — inline per-ticker loop with heartbeat
+    # Step 4: Fetch and store — delegate to canonical fetch with heartbeat callback
     total_articles_fetched = 0
     total_new_articles = 0
     total_new_mappings = 0
@@ -382,6 +399,29 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     _failed = 0
     _last_ticker: Optional[str] = None
     _last_error: Optional[str] = None
+    _last_hb = time.monotonic()
+
+    async def _ticker_progress(symbol: str, done: int, failed: int, err_msg: Optional[str]) -> None:
+        """Heartbeat callback invoked after each ticker fetch."""
+        nonlocal _done, _failed, _last_ticker, _last_error, _last_hb
+        _done = done
+        _failed = failed
+        _last_ticker = symbol.replace(".US", "")
+        if err_msg:
+            _last_error = err_msg
+        _now_mono = time.monotonic()
+        if _run_id and (_now_mono - _last_hb) >= _HEARTBEAT_INTERVAL:
+            _last_hb = _now_mono
+            await _write_news_telemetry(
+                db, _run_id, phase="fetch_news",
+                message=f"Fetching news: {done + failed}/{tickers_total}",
+                tickers_total=tickers_total,
+                tickers_done=done,
+                tickers_failed=failed,
+                api_calls=done + failed,
+                last_ticker=_last_ticker,
+                last_error=_last_error,
+            )
 
     try:
         await _write_news_telemetry(
@@ -390,61 +430,19 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
             tickers_total=tickers_total,
         )
 
-        # Inline per-ticker fetch with heartbeat (keeps fetch_news_batch_from_eodhd untouched)
-        all_articles: List[Dict[str, Any]] = []
-        _last_hb = time.monotonic()
-
-        if EODHD_API_KEY and formatted_symbols:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                for symbol in formatted_symbols:
-                    try:
-                        params = {
-                            "api_token": EODHD_API_KEY,
-                            "s": symbol,
-                            "from": from_date,
-                            "to": today,
-                            "limit": EODHD_FETCH_LIMIT,
-                            "offset": 0,
-                            "fmt": "json",
-                        }
-                        response = await client.get(
-                            "https://eodhd.com/api/news",
-                            params=params,
-                            headers={"User-Agent": "RICHSTOX/1.0"},
-                        )
-                        response.raise_for_status()
-                        articles = response.json()
-                        if isinstance(articles, list):
-                            all_articles.extend(articles)
-                        _done += 1
-                        _last_ticker = symbol.replace(".US", "")
-                    except Exception as e:
-                        logger.warning(f"Error fetching news for {symbol}: {e}")
-                        _failed += 1
-                        _last_ticker = symbol.replace(".US", "")
-                        _last_error = str(e)[:200]
-
-                    # Time-based heartbeat: write at most every _HEARTBEAT_INTERVAL seconds
-                    _now_mono = time.monotonic()
-                    if _run_id and (_now_mono - _last_hb) >= _HEARTBEAT_INTERVAL:
-                        _last_hb = _now_mono
-                        await _write_news_telemetry(
-                            db, _run_id, phase="fetch_news",
-                            message=f"Fetching news: {_done + _failed}/{tickers_total}",
-                            tickers_total=tickers_total,
-                            tickers_done=_done,
-                            tickers_failed=_failed,
-                            api_calls=_done + _failed,
-                            last_ticker=_last_ticker,
-                            last_error=_last_error,
-                        )
-
-            logger.info(f"Fetched {len(all_articles)} articles for {len(formatted_symbols)} symbols")
+        articles, api_url_template = await fetch_news_batch_from_eodhd(
+            symbols=formatted_symbols,
+            from_date=from_date,
+            to_date=today,
+            limit=3,  # 3 per ticker
+            offset=0,
+            _on_ticker_progress=_ticker_progress,
+        )
 
         # Final fetch-phase heartbeat (always, so UI sees completion of fetch)
         await _write_news_telemetry(
             db, _run_id, phase="fetch_news",
-            message=f"Fetched {len(all_articles)} articles from {_done + _failed}/{tickers_total} tickers",
+            message=f"Fetched {len(articles)} articles from {_done + _failed}/{tickers_total} tickers",
             tickers_total=tickers_total,
             tickers_done=_done,
             tickers_failed=_failed,
@@ -453,7 +451,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
             last_error=_last_error,
         )
 
-        total_articles_fetched = len(all_articles)
+        total_articles_fetched = len(articles)
 
         # Store with mappings
         await _write_news_telemetry(
@@ -463,7 +461,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
             tickers_failed=_failed, api_calls=_done + _failed,
             last_ticker=_last_ticker, last_error=_last_error,
         )
-        result = await store_articles_with_mapping(db, all_articles)
+        result = await store_articles_with_mapping(db, articles)
         total_new_articles = result["new_articles"]
         total_new_mappings = result["new_mappings"]
 
