@@ -333,7 +333,7 @@ def _cache_doc_to_general(cache_doc: dict) -> dict:
         "Type": cache_doc.get("asset_type") or cache_doc.get("security_type"),
         "Description": cache_doc.get("description"),
         "WebURL": cache_doc.get("website"),
-        "LogoURL": cache_doc.get("logo_url"),
+        "LogoURL": _internal_logo_url(cache_doc.get("logo_url") or cache_doc.get("ticker")),
         "FullTimeEmployees": cache_doc.get("full_time_employees"),
         "IPODate": cache_doc.get("ipo_date"),
         "City": cache_doc.get("city"),
@@ -724,6 +724,104 @@ async def auth_dev_login(response: Response):
         "session_token": session_token,
         "message": "Dev login successful - logged in as admin",
     }
+
+
+# ---------------------------------------------------------------------------
+# LOGO PROXY — serve logos from our DB, never expose provider CDN to clients
+# ---------------------------------------------------------------------------
+EODHD_LOGO_CDN_SERVER = "https://eodhistoricaldata.com"
+
+
+def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
+    """Return an internal ``/api/logo/{TICKER}`` URL for a logo.
+
+    *ticker_or_path* can be:
+      - a bare ticker code (``AAPL``) → ``/api/logo/AAPL``
+      - a ``.US`` ticker (``AAPL.US``) → ``/api/logo/AAPL``
+      - a relative EODHD path (``/img/logos/US/AAPL.png``) → ``/api/logo/AAPL``
+      - an absolute external URL (``https://…/img/logos/US/AAPL.png``) → ``/api/logo/AAPL``
+      - *None* / empty → *None*
+    """
+    if not ticker_or_path:
+        return None
+
+    raw = ticker_or_path.strip()
+    # Relative/absolute EODHD path → extract ticker from filename
+    if "/" in raw:
+        # e.g.  /img/logos/US/AAPL.png  or  https://…/AAPL.png
+        basename = raw.rsplit("/", 1)[-1]  # "AAPL.png"
+        code = basename.split(".")[0].upper()  # "AAPL"
+        if code:
+            return f"/api/logo/{code}"
+        return None
+
+    # Already a ticker string (possibly with ".US")
+    code = raw.replace(".US", "").upper()
+    return f"/api/logo/{code}" if code else None
+
+
+@api_router.get("/logo/{ticker}")
+async def serve_logo(ticker: str):
+    """Serve a company logo from our MongoDB cache.
+
+    On cache miss the image is fetched **once** from the upstream CDN,
+    stored in the ``ticker_logos`` collection, and then served.  All
+    subsequent requests are fulfilled from the DB — the client never
+    contacts the provider directly.
+    """
+    ticker_upper = ticker.upper().replace(".US", "").replace(".PNG", "")
+    ticker_full = f"{ticker_upper}.US"
+
+    # 1. Try the DB cache first
+    doc = await db.ticker_logos.find_one({"ticker": ticker_full})
+    if doc and doc.get("data"):
+        return Response(
+            content=doc["data"],
+            media_type=doc.get("content_type", "image/png"),
+            headers={"Cache-Control": "public, max-age=604800"},  # 7 days
+        )
+
+    # 2. Cache miss — resolve source URL from fundamentals
+    fund = await db.company_fundamentals_cache.find_one(
+        {"ticker": ticker_full},
+        {"_id": 0, "logo_url": 1},
+    )
+    logo_path = (fund or {}).get("logo_url") or f"/img/logos/US/{ticker_upper}.png"
+    if logo_path.startswith("http"):
+        source_url = logo_path
+    else:
+        source_url = f"{EODHD_LOGO_CDN_SERVER}{logo_path}"
+
+    # 3. Download from provider (server-side only)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(source_url)
+        if resp.status_code != 200:
+            raise HTTPException(status_code=404, detail="Logo not found")
+        image_bytes = resp.content
+        content_type = resp.headers.get("content-type", "image/png")
+    except httpx.HTTPError:
+        raise HTTPException(status_code=502, detail="Failed to fetch logo")
+
+    # 4. Persist to DB for future requests
+    await db.ticker_logos.update_one(
+        {"ticker": ticker_full},
+        {"$set": {
+            "ticker": ticker_full,
+            "data": image_bytes,
+            "content_type": content_type,
+            "source_url": source_url,
+            "cached_at": datetime.now(timezone.utc),
+        }},
+        upsert=True,
+    )
+
+    return Response(
+        content=image_bytes,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=604800"},
+    )
+
 
 # ----- Stock Search -----
 @api_router.get("/search")
@@ -1453,14 +1551,10 @@ async def get_watchlist(request: Request):
             if follow_price and current_price and follow_price > 0:
                 change_since_follow = round(((current_price - follow_price) / follow_price) * 100, 2)
         
-        # Build logo URL
-        logo_url = None
-        if fundamentals and fundamentals.get("logo_url"):
-            logo_path = fundamentals.get("logo_url")
-            if logo_path.startswith("/"):
-                logo_url = f"https://eodhistoricaldata.com{logo_path}"
-            else:
-                logo_url = logo_path
+        # Build internal logo URL (no external CDN)
+        logo_url = _internal_logo_url(
+            (fundamentals.get("logo_url") if fundamentals else None) or ticker_full
+        )
         
         # Format followed_at to DD/MM/YYYY
         followed_at_str = doc.get("followed_at", "")
@@ -1636,14 +1730,10 @@ async def get_homepage_data():
         if current and price_data["prev"] and price_data["prev"] > 0:
             change_1d_pct = ((current - price_data["prev"]) / price_data["prev"]) * 100
 
-        # Build logo URL from EODHD
-        logo_url = None
-        if fundamentals and fundamentals.get("logo_url"):
-            logo_path = fundamentals.get("logo_url")
-            if logo_path.startswith("/"):
-                logo_url = f"https://eodhistoricaldata.com{logo_path}"
-            else:
-                logo_url = logo_path
+        # Build internal logo URL (no external CDN)
+        logo_url = _internal_logo_url(
+            (fundamentals.get("logo_url") if fundamentals else None) or ticker
+        )
 
         # P33: Determine pill type
         in_watchlist = ticker in watchlist_tickers
@@ -2962,7 +3052,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "asset_type": general.get("Type") or "Common Stock",
             "description": general.get("Description"),
             "website": general.get("WebURL"),
-            "logo_url": general.get("LogoURL") or (tracked.get("logo_url") if tracked else None),
+            "logo_url": _internal_logo_url(general.get("LogoURL") or (tracked.get("logo_url") if tracked else None) or ticker_full),
             "full_time_employees": general.get("FullTimeEmployees"),
             "ipo_date": general.get("IPODate") or (tracked.get("ipo_date") if tracked else None),
             "city": general.get("City") or addr_data.get("City"),
@@ -3003,7 +3093,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "asset_type": tracked.get("asset_type") if tracked else "Common Stock",
             "description": None,
             "website": None,
-            "logo_url": tracked.get("logo_url") if tracked else None,
+            "logo_url": _internal_logo_url((tracked.get("logo_url") if tracked else None) or ticker_full),
             "full_time_employees": None,
             "ipo_date": tracked.get("ipo_date") if tracked else None,
             "city": None,
@@ -3418,7 +3508,7 @@ async def get_ticker_detail_mobile(
         "exchange": general.get("Exchange") or tracked.get("exchange"),
         "description": general.get("Description"),
         "website": general.get("WebURL"),
-        "logo_url": general.get("LogoURL") or tracked.get("logo_url"),
+        "logo_url": _internal_logo_url(general.get("LogoURL") or tracked.get("logo_url") or ticker_full),
         "employees": general.get("FullTimeEmployees"),
         "ipo_date": general.get("IPODate") or tracked.get("ipo_date"),
         "address": general.get("Address"),
@@ -4186,7 +4276,7 @@ async def get_ticker_detail_mobile(
             "exchange": company.get("exchange") if company else tracked.get("exchange"),
             "sector": company.get("sector") if company else tracked.get("sector"),
             "industry": company.get("industry") if company else tracked.get("industry"),
-            "logo_url": company.get("logo_url") if company else tracked.get("logo_url"),
+            "logo_url": _internal_logo_url((company.get("logo_url") if company else tracked.get("logo_url")) or ticker_full),
             "country": company.get("country") if company else None,
         },
         
@@ -4517,11 +4607,8 @@ async def get_news(
     ticker_info = {}
     for doc in company_docs:
         ticker = doc.get("ticker", "").replace(".US", "").upper()
-        logo_url = doc.get("logo_url")
-        if logo_url and not logo_url.startswith("http"):
-            logo_url = f"https://eodhistoricaldata.com{logo_url}"
         ticker_info[ticker] = {
-            "logo_url": logo_url,
+            "logo_url": _internal_logo_url(doc.get("logo_url") or ticker),
             "name": doc.get("name", ticker),
         }
     
@@ -4631,10 +4718,10 @@ async def get_news(
         logo_url = info.get("logo_url")
         company_name = info.get("name", ticker)
         
-        # Logo guarantee
+        # Logo guarantee — always use internal proxy
         fallback_logo_key = ticker[0].upper() if ticker else "N"
         if not logo_url and ticker:
-            logo_url = f"https://eodhd.com/img/logos/US/{ticker}.png"
+            logo_url = f"/api/logo/{ticker}"
         
         # Calculate time_ago
         published_at = article.get("date") or article.get("published_at")

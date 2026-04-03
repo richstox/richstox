@@ -715,7 +715,7 @@ async def get_all_tickers(
             "exchange": stock.get("exchange", ""),
             "sector": stock.get("sector", ""),
             "industry": stock.get("industry", ""),
-            "logo_url": stock.get("logo_url"),  # From tracked_tickers only
+            "logo_url": f"/api/logo/{canonical_symbol}" if canonical_symbol else None,
         })
     
     return {

@@ -1058,20 +1058,27 @@ async def get_whitelist_stats(db) -> Dict[str, Any]:
     }
 
 
-EODHD_LOGO_CDN = "https://eodhistoricaldata.com"
-
 
 def _build_full_logo_url(logo_path: Optional[str]) -> Optional[str]:
-    """Build a full logo URL from a raw logo_url value.
+    """Return an internal ``/api/logo/{TICKER}`` URL for a logo.
 
-    Relative paths (e.g. ``/img/logos/US/AAPL.png``) are prefixed with
-    the EODHD CDN host.  Absolute URLs are returned as-is.
+    Replaces the old behaviour of returning external CDN URLs.
+    Accepts relative paths (``/img/logos/US/AAPL.png``), absolute URLs,
+    or bare ticker strings.
     """
     if not logo_path:
         return None
-    if logo_path.startswith("http"):
-        return logo_path
-    return f"{EODHD_LOGO_CDN}{logo_path}"
+    raw = logo_path.strip()
+    # Relative/absolute EODHD path → extract ticker from filename
+    if "/" in raw:
+        basename = raw.rsplit("/", 1)[-1]  # "AAPL.png"
+        code = basename.split(".")[0].upper()  # "AAPL"
+        if code:
+            return f"/api/logo/{code}"
+        return None
+    # Already a ticker string (possibly with ".US")
+    code = raw.replace(".US", "").upper()
+    return f"/api/logo/{code}" if code else None
 
 
 async def search_whitelist(
