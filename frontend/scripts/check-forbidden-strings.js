@@ -11,10 +11,10 @@
  * - X-RapidAPI (RapidAPI headers)
  * - fetch("https://eodhd.com/api (direct API calls)
  * - httpx.get("https://eodhd (direct API calls)
+ * - Logo/CDN URLs pointing to eodhd.com or eodhistoricaldata.com
  * 
  * ALLOWED (not flagged):
- * - Logo CDN URLs (https://eodhd.com/img/, https://eodhistoricaldata.com)
- * - UI text mentions of "EODHD" (documentation, comments)
+ * - UI text mentions of "EODHD" in admin pipeline docs (apiUrl text fields)
  * - Backend files (this only checks frontend)
  * 
  * Exit codes:
@@ -66,6 +66,16 @@ const FORBIDDEN_PATTERNS = [
     pattern: /\.com\/api\/search\//gi,
     description: 'EODHD Search API endpoint (direct)',
     allowedContexts: []
+  },
+  {
+    pattern: /https?:\/\/eodhd\.com\/img\//gi,
+    description: 'Direct EODHD logo/image CDN URL — use /api/logo/{ticker} instead',
+    allowedContexts: ['pipeline.tsx']  // Admin docs only
+  },
+  {
+    pattern: /https?:\/\/eodhistoricaldata\.com/gi,
+    description: 'Direct EODHD CDN URL — use /api/logo/{ticker} instead',
+    allowedContexts: ['pipeline.tsx']  // Admin docs only
   }
 ];
 
@@ -110,9 +120,14 @@ function walkDir(dir, callback) {
 
 function checkFile(filepath) {
   const content = fs.readFileSync(filepath, 'utf8');
+  const basename = path.basename(filepath);
   const violations = [];
   
-  for (const { pattern, description } of FORBIDDEN_PATTERNS) {
+  for (const { pattern, description, allowedContexts } of FORBIDDEN_PATTERNS) {
+    // Skip if this file is in the allowed list for this pattern
+    if (allowedContexts && allowedContexts.length > 0 && allowedContexts.includes(basename)) {
+      continue;
+    }
     const matches = content.match(pattern);
     if (matches) {
       // Find line numbers

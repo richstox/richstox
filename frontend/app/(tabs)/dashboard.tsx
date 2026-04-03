@@ -396,18 +396,14 @@ export default function Dashboard() {
     maxPro: 10,
   };
 
-  // EODHD CDN base URL for logos
-  const EODHD_CDN = "https://eodhistoricaldata.com";
-
-  // Get logo URL from stock data (comes from API which gets it from company_fundamentals_cache)
+  // Get logo URL from stock data — backend now returns internal /api/logo/ paths
   const getLogoUrl = (stock: any): string | null => {
     if (stock?.logo_url) {
-      // If it starts with http, it's already a full URL
       if (stock.logo_url.startsWith("http")) {
         return stock.logo_url;
       }
-      // Otherwise prepend EODHD CDN
-      return `${EODHD_CDN}${stock.logo_url}`;
+      // Relative internal path — prepend our backend URL
+      return `${API_URL}${stock.logo_url}`;
     }
     return null;
   };
@@ -862,7 +858,7 @@ export default function Dashboard() {
                   disabled={!news.ticker}
                 >
                   <NewsLogo 
-                    logoUrl={news.logo_url} 
+                    logoUrl={news.logo_url ? (news.logo_url.startsWith('http') ? news.logo_url : `${API_URL}${news.logo_url}`) : undefined} 
                     fallbackKey={news.fallback_logo_key || (news.ticker || '?').charAt(0)}
                     ticker={news.ticker}
                   />
@@ -982,7 +978,7 @@ export default function Dashboard() {
                     }}
                   >
                     {selectedArticle.logo_url ? (
-                      <Image source={{ uri: selectedArticle.logo_url }} style={styles.articleLogo} />
+                      <Image source={{ uri: selectedArticle.logo_url.startsWith('http') ? selectedArticle.logo_url : `${API_URL}${selectedArticle.logo_url}` }} style={styles.articleLogo} />
                     ) : (
                       <View style={[styles.articleLogoFallback, { backgroundColor: getCompanyColor(selectedArticle.ticker || '') }]}>
                         <Text style={styles.articleLogoText}>{(selectedArticle.ticker || '?').charAt(0)}</Text>
