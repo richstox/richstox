@@ -471,7 +471,10 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
     except Exception:
         logger.error(f"{job_name}: failed to log failure to ops_job_runs")
     
-    return {"status": "failed", "error": error_msg}
+    # Raise so callers do NOT mark `last_run[job_name] = today_str`.
+    # The scheduler's per-job `except Exception` blocks will catch this and
+    # retry on the next tick.
+    raise RuntimeError(f"{job_name}: {error_msg}")
 
 
 async def _run_universe_seed_scheduled(db):
@@ -788,31 +791,55 @@ async def scheduler_loop():
     # The main loop writes a heartbeat every 15 minutes, but that write
     # is inline: if a job await blocks the loop for >30 min the watchdog
     # sees staleness and kills the process.  This independent task writes
-    # a heartbeat every 10 minutes via the same event loop.  Because
+    # a heartbeat every 60 seconds via the same event loop.  Because
     # long-running jobs yield to the loop on every I/O await, this task
     # gets scheduled and the heartbeat stays fresh.
+    #
+    # Each DB write is guarded by asyncio.wait_for to prevent a hung
+    # connection from stalling the heartbeat loop.
     # ------------------------------------------------------------------
     _bg_heartbeat_task: asyncio.Task | None = None
 
     async def _background_heartbeat_loop():
-        """Independent heartbeat writer — survives long blocking jobs."""
+        """Independent heartbeat writer — survives long blocking jobs.
+
+        Writes every 60 seconds so the watchdog (default 30-min staleness
+        threshold) always sees a fresh heartbeat, even when a long-running
+        job blocks the main scheduler loop for extended periods.
+
+        Every DB write is wrapped with asyncio.wait_for (10 s timeout) so a
+        hung MongoDB connection cannot stall this loop indefinitely.
+        """
+        _HB_INTERVAL_SECONDS = 60
+        _HB_DB_TIMEOUT_SECONDS = 10
+
         # Write immediately on startup so the watchdog sees a fresh heartbeat
-        # before the first 10-minute sleep.  Without this, restarted processes
-        # inherit a stale heartbeat from the previous run and the watchdog
-        # kills the process within ~2 minutes (before the first sleep expires).
+        # before the first sleep.  Without this, restarted processes inherit a
+        # stale heartbeat from the previous run and the watchdog may kill the
+        # process before the first interval expires.
         try:
-            ks_enabled = await get_scheduler_enabled(db)
-            await log_heartbeat(last_run, kill_switch_engaged=not ks_enabled)
+            ks_enabled = await asyncio.wait_for(
+                get_scheduler_enabled(db), timeout=_HB_DB_TIMEOUT_SECONDS,
+            )
+            await asyncio.wait_for(
+                log_heartbeat(last_run, kill_switch_engaged=not ks_enabled),
+                timeout=_HB_DB_TIMEOUT_SECONDS,
+            )
             logger.info("[HEARTBEAT-BG] Initial heartbeat written at startup")
         except Exception as exc:
             logger.warning("[HEARTBEAT-BG] Initial heartbeat failed (non-fatal): %s", exc)
 
         while True:
-            await asyncio.sleep(600)  # 10 minutes
+            await asyncio.sleep(_HB_INTERVAL_SECONDS)
             try:
-                ks_enabled = await get_scheduler_enabled(db)
-                await log_heartbeat(last_run, kill_switch_engaged=not ks_enabled)
-                logger.info("[HEARTBEAT-BG] Background heartbeat written")
+                ks_enabled = await asyncio.wait_for(
+                    get_scheduler_enabled(db), timeout=_HB_DB_TIMEOUT_SECONDS,
+                )
+                await asyncio.wait_for(
+                    log_heartbeat(last_run, kill_switch_engaged=not ks_enabled),
+                    timeout=_HB_DB_TIMEOUT_SECONDS,
+                )
+                logger.debug("[HEARTBEAT-BG] Background heartbeat written")
             except Exception as exc:
                 logger.warning("[HEARTBEAT-BG] Failed (non-fatal): %s", exc)
 

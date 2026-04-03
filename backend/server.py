@@ -8653,7 +8653,12 @@ async def startup():
     await create_notification_indexes(db)
     
     # ⚠️ Expire orphaned "running" manual_ad_hoc job docs from previous process.
-    await _expire_orphaned_running_jobs(db)
+    expired_jobs = await _expire_orphaned_running_jobs(db)
+
+    # ⚠️ Auto-retry news_refresh if it was killed by a deployment/crash.
+    # Fire-and-forget: the background task creates its own audit trail.
+    if "news_refresh" in expired_jobs:
+        asyncio.create_task(_auto_retry_news_refresh(db))
 
     # ⚠️ STARTUP VISIBILITY GUARD - Prevents silent data integrity breaches
     await startup_mega_caps_visibility_guard(db)
@@ -8664,35 +8669,200 @@ async def startup():
 
 async def _expire_orphaned_running_jobs(database):
     """
-    Expire any manual_ad_hoc job docs still in "running" status at startup.
+    Expire any manual_ad_hoc job docs still in "running" status at startup,
+    but ONLY if they have been running for longer than the safe threshold
+    (30 minutes).  This avoids expiring a job that just started moments
+    before this process booted.
 
     When the server restarts (deployment, crash), background tasks are killed
     and their finally-block DB writes may fail because the connection pool is
     already torn down.  This leaves orphaned "running" docs that permanently
     block future manual runs of the same job.  We clean them up here.
+
+    Returns:
+        set[str]: Job names that were expired (empty set on no-op or error).
     """
     from zoneinfo import ZoneInfo as _OrphanZI
+    _ORPHAN_THRESHOLD_MINUTES = 30
+    expired_job_names: set[str] = set()
     try:
         _now = datetime.now(timezone.utc)
+        _cutoff = _now - timedelta(minutes=_ORPHAN_THRESHOLD_MINUTES)
+
+        # First, discover which job_names are about to be expired so we can
+        # report them back to the caller for auto-retry decisions.
+        orphaned_cursor = database.ops_job_runs.find(
+            {
+                "job_type": "manual_ad_hoc",
+                "status": "running",
+                "started_at": {"$lt": _cutoff},
+            },
+            {"job_name": 1},
+        )
+        async for doc in orphaned_cursor:
+            if doc.get("job_name"):
+                expired_job_names.add(doc["job_name"])
+
+        if not expired_job_names:
+            return expired_job_names
+
         result = await database.ops_job_runs.update_many(
-            {"job_type": "manual_ad_hoc", "status": "running"},
+            {
+                "job_type": "manual_ad_hoc",
+                "status": "running",
+                "started_at": {"$lt": _cutoff},
+            },
             {"$set": {
                 "status": "error",
                 "finished_at": _now,
                 "finished_at_prague": _now.astimezone(_OrphanZI("Europe/Prague")).isoformat(),
-                "error_message": (
-                    "Auto-expired at server startup: job was still 'running' when the "
-                    "process restarted. Likely killed by a deployment or crash."
-                ),
+                "error_message": "orphaned_on_startup",
             }},
         )
         if result.modified_count:
             logger.warning(
                 f"Startup cleanup: expired {result.modified_count} orphaned "
-                f"'running' manual_ad_hoc job doc(s)"
+                f"'running' manual_ad_hoc job doc(s) older than "
+                f"{_ORPHAN_THRESHOLD_MINUTES} min: {expired_job_names}"
             )
     except Exception as e:
         logger.warning(f"Startup cleanup: failed to expire orphaned running jobs: {e}")
+    return expired_job_names
+
+
+# In-memory flag: at most 1 startup auto-retry per process start.
+_startup_auto_retry_fired: bool = False
+
+
+async def _auto_retry_news_refresh(database):
+    """
+    Background auto-retry of news_refresh after an orphaned run was expired.
+
+    Strict guards (all must pass for the retry to proceed):
+    1. This instance holds the scheduler leader lock.
+    2. The persisted last-run marker for news_refresh is NOT already set to today.
+    3. At most 1 startup auto-retry per process start (in-memory flag).
+    4. Hard 20-minute timeout — on timeout, finalize audit as error.
+
+    Reuses the canonical refresh_hot_tickers_news execution path (no
+    duplicated fetch logic).  Errors are logged but never propagated — this
+    must not crash the server.
+    """
+    global _startup_auto_retry_fired
+    await asyncio.sleep(15)  # let the rest of startup settle
+
+    # ── Guard 1: in-memory rate limit ──
+    if _startup_auto_retry_fired:
+        logger.info("Auto-retry: skipped — already fired once this process")
+        return
+    _startup_auto_retry_fired = True
+
+    # ── Guard 2: scheduler leader lock ──
+    # Check if THIS process owns the scheduler leader lock.  We only READ the
+    # lock document — we never acquire/release it, to avoid interfering with
+    # the scheduler daemon's lock lifecycle.
+    try:
+        from scheduler import _get_owner_id as _retry_get_owner_id
+        from scheduler import SCHEDULER_LEADER_LOCK_ID as _RETRY_LOCK_ID
+        lock_doc = await database.ops_locks.find_one({"_id": _RETRY_LOCK_ID})
+        if not lock_doc or lock_doc.get("owner_id") != _retry_get_owner_id():
+            logger.info(
+                "Auto-retry: skipped — this instance does not hold the "
+                "scheduler leader lock"
+            )
+            return
+    except Exception as exc:
+        logger.warning("Auto-retry: skipped — leader lock check failed: %s", exc)
+        return
+
+    # ── Guard 3: last-run marker not already set to today ──
+    try:
+        from zoneinfo import ZoneInfo as _RetryZI
+        _today_prague = datetime.now(_RetryZI("Europe/Prague")).strftime("%Y-%m-%d")
+        lr_doc = await database.ops_config.find_one({"key": "scheduler_last_run"})
+        lr_state = (lr_doc or {}).get("value", {})
+        if lr_state.get("news_refresh") == _today_prague:
+            logger.info(
+                "Auto-retry: skipped — news_refresh already completed today (%s)",
+                _today_prague,
+            )
+            return
+    except Exception as exc:
+        logger.warning("Auto-retry: skipped — last-run check failed: %s", exc)
+        return
+
+    _AUTO_RETRY_TIMEOUT_SECONDS = 20 * 60  # 20 minutes
+
+    logger.info("Auto-retry: re-running news_refresh after orphaned run was expired at startup")
+    audit_id = None
+    try:
+        audit_id = await create_job_audit_entry(
+            database, "news_refresh",
+            triggered_by="startup_auto_retry",
+        )
+        # Patch trigger_source on the just-created doc
+        from bson import ObjectId as _PatchOID
+        await database.ops_job_runs.update_one(
+            {"_id": _PatchOID(audit_id)},
+            {"$set": {"trigger_source": "Startup Recovery"}},
+        )
+
+        from services.news_service import refresh_hot_tickers_news
+        result = await asyncio.wait_for(
+            refresh_hot_tickers_news(database),
+            timeout=_AUTO_RETRY_TIMEOUT_SECONDS,
+        )
+        await finalize_job_audit_entry(database, audit_id, result=result)
+        logger.info(
+            "Auto-retry: news_refresh completed successfully: %s",
+            result.get("status", "unknown"),
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Auto-retry: news_refresh timed out after %d s",
+            _AUTO_RETRY_TIMEOUT_SECONDS,
+        )
+        if audit_id is not None:
+            try:
+                await finalize_job_audit_entry(
+                    database, audit_id,
+                    error=f"Auto-retry timed out after {_AUTO_RETRY_TIMEOUT_SECONDS}s",
+                )
+            except Exception:
+                _fallback_expire_audit(database, audit_id, "Auto-retry timed out")
+    except Exception as exc:
+        logger.error("Auto-retry: news_refresh failed: %s", exc)
+        if audit_id is not None:
+            try:
+                await finalize_job_audit_entry(database, audit_id, error=str(exc))
+            except Exception:
+                _fallback_expire_audit(database, audit_id, str(exc))
+
+
+def _fallback_expire_audit(database, audit_id, error_text):
+    """Last-resort fire-and-forget: ensure audit record doesn't stay 'running'.
+
+    Schedules a DB update via asyncio.ensure_future.  This is intentionally
+    sync (not awaited) because it is called inside except blocks where we
+    cannot reliably await further DB operations.
+    """
+    async def _do():
+        try:
+            from bson import ObjectId as _FbOID
+            await database.ops_job_runs.update_one(
+                {"_id": _FbOID(audit_id)},
+                {"$set": {
+                    "status": "error",
+                    "finished_at": datetime.now(timezone.utc),
+                    "error_message": f"Auto-retry failed: {error_text}"[:1000],
+                }},
+            )
+        except Exception:
+            logger.exception(
+                "Auto-retry: last-resort finalization failed for "
+                "news_refresh audit_id=%s", audit_id,
+            )
+    asyncio.ensure_future(_do())
 
 
 async def startup_mega_caps_visibility_guard(database):
