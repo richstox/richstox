@@ -5322,8 +5322,7 @@ async def admin_run_job_now(
             f"(audit_id={existing_running['_id']}, age={_age_minutes:.0f}m)"
         )
         _expire_now = datetime.now(timezone.utc)
-        from zoneinfo import ZoneInfo as _ZI
-        _PRAGUE = _ZI("Europe/Prague")
+        _PRAGUE = ZoneInfo("Europe/Prague")
         await db.ops_job_runs.update_one(
             {"_id": existing_running["_id"]},
             {"$set": {
