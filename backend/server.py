@@ -5346,16 +5346,7 @@ async def admin_run_job_now(
             )
 
         job_func = _benchmark_with_progress
-
-    # News-refresh-specific: pass audit_id for heartbeat telemetry.
-    if job_name == "news_refresh":
-        _base_news_func = job_func
-
-        async def _news_with_telemetry(database):
-            return await _base_news_func(database, audit_id=audit_id)
-
-        job_func = _news_with_telemetry
-
+    
     logger.info(f"Admin manually triggering job: {job_name}")
     
     # C2: Create audit entry with inventory snapshot BEFORE
