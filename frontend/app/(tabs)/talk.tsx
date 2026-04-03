@@ -1285,7 +1285,7 @@ export default function TalkScreen() {
                         {dropdownModal.type === 'symbol' ? (
                           opt.logo_url ? (
                             <Image 
-                              source={{ uri: opt.logo_url }} 
+                              source={{ uri: opt.logo_url.startsWith('http') ? opt.logo_url : `${API_URL}${opt.logo_url}` }} 
                               style={styles.companyLogo}
                               onError={() => {
                                 // Logo failed to load - logged for debugging
@@ -1476,7 +1476,7 @@ export default function TalkScreen() {
                           onPress={() => selectSymbol(item.symbol)}
                         >
                           {item.logo_url ? (
-                            <Image source={{ uri: item.logo_url }} style={styles.suggestionLogo} />
+                            <Image source={{ uri: item.logo_url.startsWith('http') ? item.logo_url : `${API_URL}${item.logo_url}` }} style={styles.suggestionLogo} />
                           ) : (
                             <View style={styles.suggestionLogoPlaceholder}>
                               <Text style={styles.suggestionLogoText}>

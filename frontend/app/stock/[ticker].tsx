@@ -34,7 +34,6 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
-const EODHD_LOGO_BASE = 'https://eodhd.com';
 // Delay before fetching below-the-fold content (talk posts) to prioritize critical data
 const DEFERRED_FETCH_MS = 800;
 
@@ -1164,7 +1163,7 @@ export default function StockDetail() {
   const price = data.price;
   const rawLogoUrl = company.logo_url || mobileData?.company?.logo_url;
   const logoUrl = rawLogoUrl
-    ? (rawLogoUrl.startsWith('http') ? rawLogoUrl : `${EODHD_LOGO_BASE}${rawLogoUrl}`)
+    ? (rawLogoUrl.startsWith('http') ? rawLogoUrl : `${API_URL}${rawLogoUrl}`)
     : null;
 
   // =============================================================================

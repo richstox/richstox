@@ -276,7 +276,7 @@ export default function Search() {
                 >
                   {item.logo ? (
                     <Image 
-                      source={{ uri: item.logo.startsWith('http') ? item.logo : `https://eodhistoricaldata.com${item.logo}` }}
+                      source={{ uri: item.logo.startsWith('http') ? item.logo : `${API_URL}${item.logo}` }}
                       style={styles.itemLogo}
                     />
                   ) : (
