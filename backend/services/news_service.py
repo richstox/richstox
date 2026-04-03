@@ -276,6 +276,8 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
 
 async def get_hot_symbols(db, n: int = 50) -> List[str]:
     """Get top N symbols from user follows and portfolios, with fallback to popular tickers."""
+    _AGG_TIMEOUT_MS = 30_000  # 30 s hard cap — prevents indefinite hang on slow/locked collections
+
     pipeline = [
         {"$group": {"_id": "$ticker", "count": {"$sum": 1}}},
         {"$sort": {"count": -1}},
@@ -283,8 +285,8 @@ async def get_hot_symbols(db, n: int = 50) -> List[str]:
     ]
     
     # Combine watchlist and portfolio positions
-    follows = await db.user_watchlist.aggregate(pipeline).to_list(100)
-    holdings = await db.positions.aggregate(pipeline).to_list(100)
+    follows = await db.user_watchlist.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS).to_list(100)
+    holdings = await db.positions.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS).to_list(100)
     
     # Merge and dedupe
     all_symbols = {}
