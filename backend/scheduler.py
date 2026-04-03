@@ -780,7 +780,35 @@ async def scheduler_loop():
         get_scheduler_enabled,
     )
     from parallel_batch_service import run_scheduled_backfill_all_prices
-    
+
+    # ------------------------------------------------------------------
+    # BACKGROUND HEARTBEAT — keeps the watchdog happy while long-running
+    # jobs (e.g. pain_cache) block the main scheduler loop.
+    #
+    # The main loop writes a heartbeat every 15 minutes, but that write
+    # is inline: if a job await blocks the loop for >30 min the watchdog
+    # sees staleness and kills the process.  This independent task writes
+    # a heartbeat every 10 minutes via the same event loop.  Because
+    # long-running jobs yield to the loop on every I/O await, this task
+    # gets scheduled and the heartbeat stays fresh.
+    # ------------------------------------------------------------------
+    _bg_heartbeat_task: asyncio.Task | None = None
+
+    async def _background_heartbeat_loop():
+        """Independent heartbeat writer — survives long blocking jobs."""
+        while True:
+            await asyncio.sleep(600)  # 10 minutes
+            try:
+                ks_enabled = await get_scheduler_enabled(db)
+                await log_heartbeat(last_run, kill_switch_engaged=not ks_enabled)
+                logger.info("[HEARTBEAT-BG] Background heartbeat written")
+            except Exception as exc:
+                logger.warning("[HEARTBEAT-BG] Failed (non-fatal): %s", exc)
+
+    _bg_heartbeat_task = asyncio.create_task(
+        _background_heartbeat_loop(), name="scheduler_heartbeat_bg"
+    )
+
     try:
         while True:
             now = get_prague_time()
@@ -1244,6 +1272,8 @@ async def scheduler_loop():
         logger.error(f"Scheduler error: {e}")
         raise
     finally:
+        if _bg_heartbeat_task and not _bg_heartbeat_task.done():
+            _bg_heartbeat_task.cancel()
         await release_scheduler_leader_lock(db)
         logger.info("Scheduler leader lock released")
         client.close()
