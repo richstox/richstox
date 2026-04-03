@@ -322,9 +322,13 @@ async def update_ticker_last_synced(db, tickers: List[str], sync_date: str):
         )
 
 
-async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
+async def refresh_hot_tickers_news(db, *, audit_id: Optional[str] = None) -> Dict[str, Any]:
     """
     P53 BINDING: Daily news refresh with batch API calls and delta sync.
+    
+    Args:
+        db: MongoDB database handle.
+        audit_id: Optional audit document ID for telemetry (passed by admin Run Now).
     
     Process:
     1. Get hot tickers from follows/portfolios
@@ -336,19 +340,20 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     started_at = datetime.now(timezone.utc)
     today = started_at.strftime("%Y-%m-%d")
 
-    # Self-discover running audit doc for heartbeat telemetry (admin Run Now path
-    # creates it before calling this function; scheduler path has none yet).
-    _run_id: Optional[str] = None
-    try:
-        running_doc = await db.ops_job_runs.find_one(
-            {"job_name": "news_refresh", "status": "running"},
-            {"_id": 1},
-            sort=[("started_at", -1)],
-        )
-        if running_doc:
-            _run_id = str(running_doc["_id"])
-    except Exception:
-        logger.debug("news_refresh: could not discover running audit doc", exc_info=True)
+    # Use caller-provided audit_id when available (admin Run Now path).
+    # Fall back to self-discovery for backward compat (scheduler path has none).
+    _run_id: Optional[str] = audit_id
+    if not _run_id:
+        try:
+            running_doc = await db.ops_job_runs.find_one(
+                {"job_name": "news_refresh", "status": "running"},
+                {"_id": 1},
+                sort=[("started_at", -1)],
+            )
+            if running_doc:
+                _run_id = str(running_doc["_id"])
+        except Exception:
+            logger.debug("news_refresh: could not discover running audit doc", exc_info=True)
 
     await _write_news_telemetry(db, _run_id, phase="init", message="Initialising news refresh")
 
