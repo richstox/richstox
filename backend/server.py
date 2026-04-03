@@ -767,11 +767,9 @@ def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
 async def serve_logo(ticker: str):
     """Serve a company logo from ``company_fundamentals_cache.logo_data``.
 
-    If the binary logo has not been cached yet (e.g. the fundamentals
-    pipeline has not run for this ticker), the endpoint will attempt a
-    one-time server-side download from the EODHD CDN, store the result,
-    and serve it.  Returns 404 only when the logo genuinely cannot be
-    obtained.
+    Read-only — no external fetches.  Logos are populated exclusively by
+    the fundamentals pipeline (fundamentals_service.py / batch_jobs_service.py).
+    Returns 404 if the logo is absent or has not been downloaded yet.
     """
     ticker_upper = ticker.upper().replace(".US", "")
     # Strip any file extension (e.g. ".PNG", ".JPG") that may be in the URL
@@ -783,56 +781,14 @@ async def serve_logo(ticker: str):
 
     doc = await db.company_fundamentals_cache.find_one(
         {"ticker": ticker_full},
-        {"_id": 0, "logo_data": 1, "logo_content_type": 1, "logo_url": 1},
+        {"_id": 0, "logo_data": 1, "logo_content_type": 1, "logo_status": 1},
     )
-    if doc and doc.get("logo_data"):
+    if doc and doc.get("logo_status") == "present" and doc.get("logo_data"):
         return Response(
             content=doc["logo_data"],
             media_type=doc.get("logo_content_type", "image/png"),
             headers={"Cache-Control": "public, max-age=604800"},  # 7 days
         )
-
-    # ------------------------------------------------------------------
-    # Fetch-on-miss: download logo server-side and cache for next time
-    # ------------------------------------------------------------------
-    eodhd_logo_cdn = "https://eodhistoricaldata.com"
-    raw_logo_url = (doc.get("logo_url") if doc else None) or ""
-
-    # Ignore already-transformed internal paths (/api/logo/…)
-    if raw_logo_url.startswith("/api/"):
-        raw_logo_url = ""
-
-    logo_path = raw_logo_url or f"/img/logos/US/{ticker_upper}.png"
-
-    if logo_path.startswith("http"):
-        source_url = logo_path
-    else:
-        source_url = f"{eodhd_logo_cdn}{logo_path}"
-
-    # SSRF guard: only allow requests to the known EODHD CDN domain
-    from urllib.parse import urlparse
-
-    parsed = urlparse(source_url)
-    if parsed.hostname not in ("eodhistoricaldata.com", "www.eodhistoricaldata.com"):
-        raise HTTPException(status_code=404, detail="Logo not found")
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(source_url)
-        if resp.status_code == 200 and resp.content:
-            content_type = resp.headers.get("content-type", "image/png")
-            # Cache the binary so future requests are instant
-            await db.company_fundamentals_cache.update_one(
-                {"ticker": ticker_full},
-                {"$set": {"logo_data": resp.content, "logo_content_type": content_type}},
-            )
-            return Response(
-                content=resp.content,
-                media_type=content_type,
-                headers={"Cache-Control": "public, max-age=604800"},
-            )
-    except Exception as exc:
-        logger.debug("Logo fetch-on-miss failed for %s: %s", ticker_full, exc)
 
     raise HTTPException(status_code=404, detail="Logo not found")
 
@@ -6898,6 +6854,70 @@ async def admin_verify_fundamentals_backfill():
             "or /api/admin/fundamentals-refill/verify."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# LOGO BACKFILL — one-time job to populate logo_status for all visible tickers
+# ---------------------------------------------------------------------------
+
+@api_router.post("/admin/backfill-logos")
+async def admin_backfill_logos(
+    limit: int = Query(500, ge=1, le=5000),
+    dry_run: bool = Query(False),
+):
+    """Populate ``logo_status`` for visible tickers that have not been resolved.
+
+    Iterates tickers in ``company_fundamentals_cache`` where ``logo_status``
+    is missing, downloads the logo from the EODHD CDN (pipeline-only path),
+    and writes ``logo_status`` / ``logo_fetched_at`` (+ binary when present).
+
+    This is a **one-time** admin job to backfill existing data after the
+    ``logo_status`` field was introduced.  Subsequent fundamentals pipeline
+    runs will set ``logo_status`` automatically.
+    """
+    from fundamentals_service import _download_logo
+
+    # Find cache docs that have no logo_status yet
+    cursor = db.company_fundamentals_cache.find(
+        {"logo_status": {"$exists": False}},
+        {"_id": 0, "ticker": 1, "logo_url": 1},
+    ).sort("ticker", 1).limit(limit)
+
+    docs = await cursor.to_list(length=limit)
+    if not docs:
+        return {"status": "nothing_to_do", "message": "All cached tickers already have logo_status"}
+
+    stats = {"total": len(docs), "present": 0, "absent": 0, "error": 0, "skipped_dry": 0}
+
+    for doc in docs:
+        ticker = doc["ticker"]
+        logo_url = doc.get("logo_url")
+
+        logo_result = await _download_logo(logo_url, ticker)
+        status = logo_result["logo_status"]
+        stats[status] = stats.get(status, 0) + 1
+
+        if dry_run:
+            stats["skipped_dry"] += 1
+            continue
+
+        update: dict = {
+            "logo_status": logo_result["logo_status"],
+            "logo_fetched_at": logo_result["logo_fetched_at"],
+        }
+        if logo_result.get("logo_data"):
+            update["logo_data"] = logo_result["logo_data"]
+            update["logo_content_type"] = logo_result["logo_content_type"]
+
+        await db.company_fundamentals_cache.update_one(
+            {"ticker": ticker},
+            {"$set": update},
+        )
+
+        # Rate-limit to avoid hammering the CDN
+        await asyncio.sleep(0.2)
+
+    return {"status": "completed", "dry_run": dry_run, "stats": stats}
 
 
 # =============================================================================

@@ -201,17 +201,20 @@ async def sync_single_ticker_fundamentals(
         result["has_fundamentals"] = True
 
         # 1b. Download and store the logo image in the same cache doc
-        logo_bytes, logo_ct = await _download_logo(
+        logo_result = await _download_logo(
             company_doc.get("logo_url"), ticker_full
         )
-        if logo_bytes:
-            await db.company_fundamentals_cache.update_one(
-                {"ticker": ticker_full},
-                {"$set": {
-                    "logo_data": logo_bytes,
-                    "logo_content_type": logo_ct,
-                }},
-            )
+        logo_update: dict = {
+            "logo_status": logo_result["logo_status"],
+            "logo_fetched_at": logo_result["logo_fetched_at"],
+        }
+        if logo_result.get("logo_data"):
+            logo_update["logo_data"] = logo_result["logo_data"]
+            logo_update["logo_content_type"] = logo_result["logo_content_type"]
+        await db.company_fundamentals_cache.update_one(
+            {"ticker": ticker_full},
+            {"$set": logo_update},
+        )
 
         # 2. Financial statements → company_financials (canonical), upsert
         financials_rows = parse_financials(ticker_full, data)
@@ -342,6 +345,11 @@ async def sync_single_ticker_fundamentals(
             f"HasClass: {has_classification}"
         )
 
+        # Completeness requires logo resolved (present or absent), not "error"
+        logo_resolved = logo_result.get("logo_status") in ("present", "absent")
+        fund_status = "complete" if logo_resolved else "partial"
+        fund_complete = logo_resolved
+
         await db.tracked_tickers.update_one(
             {"ticker": ticker_full},
             {"$set": {
@@ -354,9 +362,9 @@ async def sync_single_ticker_fundamentals(
                 "financial_currency":         financial_currency,
                 "shares_outstanding":         shares_outstanding,
                 # Mark complete only after all writes + verification succeed
-                "fundamentals_status":        "complete",
-                "fundamentals_complete":      True,
-                "needs_fundamentals_refresh": False,
+                "fundamentals_status":        fund_status,
+                "fundamentals_complete":      fund_complete,
+                "needs_fundamentals_refresh": not fund_complete,
                 "fundamentals_updated_at":    now,
                 "fundamentals_error":         None,
                 "fundamentals_error_code":    None,
