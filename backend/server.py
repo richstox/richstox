@@ -5303,10 +5303,13 @@ async def admin_run_job_now(
     )
     if existing_running:
         _started = existing_running.get("started_at")
-        _age_minutes = (
-            (datetime.now(timezone.utc) - _started).total_seconds() / 60.0
-            if _started else float("inf")
-        )
+        try:
+            _age_minutes = (
+                (datetime.now(timezone.utc) - _started).total_seconds() / 60.0
+                if isinstance(_started, datetime) else float("inf")
+            )
+        except Exception:
+            _age_minutes = float("inf")
         if _age_minutes > _STALE_RUNNING_THRESHOLD_MINUTES:
             # Auto-expire: the old run is stuck — mark it so a new one can start.
             from zoneinfo import ZoneInfo as _StaleZI
