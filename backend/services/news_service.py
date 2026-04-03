@@ -24,6 +24,7 @@ Tables:
 """
 
 import os
+import asyncio
 import hashlib
 import logging
 import time
@@ -353,7 +354,6 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         except Exception:
             logger.debug("news_refresh: could not discover running audit doc", exc_info=True)
         if _attempt < 2:
-            import asyncio
             await asyncio.sleep(1)
 
     await _write_news_telemetry(db, _run_id, phase="init", message="Initialising news refresh")
