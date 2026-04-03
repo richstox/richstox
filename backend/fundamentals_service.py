@@ -28,13 +28,19 @@ EODHD_LOGO_CDN = "https://eodhistoricaldata.com"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
 
-async def _download_logo(logo_url: Optional[str], ticker: str) -> tuple:
+async def _download_logo(logo_url: Optional[str], ticker: str) -> dict:
     """Download a logo image from the EODHD CDN.
 
-    Returns ``(image_bytes, content_type)`` on success, or
-    ``(None, None)`` on any failure.  This is called **only** during the
-    fundamentals pipeline — never at request time.
+    Returns a dict with keys:
+      - ``logo_status``: ``"present"`` | ``"absent"`` | ``"error"``
+      - ``logo_fetched_at``: UTC datetime of this attempt
+      - ``logo_data``: bytes (only when present)
+      - ``logo_content_type``: str (only when present)
+
+    Called **only** during the fundamentals pipeline — never at request time.
     """
+    now = datetime.now(timezone.utc)
+
     if not logo_url:
         # Try convention-based URL as last resort
         logo_url = f"/img/logos/US/{ticker.replace('.US', '').upper()}.png"
@@ -48,10 +54,17 @@ async def _download_logo(logo_url: Optional[str], ticker: str) -> tuple:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.get(source_url)
         if resp.status_code == 200 and resp.content:
-            return resp.content, resp.headers.get("content-type", "image/png")
+            return {
+                "logo_status": "present",
+                "logo_fetched_at": now,
+                "logo_data": resp.content,
+                "logo_content_type": resp.headers.get("content-type", "image/png"),
+            }
+        # Provider returned non-200 or empty body → logo does not exist
+        return {"logo_status": "absent", "logo_fetched_at": now}
     except Exception as e:
         logger.debug(f"Logo download failed for {ticker}: {e}")
-    return None, None
+    return {"logo_status": "error", "logo_fetched_at": now}
 
 # Pilot tickers for initial testing
 PILOT_TICKERS = [
@@ -527,17 +540,20 @@ async def sync_ticker_fundamentals(
         result["company_fundamentals"] = True
 
         # 1b. Download and store the logo image in the same cache doc
-        logo_bytes, logo_ct = await _download_logo(
+        logo_result = await _download_logo(
             company_doc.get("logo_url"), ticker_full
         )
-        if logo_bytes:
-            await db.company_fundamentals_cache.update_one(
-                {"ticker": ticker_full},
-                {"$set": {
-                    "logo_data": logo_bytes,
-                    "logo_content_type": logo_ct,
-                }},
-            )
+        logo_update: dict = {
+            "logo_status": logo_result["logo_status"],
+            "logo_fetched_at": logo_result["logo_fetched_at"],
+        }
+        if logo_result.get("logo_data"):
+            logo_update["logo_data"] = logo_result["logo_data"]
+            logo_update["logo_content_type"] = logo_result["logo_content_type"]
+        await db.company_fundamentals_cache.update_one(
+            {"ticker": ticker_full},
+            {"$set": logo_update},
+        )
         
         # 2. Parse and store financials
         financials_rows = parse_financials(ticker_upper, data)

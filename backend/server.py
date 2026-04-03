@@ -767,9 +767,9 @@ def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
 async def serve_logo(ticker: str):
     """Serve a company logo from ``company_fundamentals_cache.logo_data``.
 
-    Read-only — no external fetches.  Logos are populated by the
-    fundamentals pipeline (fundamentals_service.py).  Returns 404 if
-    the logo has not been downloaded yet.
+    Read-only — no external fetches.  Logos are populated exclusively by
+    the fundamentals pipeline (fundamentals_service.py / batch_jobs_service.py).
+    Returns 404 if the logo is absent or has not been downloaded yet.
     """
     ticker_upper = ticker.upper().replace(".US", "")
     # Strip any file extension (e.g. ".PNG", ".JPG") that may be in the URL
@@ -781,9 +781,9 @@ async def serve_logo(ticker: str):
 
     doc = await db.company_fundamentals_cache.find_one(
         {"ticker": ticker_full},
-        {"_id": 0, "logo_data": 1, "logo_content_type": 1},
+        {"_id": 0, "logo_data": 1, "logo_content_type": 1, "logo_status": 1},
     )
-    if doc and doc.get("logo_data"):
+    if doc and doc.get("logo_status") == "present" and doc.get("logo_data"):
         return Response(
             content=doc["logo_data"],
             media_type=doc.get("logo_content_type", "image/png"),
@@ -6854,6 +6854,70 @@ async def admin_verify_fundamentals_backfill():
             "or /api/admin/fundamentals-refill/verify."
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# LOGO BACKFILL — one-time job to populate logo_status for all visible tickers
+# ---------------------------------------------------------------------------
+
+@api_router.post("/admin/backfill-logos")
+async def admin_backfill_logos(
+    limit: int = Query(500, ge=1, le=5000),
+    dry_run: bool = Query(False),
+):
+    """Populate ``logo_status`` for visible tickers that have not been resolved.
+
+    Iterates tickers in ``company_fundamentals_cache`` where ``logo_status``
+    is missing, downloads the logo from the EODHD CDN (pipeline-only path),
+    and writes ``logo_status`` / ``logo_fetched_at`` (+ binary when present).
+
+    This is a **one-time** admin job to backfill existing data after the
+    ``logo_status`` field was introduced.  Subsequent fundamentals pipeline
+    runs will set ``logo_status`` automatically.
+    """
+    from fundamentals_service import _download_logo
+
+    # Find cache docs that have no logo_status yet
+    cursor = db.company_fundamentals_cache.find(
+        {"logo_status": {"$exists": False}},
+        {"_id": 0, "ticker": 1, "logo_url": 1},
+    ).sort("ticker", 1).limit(limit)
+
+    docs = await cursor.to_list(length=limit)
+    if not docs:
+        return {"status": "nothing_to_do", "message": "All cached tickers already have logo_status"}
+
+    stats = {"total": len(docs), "present": 0, "absent": 0, "error": 0, "skipped_dry": 0}
+
+    for doc in docs:
+        ticker = doc["ticker"]
+        logo_url = doc.get("logo_url")
+
+        logo_result = await _download_logo(logo_url, ticker)
+        status = logo_result["logo_status"]
+        stats[status] = stats.get(status, 0) + 1
+
+        if dry_run:
+            stats["skipped_dry"] += 1
+            continue
+
+        update: dict = {
+            "logo_status": logo_result["logo_status"],
+            "logo_fetched_at": logo_result["logo_fetched_at"],
+        }
+        if logo_result.get("logo_data"):
+            update["logo_data"] = logo_result["logo_data"]
+            update["logo_content_type"] = logo_result["logo_content_type"]
+
+        await db.company_fundamentals_cache.update_one(
+            {"ticker": ticker},
+            {"$set": update},
+        )
+
+        # Rate-limit to avoid hammering the CDN
+        await asyncio.sleep(0.2)
+
+    return {"status": "completed", "dry_run": dry_run, "stats": stats}
 
 
 # =============================================================================
