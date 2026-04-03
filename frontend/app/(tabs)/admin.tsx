@@ -4,10 +4,10 @@
  * 3 tabs: Dashboard · Pipeline · Customers
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, SafeAreaView,
+  RefreshControl, ActivityIndicator, SafeAreaView, Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
@@ -117,6 +117,7 @@ interface OverviewData {
   };
   bulk_completeness?: BulkCompleteness;
   visible_coverage?: VisibleCoverage;
+  job_last_runs?: Record<string, any>;
 }
 
 interface StatsData {
@@ -159,6 +160,14 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
+  // ── News refresh (Morning Refresh) state ────────────────────────────────
+  const [newsRefreshTriggered, setNewsRefreshTriggered] = useState(false);
+  const newsRefreshPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [liveNewsRun, setLiveNewsRun] = useState<Record<string, any> | null>(null);
+  const wasPollingNewsRef = useRef(false);
+
+  const authHeaders: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+
   const fetchAll = useCallback(async () => {
     try {
       const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
@@ -178,6 +187,82 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
   const onRefresh = () => { setRefreshing(true); fetchAll(); };
+
+  // Derive news_refresh running state from overview snapshot + live poll data
+  const snapshotNewsRun = overview?.job_last_runs?.['news_refresh'] ?? null;
+  const newsRun = liveNewsRun ?? snapshotNewsRun;
+  const newsRunStatus = newsRun?.status as string | undefined;
+  const isNewsRefreshRunning = newsRefreshTriggered || newsRunStatus === 'running';
+
+  // Poll news_refresh status while running (mirrors Benchmark Update pattern)
+  useEffect(() => {
+    if (newsRunStatus !== 'running' || !sessionToken) {
+      if (newsRefreshPollRef.current) {
+        clearTimeout(newsRefreshPollRef.current);
+        newsRefreshPollRef.current = null;
+      }
+      if (!sessionToken) {
+        setLiveNewsRun(null);
+        wasPollingNewsRef.current = false;
+        return;
+      }
+      // When job finishes after we were polling, refresh overview for pipeline_age
+      if (wasPollingNewsRef.current && newsRunStatus && newsRunStatus !== 'running') {
+        fetchAll();
+        setLiveNewsRun(null);
+      }
+      wasPollingNewsRef.current = false;
+      return;
+    }
+    wasPollingNewsRef.current = true;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/admin/job/news_refresh/status`, {
+          headers: { Authorization: `Bearer ${sessionToken}` },
+        });
+        if (res.ok && !cancelled) {
+          const payload = await res.json();
+          if (payload.last_run) {
+            setLiveNewsRun(payload.last_run);
+          }
+        }
+      } catch { /* non-fatal */ }
+      if (!cancelled) {
+        newsRefreshPollRef.current = setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (newsRefreshPollRef.current) {
+        clearTimeout(newsRefreshPollRef.current);
+        newsRefreshPollRef.current = null;
+      }
+    };
+  }, [newsRunStatus, sessionToken]);
+
+  const handleRunNewsRefresh = async () => {
+    setNewsRefreshTriggered(true);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/job/news_refresh/run`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
+        throw new Error(msg);
+      }
+      // Refresh overview to pick up the new "running" sentinel
+      await fetchAll();
+    } catch (e: any) {
+      Alert.alert('Morning Refresh', e?.message || 'Could not start news refresh');
+    } finally {
+      setNewsRefreshTriggered(false);
+    }
+  };
 
   if (loading) return (
     <ScrollView style={d.container} contentContainerStyle={{ paddingBottom: 40 }}>
@@ -225,6 +310,14 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const failedCount = health?.jobs_failed ?? 0;
   const schedulerActive = health?.scheduler_active;
   const pAge = overview?.pipeline_age;
+  // Morning Refresh display status: derive from live job status, fallback to pipeline_age
+  const mrDisplayStatus: string | undefined = isNewsRefreshRunning
+    ? undefined
+    : newsRunStatus === 'completed' || newsRunStatus === 'success'
+      ? 'green'
+      : newsRunStatus === 'error' || newsRunStatus === 'failed'
+        ? 'red'
+        : pAge?.morning_refresh_status;
   const pi = overview?.price_integrity;
   const cp = pi?.coverage_checkpoints || {};
   const eodhd = overview?.eodhd_api_usage;
@@ -367,11 +460,32 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             value={formatHours(pAge?.pipeline_hours_since_success)}
             status={pAge?.pipeline_status}
           />
-          <OpsItem
-            label="Morning Refresh"
-            value={formatHours(pAge?.morning_refresh_hours_since_success)}
-            status={pAge?.morning_refresh_status}
-          />
+          {/* Morning Refresh — enhanced tile with Run Now + running state */}
+          <View style={d.opsItem}>
+            {isNewsRefreshRunning ? (
+              <ActivityIndicator size={14} color="#F59E0B" />
+            ) : (
+              <Ionicons name={statusIcon(mrDisplayStatus) as any} size={14} color={statusColor(mrDisplayStatus)} />
+            )}
+            <Text style={d.opsLabel}>Morning Refresh</Text>
+            {isNewsRefreshRunning ? (
+              <Text style={[d.opsValue, { color: '#F59E0B' }]}>Running…</Text>
+            ) : !newsRun && pAge?.morning_refresh_hours_since_success == null ? (
+              <Text style={[d.opsValue, { color: COLORS.textMuted }]}>Never run</Text>
+            ) : (
+              <Text style={[d.opsValue, { color: statusColor(mrDisplayStatus) }]}>
+                {formatHours(pAge?.morning_refresh_hours_since_success)}
+              </Text>
+            )}
+            {!isNewsRefreshRunning && (
+              <TouchableOpacity
+                style={d.opsRunBtn}
+                onPress={handleRunNewsRefresh}
+              >
+                <Text style={d.opsRunBtnText}>Run</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           <OpsItem
             label="Scheduler"
             value={schedulerActive ? 'Running' : 'Paused'}
@@ -623,6 +737,8 @@ const d = StyleSheet.create({
   opsItem: { width: '47%', flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border },
   opsLabel: { flex: 1, fontSize: 11, color: COLORS.text },
   opsValue: { fontSize: 11, fontWeight: '700' },
+  opsRunBtn: { marginLeft: 4, backgroundColor: '#06B6D4', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
+  opsRunBtnText: { color: '#fff', fontSize: 9, fontWeight: '700' },
 
   // C) Price Integrity
   integrityGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },

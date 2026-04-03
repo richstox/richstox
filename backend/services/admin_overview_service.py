@@ -1187,11 +1187,14 @@ async def get_eodhd_api_usage() -> Dict[str, Any]:
 async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
     """
     Return hours since last successful full pipeline run (Step 3 = fundamentals_sync)
-    and last successful *standalone* morning refresh (price_sync WITHOUT a chain_run_id).
+    and last successful morning refresh (news_refresh).
 
-    Morning Refresh semantics: only standalone price_sync runs count.
-    Chain runs (details.chain_run_id exists and is not null) are excluded.
-    If no standalone run exists, morning_refresh_hours_since_success = None → UI shows "—".
+    Morning Refresh = ``news_refresh`` job only.
+    Both the scheduler (13:00 Prague) and admin Run Now write
+    ``job_name: "news_refresh"`` to ops_job_runs.
+    The scheduler path writes ``completed_at``; the admin path writes
+    ``finished_at`` — we handle both.
+    If no qualifying run exists, morning_refresh_hours_since_success = None → UI shows "—".
     """
     try:
         now_utc = datetime.now(timezone.utc)
@@ -1201,25 +1204,26 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
             {"finished_at": 1, "_id": 0},
             sort=[("finished_at", -1)],
         )
-        # Morning Refresh = standalone price_sync only (no chain_run_id).
-        # Filter: details.chain_run_id must be absent or null.
+        # Morning Refresh = news_refresh only (scheduled 13:00 or manual Run Now).
+        # Sort by started_at because scheduler records lack finished_at.
         morning_refresh_run = await db.ops_job_runs.find_one(
             {
-                "job_name": "price_sync",
+                "job_name": "news_refresh",
                 "status": {"$in": ["success", "completed"]},
-                "$or": [
-                    {"details.chain_run_id": {"$exists": False}},
-                    {"details.chain_run_id": None},
-                ],
             },
-            {"finished_at": 1, "_id": 0},
-            sort=[("finished_at", -1)],
+            {"finished_at": 1, "completed_at": 1, "_id": 0},
+            sort=[("started_at", -1)],
         )
 
         def _hours_since(run_doc):
-            if not run_doc or not run_doc.get("finished_at"):
+            if not run_doc:
                 return None
-            finished = run_doc["finished_at"]
+            # Admin path writes finished_at; scheduler path writes completed_at.
+            finished = run_doc.get("finished_at")
+            if finished is None:
+                finished = run_doc.get("completed_at")
+            if not finished:
+                return None
             if getattr(finished, "tzinfo", None) is None:
                 finished = finished.replace(tzinfo=timezone.utc)
             return round((now_utc - finished).total_seconds() / 3600, 1)
