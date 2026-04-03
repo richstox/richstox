@@ -796,6 +796,17 @@ async def scheduler_loop():
 
     async def _background_heartbeat_loop():
         """Independent heartbeat writer — survives long blocking jobs."""
+        # Write immediately on startup so the watchdog sees a fresh heartbeat
+        # before the first 10-minute sleep.  Without this, restarted processes
+        # inherit a stale heartbeat from the previous run and the watchdog
+        # kills the process within ~2 minutes (before the first sleep expires).
+        try:
+            ks_enabled = await get_scheduler_enabled(db)
+            await log_heartbeat(last_run, kill_switch_engaged=not ks_enabled)
+            logger.info("[HEARTBEAT-BG] Initial heartbeat written at startup")
+        except Exception as exc:
+            logger.warning("[HEARTBEAT-BG] Initial heartbeat failed (non-fatal): %s", exc)
+
         while True:
             await asyncio.sleep(600)  # 10 minutes
             try:

@@ -5841,9 +5841,11 @@ async def run_pain_cache_refresh(database, batch_size: int = 100) -> dict:
             
             processed += 1
             
-            # Log progress every 100 tickers
+            # Log progress and yield to event loop every 100 tickers so
+            # background tasks (heartbeat writer, watchdog) stay scheduled.
             if processed % 100 == 0:
                 logger.info(f"[PAIN_CACHE:{job_id}] Progress: {processed}/{total_tickers}")
+                await asyncio.sleep(0)
                 
         except Exception as e:
             errors += 1
