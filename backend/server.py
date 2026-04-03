@@ -769,7 +769,12 @@ async def serve_logo(ticker: str):
     subsequent requests are fulfilled from the DB — the client never
     contacts the provider directly.
     """
-    ticker_upper = ticker.upper().replace(".US", "").replace(".PNG", "")
+    ticker_upper = ticker.upper().replace(".US", "")
+    # Strip any file extension (e.g. ".PNG", ".JPG") that may be in the URL
+    for ext in (".PNG", ".JPG", ".JPEG", ".SVG", ".WEBP"):
+        if ticker_upper.endswith(ext):
+            ticker_upper = ticker_upper[: -len(ext)]
+            break
     ticker_full = f"{ticker_upper}.US"
 
     # 1. Try the DB cache first
