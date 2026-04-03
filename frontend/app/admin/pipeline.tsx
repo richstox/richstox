@@ -2257,6 +2257,21 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         {isNewsRefreshRunning ? (
           <View style={s.runInfo}>
             <Text style={[s.runValue, { color: '#06B6D4' }]}>Running…</Text>
+            {(() => {
+              const tel = jobRuns['news_refresh']?.details?.news_refresh_telemetry;
+              if (!tel) return <Text style={[s.detailValue, { color: '#94A3B8', marginTop: 2 }]}>No telemetry yet</Text>;
+              return (
+                <View style={{ marginTop: 4 }}>
+                  <Text style={[s.detailValue, { color: '#06B6D4' }]}>{tel.phase}: {tel.message}</Text>
+                  {tel.tickers_total > 0 && (
+                    <Text style={s.detailValue}>Progress: {tel.tickers_done}/{tel.tickers_total}{tel.tickers_failed > 0 ? ` · ${tel.tickers_failed} failed` : ''}</Text>
+                  )}
+                  {tel.api_calls > 0 && <Text style={s.detailValue}>API calls: {tel.api_calls}</Text>}
+                  {tel.last_ticker ? <Text style={s.detailValue}>Last ticker: {tel.last_ticker}</Text> : null}
+                  {tel.last_error ? <Text style={[s.detailValue, { color: '#EF4444' }]}>Error: {tel.last_error}</Text> : null}
+                </View>
+              );
+            })()}
           </View>
         ) : jobRuns['news_refresh'] ? (
           <View style={s.runInfo}>
