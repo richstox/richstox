@@ -4284,7 +4284,12 @@ async def get_ticker_chart_data(
         if adj and close and close > 0 and adj / close > 100:
             return close
         return adj or close
-    
+
+    def _is_valid_price(p):
+        """Return True only when adjusted_close is a real positive number."""
+        adj = p.get("adjusted_close")
+        return isinstance(adj, (int, float)) and adj > 0
+
     # B: MAX Chart Fix - Smart Downsampling
     # For MAX period, get ALL data (no artificial limit) and downsample intelligently
     if period == "MAX":
@@ -4293,8 +4298,11 @@ async def get_ticker_chart_data(
             {"ticker": ticker_full, "date": {"$gte": start_date}},
             {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1, "volume": 1}
         ).sort("date", 1).to_list(length=None)
-        
-        logger.info(f"[CHART] MAX: {ticker_full} has {len(all_prices)} total records")
+
+        # Drop rows with missing / non-positive adjusted_close
+        all_prices = [p for p in all_prices if _is_valid_price(p)]
+
+        logger.info(f"[CHART] MAX: {ticker_full} has {len(all_prices)} valid records")
         
         # Smart downsample: evenly distribute across ENTIRE date range
         # FIXED: Use proper sampling to cover all years
@@ -4333,8 +4341,11 @@ async def get_ticker_chart_data(
             {"ticker": ticker_full, "date": {"$gte": start_date}},
             {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1, "volume": 1}
         ).sort("date", 1).to_list(length=data_limit)
-        
-        logger.info(f"[CHART] {period}: {ticker_full} has {len(prices)} records")
+
+        # Drop rows with missing / non-positive adjusted_close
+        prices = [p for p in prices if _is_valid_price(p)]
+
+        logger.info(f"[CHART] {period}: {ticker_full} has {len(prices)} valid records")
     
     # Downsample for large datasets (keep ~500 points for chart, but all for calculations)
     def downsample(data, target_points=500):
@@ -4366,6 +4377,10 @@ async def get_ticker_chart_data(
     
     # Normalize ticker prices to 100 at start
     normalized_prices = []
+
+    # Derive start_date from the first valid price row, not the query sentinel
+    start_date = prices[0]["date"] if prices else None
+
     if prices:
         start_value = _safe_adjusted_close(prices[0])
         for p in prices:
