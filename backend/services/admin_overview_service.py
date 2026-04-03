@@ -216,6 +216,7 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             "progress_processed": {"$first": "$progress_processed"},
             "progress_pct":       {"$first": "$progress_pct"},
             "phase":              {"$first": "$phase"},
+            "error_message_raw":  {"$first": "$error_message"},
         }},
     ]
     docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
@@ -247,7 +248,9 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             result.get("processed") or
             result.get("records_upserted") or 0
         )
-        doc["error_message"] = result.get("error") if doc.get("status") == "failed" else None
+        doc["error_message"] = (
+            result.get("error") or doc.get("error_message_raw") or None
+        ) if doc.get("status") in ("failed", "error") else None
         # Raw symbols fetched from EODHD before filtering (universe_seed only).
         # Prefer the top-level raw_rows_total written by raw_total_callback during
         # a running job; fall back to result.raw_rows_total (details sub-doc) or
@@ -1701,7 +1704,13 @@ async def get_admin_overview(db) -> Dict[str, Any]:
             job_data["last_run_finished"] = to_prague_str(finished_at)
             
             if job_data["status"] == "error":
-                job_data["error_summary"] = str(details.get("error") or details.get("errors") or "Unknown")[:200]
+                result_doc = matching_run.get("result") or {}
+                job_data["error_summary"] = str(
+                    details.get("error") or details.get("errors")
+                    or result_doc.get("error")
+                    or matching_run.get("error_message")
+                    or "Unknown"
+                )[:200]
         else:
             # Not run today
             job_data["ran_today"] = False
