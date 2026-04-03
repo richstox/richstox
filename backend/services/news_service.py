@@ -27,7 +27,7 @@ import os
 import hashlib
 import logging
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, Callable, Coroutine, List, Optional
+from typing import Dict, Any, Awaitable, Callable, List, Optional
 from zoneinfo import ZoneInfo
 import httpx
 
@@ -102,7 +102,7 @@ async def fetch_news_batch_from_eodhd(
     to_date: str,
     limit: int = 200,
     offset: int = 0,
-    on_ticker_done: Optional[Callable[[str, int], Coroutine]] = None,
+    on_ticker_done: Optional[Callable[[str, int, Optional[str]], Awaitable]] = None,
 ) -> tuple[List[Dict[str, Any]], str]:
     """
     P53: Fetch news for multiple tickers.
