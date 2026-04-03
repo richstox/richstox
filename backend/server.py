@@ -8681,7 +8681,7 @@ async def _expire_orphaned_running_jobs(database):
         set[str]: Job names that were expired (empty set on no-op or error).
     """
     from zoneinfo import ZoneInfo as _OrphanZI
-    expired_job_names: set = set()
+    expired_job_names: set[str] = set()
     try:
         # First, discover which job_names are about to be expired so we can
         # report them back to the caller for auto-retry decisions.
@@ -8731,6 +8731,7 @@ async def _auto_retry_news_refresh(database):
     await _retry_aio.sleep(15)  # let the rest of startup settle
 
     logger.info("Auto-retry: re-running news_refresh after orphaned run was expired at startup")
+    audit_id = None
     try:
         audit_id = await create_job_audit_entry(database, "news_refresh", triggered_by="startup_auto_retry")
         from services.news_service import refresh_hot_tickers_news
@@ -8739,24 +8740,25 @@ async def _auto_retry_news_refresh(database):
         logger.info(f"Auto-retry: news_refresh completed successfully: {result.get('status', 'unknown')}")
     except Exception as exc:
         logger.error(f"Auto-retry: news_refresh failed: {exc}")
-        try:
-            await finalize_job_audit_entry(database, audit_id, error=str(exc))
-        except Exception:
-            # Last resort: make sure the record doesn't stay "running"
+        if audit_id is not None:
             try:
-                from bson import ObjectId as _RetryOID
-                await database.ops_job_runs.update_one(
-                    {"_id": _RetryOID(audit_id)},
-                    {"$set": {
-                        "status": "error",
-                        "finished_at": datetime.now(timezone.utc),
-                        "error_message": f"Auto-retry failed: {exc}"[:1000],
-                    }},
-                )
+                await finalize_job_audit_entry(database, audit_id, error=str(exc))
             except Exception:
-                logger.exception(
-                    f"Auto-retry: last-resort finalization failed for news_refresh audit_id={audit_id}"
-                )
+                # Last resort: make sure the record doesn't stay "running"
+                try:
+                    from bson import ObjectId as _RetryOID
+                    await database.ops_job_runs.update_one(
+                        {"_id": _RetryOID(audit_id)},
+                        {"$set": {
+                            "status": "error",
+                            "finished_at": datetime.now(timezone.utc),
+                            "error_message": f"Auto-retry failed: {exc}"[:1000],
+                        }},
+                    )
+                except Exception:
+                    logger.exception(
+                        f"Auto-retry: last-resort finalization failed for news_refresh audit_id={audit_id}"
+                    )
 
 
 async def startup_mega_caps_visibility_guard(database):
