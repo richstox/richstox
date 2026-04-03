@@ -24,7 +24,34 @@ from provider_debug_service import upsert_provider_debug_snapshot
 logger = logging.getLogger("richstox.fundamentals")
 
 EODHD_BASE_URL = "https://eodhd.com/api"
+EODHD_LOGO_CDN = "https://eodhistoricaldata.com"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
+
+
+async def _download_logo(logo_url: Optional[str], ticker: str) -> tuple:
+    """Download a logo image from the EODHD CDN.
+
+    Returns ``(image_bytes, content_type)`` on success, or
+    ``(None, None)`` on any failure.  This is called **only** during the
+    fundamentals pipeline — never at request time.
+    """
+    if not logo_url:
+        # Try convention-based URL as last resort
+        logo_url = f"/img/logos/US/{ticker.replace('.US', '').upper()}.png"
+
+    if logo_url.startswith("http"):
+        source_url = logo_url
+    else:
+        source_url = f"{EODHD_LOGO_CDN}{logo_url}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(source_url)
+        if resp.status_code == 200 and resp.content:
+            return resp.content, resp.headers.get("content-type", "image/png")
+    except Exception as e:
+        logger.debug(f"Logo download failed for {ticker}: {e}")
+    return None, None
 
 # Pilot tickers for initial testing
 PILOT_TICKERS = [
@@ -498,6 +525,19 @@ async def sync_ticker_fundamentals(
             upsert=True
         )
         result["company_fundamentals"] = True
+
+        # 1b. Download and store the logo image in the same cache doc
+        logo_bytes, logo_ct = await _download_logo(
+            company_doc.get("logo_url"), ticker_full
+        )
+        if logo_bytes:
+            await db.company_fundamentals_cache.update_one(
+                {"ticker": ticker_full},
+                {"$set": {
+                    "logo_data": logo_bytes,
+                    "logo_content_type": logo_ct,
+                }},
+            )
         
         # 2. Parse and store financials
         financials_rows = parse_financials(ticker_upper, data)

@@ -357,7 +357,7 @@ async def _get_fundamentals_from_db(ticker: str) -> dict:
 
     # 1. Try company_fundamentals_cache
     cache_doc = await db.company_fundamentals_cache.find_one(
-        {"ticker": ticker_full}, {"_id": 0}
+        {"ticker": ticker_full}, {"_id": 0, "logo_data": 0, "logo_content_type": 0}
     )
     if cache_doc:
         # If the cache stores EODHD-shaped data, return as-is
@@ -727,9 +727,12 @@ async def auth_dev_login(response: Response):
 
 
 # ---------------------------------------------------------------------------
-# LOGO PROXY — serve logos from our DB, never expose provider CDN to clients
+# LOGO SERVING — serve logos stored by the fundamentals pipeline
 # ---------------------------------------------------------------------------
-EODHD_LOGO_CDN_SERVER = "https://eodhistoricaldata.com"
+# Logos are downloaded server-side during fundamentals sync and stored as
+# binary ``logo_data`` in the existing ``company_fundamentals_cache`` docs.
+# This endpoint is purely read-only — it never fetches from external CDNs.
+# ---------------------------------------------------------------------------
 
 
 def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
@@ -762,12 +765,11 @@ def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
 
 @api_router.get("/logo/{ticker}")
 async def serve_logo(ticker: str):
-    """Serve a company logo from our MongoDB cache.
+    """Serve a company logo from ``company_fundamentals_cache.logo_data``.
 
-    On cache miss the image is fetched **once** from the upstream CDN,
-    stored in the ``ticker_logos`` collection, and then served.  All
-    subsequent requests are fulfilled from the DB — the client never
-    contacts the provider directly.
+    Read-only — no external fetches.  Logos are populated by the
+    fundamentals pipeline (fundamentals_service.py).  Returns 404 if
+    the logo has not been downloaded yet.
     """
     ticker_upper = ticker.upper().replace(".US", "")
     # Strip any file extension (e.g. ".PNG", ".JPG") that may be in the URL
@@ -777,55 +779,18 @@ async def serve_logo(ticker: str):
             break
     ticker_full = f"{ticker_upper}.US"
 
-    # 1. Try the DB cache first
-    doc = await db.ticker_logos.find_one({"ticker": ticker_full})
-    if doc and doc.get("data"):
+    doc = await db.company_fundamentals_cache.find_one(
+        {"ticker": ticker_full},
+        {"_id": 0, "logo_data": 1, "logo_content_type": 1},
+    )
+    if doc and doc.get("logo_data"):
         return Response(
-            content=doc["data"],
-            media_type=doc.get("content_type", "image/png"),
+            content=doc["logo_data"],
+            media_type=doc.get("logo_content_type", "image/png"),
             headers={"Cache-Control": "public, max-age=604800"},  # 7 days
         )
 
-    # 2. Cache miss — resolve source URL from fundamentals
-    fund = await db.company_fundamentals_cache.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0, "logo_url": 1},
-    )
-    logo_path = (fund or {}).get("logo_url") or f"/img/logos/US/{ticker_upper}.png"
-    if logo_path.startswith("http"):
-        source_url = logo_path
-    else:
-        source_url = f"{EODHD_LOGO_CDN_SERVER}{logo_path}"
-
-    # 3. Download from provider (server-side only)
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(source_url)
-        if resp.status_code != 200:
-            raise HTTPException(status_code=404, detail="Logo not found")
-        image_bytes = resp.content
-        content_type = resp.headers.get("content-type", "image/png")
-    except httpx.HTTPError:
-        raise HTTPException(status_code=502, detail="Failed to fetch logo")
-
-    # 4. Persist to DB for future requests
-    await db.ticker_logos.update_one(
-        {"ticker": ticker_full},
-        {"$set": {
-            "ticker": ticker_full,
-            "data": image_bytes,
-            "content_type": content_type,
-            "source_url": source_url,
-            "cached_at": datetime.now(timezone.utc),
-        }},
-        upsert=True,
-    )
-
-    return Response(
-        content=image_bytes,
-        media_type=content_type,
-        headers={"Cache-Control": "public, max-age=604800"},
-    )
+    raise HTTPException(status_code=404, detail="Logo not found")
 
 
 # ----- Stock Search -----
@@ -1539,7 +1504,10 @@ async def get_watchlist(request: Request):
         ticker_full = f"{ticker}.US"
         
         # Get fundamentals for name/logo
-        fundamentals = await db.company_fundamentals_cache.find_one({"ticker": ticker_full})
+        fundamentals = await db.company_fundamentals_cache.find_one(
+            {"ticker": ticker_full},
+            {"logo_data": 0, "logo_content_type": 0},
+        )
         
         # Get current price
         latest_price = await db.stock_prices.find_one(
@@ -3035,7 +3003,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
     cache_doc = None
     if not general:
         cache_doc = await db.company_fundamentals_cache.find_one(
-            {"ticker": ticker_full}, {"_id": 0}
+            {"ticker": ticker_full}, {"_id": 0, "logo_data": 0, "logo_content_type": 0}
         )
         if cache_doc:
             if cache_doc.get("General"):
@@ -3496,7 +3464,7 @@ async def get_ticker_detail_mobile(
     # Fallback: check company_fundamentals_cache when embedded fundamentals are empty
     if not general:
         cache_doc = await db.company_fundamentals_cache.find_one(
-            {"ticker": ticker_full}, {"_id": 0}
+            {"ticker": ticker_full}, {"_id": 0, "logo_data": 0, "logo_content_type": 0}
         )
         if cache_doc:
             if cache_doc.get("General"):
@@ -4723,7 +4691,7 @@ async def get_news(
         logo_url = info.get("logo_url")
         company_name = info.get("name", ticker)
         
-        # Logo guarantee — always use internal proxy
+        # Logo guarantee — always use internal logo endpoint
         fallback_logo_key = ticker[0].upper() if ticker else "N"
         if not logo_url and ticker:
             logo_url = f"/api/logo/{ticker}"

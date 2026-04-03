@@ -24,6 +24,7 @@ from fundamentals_service import (
     parse_financials,
     parse_earnings_history,
     parse_insider_activity,
+    _download_logo,
 )
 from provider_debug_service import upsert_provider_debug_snapshot
 
@@ -198,6 +199,19 @@ async def sync_single_ticker_fundamentals(
             upsert=True,
         )
         result["has_fundamentals"] = True
+
+        # 1b. Download and store the logo image in the same cache doc
+        logo_bytes, logo_ct = await _download_logo(
+            company_doc.get("logo_url"), ticker_full
+        )
+        if logo_bytes:
+            await db.company_fundamentals_cache.update_one(
+                {"ticker": ticker_full},
+                {"$set": {
+                    "logo_data": logo_bytes,
+                    "logo_content_type": logo_ct,
+                }},
+            )
 
         # 2. Financial statements → company_financials (canonical), upsert
         financials_rows = parse_financials(ticker_full, data)
