@@ -5353,15 +5353,18 @@ async def admin_run_job_now(
     audit_id = await create_job_audit_entry(db, job_name)
     
     if wait:
+        _wait_finalized = False
         try:
             result = await job_func(db)
             # C2: Finalize audit with inventory snapshot AFTER
             await finalize_job_audit_entry(db, audit_id, result=result)
+            _wait_finalized = True
             return {"job": job_name, "status": "completed", "result": result, "audit_id": audit_id}
         except Exception as e:
             logger.error(f"Job {job_name} failed: {e}")
             try:
                 await finalize_job_audit_entry(db, audit_id, error=str(e))
+                _wait_finalized = True
             except Exception as finalize_err:
                 logger.error(f"finalize_job_audit_entry also failed for {job_name}: {finalize_err}")
                 try:
@@ -5375,19 +5378,42 @@ async def admin_run_job_now(
                             "error_message": f"finalize failed: {finalize_err}; original: {e}"[:1000],
                         }},
                     )
+                    _wait_finalized = True
                 except Exception:
                     logger.exception(f"Last-resort finalization failed for {job_name} audit_id={audit_id}")
             return {"job": job_name, "status": "error", "error": str(e), "audit_id": audit_id}
+        finally:
+            # Guarantee finalization even if a BaseException (e.g. asyncio.CancelledError
+            # during server shutdown) bypassed the except Exception block.
+            if not _wait_finalized:
+                try:
+                    await finalize_job_audit_entry(db, audit_id, error="Process interrupted unexpectedly")
+                except Exception:
+                    try:
+                        from bson import ObjectId as _OID_fin
+                        await db.ops_job_runs.update_one(
+                            {"_id": _OID_fin(audit_id)},
+                            {"$set": {
+                                "status": "error",
+                                "finished_at": datetime.now(timezone.utc),
+                                "error_message": "Process interrupted unexpectedly",
+                            }},
+                        )
+                    except Exception:
+                        logger.exception(f"finally-block finalization failed for {job_name} audit_id={audit_id}")
     
     # Background execution with audit trail
     async def run_with_audit():
+        _bg_finalized = False
         try:
             result = await job_func(db)
             await finalize_job_audit_entry(db, audit_id, result=result)
+            _bg_finalized = True
         except Exception as e:
             logger.error(f"Job {job_name} failed in background: {e}")
             try:
                 await finalize_job_audit_entry(db, audit_id, error=str(e))
+                _bg_finalized = True
             except Exception as finalize_err:
                 # Last resort: at minimum close the record so it never stays "running"
                 logger.error(
@@ -5405,8 +5431,28 @@ async def admin_run_job_now(
                             "error_message": f"finalize failed: {finalize_err}; original: {e}"[:1000],
                         }},
                     )
+                    _bg_finalized = True
                 except Exception:
                     logger.exception(f"Last-resort finalization failed for {job_name} audit_id={audit_id}")
+        finally:
+            # Guarantee finalization even if a BaseException (e.g. asyncio.CancelledError
+            # during server shutdown) bypassed the except Exception block.
+            if not _bg_finalized:
+                try:
+                    await finalize_job_audit_entry(db, audit_id, error="Process interrupted unexpectedly")
+                except Exception:
+                    try:
+                        from bson import ObjectId as _OID_bg
+                        await db.ops_job_runs.update_one(
+                            {"_id": _OID_bg(audit_id)},
+                            {"$set": {
+                                "status": "error",
+                                "finished_at": datetime.now(timezone.utc),
+                                "error_message": "Process interrupted unexpectedly",
+                            }},
+                        )
+                    except Exception:
+                        logger.exception(f"finally-block finalization failed for {job_name} audit_id={audit_id}")
     
     # Run in background with audit trail
     background_tasks.add_task(run_with_audit)
