@@ -1033,6 +1033,8 @@ async def run_daily_bulk_catchup(
     # as non-trading.  If no calendar row exists (e.g. calendar not yet
     # populated), proceed with the write — never silently block syncs.
     try:
+        # Delayed import: market_calendar_service is optional here.
+        # If the import fails, the except block lets the write proceed.
         from services.market_calendar_service import COLLECTION as _MC_COLLECTION
         _cal_doc = await db[_MC_COLLECTION].find_one(
             {"market": "US", "date": date_seen},
