@@ -175,6 +175,13 @@ async def get_step3_live_telemetry(db) -> Dict[str, Any]:
         "C": _sanitize_phase_payload((raw_phases or {}).get("C"), fallback_name="PriceHistory"),
     }
 
+    # ── Pass through extra step3_telemetry keys (e.g. logo backfill) ──
+    _KNOWN_TELEMETRY_KEYS = {"phases", "active_phase", "updated_at_prague"}
+    if isinstance(telemetry, dict):
+        extra = {k: v for k, v in telemetry.items() if k not in _KNOWN_TELEMETRY_KEYS}
+        if extra:
+            response["step3_telemetry"] = extra
+
     # ── Defensive: normalise stale "running" phases for terminal runs ──
     # If the process died mid-Phase (OOM / restart), the zombie finalizer
     # marks the run as cancelled but phase telemetry may still say "running".
