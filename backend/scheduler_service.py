@@ -1440,6 +1440,31 @@ async def run_daily_price_sync(
                     progress_cb=_bulk_progress,
                     seeded_tickers_override=_seeded_set,
                 )
+
+                # ── Non-trading-day skip: treat as successful no-op ─────────
+                # When market_calendar says the EODHD date is a holiday/weekend,
+                # run_daily_bulk_catchup returns status="skipped" with
+                # skipped_reason="non_trading_day".  Treat this as a successful
+                # completion so the scheduler advances state and does NOT retry.
+                if day_result.get("skipped_reason") == "non_trading_day":
+                    _ntd_date = day_result.get("date", "unknown")
+                    logger.info(
+                        f"{job_name}: bulk data date {_ntd_date} is not a trading day — "
+                        "skipping price sync (no writes, marking as completed)"
+                    )
+                    should_append_day = False
+                    result["status"] = "completed"
+                    result["bulk_fetch_executed"] = True
+                    result["api_calls"] = 1
+                    result["raw_row_count"] = day_result.get("raw_row_count", 0)
+                    result["skipped_reason"] = "non_trading_day"
+                    result["skipped_date"] = _ntd_date
+                    await _progress(
+                        f"Skipped: {_ntd_date} is not a US trading day (holiday/weekend)",
+                        phase="completed",
+                    )
+                    break
+
                 day_bulk_fetch_executed = bool(day_result.get("bulk_fetch_executed"))
                 result["bulk_fetch_executed"] = day_bulk_fetch_executed
                 result["api_calls"] = 1 if result["bulk_fetch_executed"] else 0
@@ -1585,6 +1610,46 @@ async def run_daily_price_sync(
                 "api_calls": result.get("api_calls", 0),
                 "started_at": started_at.isoformat(),
                 "finished_at": _bulk_guard_finished_at.isoformat(),
+            }
+
+        # ── Non-trading-day early exit ────────────────────────────────────────
+        # When the bulk catchup detected a holiday/weekend date from EODHD,
+        # skip Phases A-tail / B / C entirely.  Return "completed" so the
+        # scheduler marks the step as done and does not retry.
+        if result.get("skipped_reason") == "non_trading_day":
+            _ntd_finished = datetime.now(timezone.utc)
+            _ntd_date = result.get("skipped_date", "unknown")
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {
+                    "status": "completed",
+                    "finished_at": _ntd_finished,
+                    "finished_at_prague": _to_prague_iso(_ntd_finished),
+                    "phase": "completed",
+                    "progress": (
+                        f"No price sync needed: {_ntd_date} is not a US trading day "
+                        "(holiday/weekend per market_calendar)"
+                    ),
+                    "details": {
+                        **result,
+                        "parent_run_id": parent_run_id,
+                        "chain_run_id": chain_run_id,
+                    },
+                }},
+            )
+            logger.info(
+                f"{job_name}: completed (non-trading-day skip for {_ntd_date})"
+            )
+            return {
+                "job_name": job_name,
+                "status": "completed",
+                "skipped_reason": "non_trading_day",
+                "skipped_date": _ntd_date,
+                "records_upserted": 0,
+                "dates_processed": 0,
+                "api_calls": result.get("api_calls", 0),
+                "started_at": started_at.isoformat(),
+                "finished_at": _ntd_finished.isoformat(),
             }
 
         await _progress(
