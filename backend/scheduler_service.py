@@ -58,6 +58,12 @@ FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS = 10
 FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS = 60
 FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS = 300
 FUNDAMENTALS_SYNC_TICKER_TIMEOUT_SECONDS = 120
+# Logo backfill: tickers with logo_status="absent" fetched before this cutoff
+# must be re-attempted — earlier runs used the wrong CDN base
+# (eodhistoricaldata.com instead of eodhd.com).
+LOGO_CDN_FIX_CUTOFF = datetime(2026, 4, 4, tzinfo=timezone.utc)
+LOGO_BACKFILL_CONCURRENCY = 10
+LOGO_BACKFILL_TICKER_TIMEOUT = 30
 CANCEL_REQUESTED_STUCK_SECONDS = 600
 PRICE_SYNC_ACTIVE_PHASES = {
     "bulk_catchup",
@@ -2495,12 +2501,20 @@ async def _reconcile_logo_completeness(db) -> Dict[str, Any]:
     if not complete_tickers:
         return {"reset_count": 0, "reset_tickers": []}
 
-    # 2. Check which of those tickers have logo_status resolved in the cache
+    # 2. Check which of those tickers have logo_status *truly* resolved in the
+    #    cache.  Resolution requires:
+    #      a) logo_status in ("present", "absent") AND logo_fetched_at is set, AND
+    #      b) for "absent": logo_fetched_at >= LOGO_CDN_FIX_CUTOFF (stale results
+    #         from the old broken CDN base are NOT considered resolved).
     resolved_tickers: List[str] = await db.company_fundamentals_cache.distinct(
         "ticker",
         {
             "ticker": {"$in": complete_tickers},
-            "logo_status": {"$in": ["present", "absent"]},
+            "logo_fetched_at": {"$exists": True, "$ne": None},
+            "$or": [
+                {"logo_status": "present"},
+                {"logo_status": "absent", "logo_fetched_at": {"$gte": LOGO_CDN_FIX_CUTOFF}},
+            ],
         },
     )
     resolved_set = set(resolved_tickers)
@@ -2525,6 +2539,46 @@ async def _reconcile_logo_completeness(db) -> Dict[str, Any]:
         "to partial/needs_refresh (logo_status not resolved in cache)"
     )
     return {"reset_count": len(stale_tickers), "reset_tickers": stale_tickers}
+
+
+async def _build_logo_backfill_worklist(
+    db,
+    exclude_tickers: Optional[set] = None,
+) -> List[dict]:
+    """Return ``company_fundamentals_cache`` docs needing logo (re-)download.
+
+    Criteria (any match → included):
+      • ``logo_status`` field missing       — never attempted
+      • ``logo_status = "error"``            — transient failure
+      • ``logo_status = "absent"`` **AND**
+        ``logo_fetched_at`` missing or < ``LOGO_CDN_FIX_CUTOFF``
+        — fetched with the old (broken) CDN base domain
+
+    Scoped to the canonical Step 3 universe (``STEP3_QUERY``).
+    Tickers in *exclude_tickers* (already processed in Phase A main) are skipped.
+    """
+    eligible: List[str] = await db.tracked_tickers.distinct("ticker", STEP3_QUERY)
+    if not eligible:
+        return []
+
+    query: dict = {
+        "ticker": {"$in": eligible},
+        "$or": [
+            {"logo_status": {"$exists": False}},
+            {"logo_status": "error"},
+            {"logo_status": "absent", "logo_fetched_at": {"$lt": LOGO_CDN_FIX_CUTOFF}},
+            {"logo_status": "absent", "logo_fetched_at": {"$exists": False}},
+        ],
+    }
+
+    docs = await db.company_fundamentals_cache.find(
+        query, {"ticker": 1, "logo_url": 1, "logo_status": 1, "_id": 0}
+    ).to_list(None)
+
+    if exclude_tickers:
+        docs = [d for d in docs if d.get("ticker") not in exclude_tickers]
+
+    return docs
 
 
 async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
@@ -3504,11 +3558,123 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         f"remaining pending events as skipped"
                     )
 
+        # ── Logo backfill ──────────────────────────────────────────────────
+        # Download logos for cached tickers that need a (re-)download.
+        # Runs every Step 3 until the worklist is empty.  Handles:
+        #   • tickers synced before the logo feature (logo_status missing)
+        #   • transient logo errors  (logo_status="error")
+        #   • stale "absent" from old CDN base (logo_fetched_at < cutoff)
+        # Excludes tickers already processed in Phase A main.
+        processed_in_phase_a: set = {
+            (t if t.endswith(".US") else f"{t}.US")
+            for t in tickers_to_sync
+        }
+        logo_backfill_worklist = await _build_logo_backfill_worklist(
+            db, exclude_tickers=processed_in_phase_a,
+        )
+        logo_backfill_stats: Dict[str, int] = {
+            "targeted": len(logo_backfill_worklist),
+            "present": 0,
+            "absent": 0,
+            "error": 0,
+            "skipped": 0,
+        }
+
+        if logo_backfill_worklist and not await _is_cancelled():
+            from fundamentals_service import _download_logo as _dl_logo
+
+            bf_total = len(logo_backfill_worklist)
+            logger.info(f"{job_name}: logo backfill: {bf_total} tickers queued")
+            _phase_update(
+                "A", status="running",
+                processed=done_count, total=done_count + bf_total,
+                message=f"Logo backfill: 0/{bf_total}",
+                activate=True,
+            )
+            await _write_step3_telemetry(force=True)
+            await _progress(f"Logo backfill: downloading logos for {bf_total} tickers…")
+
+            _logo_sem = asyncio.Semaphore(LOGO_BACKFILL_CONCURRENCY)
+            _bf_done = 0
+
+            async def _backfill_one_logo(cache_doc: dict) -> None:
+                nonlocal _bf_done, done_count
+                tk = cache_doc["ticker"]
+                async with _logo_sem:
+                    if await _is_cancelled():
+                        logo_backfill_stats["skipped"] += 1
+                        return
+                    try:
+                        lr = await asyncio.wait_for(
+                            _dl_logo(cache_doc.get("logo_url"), tk),
+                            timeout=LOGO_BACKFILL_TICKER_TIMEOUT,
+                        )
+                    except asyncio.TimeoutError:
+                        lr = {
+                            "logo_status": "error",
+                            "logo_fetched_at": datetime.now(timezone.utc),
+                        }
+
+                    # Persist to company_fundamentals_cache
+                    cache_set: dict = {
+                        "logo_status": lr["logo_status"],
+                        "logo_fetched_at": lr["logo_fetched_at"],
+                    }
+                    if lr.get("logo_data"):
+                        cache_set["logo_data"] = lr["logo_data"]
+                        cache_set["logo_content_type"] = lr["logo_content_type"]
+                    await db.company_fundamentals_cache.update_one(
+                        {"ticker": tk}, {"$set": cache_set},
+                    )
+
+                    logo_backfill_stats[lr["logo_status"]] = (
+                        logo_backfill_stats.get(lr["logo_status"], 0) + 1
+                    )
+
+                    # Promote partial → complete when logo resolves
+                    if lr["logo_status"] in ("present", "absent"):
+                        await db.tracked_tickers.update_one(
+                            {"ticker": tk, "fundamentals_status": "partial"},
+                            {"$set": {
+                                "fundamentals_status": "complete",
+                                "fundamentals_complete": True,
+                                "needs_fundamentals_refresh": False,
+                            }},
+                        )
+
+                    _bf_done += 1
+                    done_count += 1
+                    if _bf_done % 50 == 0 or _bf_done == bf_total:
+                        _phase_update(
+                            "A", status="running",
+                            processed=done_count,
+                            total=done_count + bf_total - _bf_done,
+                            message=f"Logo backfill: {_bf_done}/{bf_total}",
+                        )
+                        await _write_step3_telemetry(throttle_processed=done_count)
+
+            bf_tasks = [
+                asyncio.create_task(_backfill_one_logo(d))
+                for d in logo_backfill_worklist
+            ]
+            await asyncio.gather(*bf_tasks, return_exceptions=True)
+
+            logger.info(
+                f"{job_name}: logo backfill done — "
+                f"targeted={logo_backfill_stats['targeted']} "
+                f"present={logo_backfill_stats['present']} "
+                f"absent={logo_backfill_stats['absent']} "
+                f"error={logo_backfill_stats['error']}"
+            )
+
+        result["logo_backfill"] = logo_backfill_stats
+
+        _phase_a_total = (len(tickers_to_sync) if tickers_to_sync else 0) + logo_backfill_stats["targeted"]
         _phase_update(
             "A",
             status="done" if result.get("status") != "cancelled" else "error",
-            processed=result.get("processed", 0),
-            total=len(tickers_to_sync) if tickers_to_sync else 0,
+            processed=done_count,
+            total=_phase_a_total,
             message="Fundamentals sync completed" if result.get("status") != "cancelled" else "Fundamentals sync cancelled",
             activate=True,
         )
