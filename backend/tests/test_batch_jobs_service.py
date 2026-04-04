@@ -126,6 +126,16 @@ def test_sync_single_ticker_success_clears_stale_error_fields(monkeypatch):
     )
     monkeypatch.setattr("batch_jobs_service.parse_insider_activity", lambda ticker, data: None)
 
+    # Mock _download_logo so tests don't require network access
+    async def _fake_download_logo(_url, _ticker):
+        return {
+            "logo_status": "present",
+            "logo_fetched_at": datetime.now(timezone.utc),
+            "logo_data": b"PNG_FAKE",
+            "logo_content_type": "image/png",
+        }
+    monkeypatch.setattr("batch_jobs_service._download_logo", _fake_download_logo)
+
     result = asyncio.run(sync_single_ticker_fundamentals(db, "AAPL"))
 
     assert result["success"] is True

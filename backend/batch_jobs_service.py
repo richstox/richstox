@@ -394,8 +394,12 @@ async def sync_single_ticker_fundamentals(
             f"HasClass: {has_classification}"
         )
 
-        # Completeness requires logo resolved (present or absent), not "error"
-        logo_resolved = logo_result.get("logo_status") in ("present", "absent")
+        # Completeness requires logo resolved (present or absent) AND
+        # logo_fetched_at set — "error" or missing logo keeps status "partial".
+        logo_resolved = (
+            logo_result.get("logo_status") in ("present", "absent")
+            and logo_result.get("logo_fetched_at") is not None
+        )
         fund_status = "complete" if logo_resolved else "partial"
         fund_complete = logo_resolved
 
