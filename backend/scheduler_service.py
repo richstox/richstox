@@ -2554,11 +2554,12 @@ async def _build_logo_backfill_worklist(
         ``logo_fetched_at`` missing or < ``LOGO_CDN_FIX_CUTOFF``
         — fetched with the old (broken) CDN base domain
 
-    Scoped to the canonical Step 3 universe (``STEP3_QUERY``).
+    Scoped to the active seeded universe (``SEED_QUERY``).
     Tickers in *exclude_tickers* (already processed in Phase A main) are skipped.
     """
-    eligible: List[str] = await db.tracked_tickers.distinct("ticker", STEP3_QUERY)
+    eligible: List[str] = await db.tracked_tickers.distinct("ticker", SEED_QUERY)
     if not eligible:
+        logger.info("_build_logo_backfill_worklist: eligible=0 (SEED_QUERY matched nothing)")
         return []
 
     query: dict = {
@@ -2578,6 +2579,10 @@ async def _build_logo_backfill_worklist(
     if exclude_tickers:
         docs = [d for d in docs if d.get("ticker") not in exclude_tickers]
 
+    logger.info(
+        "_build_logo_backfill_worklist: eligible=%d matched=%d exclude=%d",
+        len(eligible), len(docs), len(exclude_tickers) if exclude_tickers else 0,
+    )
     return docs
 
 
@@ -3579,6 +3584,16 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "error": 0,
             "skipped": 0,
         }
+
+        # ── Telemetry: logo backfill worklist diagnostics ──────────────────
+        _bf_sample = [d.get("ticker") for d in logo_backfill_worklist[:5]]
+        step3_telemetry["logo_backfill_worklist_count"] = len(logo_backfill_worklist)
+        step3_telemetry["logo_backfill_sample_tickers"] = _bf_sample
+        logger.info(
+            f"{job_name}: logo_backfill_worklist_count={len(logo_backfill_worklist)} "
+            f"sample={_bf_sample}"
+        )
+        await _write_step3_telemetry(force=True)
 
         if logo_backfill_worklist and not await _is_cancelled():
             from fundamentals_service import _download_logo as _dl_logo

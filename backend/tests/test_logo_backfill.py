@@ -10,7 +10,6 @@ from scheduler_service import (
     _build_logo_backfill_worklist,
     _reconcile_logo_completeness,
     LOGO_CDN_FIX_CUTOFF,
-    STEP3_QUERY,
 )
 
 
@@ -289,8 +288,8 @@ def test_backfill_worklist_absent_no_fetched_at():
     assert len(result) == 1
 
 
-def test_backfill_worklist_scoped_to_step3_universe():
-    """Tickers outside STEP3_QUERY (e.g. no price data) are excluded."""
+def test_backfill_worklist_scoped_to_seeded_universe():
+    """Tickers outside SEED_QUERY (e.g. OTC exchange) are excluded."""
     db = _FakeDB(
         [
             {"ticker": "AAPL.US", **_BASE_TRACKED},
@@ -304,6 +303,23 @@ def test_backfill_worklist_scoped_to_step3_universe():
     )
     result = asyncio.run(_build_logo_backfill_worklist(db))
     # OTC.US is excluded because exchange is OTC, not in NYSE/NASDAQ
+    assert len(result) == 1
+    assert result[0]["ticker"] == "AAPL.US"
+
+
+def test_backfill_worklist_includes_ticker_without_price_data():
+    """Seeded ticker without has_price_data should still be in worklist."""
+    db = _FakeDB(
+        [
+            {"ticker": "AAPL.US", "exchange": "NYSE", "asset_type": "Common Stock",
+             "is_seeded": True, "has_price_data": False},
+        ],
+        [
+            {"ticker": "AAPL.US", "logo_status": "error"},
+        ],
+    )
+    result = asyncio.run(_build_logo_backfill_worklist(db))
+    # Ticker lacks has_price_data but is seeded → included via SEED_QUERY
     assert len(result) == 1
     assert result[0]["ticker"] == "AAPL.US"
 
