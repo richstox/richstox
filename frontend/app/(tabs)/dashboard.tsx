@@ -91,6 +91,48 @@ const newsLogoStyles = StyleSheet.create({
   },
 });
 
+// P31+ Stock list logo with onError fallback to letter badge
+const StockLogo = ({ logoUrl, ticker, color }: { logoUrl: string | null; ticker: string; color: string }) => {
+  const [imageError, setImageError] = useState(false);
+
+  if (!logoUrl || imageError) {
+    return (
+      <View style={[stockLogoStyles.fallback, { backgroundColor: color }]}>
+        <Text style={stockLogoStyles.fallbackText}>{ticker.charAt(0)}</Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: logoUrl }}
+      style={stockLogoStyles.logo}
+      onError={() => setImageError(true)}
+    />
+  );
+};
+
+const stockLogoStyles = StyleSheet.create({
+  logo: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#F3F4F6',
+  },
+  fallback: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fallbackText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+});
+
 export default function Dashboard() {
   const router = useRouter();
   const { user, isAuthenticated, sessionToken } = useAuth();
@@ -716,16 +758,7 @@ export default function Dashboard() {
                       onPress={() => router.push(`/stock/${stock.ticker}`)}
                     >
                       <View style={styles.companyLeft}>
-                        {logoUrl ? (
-                          <Image 
-                            source={{ uri: logoUrl }} 
-                            style={styles.companyLogo}
-                          />
-                        ) : (
-                          <View style={[styles.companyLogoFallback, { backgroundColor: getCompanyColor(stock.ticker) }]}>
-                            <Text style={styles.companyLogoText}>{stock.ticker.charAt(0)}</Text>
-                          </View>
-                        )}
+                        <StockLogo logoUrl={logoUrl} ticker={stock.ticker} color={getCompanyColor(stock.ticker)} />
                         <View style={styles.stockInfoColumn}>
                           <View style={styles.tickerRow}>
                             <Text style={styles.companyTicker}>{stock.ticker}</Text>

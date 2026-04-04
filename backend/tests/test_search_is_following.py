@@ -109,17 +109,17 @@ async def test_is_following_empty_set_all_false():
 # ---------------------------------------------------------------------------
 
 def test_build_full_logo_url_relative_path():
-    """Relative paths should be prefixed with the EODHD CDN."""
+    """Relative paths should be converted to internal /api/logo/ URLs."""
     from whitelist_service import _build_full_logo_url
 
-    assert _build_full_logo_url("/img/logos/US/AAPL.png") == "https://eodhistoricaldata.com/img/logos/US/AAPL.png"
+    assert _build_full_logo_url("/img/logos/US/AAPL.png") == "/api/logo/AAPL"
 
 
 def test_build_full_logo_url_absolute():
-    """Absolute URLs should be returned as-is."""
+    """Absolute URLs should be converted to internal /api/logo/ URLs."""
     from whitelist_service import _build_full_logo_url
 
-    assert _build_full_logo_url("https://example.com/logo.png") == "https://example.com/logo.png"
+    assert _build_full_logo_url("https://example.com/logo.png") == "/api/logo/LOGO"
 
 
 def test_build_full_logo_url_none():
@@ -155,8 +155,8 @@ async def test_search_results_include_full_logo_url():
 
     results = await search_whitelist(db, "A", limit=20)
 
-    assert results[0]["logo"] == "https://eodhistoricaldata.com/img/logos/US/AAPL.png"
-    assert results[1]["logo"] == "https://cdn.example.com/msft.png"
+    assert results[0]["logo"] == "/api/logo/AAPL"
+    assert results[1]["logo"] == "/api/logo/MSFT"
     assert results[2]["logo"] is None
 
 
@@ -181,6 +181,6 @@ async def test_search_logo_from_fundamentals_cache():
     results = await search_whitelist(db, "KO", limit=20)
 
     assert results[0]["ticker"] == "KO"
-    assert results[0]["logo"] == "https://eodhistoricaldata.com/img/logos/US/KO.png"
+    assert results[0]["logo"] == "/api/logo/KO"
     assert results[1]["ticker"] == "KOD"
-    assert results[1]["logo"] == "https://cdn.example.com/kod.png"
+    assert results[1]["logo"] == "/api/logo/KOD"

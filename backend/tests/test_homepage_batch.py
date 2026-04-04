@@ -272,7 +272,7 @@ async def test_homepage_ordering():
 async def test_homepage_logo_url_building():
     """Test logo URL construction from fundamentals data."""
     cases = [
-        ("/img/apple.png", "https://eodhistoricaldata.com/img/apple.png"),
+        ("/img/apple.png", "https://eodhd.com/img/apple.png"),
         ("https://example.com/logo.png", "https://example.com/logo.png"),
         (None, None),
     ]
@@ -283,7 +283,7 @@ async def test_homepage_logo_url_building():
         if fundamentals and fundamentals.get("logo_url"):
             lp = fundamentals.get("logo_url")
             if lp.startswith("/"):
-                logo_url = f"https://eodhistoricaldata.com{lp}"
+                logo_url = f"https://eodhd.com{lp}"
             else:
                 logo_url = lp
         assert logo_url == expected, f"Failed for logo_path={logo_path}"

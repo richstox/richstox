@@ -24,7 +24,7 @@ from provider_debug_service import upsert_provider_debug_snapshot
 logger = logging.getLogger("richstox.fundamentals")
 
 EODHD_BASE_URL = "https://eodhd.com/api"
-EODHD_LOGO_CDN = "https://eodhistoricaldata.com"
+EODHD_LOGO_CDN = "https://eodhd.com"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
 
@@ -50,20 +50,42 @@ async def _download_logo(logo_url: Optional[str], ticker: str) -> dict:
     else:
         source_url = f"{EODHD_LOGO_CDN}{logo_url}"
 
+    _HEADERS = {
+        "User-Agent": "RichStox/1.0 (logo-pipeline)",
+        "Accept": "image/png, image/jpeg, image/*;q=0.9, */*;q=0.5",
+    }
+
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(source_url)
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(source_url, headers=_HEADERS)
         if resp.status_code == 200 and resp.content:
+            ct = resp.headers.get("content-type", "image/png")
+            # Guard against HTML error pages served as 200
+            if "text/html" in ct:
+                logger.warning(
+                    "Logo download for %s returned HTML instead of image "
+                    "(url=%s, content-length=%d)",
+                    ticker, source_url, len(resp.content),
+                )
+                return {"logo_status": "absent", "logo_fetched_at": now}
+            logger.info("Logo downloaded for %s (%d bytes)", ticker, len(resp.content))
             return {
                 "logo_status": "present",
                 "logo_fetched_at": now,
                 "logo_data": resp.content,
-                "logo_content_type": resp.headers.get("content-type", "image/png"),
+                "logo_content_type": ct,
             }
         # Provider returned non-200 or empty body → logo does not exist
+        logger.warning(
+            "Logo download for %s returned HTTP %d (url=%s, body=%d bytes)",
+            ticker, resp.status_code, source_url, len(resp.content) if resp.content else 0,
+        )
         return {"logo_status": "absent", "logo_fetched_at": now}
     except Exception as e:
-        logger.debug(f"Logo download failed for {ticker}: {e}")
+        logger.warning(
+            "Logo download failed for %s: [%s] %s (url=%s)",
+            ticker, type(e).__name__, e, source_url,
+        )
     return {"logo_status": "error", "logo_fetched_at": now}
 
 # Pilot tickers for initial testing
