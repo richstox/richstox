@@ -7928,6 +7928,28 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 )
             logger.info(f"[run-full-now] Chain {chain_id} {chain_status}")
 
+            # Only mark steps as "ran today" in scheduler_last_run when the
+            # entire chain succeeded.  Per-step updates would block same-day
+            # scheduler retries if a later step fails.
+            if chain_status == "completed" and _all_steps_done:
+                try:
+                    _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                    await db.ops_config.update_one(
+                        {"key": "scheduler_last_run"},
+                        {"$set": {
+                            "value.universe_seed": _today_str,
+                            "value.price_sync": _today_str,
+                            "value.fundamentals_sync": _today_str,
+                            "updated_at": datetime.now(timezone.utc),
+                        }},
+                        upsert=True,
+                    )
+                except Exception:
+                    logger.warning(
+                        "[run-full-now] Failed to update scheduler_last_run (non-fatal)",
+                        exc_info=True,
+                    )
+
             # Step 2 sentinel deterministic finalization.
             # When the chain ends non-normally and step2 completed (step_run_ids.step2
             # is non-null), the price_sync sentinel must never remain status="running".
