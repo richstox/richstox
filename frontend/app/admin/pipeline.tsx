@@ -561,21 +561,22 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         setData(overviewData);
         const latestChainRun = getLatestChainRun(overviewData?.job_last_runs);
         if (latestChainRun?.chainRunId) {
-          const latestStatus = latestChainRun.status ?? null;
-          setChainRunId(latestChainRun.chainRunId);
-          setChainStatus(latestStatus);
-          chainStateRef.current = { chainRunId: latestChainRun.chainRunId, chainStatus: latestStatus };
-          const active = isChainStatusActive(latestStatus);
-          setChainRunning(active);
+          // The overview returns the *job* status which can disagree with
+          // the actual *chain* status (e.g. a stale "running" sentinel in
+          // ops_job_runs while the chain document is already "completed").
+          // Verify against the chain document to avoid a polling loop where
+          // fetchSnapshotOnce starts polling, pollChainStatus finds the chain
+          // done, stops, re-calls fetchSnapshotOnce which sees the stale job
+          // status and restarts polling — causing the button to blink.
+          await pollChainStatus(latestChainRun.chainRunId);
+          const { chainStatus: verifiedStatus } = chainStateRef.current;
+          const active = isChainStatusActive(verifiedStatus);
           if (active) {
             startChainTimer(latestChainRun.startedAt);
-            startPolling(latestChainRun.chainRunId, latestStatus);
-          } else {
-            userStartedRunRef.current = false;
-            stopChainTimer();
-            setElapsedSeconds(0);
-            stopPolling();
+            startPolling(latestChainRun.chainRunId, verifiedStatus);
           }
+          // pollChainStatus already handled the non-active case (stops timer,
+          // resets elapsed, stops polling, sets chainRunning=false).
         } else {
           setChainRunId(null);
           setChainStatus(null);
@@ -605,7 +606,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [sessionToken, stopChainTimer]);
+  }, [sessionToken, stopChainTimer, pollChainStatus]);
 
   const pollingTick = useCallback(async () => {
     const ctrl = pollingControllerRef.current;

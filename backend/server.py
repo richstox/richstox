@@ -7729,6 +7729,21 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             logger.info(f"[run-full-now] Step 1 done: {s1_run_id}")
             last_completed_step = 1
 
+            # Mark Step 1 as completed in scheduler's last_run state so the
+            # automatic scheduler does not re-run the same step today.
+            _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            try:
+                await db.ops_config.update_one(
+                    {"key": "scheduler_last_run"},
+                    {"$set": {
+                        "value.universe_seed": _today_str,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                    upsert=True,
+                )
+            except Exception:
+                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 1 (non-fatal)")
+
             # Chain robustness: verify Step 1 run record was persisted in DB.
             _s1_verify = await db.ops_job_runs.find_one(
                 {"_id": _s1_run_doc_id}, {"_id": 1}
@@ -7809,6 +7824,20 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             logger.info(f"[run-full-now] Step 2 done: {s2_run_id}")
             last_completed_step = 2
 
+            # Mark Step 2 as completed in scheduler's last_run state so the
+            # automatic scheduler does not re-run the same step today.
+            try:
+                await db.ops_config.update_one(
+                    {"key": "scheduler_last_run"},
+                    {"$set": {
+                        "value.price_sync": _today_str,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                    upsert=True,
+                )
+            except Exception:
+                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 2 (non-fatal)")
+
             if await _cancelled():
                 chain_status = "cancelled"
                 raise Exception("cancelled")
@@ -7843,6 +7872,20 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             logger.info(f"[run-full-now] Step 3 done: {s3_run_id}, visibility: {s3_vis_run_id}")
             last_completed_step = 3
             _all_steps_done = True
+
+            # Mark Step 3 as completed in scheduler's last_run state so the
+            # automatic scheduler does not re-run the same step today.
+            try:
+                await db.ops_config.update_one(
+                    {"key": "scheduler_last_run"},
+                    {"$set": {
+                        "value.fundamentals_sync": _today_str,
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                    upsert=True,
+                )
+            except Exception:
+                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 3 (non-fatal)")
 
         except Exception as exc:
             if chain_status != "cancelled":
