@@ -671,7 +671,8 @@ async def get_all_tickers(
     Supports comma-separated values for union filtering.
     
     RULE: Ticker data comes from `tracked_tickers` collection.
-    Logo URLs are only emitted when logo_status="present" in company_fundamentals_cache.
+    Logo URLs are emitted for all tickers with a fundamentals cache entry;
+    the serve_logo endpoint handles fetch-on-miss for logos not yet downloaded.
     No external API calls.
     """
     db = request.app.state.db
@@ -702,32 +703,32 @@ async def get_all_tickers(
     async for stock in cursor:
         tickers_raw.append(stock)
     
-    # Batch-lookup which tickers actually have a stored logo binary
+    # Batch-lookup which tickers have a fundamentals cache entry (for logo URLs)
     all_ticker_dbs = [s["ticker"] for s in tickers_raw if s.get("ticker")]
-    logos_present: set = set()
+    has_fundamentals: set = set()
     if all_ticker_dbs:
-        logo_cursor = db.company_fundamentals_cache.find(
-            {"ticker": {"$in": all_ticker_dbs}, "logo_status": "present"},
+        fund_cursor = db.company_fundamentals_cache.find(
+            {"ticker": {"$in": all_ticker_dbs}},
             {"_id": 0, "ticker": 1},
         )
-        async for ldoc in logo_cursor:
-            logos_present.add(ldoc["ticker"])
+        async for ldoc in fund_cursor:
+            has_fundamentals.add(ldoc["ticker"])
 
-    # Build response — only emit logo_url when binary exists
+    # Build response — emit logo_url when fundamentals entry exists
     tickers = []
     for stock in tickers_raw:
         symbol = stock.get("ticker", "")
         # Remove .US suffix if present for canonical symbol display
         canonical_symbol = symbol.replace(".US", "").upper() if symbol else ""
         
-        has_logo = symbol in logos_present
+        has_fund = symbol in has_fundamentals
         tickers.append({
             "symbol": canonical_symbol,
             "name": stock.get("name", ""),
             "exchange": stock.get("exchange", ""),
             "sector": stock.get("sector", ""),
             "industry": stock.get("industry", ""),
-            "logo_url": f"/api/logo/{canonical_symbol}" if (canonical_symbol and has_logo) else None,
+            "logo_url": f"/api/logo/{canonical_symbol}" if (canonical_symbol and has_fund) else None,
         })
     
     return {

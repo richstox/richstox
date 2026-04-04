@@ -333,7 +333,7 @@ def _cache_doc_to_general(cache_doc: dict) -> dict:
         "Type": cache_doc.get("asset_type") or cache_doc.get("security_type"),
         "Description": cache_doc.get("description"),
         "WebURL": cache_doc.get("website"),
-        "LogoURL": _internal_logo_url(cache_doc.get("logo_url") or cache_doc.get("ticker")) if cache_doc.get("logo_status") == "present" else None,
+        "LogoURL": _internal_logo_url(cache_doc.get("logo_url") or cache_doc.get("ticker")) if cache_doc else None,
         "FullTimeEmployees": cache_doc.get("full_time_employees"),
         "IPODate": cache_doc.get("ipo_date"),
         "City": cache_doc.get("city"),
@@ -767,9 +767,10 @@ def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
 async def serve_logo(ticker: str):
     """Serve a company logo from ``company_fundamentals_cache.logo_data``.
 
-    Read-only — no external fetches.  Logos are populated exclusively by
-    the fundamentals pipeline (fundamentals_service.py / batch_jobs_service.py).
-    Returns 404 if the logo is absent or has not been downloaded yet.
+    If the logo has not been downloaded yet (``logo_status`` is missing or
+    ``"error"``), the endpoint attempts a one-time fetch from the EODHD CDN,
+    caches the result, and serves it.  Subsequent requests are served from
+    the cache.  Returns 404 when the logo is genuinely absent on the CDN.
     """
     ticker_upper = ticker.upper().replace(".US", "")
     # Strip any file extension (e.g. ".PNG", ".JPG") that may be in the URL
@@ -781,14 +782,62 @@ async def serve_logo(ticker: str):
 
     doc = await db.company_fundamentals_cache.find_one(
         {"ticker": ticker_full},
-        {"_id": 0, "logo_data": 1, "logo_content_type": 1, "logo_status": 1},
+        {"_id": 0, "logo_data": 1, "logo_content_type": 1, "logo_status": 1,
+         "logo_url": 1, "logo_fetched_at": 1},
     )
+
+    # Fast path: cached logo binary is ready to serve.
     if doc and doc.get("logo_status") == "present" and doc.get("logo_data"):
         return Response(
             content=doc["logo_data"],
             media_type=doc.get("logo_content_type", "image/png"),
             headers={"Cache-Control": "public, max-age=604800"},  # 7 days
         )
+
+    # Determine whether a fetch-on-miss download should be attempted.
+    should_download = False
+    if doc is None:
+        # No fundamentals doc at all — skip (pipeline creates these).
+        pass
+    elif doc.get("logo_status") in (None, "error"):
+        # Never attempted or previous transient failure → retry.
+        should_download = True
+    elif doc.get("logo_status") == "present" and not doc.get("logo_data"):
+        # Status says present but binary is missing (data corruption).
+        should_download = True
+
+    if should_download:
+        from fundamentals_service import _download_logo
+
+        logo_url = doc.get("logo_url") if doc else None
+        try:
+            logo_result = await asyncio.wait_for(
+                _download_logo(logo_url, ticker_full),
+                timeout=10,
+            )
+        except asyncio.TimeoutError:
+            raise HTTPException(status_code=404, detail="Logo not found")
+
+        # Persist the result so future requests are served from cache.
+        update: dict = {
+            "logo_status": logo_result["logo_status"],
+            "logo_fetched_at": logo_result["logo_fetched_at"],
+        }
+        if logo_result.get("logo_data"):
+            update["logo_data"] = logo_result["logo_data"]
+            update["logo_content_type"] = logo_result["logo_content_type"]
+
+        await db.company_fundamentals_cache.update_one(
+            {"ticker": ticker_full},
+            {"$set": update},
+        )
+
+        if logo_result.get("logo_status") == "present" and logo_result.get("logo_data"):
+            return Response(
+                content=logo_result["logo_data"],
+                media_type=logo_result.get("logo_content_type", "image/png"),
+                headers={"Cache-Control": "public, max-age=604800"},
+            )
 
     raise HTTPException(status_code=404, detail="Logo not found")
 
@@ -1524,9 +1573,9 @@ async def get_watchlist(request: Request):
             if follow_price and current_price and follow_price > 0:
                 change_since_follow = round(((current_price - follow_price) / follow_price) * 100, 2)
 
-        # Build internal logo URL only when logo binary actually exists
+        # Build internal logo URL — serve_logo handles fetch-on-miss
         logo_url = None
-        if fundamentals and fundamentals.get("logo_status") == "present":
+        if fundamentals:
             logo_url = _internal_logo_url(
                 fundamentals.get("logo_url") or ticker_full
             )
@@ -1705,9 +1754,9 @@ async def get_homepage_data():
         if current and price_data["prev"] and price_data["prev"] > 0:
             change_1d_pct = ((current - price_data["prev"]) / price_data["prev"]) * 100
 
-        # Build internal logo URL only when logo binary actually exists
+        # Build internal logo URL — serve_logo handles fetch-on-miss
         logo_url = None
-        if fundamentals and fundamentals.get("logo_status") == "present":
+        if fundamentals:
             logo_url = _internal_logo_url(
                 fundamentals.get("logo_url") or ticker
             )
@@ -3016,14 +3065,14 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             elif cache_doc.get("name"):
                 general = _cache_doc_to_general(cache_doc)
 
-    # Check logo_status from cache (lightweight query if cache_doc wasn't loaded above)
+    # Check logo availability from cache (lightweight query if cache_doc wasn't loaded above)
     if cache_doc is None:
         _logo_doc = await db.company_fundamentals_cache.find_one(
             {"ticker": ticker_full}, {"_id": 0, "logo_status": 1}
         )
     else:
         _logo_doc = cache_doc
-    _logo_present = (_logo_doc.get("logo_status") == "present") if _logo_doc else False
+    _has_fundamentals_doc = _logo_doc is not None
 
     # Build company dict from fundamentals (embedded or cache)
     fundamentals_pending = False
@@ -3039,7 +3088,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "asset_type": general.get("Type") or "Common Stock",
             "description": general.get("Description"),
             "website": general.get("WebURL"),
-            "logo_url": _internal_logo_url(general.get("LogoURL") or (tracked.get("logo_url") if tracked else None) or ticker_full) if _logo_present else None,
+            "logo_url": _internal_logo_url(general.get("LogoURL") or (tracked.get("logo_url") if tracked else None) or ticker_full) if _has_fundamentals_doc else None,
             "full_time_employees": general.get("FullTimeEmployees"),
             "ipo_date": general.get("IPODate") or (tracked.get("ipo_date") if tracked else None),
             "city": general.get("City") or addr_data.get("City"),
@@ -3080,7 +3129,7 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             "asset_type": tracked.get("asset_type") if tracked else "Common Stock",
             "description": None,
             "website": None,
-            "logo_url": _internal_logo_url((tracked.get("logo_url") if tracked else None) or ticker_full) if _logo_present else None,
+            "logo_url": _internal_logo_url((tracked.get("logo_url") if tracked else None) or ticker_full) if _has_fundamentals_doc else None,
             "full_time_employees": None,
             "ipo_date": tracked.get("ipo_date") if tracked else None,
             "city": None,
@@ -3487,14 +3536,14 @@ async def get_ticker_detail_mobile(
             elif cache_doc.get("name"):
                 general = _cache_doc_to_general(cache_doc)
 
-    # Check logo_status from cache
+    # Check logo availability from cache
     if cache_doc is None:
         _logo_doc = await db.company_fundamentals_cache.find_one(
             {"ticker": ticker_full}, {"_id": 0, "logo_status": 1}
         )
     else:
         _logo_doc = cache_doc
-    _logo_present = (_logo_doc.get("logo_status") == "present") if _logo_doc else False
+    _has_fundamentals_doc = _logo_doc is not None
 
     # Build company dict from fundamentals (embedded or cache) - ALWAYS return a dict, never None
     addr_data = (general.get("AddressData") or {}) if general else {}
@@ -3505,7 +3554,7 @@ async def get_ticker_detail_mobile(
         "exchange": general.get("Exchange") or tracked.get("exchange"),
         "description": general.get("Description"),
         "website": general.get("WebURL"),
-        "logo_url": _internal_logo_url(general.get("LogoURL") or tracked.get("logo_url") or ticker_full) if _logo_present else None,
+        "logo_url": _internal_logo_url(general.get("LogoURL") or tracked.get("logo_url") or ticker_full) if _has_fundamentals_doc else None,
         "employees": general.get("FullTimeEmployees"),
         "ipo_date": general.get("IPODate") or tracked.get("ipo_date"),
         "address": general.get("Address"),
@@ -4273,7 +4322,7 @@ async def get_ticker_detail_mobile(
             "exchange": company.get("exchange") if company else tracked.get("exchange"),
             "sector": company.get("sector") if company else tracked.get("sector"),
             "industry": company.get("industry") if company else tracked.get("industry"),
-            "logo_url": _internal_logo_url((company.get("logo_url") if company else tracked.get("logo_url")) or ticker_full) if _logo_present else None,
+            "logo_url": _internal_logo_url((company.get("logo_url") if company else tracked.get("logo_url")) or ticker_full) if _has_fundamentals_doc else None,
             "country": company.get("country") if company else None,
         },
 
@@ -4613,15 +4662,13 @@ async def get_news(
     ticker_full_list = [f"{t}.US" for t in ticker_list]
     company_docs = await db.company_fundamentals_cache.find(
         {"ticker": {"$in": ticker_full_list}},
-        {"_id": 0, "ticker": 1, "logo_url": 1, "name": 1, "logo_status": 1}
+        {"_id": 0, "ticker": 1, "logo_url": 1, "name": 1}
     ).to_list(length=None)
 
     ticker_info = {}
     for doc in company_docs:
         ticker = doc.get("ticker", "").replace(".US", "").upper()
-        logo_url = None
-        if doc.get("logo_status") == "present":
-            logo_url = _internal_logo_url(doc.get("logo_url") or ticker)
+        logo_url = _internal_logo_url(doc.get("logo_url") or ticker)
         ticker_info[ticker] = {
             "logo_url": logo_url,
             "name": doc.get("name", ticker),
