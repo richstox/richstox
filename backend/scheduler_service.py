@@ -2938,6 +2938,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "B": _build_phase("Visibility"),
             "C": _build_phase("PriceHistory"),
         },
+        "visible_present_logo_example_found": False,
+        "visible_present_logo_example_ticker": None,
     }
 
     _telemetry_last_write_monotonic = 0.0
