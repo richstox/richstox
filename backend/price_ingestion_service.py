@@ -1025,6 +1025,65 @@ async def run_daily_bulk_catchup(
         }
     date_seen = unique_dates[0]
 
+    # ── Market calendar guard: reject data for non-trading days ──────────
+    # EODHD may return stale data dated on a holiday (exchange closed).
+    # Validate against market_calendar to prevent writing garbage prices.
+    #
+    # FAIL-OPEN: only skip when a calendar row EXPLICITLY marks the date
+    # as non-trading.  If no calendar row exists (e.g. calendar not yet
+    # populated), proceed with the write — never silently block syncs.
+    try:
+        # Delayed import: market_calendar_service is optional here.
+        # If the import fails, the except block lets the write proceed.
+        from services.market_calendar_service import COLLECTION as _MC_COLLECTION
+        _cal_doc = await db[_MC_COLLECTION].find_one(
+            {"market": "US", "date": date_seen},
+            {"is_trading_day": 1, "holiday_name": 1, "_id": 0},
+        )
+        if _cal_doc is not None and not _cal_doc.get("is_trading_day", True):
+            _holiday_label = _cal_doc.get("holiday_name") or "weekend/holiday"
+            logger.warning(
+                "[BULK CATCHUP] EODHD returned data for %s which is NOT a trading day "
+                "(%s per market_calendar) — skipping write",
+                date_seen, _holiday_label,
+            )
+            return {
+                "status": "skipped",
+                "message": (
+                    f"Bulk data date {date_seen} is not a US trading day "
+                    f"({_holiday_label} per market_calendar) — no prices written"
+                ),
+                "date": date_seen,
+                "processed_date": date_seen,
+                "unique_dates": unique_dates,
+                "dates_processed": 0,
+                "records_upserted": 0,
+                "rows_written": 0,
+                "matched_price_tickers_raw": len(matched_seeded_tickers),
+                "tickers_with_price_data": len(matched_seeded_tickers),
+                "api_calls": 1 if bulk_fetch_executed else 0,
+                "bulk_fetch_executed": bulk_fetch_executed,
+                "raw_row_count": raw_row_count,
+                "bulk_writes": 0,
+                "bulk_url_used": bulk_url_used,
+                "tickers_with_price": [],
+                "ticker_samples": ticker_samples,
+                "skipped_reason": "non_trading_day",
+                "holiday_name": _holiday_label,
+            }
+        if _cal_doc is None:
+            logger.info(
+                "[BULK CATCHUP] No market_calendar row for %s — proceeding with write (fail-open)",
+                date_seen,
+            )
+    except Exception as _cal_exc:
+        # Calendar lookup failure is non-fatal — proceed with write.
+        # The calendar may not be populated yet on first run.
+        logger.warning(
+            "[BULK CATCHUP] Market calendar check failed for %s (%s) — proceeding with write",
+            date_seen, _cal_exc,
+        )
+
     if current_batch_ops:
         batched_operations_with_tickers.append(
             (current_batch_ops, current_batch_tickers)
