@@ -1616,9 +1616,28 @@ async def run_daily_price_sync(
         # When the bulk catchup detected a holiday/weekend date from EODHD,
         # skip Phases A-tail / B / C entirely.  Return "completed" so the
         # scheduler marks the step as done and does not retry.
+        #
+        # IMPORTANT: we still call sync_has_price_data_flags (DB-fallback mode)
+        # so that has_price_data reflects the *last real trading day* stored in
+        # stock_prices.  Without this, a pipeline run on a holiday after a fresh
+        # deploy (or first-ever run) would leave all tickers with
+        # has_price_data=False and Step 3 would process 0 tickers.
         if result.get("skipped_reason") == "non_trading_day":
-            _ntd_finished = datetime.now(timezone.utc)
             _ntd_date = result.get("skipped_date", "unknown")
+            logger.info(
+                f"{job_name}: {_ntd_date} is not a trading day — "
+                "syncing has_price_data flags from stock_prices (DB fallback)"
+            )
+            _ntd_flag_summary = await sync_has_price_data_flags(
+                db, include_exclusions=True, tickers_with_price=None,
+            )
+            logger.info(
+                f"{job_name}: non-trading-day flag sync: "
+                f"{_ntd_flag_summary['with_price_data']}/{_ntd_flag_summary['seeded_total']} "
+                "tickers with price data (from stock_prices DB)"
+            )
+
+            _ntd_finished = datetime.now(timezone.utc)
             await db.ops_job_runs.update_one(
                 {"_id": _running_doc_id},
                 {"$set": {
@@ -1628,12 +1647,15 @@ async def run_daily_price_sync(
                     "phase": "completed",
                     "progress": (
                         f"No price sync needed: {_ntd_date} is not a US trading day "
-                        "(holiday/weekend per market_calendar)"
+                        "(holiday/weekend per market_calendar). "
+                        f"has_price_data flags synced from DB: "
+                        f"{_ntd_flag_summary['with_price_data']}/{_ntd_flag_summary['seeded_total']}"
                     ),
                     "details": {
                         **result,
                         "parent_run_id": parent_run_id,
                         "chain_run_id": chain_run_id,
+                        "non_trading_day_flag_sync": _ntd_flag_summary,
                     },
                 }},
             )
@@ -1650,6 +1672,7 @@ async def run_daily_price_sync(
                 "api_calls": result.get("api_calls", 0),
                 "started_at": started_at.isoformat(),
                 "finished_at": _ntd_finished.isoformat(),
+                "non_trading_day_flag_sync": _ntd_flag_summary,
             }
 
         await _progress(
@@ -1974,7 +1997,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     seeded_set = set(seeded_tickers)
     from price_ingestion_service import _normalize_step2_ticker
 
-    if tickers_with_price is not None:
+    if tickers_with_price is not None and len(tickers_with_price) > 0:
         # ── Fast path: use the set returned by the bulk feed ─────────────
         with_price_set = {
             _normalize_step2_ticker(t)
@@ -1984,6 +2007,17 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         any_price_set = with_price_set  # same set when sourced from bulk feed
         matched_raw = len(with_price_set)
     else:
+        # ── Safety guard: never wipe all flags with an empty list ────────
+        # When the bulk feed returns an empty list (e.g. non-trading day),
+        # fall back to querying stock_prices so existing price data is
+        # preserved.  Stale data is always better than an empty app.
+        if tickers_with_price is not None and len(tickers_with_price) == 0 and seeded_total > 0:
+            logger.warning(
+                "[sync_has_price_data_flags] tickers_with_price is empty but "
+                "%d tickers are seeded — falling back to stock_prices query "
+                "to preserve existing price flags",
+                seeded_total,
+            )
         # ── Legacy fallback: query stock_prices collection ───────────────
         seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
         ticker_candidates = list(set(seeded_tickers) | set(seeded_codes))
@@ -2426,6 +2460,70 @@ async def _skip_already_complete_tickers(
         "skipped_event_count": skipped_events,
         "skipped_tickers": skippable,
     }
+
+
+async def _reconcile_logo_completeness(db) -> Dict[str, Any]:
+    """Reset stale-complete tickers whose logo_status is unresolved.
+
+    After the logo requirement was added to the completeness gate, tickers
+    that were synced *before* logos existed may still carry
+    ``fundamentals_status="complete"`` despite having no ``logo_status`` (or
+    ``logo_status="error"``).  The skip-gate would then skip them forever.
+
+    This function:
+      1. Finds tracked_tickers with fundamentals_status="complete" and
+         needs_fundamentals_refresh != True.
+      2. Cross-checks company_fundamentals_cache: any ticker whose cache doc
+         has no ``logo_status`` or ``logo_status`` not in ("present","absent")
+         is considered stale-complete.
+      3. Resets ``needs_fundamentals_refresh=True`` and
+         ``fundamentals_status="partial"`` so Step 3 reprocesses them.
+
+    Returns ``{"reset_count": int, "reset_tickers": [...]}``.
+    """
+    # 1. Find "complete" tickers that are not already flagged for refresh
+    complete_tickers: List[str] = await db.tracked_tickers.distinct(
+        "ticker",
+        {
+            **SEED_QUERY,
+            "has_price_data": True,
+            "fundamentals_status": "complete",
+            "needs_fundamentals_refresh": {"$ne": True},
+        },
+    )
+    if not complete_tickers:
+        return {"reset_count": 0, "reset_tickers": []}
+
+    # 2. Check which of those tickers have logo_status resolved in the cache
+    resolved_tickers: List[str] = await db.company_fundamentals_cache.distinct(
+        "ticker",
+        {
+            "ticker": {"$in": complete_tickers},
+            "logo_status": {"$in": ["present", "absent"]},
+        },
+    )
+    resolved_set = set(resolved_tickers)
+    stale_tickers = [t for t in complete_tickers if t not in resolved_set]
+
+    if not stale_tickers:
+        return {"reset_count": 0, "reset_tickers": []}
+
+    # 3. Reset flags so Step 3 reprocesses these tickers (downloads logos)
+    now = datetime.now(timezone.utc)
+    await db.tracked_tickers.update_many(
+        {"ticker": {"$in": stale_tickers}},
+        {"$set": {
+            "fundamentals_status": "partial",
+            "fundamentals_complete": False,
+            "needs_fundamentals_refresh": True,
+            "updated_at": now,
+        }},
+    )
+    logger.info(
+        f"_reconcile_logo_completeness: reset {len(stale_tickers)} tickers "
+        "to partial/needs_refresh (logo_status not resolved in cache)"
+    )
+    return {"reset_count": len(stale_tickers), "reset_tickers": stale_tickers}
 
 
 async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
@@ -3024,6 +3122,19 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         await _write_step3_telemetry(force=True)
         await _progress("Deduplicating pending fundamentals_events queue…")
         dedup_stats = await _deduplicate_pending_events(db, now_queue)
+
+        # ── Logo completeness reconciliation ───────────────────────────────
+        # Tickers marked fundamentals_status="complete" before the logo feature
+        # may lack logo_status in company_fundamentals_cache.  Detect these
+        # stale-complete tickers and reset needs_fundamentals_refresh=True so
+        # Step 3 reprocesses them and downloads logos.
+        await _progress("Reconciling logo completeness for stale tickers…")
+        _logo_reconcile_stats = await _reconcile_logo_completeness(db)
+        if _logo_reconcile_stats["reset_count"] > 0:
+            logger.info(
+                f"{job_name}: logo reconciliation reset {_logo_reconcile_stats['reset_count']} "
+                "tickers to needs_fundamentals_refresh=True (missing logo_status)"
+            )
 
         # Ensure Step 3 includes priced tickers missing classification.
         # Exclude tickers already fundamentals_status='complete': if a prior run

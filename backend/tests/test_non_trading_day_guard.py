@@ -408,8 +408,17 @@ class TestPriceSyncNonTradingDaySkip:
         assert result["status"] == "completed"
         assert result.get("skipped_reason") == "non_trading_day"
         assert result.get("skipped_date") == "2026-04-03"
-        # Should NOT have run detectors or flag sync
+        # Should NOT have run detectors or written prices
         assert result.get("records_upserted", 0) == 0
+        # BUT should have synced has_price_data flags via DB fallback
+        flag_sync = result.get("non_trading_day_flag_sync")
+        assert flag_sync is not None, (
+            "Non-trading-day path must still sync has_price_data flags"
+        )
+        assert flag_sync["seeded_total"] > 0
+        assert flag_sync["with_price_data"] > 0, (
+            "DB fallback should find existing price data from previous trading days"
+        )
 
     def test_price_sync_ops_job_runs_marked_completed(self, monkeypatch):
         """Non-trading-day skip updates ops_job_runs with completed status."""
@@ -452,6 +461,8 @@ class TestPriceSyncNonTradingDaySkip:
         assert latest_doc is not None
         assert latest_doc["status"] == "completed"
         assert latest_doc["phase"] == "completed"
+        # Flag sync summary stored in details
+        assert "non_trading_day_flag_sync" in latest_doc.get("details", {})
 
     def test_normal_trading_day_still_works(self, monkeypatch):
         """Normal trading day data goes through full pipeline."""
@@ -486,3 +497,170 @@ class TestPriceSyncNonTradingDaySkip:
 
         assert result["status"] in ("success", "completed")
         assert result.get("skipped_reason") is None
+
+
+# =============================================================================
+# Tests: sync_has_price_data_flags — empty-list safety guard
+# =============================================================================
+
+
+class TestSyncHasPriceDataFlagsGuard:
+    """Tests that sync_has_price_data_flags never wipes all flags to False."""
+
+    def test_empty_list_falls_back_to_db_query(self, monkeypatch):
+        """When tickers_with_price=[] the function falls back to stock_prices query."""
+
+        class _FakeStockPricesWithData:
+            async def distinct(self, field, query):
+                # Simulate existing price data in DB from previous trading day
+                return ["AAPL.US", "MSFT.US", "GOOGL.US"]
+
+        class _FakeTrackedTickersForFlags:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+
+            def find(self, query, projection=None):
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+
+            async def update_many(self, filt, update):
+                return SimpleNamespace(modified_count=0)
+
+        class _FakeDBForFlags:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
+                self.stock_prices = _FakeStockPricesWithData()
+
+        seeded = ["AAPL.US", "MSFT.US", "GOOGL.US", "AMZN.US"]
+        db = _FakeDBForFlags(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=[],  # empty list — should trigger fallback
+            )
+        )
+
+        # Must NOT wipe all flags — should find prices via DB query
+        assert result["with_price_data"] > 0, (
+            "Empty tickers_with_price should fall back to DB query, not wipe flags"
+        )
+
+    def test_nonempty_list_uses_fast_path(self, monkeypatch):
+        """When tickers_with_price has entries, fast path is used."""
+
+        class _FakeTrackedTickersForFlags:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+
+            def find(self, query, projection=None):
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+
+            async def update_many(self, filt, update):
+                return SimpleNamespace(modified_count=0)
+
+        class _FakeDBForFlags:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
+
+        seeded = ["AAPL.US", "MSFT.US"]
+        db = _FakeDBForFlags(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US", "MSFT.US"],
+            )
+        )
+
+        assert result["with_price_data"] == 2
+
+
+# =============================================================================
+# Tests: _reconcile_logo_completeness — stale-complete logo detection
+# =============================================================================
+
+
+class TestReconcileLogoCompleteness:
+    """Tests that Step 3 detects tickers marked complete without resolved logos."""
+
+    def test_resets_tickers_without_logo_status(self):
+        """Tickers marked complete but with no logo_status in cache are reset."""
+
+        updated_tickers = []
+
+        class _FakeTrackedTickersForLogo:
+            async def distinct(self, field, query):
+                # Return tickers that are fundamentals_status="complete"
+                return ["AAPL.US", "MSFT.US", "GOOGL.US"]
+
+            async def update_many(self, filt, update):
+                updated_tickers.extend(filt.get("ticker", {}).get("$in", []))
+                return SimpleNamespace(modified_count=len(updated_tickers))
+
+        class _FakeFundamentalsCache:
+            async def distinct(self, field, query):
+                # Only AAPL has logo resolved — MSFT and GOOGL don't
+                return ["AAPL.US"]
+
+        class _FakeDBForLogo:
+            tracked_tickers = _FakeTrackedTickersForLogo()
+            company_fundamentals_cache = _FakeFundamentalsCache()
+
+        db = _FakeDBForLogo()
+        result = asyncio.run(scheduler_service._reconcile_logo_completeness(db))
+
+        assert result["reset_count"] == 2
+        assert "MSFT.US" in result["reset_tickers"]
+        assert "GOOGL.US" in result["reset_tickers"]
+        assert "AAPL.US" not in result["reset_tickers"]
+        # Verify update_many was called with the stale tickers
+        assert "MSFT.US" in updated_tickers
+        assert "GOOGL.US" in updated_tickers
+
+    def test_no_reset_when_all_logos_resolved(self):
+        """When all complete tickers have resolved logos, nothing is reset."""
+
+        class _FakeTrackedTickersForLogo:
+            async def distinct(self, field, query):
+                return ["AAPL.US", "MSFT.US"]
+
+            async def update_many(self, filt, update):
+                raise AssertionError("update_many should not be called")
+
+        class _FakeFundamentalsCache:
+            async def distinct(self, field, query):
+                # Both tickers have logo resolved
+                return ["AAPL.US", "MSFT.US"]
+
+        class _FakeDBForLogo:
+            tracked_tickers = _FakeTrackedTickersForLogo()
+            company_fundamentals_cache = _FakeFundamentalsCache()
+
+        db = _FakeDBForLogo()
+        result = asyncio.run(scheduler_service._reconcile_logo_completeness(db))
+
+        assert result["reset_count"] == 0
+        assert result["reset_tickers"] == []
+
+    def test_no_reset_when_no_complete_tickers(self):
+        """When no tickers are marked complete, nothing is reset."""
+
+        class _FakeTrackedTickersForLogo:
+            async def distinct(self, field, query):
+                return []  # No complete tickers
+
+        class _FakeFundamentalsCache:
+            async def distinct(self, field, query):
+                return []
+
+        class _FakeDBForLogo:
+            tracked_tickers = _FakeTrackedTickersForLogo()
+            company_fundamentals_cache = _FakeFundamentalsCache()
+
+        db = _FakeDBForLogo()
+        result = asyncio.run(scheduler_service._reconcile_logo_completeness(db))
+
+        assert result["reset_count"] == 0
+        assert result["reset_tickers"] == []

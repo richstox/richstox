@@ -406,6 +406,35 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     if batch_ops:
         await db.tracked_tickers.bulk_write(batch_ops, ordered=False)
 
+    # ── Circuit breaker: NEVER leave the app empty ───────────────────────
+    # If visibility would drop to 0 but we previously had visible tickers,
+    # this signals a data issue (e.g. non-trading day wiped price flags).
+    # Restore previous visibility so users never see an empty app.
+    # Stale data is ALWAYS better than no data.
+    if stats["now_visible"] == 0 and before["visible_count"] > 0:
+        newly_invisible = list(now_invisible_set - pre_invisible)
+        logger.critical(
+            "VISIBILITY CIRCUIT BREAKER: recompute resulted in 0 visible "
+            "tickers (was %d). Restoring %d previously-visible tickers.",
+            before["visible_count"], len(newly_invisible),
+        )
+        if newly_invisible:
+            await db.tracked_tickers.update_many(
+                {"ticker": {"$in": newly_invisible}},
+                {"$set": {
+                    "is_visible": True,
+                    "visibility_failed_reason": None,
+                    "visibility_updated_at": datetime.now(timezone.utc),
+                }},
+            )
+        # Recalculate stats to reflect the restoration
+        stats["now_visible"] = before["visible_count"]
+        stats["now_invisible"] -= len(newly_invisible)
+        stats["circuit_breaker_triggered"] = True
+        stats["restored_tickers"] = len(newly_invisible)
+        # Skip cleanup — never delete data during a circuit breaker event
+        now_invisible_set -= set(newly_invisible)
+
     # SAFE CLEANUP: only tickers that were already invisible at job start
     # AND are still invisible after the recompute.
     tickers_to_cleanup = list(pre_invisible & now_invisible_set)
