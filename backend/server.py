@@ -7626,6 +7626,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
         chain_failed_step: Optional[int] = None
         last_completed_step: int = 0
         _all_steps_done = False  # Set True only when all steps complete; used in finally
+        _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
         async def _cancelled() -> bool:
             _d = await db.pipeline_chain_runs.find_one(
@@ -7731,7 +7732,6 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
 
             # Mark Step 1 as completed in scheduler's last_run state so the
             # automatic scheduler does not re-run the same step today.
-            _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             try:
                 await db.ops_config.update_one(
                     {"key": "scheduler_last_run"},
@@ -7742,7 +7742,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     upsert=True,
                 )
             except Exception:
-                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 1 (non-fatal)")
+                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 1 (non-fatal)", exc_info=True)
 
             # Chain robustness: verify Step 1 run record was persisted in DB.
             _s1_verify = await db.ops_job_runs.find_one(
@@ -7836,7 +7836,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     upsert=True,
                 )
             except Exception:
-                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 2 (non-fatal)")
+                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 2 (non-fatal)", exc_info=True)
 
             if await _cancelled():
                 chain_status = "cancelled"
@@ -7885,7 +7885,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     upsert=True,
                 )
             except Exception:
-                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 3 (non-fatal)")
+                logger.warning("[run-full-now] Failed to update scheduler_last_run for Step 3 (non-fatal)", exc_info=True)
 
         except Exception as exc:
             if chain_status != "cancelled":
