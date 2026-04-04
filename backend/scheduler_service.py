@@ -64,6 +64,7 @@ FUNDAMENTALS_SYNC_TICKER_TIMEOUT_SECONDS = 120
 LOGO_CDN_FIX_CUTOFF = datetime(2026, 4, 4, tzinfo=timezone.utc)
 LOGO_BACKFILL_CONCURRENCY = 10
 LOGO_BACKFILL_TICKER_TIMEOUT = 30
+LOGO_BACKFILL_VISIBLE_LIMIT = 500
 CANCEL_REQUESTED_STUCK_SECONDS = 600
 PRICE_SYNC_ACTIVE_PHASES = {
     "bulk_catchup",
@@ -2544,22 +2545,24 @@ async def _reconcile_logo_completeness(db) -> Dict[str, Any]:
 async def _build_logo_backfill_worklist(
     db,
     exclude_tickers: Optional[set] = None,
+    limit: int = LOGO_BACKFILL_VISIBLE_LIMIT,
 ) -> List[dict]:
     """Return ``company_fundamentals_cache`` docs needing logo (re-)download.
 
     Criteria (any match → included):
       • ``logo_status`` field missing       — never attempted
       • ``logo_status = "error"``            — transient failure
-      • ``logo_status = "absent"`` **AND**
-        ``logo_fetched_at`` missing or < ``LOGO_CDN_FIX_CUTOFF``
-        — fetched with the old (broken) CDN base domain
+      • ``logo_status = "absent"``           — no logo found previously
 
-    Scoped to the active seeded universe (``SEED_QUERY``).
+    Scoped to **visible** tickers (``status="active"``, ``is_visible=True``)
+    because only those appear in the UI.
     Tickers in *exclude_tickers* (already processed in Phase A main) are skipped.
+    At most *limit* tickers are returned per run.
     """
-    eligible: List[str] = await db.tracked_tickers.distinct("ticker", SEED_QUERY)
+    visible_query = {"status": "active", "is_visible": True}
+    eligible: List[str] = await db.tracked_tickers.distinct("ticker", visible_query)
     if not eligible:
-        logger.info("_build_logo_backfill_worklist: eligible=0 (SEED_QUERY matched nothing)")
+        logger.info("_build_logo_backfill_worklist: eligible=0 (no visible active tickers)")
         return []
 
     query: dict = {
@@ -2567,8 +2570,7 @@ async def _build_logo_backfill_worklist(
         "$or": [
             {"logo_status": {"$exists": False}},
             {"logo_status": "error"},
-            {"logo_status": "absent", "logo_fetched_at": {"$lt": LOGO_CDN_FIX_CUTOFF}},
-            {"logo_status": "absent", "logo_fetched_at": {"$exists": False}},
+            {"logo_status": "absent"},
         ],
     }
 
@@ -2579,9 +2581,12 @@ async def _build_logo_backfill_worklist(
     if exclude_tickers:
         docs = [d for d in docs if d.get("ticker") not in exclude_tickers]
 
+    if limit and len(docs) > limit:
+        docs = docs[:limit]
+
     logger.info(
-        "_build_logo_backfill_worklist: eligible=%d matched=%d exclude=%d",
-        len(eligible), len(docs), len(exclude_tickers) if exclude_tickers else 0,
+        "_build_logo_backfill_worklist: visible_eligible=%d matched=%d exclude=%d limit=%d",
+        len(eligible), len(docs), len(exclude_tickers) if exclude_tickers else 0, limit,
     )
     return docs
 
@@ -3589,10 +3594,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
         # ── Telemetry: logo backfill worklist diagnostics ──────────────────
         _bf_sample = [d.get("ticker") for d in logo_backfill_worklist[:5]]
-        step3_telemetry["logo_backfill_worklist_count"] = len(logo_backfill_worklist)
-        step3_telemetry["logo_backfill_sample_tickers"] = _bf_sample
+        step3_telemetry["logo_backfill_visible_worklist_count"] = len(logo_backfill_worklist)
+        step3_telemetry["logo_backfill_visible_sample_tickers"] = _bf_sample
         logger.info(
-            f"{job_name}: logo_backfill_worklist_count={len(logo_backfill_worklist)} "
+            f"{job_name}: logo_backfill_visible_worklist_count={len(logo_backfill_worklist)} "
             f"sample={_bf_sample}"
         )
         await _write_step3_telemetry(force=True)

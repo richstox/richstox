@@ -10,6 +10,7 @@ from scheduler_service import (
     _build_logo_backfill_worklist,
     _reconcile_logo_completeness,
     LOGO_CDN_FIX_CUTOFF,
+    LOGO_BACKFILL_VISIBLE_LIMIT,
 )
 
 
@@ -185,6 +186,8 @@ _BASE_TRACKED = {
     "asset_type": "Common Stock",
     "is_seeded": True,
     "has_price_data": True,
+    "status": "active",
+    "is_visible": True,
 }
 
 
@@ -230,8 +233,8 @@ def test_backfill_worklist_picks_stale_absent():
     assert len(result) == 1
 
 
-def test_backfill_worklist_skips_fresh_absent():
-    """Cache doc with logo_status='absent' fetched AFTER cutoff → NOT in worklist."""
+def test_backfill_worklist_picks_absent_regardless_of_date():
+    """Cache doc with logo_status='absent' → always in worklist (visible scope)."""
     fresh_date = LOGO_CDN_FIX_CUTOFF + timedelta(hours=1)
     db = _FakeDB(
         [{"ticker": "GOOG.US", **_BASE_TRACKED}],
@@ -243,7 +246,7 @@ def test_backfill_worklist_skips_fresh_absent():
         }],
     )
     result = asyncio.run(_build_logo_backfill_worklist(db))
-    assert len(result) == 0
+    assert len(result) == 1
 
 
 def test_backfill_worklist_skips_present():
@@ -288,40 +291,50 @@ def test_backfill_worklist_absent_no_fetched_at():
     assert len(result) == 1
 
 
-def test_backfill_worklist_scoped_to_seeded_universe():
-    """Tickers outside SEED_QUERY (e.g. OTC exchange) are excluded."""
+def test_backfill_worklist_scoped_to_visible_tickers():
+    """Tickers that are not visible (is_visible=False or status!='active') are excluded."""
     db = _FakeDB(
         [
             {"ticker": "AAPL.US", **_BASE_TRACKED},
-            {"ticker": "OTC.US", "exchange": "OTC", "asset_type": "Common Stock",
-             "is_seeded": True, "has_price_data": True},
+            {"ticker": "HIDDEN.US", "exchange": "NYSE", "asset_type": "Common Stock",
+             "is_seeded": True, "has_price_data": True,
+             "status": "active", "is_visible": False},
         ],
         [
             {"ticker": "AAPL.US", "logo_status": "error"},
-            {"ticker": "OTC.US", "logo_status": "error"},
+            {"ticker": "HIDDEN.US", "logo_status": "error"},
         ],
     )
     result = asyncio.run(_build_logo_backfill_worklist(db))
-    # OTC.US is excluded because exchange is OTC, not in NYSE/NASDAQ
+    # HIDDEN.US is excluded because is_visible=False
     assert len(result) == 1
     assert result[0]["ticker"] == "AAPL.US"
 
 
-def test_backfill_worklist_includes_ticker_without_price_data():
-    """Seeded ticker without has_price_data should still be in worklist."""
+def test_backfill_worklist_excludes_inactive_tickers():
+    """Inactive tickers should not be in worklist even if visible."""
     db = _FakeDB(
         [
             {"ticker": "AAPL.US", "exchange": "NYSE", "asset_type": "Common Stock",
-             "is_seeded": True, "has_price_data": False},
+             "is_seeded": True, "has_price_data": True,
+             "status": "inactive", "is_visible": True},
         ],
         [
             {"ticker": "AAPL.US", "logo_status": "error"},
         ],
     )
     result = asyncio.run(_build_logo_backfill_worklist(db))
-    # Ticker lacks has_price_data but is seeded → included via SEED_QUERY
-    assert len(result) == 1
-    assert result[0]["ticker"] == "AAPL.US"
+    # Ticker has status='inactive' → not eligible
+    assert len(result) == 0
+
+
+def test_backfill_worklist_respects_limit():
+    """Worklist should be capped at the provided limit."""
+    tracked = [{"ticker": f"T{i}.US", **_BASE_TRACKED} for i in range(10)]
+    cached = [{"ticker": f"T{i}.US", "logo_status": "error"} for i in range(10)]
+    db = _FakeDB(tracked, cached)
+    result = asyncio.run(_build_logo_backfill_worklist(db, limit=3))
+    assert len(result) == 3
 
 
 # ═════════════════════════════════════════════════════════════════════════
