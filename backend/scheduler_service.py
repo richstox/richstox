@@ -57,6 +57,7 @@ FUNDAMENTALS_SYNC_LOCK_ID = "fundamentals_sync"
 FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS = 10
 FUNDAMENTALS_SYNC_LOCK_LEASE_SECONDS = 60
 FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS = 300
+FUNDAMENTALS_SYNC_TICKER_TIMEOUT_SECONDS = 120
 CANCEL_REQUESTED_STUCK_SECONDS = 600
 PRICE_SYNC_ACTIVE_PHASES = {
     "bulk_catchup",
@@ -2925,6 +2926,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
     _heartbeat_stop = asyncio.Event()
     _heartbeat_task: Optional[asyncio.Task] = None
+    _last_ticker_started: Optional[str] = None
+    _last_ticker_finished: Optional[str] = None
+    _heartbeat_last_error: Optional[str] = None
 
     def _details_updated_fields(now_utc: datetime) -> Dict[str, Any]:
         return {
@@ -2944,21 +2948,42 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             _lock_acquired = False
 
     async def _heartbeat_worker() -> None:
+        nonlocal _heartbeat_last_error
         while not _heartbeat_stop.is_set():
             await asyncio.sleep(FUNDAMENTALS_SYNC_HEARTBEAT_SECONDS)
             heartbeat_now = datetime.now(timezone.utc)
-            heartbeat_result = await db.ops_job_runs.update_one(
-                {"_id": _running_doc_id, "status": "running"},
-                {"$set": {
-                    "heartbeat_at": heartbeat_now,
-                    **_details_updated_fields(heartbeat_now),
-                }},
-            )
-            if heartbeat_result.modified_count == 0:
-                # Exit if the run is no longer active (externally finalized/status changed).
-                logger.info(f"{job_name}: heartbeat worker stopped (run no longer active)")
-                break
-            await _heartbeat_fundamentals_sync_lock(db, _lock_owner_run_id, heartbeat_now)
+            try:
+                heartbeat_result = await asyncio.wait_for(
+                    db.ops_job_runs.update_one(
+                        {"_id": _running_doc_id, "status": "running"},
+                        {"$set": {
+                            "heartbeat_at": heartbeat_now,
+                            "details.last_ticker_started": _last_ticker_started,
+                            "details.last_ticker_finished": _last_ticker_finished,
+                            "details.heartbeat_last_error": _heartbeat_last_error,
+                            **_details_updated_fields(heartbeat_now),
+                        }},
+                    ),
+                    timeout=10,
+                )
+                if heartbeat_result.modified_count == 0:
+                    # Exit if the run is no longer active (externally finalized/status changed).
+                    logger.info(f"{job_name}: heartbeat worker stopped (run no longer active)")
+                    break
+                _heartbeat_last_error = None  # clear on success
+            except Exception as hb_exc:
+                _heartbeat_last_error = f"{type(hb_exc).__name__}: {hb_exc}"
+                logger.warning(
+                    f"{job_name}: heartbeat write failed, will retry next cycle: {hb_exc}"
+                )
+                continue
+            try:
+                await asyncio.wait_for(
+                    _heartbeat_fundamentals_sync_lock(db, _lock_owner_run_id, heartbeat_now),
+                    timeout=10,
+                )
+            except Exception as lock_exc:
+                logger.warning(f"{job_name}: heartbeat lock refresh failed: {lock_exc}")
 
     _heartbeat_task = asyncio.create_task(_heartbeat_worker())
 
@@ -3032,18 +3057,27 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         progress_processed = active.get("processed", 0)
         progress_total = active.get("total")
         progress_pct = active.get("pct")
-        await db.ops_job_runs.update_one(
-            {"_id": _running_doc_id},
-            {"$set": {
-                "details.step3_telemetry": step3_telemetry,
-                "progress": progress_msg,
-                "progress_processed": progress_processed,
-                "progress_total": progress_total,
-                "progress_pct": progress_pct,
-                "heartbeat_at": now_utc,
-                **_details_updated_fields(now_utc),
-            }},
-        )
+        try:
+            await asyncio.wait_for(
+                db.ops_job_runs.update_one(
+                    {"_id": _running_doc_id},
+                    {"$set": {
+                        "details.step3_telemetry": step3_telemetry,
+                        "details.last_ticker_started": _last_ticker_started,
+                        "details.last_ticker_finished": _last_ticker_finished,
+                        "progress": progress_msg,
+                        "progress_processed": progress_processed,
+                        "progress_total": progress_total,
+                        "progress_pct": progress_pct,
+                        "heartbeat_at": now_utc,
+                        **_details_updated_fields(now_utc),
+                    }},
+                ),
+                timeout=30,
+            )
+        except Exception as telem_exc:
+            logger.warning(f"{job_name}: telemetry write failed (skipping): {telem_exc}")
+            return
         _telemetry_last_write_monotonic = now_monotonic
         _telemetry_last_processed = int(active.get("processed", 0))
 
@@ -3280,6 +3314,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             "processed": 0,
             "success": 0,
             "failed": 0,
+            "ticker_timeouts": 0,
+            "db_timeouts": 0,
             "classification_events_enqueued": class_enqueue.get("new_inserts", 0),
             "classification_events_already_pending": class_enqueue.get("skipped_existing", 0),
             # requested_event_types moved to _debug — not used by the Step 3 card.
@@ -3335,12 +3371,36 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         return
 
             async def _process_one(ticker: str) -> dict:
+                nonlocal _last_ticker_started, _last_ticker_finished
+                t = ticker.upper().strip()
+                ticker_full = t if t.endswith(".US") else f"{t}.US"
                 # Fast in-memory check — no DB round-trip
                 if cancel_event.is_set() or await _is_cancelled():
                     cancel_event.set()
-                    return {"ticker": ticker, "success": False, "cancelled": True}
+                    return {"ticker": ticker_full, "success": False, "cancelled": True}
                 async with semaphore:
-                    return await sync_single_ticker_fundamentals(db, ticker, source_job=job_name)
+                    _last_ticker_started = ticker_full
+                    try:
+                        res = await asyncio.wait_for(
+                            sync_single_ticker_fundamentals(db, ticker, source_job=job_name),
+                            timeout=FUNDAMENTALS_SYNC_TICKER_TIMEOUT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(
+                            f"{job_name}: ticker {ticker_full} timed out after "
+                            f"{FUNDAMENTALS_SYNC_TICKER_TIMEOUT_SECONDS}s"
+                        )
+                        res = {
+                            "ticker": ticker_full,
+                            "success": False,
+                            "error": (
+                                f"Per-ticker hard timeout after "
+                                f"{FUNDAMENTALS_SYNC_TICKER_TIMEOUT_SECONDS}s"
+                            ),
+                            "error_type": "ticker_timeout",
+                        }
+                    _last_ticker_finished = ticker_full
+                    return res
 
             cancel_monitor_task = asyncio.create_task(_cancel_monitor_sched())
             tasks = [asyncio.create_task(_process_one(t)) for t in tickers_to_sync]
@@ -3384,6 +3444,11 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             )
                     else:
                         result["failed"] += 1
+                        err_type = ticker_result.get("error_type")
+                        if err_type == "ticker_timeout":
+                            result["ticker_timeouts"] += 1
+                        elif err_type == "db_timeout":
+                            result["db_timeouts"] += 1
                         if event_ids:
                             await db.fundamentals_events.update_many(
                                 {"_id": {"$in": event_ids}},

@@ -31,6 +31,31 @@ from provider_debug_service import upsert_provider_debug_snapshot
 logger = logging.getLogger("richstox.batch_jobs")
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
+# Hard timeout (seconds) for individual MongoDB operations inside
+# sync_single_ticker_fundamentals.  Prevents any single update_one /
+# bulk_write / count_documents / find_one from hanging indefinitely and
+# blocking the pipeline.
+DB_OP_TIMEOUT_SECONDS = 30
+
+
+class _DBOperationTimeout(Exception):
+    """Raised when a MongoDB operation exceeds its hard timeout."""
+
+
+async def _db_with_timeout(coro, desc: str, timeout_s: int = DB_OP_TIMEOUT_SECONDS):
+    """Execute *coro* with a hard ``asyncio.wait_for`` timeout.
+
+    On timeout raises :class:`_DBOperationTimeout` so the caller can
+    classify the failure as ``"db_timeout"`` rather than a generic exception.
+    """
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout_s)
+    except asyncio.TimeoutError:
+        raise _DBOperationTimeout(
+            f"db_timeout: {desc} exceeded {timeout_s}s"
+        )
+
+
 # Kill switch - set to True to pause all batch jobs
 BATCH_JOB_KILL_SWITCH = False
 
@@ -140,17 +165,20 @@ async def sync_single_ticker_fundamentals(
         """Mark ticker as error state — never leaves limbo."""
         err_at = datetime.now(timezone.utc)
         try:
-            await db.tracked_tickers.update_one(
-                {"ticker": ticker_full},
-                {"$set": {
-                    "fundamentals_status":        "error",
-                    "fundamentals_complete":      False,
-                    "needs_fundamentals_refresh": True,
-                    "fundamentals_error":         msg,
-                    "fundamentals_error_code":    code,
-                    "fundamentals_error_at":      err_at,
-                    "updated_at":                 datetime.now(timezone.utc),
-                }},
+            await asyncio.wait_for(
+                db.tracked_tickers.update_one(
+                    {"ticker": ticker_full},
+                    {"$set": {
+                        "fundamentals_status":        "error",
+                        "fundamentals_complete":      False,
+                        "needs_fundamentals_refresh": True,
+                        "fundamentals_error":         msg,
+                        "fundamentals_error_code":    code,
+                        "fundamentals_error_at":      err_at,
+                        "updated_at":                 datetime.now(timezone.utc),
+                    }},
+                ),
+                timeout=DB_OP_TIMEOUT_SECONDS,
             )
         except Exception:
             pass
@@ -193,10 +221,13 @@ async def sync_single_ticker_fundamentals(
         # 1. Company fundamentals cache
         company_doc = parse_company_fundamentals(ticker_full, data, raw_payload_hash=raw_payload_hash)
         company_doc["updated_at"] = now
-        await db.company_fundamentals_cache.update_one(
-            {"ticker": ticker_full},
-            {"$set": company_doc},
-            upsert=True,
+        await _db_with_timeout(
+            db.company_fundamentals_cache.update_one(
+                {"ticker": ticker_full},
+                {"$set": company_doc},
+                upsert=True,
+            ),
+            f"company_fundamentals_cache.update_one({ticker_full})",
         )
         result["has_fundamentals"] = True
 
@@ -211,9 +242,12 @@ async def sync_single_ticker_fundamentals(
         if logo_result.get("logo_data"):
             logo_update["logo_data"] = logo_result["logo_data"]
             logo_update["logo_content_type"] = logo_result["logo_content_type"]
-        await db.company_fundamentals_cache.update_one(
-            {"ticker": ticker_full},
-            {"$set": logo_update},
+        await _db_with_timeout(
+            db.company_fundamentals_cache.update_one(
+                {"ticker": ticker_full},
+                {"$set": logo_update},
+            ),
+            f"company_fundamentals_cache.update_one(logo, {ticker_full})",
         )
 
         # 2. Financial statements → company_financials (canonical), upsert
@@ -239,7 +273,10 @@ async def sync_single_ticker_fundamentals(
                     )
                     for r in financials_rows
                 ]
-                fin_res = await db.company_financials.bulk_write(fin_ops, ordered=False)
+                fin_res = await _db_with_timeout(
+                    db.company_financials.bulk_write(fin_ops, ordered=False),
+                    f"company_financials.bulk_write({ticker_full}, {len(fin_ops)} ops)",
+                )
                 fin_bulk["upserted_count"] = fin_res.upserted_count
                 fin_bulk["matched_count"]  = fin_res.matched_count
                 fin_bulk["modified_count"] = fin_res.modified_count
@@ -282,7 +319,10 @@ async def sync_single_ticker_fundamentals(
                     )
                     for r in earnings_rows
                 ]
-                earn_res = await db.company_earnings_history.bulk_write(earn_ops, ordered=False)
+                earn_res = await _db_with_timeout(
+                    db.company_earnings_history.bulk_write(earn_ops, ordered=False),
+                    f"company_earnings_history.bulk_write({ticker_full}, {len(earn_ops)} ops)",
+                )
                 earn_bulk["upserted_count"] = earn_res.upserted_count
                 earn_bulk["matched_count"]  = earn_res.matched_count
                 earn_bulk["modified_count"] = earn_res.modified_count
@@ -305,8 +345,14 @@ async def sync_single_ticker_fundamentals(
         result["earn_bulk_write"] = earn_bulk
 
         # 4. Post-write DB verification — detect silent 0-row persistence
-        db_fin_rows_after  = await db.company_financials.count_documents({"ticker": ticker_full})
-        db_earn_rows_after = await db.company_earnings_history.count_documents({"ticker": ticker_full})
+        db_fin_rows_after  = await _db_with_timeout(
+            db.company_financials.count_documents({"ticker": ticker_full}),
+            f"company_financials.count_documents({ticker_full})",
+        )
+        db_earn_rows_after = await _db_with_timeout(
+            db.company_earnings_history.count_documents({"ticker": ticker_full}),
+            f"company_earnings_history.count_documents({ticker_full})",
+        )
 
         corruption_flags = []
         if provider_has_fin and db_fin_rows_after == 0:
@@ -325,8 +371,11 @@ async def sync_single_ticker_fundamentals(
         # 5. Insider activity (absence is normal)
         insider_doc = parse_insider_activity(ticker_full, data)
         if insider_doc and (insider_doc.get("buyers_count", 0) > 0 or insider_doc.get("sellers_count", 0) > 0):
-            await db.insider_activity_cache.update_one(
-                {"ticker": ticker_full}, {"$set": insider_doc}, upsert=True
+            await _db_with_timeout(
+                db.insider_activity_cache.update_one(
+                    {"ticker": ticker_full}, {"$set": insider_doc}, upsert=True
+                ),
+                f"insider_activity_cache.update_one({ticker_full})",
             )
             result["has_insider"] = True
 
@@ -350,34 +399,40 @@ async def sync_single_ticker_fundamentals(
         fund_status = "complete" if logo_resolved else "partial"
         fund_complete = logo_resolved
 
-        await db.tracked_tickers.update_one(
-            {"ticker": ticker_full},
-            {"$set": {
-                "status":                     "active",
-                "is_active":                  True,
-                "name":                       company_doc.get("name"),
-                "sector":                     sector   or None,
-                "industry":                   industry or None,
-                "has_classification":         has_classification,
-                "financial_currency":         financial_currency,
-                "shares_outstanding":         shares_outstanding,
-                # Mark complete only after all writes + verification succeed
-                "fundamentals_status":        fund_status,
-                "fundamentals_complete":      fund_complete,
-                "needs_fundamentals_refresh": not fund_complete,
-                "fundamentals_updated_at":    now,
-                "fundamentals_error":         None,
-                "fundamentals_error_code":    None,
-                "fundamentals_error_at":      None,
-                "updated_at":                 now,
-            }},
-            upsert=True,
+        await _db_with_timeout(
+            db.tracked_tickers.update_one(
+                {"ticker": ticker_full},
+                {"$set": {
+                    "status":                     "active",
+                    "is_active":                  True,
+                    "name":                       company_doc.get("name"),
+                    "sector":                     sector   or None,
+                    "industry":                   industry or None,
+                    "has_classification":         has_classification,
+                    "financial_currency":         financial_currency,
+                    "shares_outstanding":         shares_outstanding,
+                    # Mark complete only after all writes + verification succeed
+                    "fundamentals_status":        fund_status,
+                    "fundamentals_complete":      fund_complete,
+                    "needs_fundamentals_refresh": not fund_complete,
+                    "fundamentals_updated_at":    now,
+                    "fundamentals_error":         None,
+                    "fundamentals_error_code":    None,
+                    "fundamentals_error_at":      None,
+                    "updated_at":                 now,
+                }},
+                upsert=True,
+            ),
+            f"tracked_tickers.update_one({ticker_full})",
         )
 
         # 7. Verify shares_outstanding was actually written
-        tt_after = await db.tracked_tickers.find_one(
-            {"ticker": ticker_full},
-            {"shares_outstanding": 1, "_id": 0},
+        tt_after = await _db_with_timeout(
+            db.tracked_tickers.find_one(
+                {"ticker": ticker_full},
+                {"shares_outstanding": 1, "_id": 0},
+            ),
+            f"tracked_tickers.find_one({ticker_full})",
         )
         shares_outstanding_after = (tt_after or {}).get("shares_outstanding")
 
@@ -392,6 +447,12 @@ async def sync_single_ticker_fundamentals(
         }
 
         result["success"] = True
+
+    except _DBOperationTimeout as e:
+        result["error"]      = str(e)
+        result["error_type"] = "db_timeout"
+        logger.error(f"DB timeout syncing {ticker_full}: {e}")
+        await _set_error("db_timeout", str(e)[:500])
 
     except Exception as e:
         result["error"]      = str(e)
