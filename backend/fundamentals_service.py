@@ -24,7 +24,7 @@ from provider_debug_service import upsert_provider_debug_snapshot
 logger = logging.getLogger("richstox.fundamentals")
 
 EODHD_BASE_URL = "https://eodhd.com/api"
-EODHD_LOGO_CDN = "https://eodhistoricaldata.com"
+EODHD_LOGO_CDN = "https://eodhd.com"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
 
