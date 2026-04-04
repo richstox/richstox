@@ -233,15 +233,14 @@ def test_backfill_worklist_picks_stale_absent():
     assert len(result) == 1
 
 
-def test_backfill_worklist_picks_absent_regardless_of_date():
+def test_backfill_worklist_picks_absent_status():
     """Cache doc with logo_status='absent' → always in worklist (visible scope)."""
-    fresh_date = LOGO_CDN_FIX_CUTOFF + timedelta(hours=1)
     db = _FakeDB(
         [{"ticker": "GOOG.US", **_BASE_TRACKED}],
         [{
             "ticker": "GOOG.US",
             "logo_status": "absent",
-            "logo_fetched_at": fresh_date,
+            "logo_fetched_at": LOGO_CDN_FIX_CUTOFF + timedelta(hours=1),
             "logo_url": "/img/logos/US/GOOG.png",
         }],
     )
