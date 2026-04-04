@@ -485,8 +485,8 @@ def test_completeness_requires_logo_fetched_at(monkeypatch):
     async def _fake_debug(**_kw):
         return {"stored": True}
 
-    # Logo result WITHOUT logo_fetched_at → should NOT be "complete"
-    async def _fake_logo_no_fetched_at(_url, _ticker):
+    # Logo result with logo_fetched_at=None → should NOT be "complete"
+    async def _fake_logo_with_null_fetched_at(_url, _ticker):
         return {"logo_status": "present", "logo_fetched_at": None, "logo_data": b"PNG", "logo_content_type": "image/png"}
 
     monkeypatch.setattr("batch_jobs_service.fetch_fundamentals_from_eodhd", _fake_fetch)
@@ -498,7 +498,7 @@ def test_completeness_requires_logo_fetched_at(monkeypatch):
     monkeypatch.setattr("batch_jobs_service.parse_earnings_history",
                         lambda t, d: [{"ticker": t, "quarter_date": "2025-12-31"}])
     monkeypatch.setattr("batch_jobs_service.parse_insider_activity", lambda t, d: None)
-    monkeypatch.setattr("batch_jobs_service._download_logo", _fake_logo_no_fetched_at)
+    monkeypatch.setattr("batch_jobs_service._download_logo", _fake_logo_with_null_fetched_at)
 
     result = asyncio.run(sync_single_ticker_fundamentals(db, "TEST"))
     assert result["success"] is True
