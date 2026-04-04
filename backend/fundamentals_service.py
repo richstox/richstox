@@ -82,7 +82,10 @@ async def _download_logo(logo_url: Optional[str], ticker: str) -> dict:
         )
         return {"logo_status": "absent", "logo_fetched_at": now}
     except Exception as e:
-        logger.warning("Logo download failed for %s: %s (url=%s)", ticker, e, source_url)
+        logger.warning(
+            "Logo download failed for %s: [%s] %s (url=%s)",
+            ticker, type(e).__name__, e, source_url,
+        )
     return {"logo_status": "error", "logo_fetched_at": now}
 
 # Pilot tickers for initial testing
