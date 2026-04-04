@@ -486,3 +486,81 @@ class TestPriceSyncNonTradingDaySkip:
 
         assert result["status"] in ("success", "completed")
         assert result.get("skipped_reason") is None
+
+
+# =============================================================================
+# Tests: sync_has_price_data_flags — empty-list safety guard
+# =============================================================================
+
+
+class TestSyncHasPriceDataFlagsGuard:
+    """Tests that sync_has_price_data_flags never wipes all flags to False."""
+
+    def test_empty_list_falls_back_to_db_query(self, monkeypatch):
+        """When tickers_with_price=[] the function falls back to stock_prices query."""
+
+        class _FakeStockPricesWithData:
+            async def distinct(self, field, query):
+                # Simulate existing price data in DB from previous trading day
+                return ["AAPL.US", "MSFT.US", "GOOGL.US"]
+
+        class _FakeTrackedTickersForFlags:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+
+            def find(self, query, projection=None):
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+
+            async def update_many(self, filt, update):
+                return SimpleNamespace(modified_count=0)
+
+        class _FakeDBForFlags:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
+                self.stock_prices = _FakeStockPricesWithData()
+
+        seeded = ["AAPL.US", "MSFT.US", "GOOGL.US", "AMZN.US"]
+        db = _FakeDBForFlags(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=[],  # empty list — should trigger fallback
+            )
+        )
+
+        # Must NOT wipe all flags — should find prices via DB query
+        assert result["with_price_data"] > 0, (
+            "Empty tickers_with_price should fall back to DB query, not wipe flags"
+        )
+
+    def test_nonempty_list_uses_fast_path(self, monkeypatch):
+        """When tickers_with_price has entries, fast path is used."""
+
+        class _FakeTrackedTickersForFlags:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+
+            def find(self, query, projection=None):
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+
+            async def update_many(self, filt, update):
+                return SimpleNamespace(modified_count=0)
+
+        class _FakeDBForFlags:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
+
+        seeded = ["AAPL.US", "MSFT.US"]
+        db = _FakeDBForFlags(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US", "MSFT.US"],
+            )
+        )
+
+        assert result["with_price_data"] == 2

@@ -1974,7 +1974,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     seeded_set = set(seeded_tickers)
     from price_ingestion_service import _normalize_step2_ticker
 
-    if tickers_with_price is not None:
+    if tickers_with_price is not None and len(tickers_with_price) > 0:
         # ── Fast path: use the set returned by the bulk feed ─────────────
         with_price_set = {
             _normalize_step2_ticker(t)
@@ -1984,6 +1984,17 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         any_price_set = with_price_set  # same set when sourced from bulk feed
         matched_raw = len(with_price_set)
     else:
+        # ── Safety guard: never wipe all flags with an empty list ────────
+        # When the bulk feed returns an empty list (e.g. non-trading day),
+        # fall back to querying stock_prices so existing price data is
+        # preserved.  Stale data is always better than an empty app.
+        if tickers_with_price is not None and len(tickers_with_price) == 0 and seeded_total > 0:
+            logger.warning(
+                "[sync_has_price_data_flags] tickers_with_price is empty but "
+                "%d tickers are seeded — falling back to stock_prices query "
+                "to preserve existing price flags",
+                seeded_total,
+            )
         # ── Legacy fallback: query stock_prices collection ───────────────
         seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
         ticker_candidates = list(set(seeded_tickers) | set(seeded_codes))
