@@ -416,6 +416,9 @@ class TestPriceSyncNonTradingDaySkip:
             "Non-trading-day path must still sync has_price_data flags"
         )
         assert flag_sync["seeded_total"] > 0
+        assert flag_sync["with_price_data"] > 0, (
+            "DB fallback should find existing price data from previous trading days"
+        )
 
     def test_price_sync_ops_job_runs_marked_completed(self, monkeypatch):
         """Non-trading-day skip updates ops_job_runs with completed status."""
