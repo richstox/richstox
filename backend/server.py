@@ -731,8 +731,11 @@ async def auth_dev_login(response: Response):
 # ---------------------------------------------------------------------------
 # Logos are downloaded server-side during fundamentals sync and stored as
 # binary ``logo_data`` in the existing ``company_fundamentals_cache`` docs.
-# This endpoint is purely read-only — it never fetches from external CDNs.
+# When a cached logo is missing, the endpoint fetches on-demand from the
+# EODHD CDN and caches the result for subsequent requests.
 # ---------------------------------------------------------------------------
+
+LOGO_FETCH_TIMEOUT_SECONDS = 10  # Max wait for on-demand CDN download
 
 
 def _internal_logo_url(ticker_or_path: Optional[str]) -> Optional[str]:
@@ -813,10 +816,10 @@ async def serve_logo(ticker: str):
         try:
             logo_result = await asyncio.wait_for(
                 _download_logo(logo_url, ticker_full),
-                timeout=10,
+                timeout=LOGO_FETCH_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            raise HTTPException(status_code=404, detail="Logo not found")
+            raise HTTPException(status_code=404, detail="Logo fetch timed out")
 
         # Persist the result so future requests are served from cache.
         update: dict = {
