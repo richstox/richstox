@@ -3684,6 +3684,37 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
         result["logo_backfill"] = logo_backfill_stats
 
+        # ── Proof-of-logo diagnostic: find ONE visible ticker with stored logo ─
+        _proof_ticker: Optional[str] = None
+        try:
+            _visible_with_logo = await db.tracked_tickers.aggregate([
+                {"$match": {"status": "active", "is_visible": True}},
+                {"$lookup": {
+                    "from": "company_fundamentals_cache",
+                    "localField": "ticker",
+                    "foreignField": "ticker",
+                    "as": "_fc",
+                }},
+                {"$unwind": "$_fc"},
+                {"$match": {
+                    "_fc.logo_status": "present",
+                    "_fc.logo_data": {"$exists": True},
+                }},
+                {"$limit": 1},
+                {"$project": {"_id": 0, "ticker": 1}},
+            ]).to_list(1)
+            if _visible_with_logo:
+                _proof_ticker = _visible_with_logo[0]["ticker"]
+        except Exception as _proof_exc:
+            logger.warning(f"{job_name}: proof-of-logo query failed: {_proof_exc}")
+
+        step3_telemetry["visible_present_logo_example_ticker"] = _proof_ticker
+        step3_telemetry["visible_present_logo_example_found"] = _proof_ticker is not None
+        logger.info(
+            f"{job_name}: proof-of-logo diagnostic: "
+            f"found={_proof_ticker is not None} ticker={_proof_ticker}"
+        )
+
         _phase_a_total = (len(tickers_to_sync) if tickers_to_sync else 0) + logo_backfill_stats["targeted"]
         _phase_update(
             "A",
