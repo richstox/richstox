@@ -1112,7 +1112,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       scheduledMinute: 0,
       icon: 'globe-outline' as const,
       color: '#6366F1',
-      apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}',
+      apiUrl: 'https://eodhd.com/api/exchange-symbol-list/{NYSE|NASDAQ}  (1 credit/exchange)',
       inputLabel: 'Raw symbols (EODHD)',
       inputCount: s1In,
       outputCount: s1Out,
@@ -1136,7 +1136,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       scheduledMinute: 0,
       icon: 'trending-up-outline' as const,
       color: '#10B981',
-      apiUrl: 'https://eodhd.com/api/eod-bulk-last-day/US',
+      apiUrl: 'https://eodhd.com/api/eod-bulk-last-day/US  (1 credit)',
+      apiUrl2: 'https://eodhd.com/api/eod/{TICKER}.US  (remediation: 1 credit/ticker)',
       inputLabel: 'Seeded tickers',
       inputCount: s1Out,
       outputCount: s2Out,
@@ -1157,6 +1158,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       icon: 'library-outline' as const,
       color: '#F59E0B',
       apiUrl: 'https://eodhd.com/api/fundamentals/{TICKER}.US  (~10 credits/ticker)',
+      apiUrl2: 'https://eodhd.com/img/logos/US/{TICKER}.png  (logo CDN, 0 credits)',
       inputLabel: 'Tickers with prices',
       inputCount: s2Out,
       outputCount: s3Out,
@@ -2200,8 +2202,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {isExpanded && (
                 <View style={s.details}>
-                  <Text style={s.detailLabel}>API ENDPOINT</Text>
+                  <Text style={s.detailLabel}>API ENDPOINT{step.apiUrl2 ? 'S' : ''}</Text>
                   <Text style={s.apiText}>· {step.apiUrl}</Text>
+                  {step.apiUrl2 && <Text style={s.apiText}>· {step.apiUrl2}</Text>}
                   <Text style={[s.detailLabel, { marginTop: 8 }]}>EXCLUDED IF</Text>
                   {step.filters.map(f => (
                     <Text key={f} style={s.filterText}>✕ {f}</Text>
@@ -2284,7 +2287,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           <Text style={s.neverRun}>Never run</Text>
         )}
         <Text style={[s.detailValue, { marginTop: 4 }]}>Fetch news + compute sentiment for tracked tickers</Text>
-        <Text style={s.apiText}>· https://eodhd.com/api/news (per tracked ticker)</Text>
+        <Text style={s.apiText}>· https://eodhd.com/api/news?s={'{SYMBOL}'}.US&limit=10&offset=0&fmt=json  (per tracked ticker)</Text>
       </View>
 
       {/* Benchmark Update — independent job, not part of universe pipeline */}
@@ -2350,6 +2353,43 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           <Text style={s.neverRun}>Never run</Text>
         )}
         <Text style={[s.detailValue, { marginTop: 4 }]}>Incremental update of S&P 500 Total Return benchmark (SP500TR.INDX)</Text>
+        <Text style={s.apiText}>· https://eodhd.com/api/eod/SP500TR.INDX?from={'{DATE}'}&to={'{DATE}'}&fmt=json</Text>
+      </View>
+
+      {/* ── All External API Endpoints Reference ── */}
+      <View style={[s.stepCard, { marginTop: 20, borderLeftColor: '#64748B', borderLeftWidth: 3 }]}>
+        <View style={s.stepHeader}>
+          <View style={[s.stepBadge, { backgroundColor: '#64748B22' }]}>
+            <Ionicons name="link-outline" size={16} color="#64748B" />
+          </View>
+          <View style={s.stepMeta}>
+            <Text style={s.stepTitle}>All External API Endpoints</Text>
+            <Text style={s.stepSchedule}>Complete reference of every external call</Text>
+          </View>
+        </View>
+
+        <View style={{ marginTop: 10 }}>
+          <Text style={[s.detailLabel, { marginBottom: 4 }]}>EODHD — PIPELINE (Steps 1-3)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/exchange-symbol-list/{'{NYSE|NASDAQ}'}  (Step 1 · 1 credit/exchange)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/eod-bulk-last-day/US  (Step 2.1 · 1 credit)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date={'{DATE}'}  (Step 2.2 · 1 credit)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date={'{DATE}'}  (Step 2.4 · 1 credit)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/calendar/earnings?from={'{DATE}'}&to={'{DATE}'}  (Step 2.6 · 1 credit)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/fundamentals/{'{TICKER}'}.US  (Step 3 · 10 credits/ticker)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/img/logos/US/{'{TICKER}'}.png  (Step 3 logo · CDN, 0 credits)</Text>
+
+          <Text style={[s.detailLabel, { marginTop: 10, marginBottom: 4 }]}>EODHD — REMEDIATION & BACKFILL</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/eod/{'{TICKER}'}.US?from={'{DATE}'}&to={'{DATE}'}  (price redownload · 1 credit/ticker)</Text>
+
+          <Text style={[s.detailLabel, { marginTop: 10, marginBottom: 4 }]}>EODHD — INDEPENDENT JOBS</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/exchange-details/US  (Market Calendar · daily 02:00 · 1 credit)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/news?s={'{SYMBOL}'}.US&limit=10&offset=0&fmt=json  (News Refresh · 13:00 · 1 credit/ticker)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/eod/SP500TR.INDX?from={'{DATE}'}&to={'{DATE}'}  (Benchmark · 04:15 · 1 credit)</Text>
+
+          <Text style={[s.detailLabel, { marginTop: 10, marginBottom: 4 }]}>GOOGLE OAUTH (on user login)</Text>
+          <Text style={s.apiText}>· POST https://oauth2.googleapis.com/token  (exchange code for token)</Text>
+          <Text style={s.apiText}>· GET https://www.googleapis.com/oauth2/v2/userinfo  (fetch user profile)</Text>
+        </View>
       </View>
 
       <View style={{ height: 40 }} />
