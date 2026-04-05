@@ -803,7 +803,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     const v = m.median;
     // Percentage metrics
     if (['Net Margin (TTM)', 'Free Cash Flow Yield', 'Revenue Growth (3Y CAGR)', 'Dividend Yield (TTM)', 'ROE'].includes(m.name))
-      return `${v >= 0 ? '' : ''}${v.toFixed(2)} %`;
+      return `${v.toFixed(2)} %`;
     // Ratio metrics
     return v.toFixed(2);
   };
