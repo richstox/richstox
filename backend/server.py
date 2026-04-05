@@ -4616,15 +4616,17 @@ async def get_news(
         {"_id": 0, "ticker": 1, "logo_url": 1, "name": 1, "logo_status": 1}
     ).to_list(length=None)
 
-    ticker_info = {}
+    # Build ticker_info keyed by bare ticker (e.g. "BHC") — must match
+    # the key format used later by _display_ticker from article_ticker_mapping.
+    ticker_info: Dict[str, dict] = {}
     for doc in company_docs:
-        ticker = doc.get("ticker", "").replace(".US", "").upper()
+        bare = doc.get("ticker", "").replace(".US", "").upper()
         logo_url = None
         if doc.get("logo_status") == "present":
-            logo_url = _internal_logo_url(doc.get("logo_url") or ticker)
-        ticker_info[ticker] = {
+            logo_url = _internal_logo_url(doc.get("logo_url") or bare)
+        ticker_info[bare] = {
             "logo_url": logo_url,
-            "name": doc.get("name", ticker),
+            "name": doc.get("name", bare),
         }
 
     # ==========================================================================
@@ -4727,8 +4729,11 @@ async def get_news(
     # ==========================================================================
     cached_news = []
     for article in paginated:
-        # P38.3: Use _display_ticker (mapped ticker) instead of raw ticker
-        ticker = article.get("_display_ticker") or article.get("ticker", "").upper()
+        # P38.3: Use _display_ticker (mapped ticker) instead of raw ticker.
+        # Normalise to upper-case bare ticker so it matches ticker_info keys
+        # and the same format the homepage My Stocks response uses.
+        raw_ticker = article.get("_display_ticker") or article.get("ticker", "")
+        ticker = raw_ticker.replace(".US", "").upper()
         info = ticker_info.get(ticker, {})
         logo_url = info.get("logo_url")
         company_name = info.get("name", ticker)
