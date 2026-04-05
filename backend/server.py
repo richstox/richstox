@@ -2663,6 +2663,137 @@ async def get_industry_benchmark_detail(industry: str):
         raise HTTPException(404, f"No benchmark data for industry: {industry}")
     return benchmark
 
+# ----- Peer Medians Admin Endpoints -----
+
+@api_router.get("/admin/peer-medians/groups")
+async def admin_peer_medians_groups(level: str = Query(..., regex="^(industry|sector|market)$")):
+    """Return available group names for a given level from peer_benchmarks."""
+    if level == "industry":
+        names = await db.peer_benchmarks.distinct("industry", {"industry": {"$ne": None}})
+    elif level == "sector":
+        names = await db.peer_benchmarks.distinct("sector", {"industry": None, "sector": {"$ne": None}})
+    else:
+        names = ["US Market"]
+    names = sorted([n for n in names if n])
+    return {"level": level, "groups": names}
+
+
+@api_router.get("/admin/peer-medians")
+async def admin_peer_medians(
+    level: str = Query(..., regex="^(industry|sector|market)$"),
+    key: str = Query(..., min_length=1),
+):
+    """
+    Read pre-computed peer medians from peer_benchmarks collection.
+    Returns medians for the 7 Key Metrics: P/E (TTM), Net Margin (TTM),
+    Free Cash Flow Yield, Net Debt / EBITDA, Revenue Growth (3Y CAGR),
+    Dividend Yield (TTM), ROE.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    import zoneinfo as _zi
+
+    # Query the correct document based on level
+    if level == "industry":
+        query = {"industry": key}
+    elif level == "sector":
+        query = {"sector": key, "industry": None}
+    else:  # market
+        query = {"sector": None, "industry": None}
+
+    doc = await db.peer_benchmarks.find_one(query, {"_id": 0, "metric_values": 0, "excluded_tickers": 0})
+
+    if not doc:
+        raise HTTPException(404, f"No peer benchmark data for {level}={key}")
+
+    benchmarks = doc.get("benchmarks", {})
+    ticker_count = doc.get("peer_count_used") or doc.get("peer_count") or 0
+    computed_at_raw = doc.get("computed_at")
+
+    # Convert computed_at to Europe/Prague
+    updated_at_prague = None
+    if computed_at_raw:
+        try:
+            prague = _zi.ZoneInfo("Europe/Prague")
+            if isinstance(computed_at_raw, str):
+                utc_dt = _dt.fromisoformat(computed_at_raw.replace("Z", "+00:00"))
+            else:
+                utc_dt = computed_at_raw if computed_at_raw.tzinfo else computed_at_raw.replace(tzinfo=_tz.utc)
+            updated_at_prague = utc_dt.astimezone(prague).isoformat()
+        except Exception:
+            updated_at_prague = str(computed_at_raw)
+
+    # Map the 7 required metrics to what exists in peer_benchmarks
+    metrics_count = doc.get("metrics_count", {})
+    metrics = {
+        "pe_ttm": {
+            "name": "P/E (TTM)",
+            "median": benchmarks.get("pe_median"),
+            "n_used": metrics_count.get("pe"),
+        },
+        "net_margin_ttm": {
+            "name": "Net Margin (TTM)",
+            "median": None,
+            "na_reason": "not_computed_in_peer_job",
+        },
+        "fcf_yield": {
+            "name": "Free Cash Flow Yield",
+            "median": None,
+            "na_reason": "not_computed_in_peer_job",
+        },
+        "net_debt_ebitda": {
+            "name": "Net Debt / EBITDA",
+            "median": None,
+            "na_reason": "not_computed_in_peer_job",
+        },
+        "revenue_growth_3y": {
+            "name": "Revenue Growth (3Y CAGR)",
+            "median": None,
+            "na_reason": "not_computed_in_peer_job",
+        },
+        "dividend_yield_ttm": {
+            "name": "Dividend Yield (TTM)",
+            "median": benchmarks.get("dividend_yield_median_all"),
+            "n_used": doc.get("dividend_peer_count"),
+        },
+        "roe": {
+            "name": "ROE",
+            "median": None,
+            "na_reason": "not_computed_in_peer_job",
+        },
+    }
+
+    # Also include the additional valuation metrics that ARE stored
+    for mk, bk, mc_key, label in [
+        ("ps_ttm", "ps_median", "ps", "P/S (TTM)"),
+        ("pb", "pb_median", "pb", "P/B"),
+        ("ev_ebitda_ttm", "ev_ebitda_median", "ev_ebitda", "EV/EBITDA (TTM)"),
+        ("ev_revenue_ttm", "ev_revenue_median", "ev_revenue", "EV/Revenue (TTM)"),
+    ]:
+        metrics[mk] = {
+            "name": label,
+            "median": benchmarks.get(bk),
+            "n_used": metrics_count.get(mc_key),
+        }
+
+    # Warning for insufficient peers
+    warning = None
+    if ticker_count < 5:
+        level_label = key if level != "market" else "Market"
+        warning = (
+            f"No peer benchmark available\u2026 {level_label} has fewer than "
+            f"5 companies in our database."
+        )
+
+    return {
+        "level": level,
+        "key": key,
+        "ticker_count": ticker_count,
+        "updated_at_prague": updated_at_prague,
+        "warning": warning,
+        "metrics": metrics,
+    }
+
+
 # ----- Dividend History Endpoints -----
 
 @api_router.post("/admin/dividends/sync-ticker/{ticker}")
