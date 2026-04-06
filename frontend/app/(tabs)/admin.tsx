@@ -192,11 +192,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const snapshotNewsRun = overview?.job_last_runs?.['news_refresh'] ?? null;
   const newsRun = liveNewsRun ?? snapshotNewsRun;
   const newsRunStatus = newsRun?.status as string | undefined;
-  const isNewsRefreshRunning = newsRefreshTriggered || newsRunStatus === 'running';
+  const isNewsRefreshRunning = newsRefreshTriggered || (newsRunStatus === 'running' && !newsRun?.finished_at && !newsRun?.end_time);
 
   // Poll news_refresh status while running (mirrors Benchmark Update pattern)
   useEffect(() => {
-    if (newsRunStatus !== 'running' || !sessionToken) {
+    if ((newsRunStatus !== 'running' || !!newsRun?.finished_at || !!newsRun?.end_time) || !sessionToken) {
       if (newsRefreshPollRef.current) {
         clearTimeout(newsRefreshPollRef.current);
         newsRefreshPollRef.current = null;

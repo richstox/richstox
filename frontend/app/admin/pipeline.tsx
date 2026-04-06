@@ -318,13 +318,17 @@ function normaliseRun(run: any): any {
 function deriveProgress(run: any) {
   if (!run) return null;
   const normalized = normaliseRun(run);
-  const isTerminalStatus = normalized.status === 'success' || normalized.status === 'completed';
+  const isComplete = normalized.status === 'success' || normalized.status === 'completed';
+  const isError = normalized.status === 'error' || normalized.status === 'failed';
+  // A run is terminal when it completed, errored, or has finished_at set
+  // (e.g. status still "running" but backend already wrote finished_at).
+  const isTerminal = isComplete || isError || (normalized.status === 'running' && !!normalized.finished_at);
   const total = normalized.progress_total;
   const processed = normalized.progress_processed ?? 0;
-  const pct = isTerminalStatus ? 100 : (total ? Math.min(Math.round((processed / total) * 100), 100) : (processed ? 100 : 0));
+  const pct = isComplete ? 100 : (total ? Math.min(Math.round((processed / total) * 100), 100) : (processed ? 100 : 0));
   // Auto-advance past 2.1@100%: when bulk sync is done the backend transitions
   // to 2.2 but the frontend poll may not catch it before completion.
-  const effectivePhase = isTerminalStatus ? 'completed'
+  const effectivePhase = isTerminal ? (isComplete ? 'completed' : normalized.phase)
     : (normalized.phase === '2.1_bulk_catchup' && pct >= 100)
     ? '2.2_split'
     : normalized.phase;
@@ -333,8 +337,18 @@ function deriveProgress(run: any) {
     total,
     pct,
     phase: effectivePhase,
-    message: isTerminalStatus ? undefined : normalized.progress,
+    message: isTerminal ? undefined : normalized.progress,
   };
+}
+
+/** Extract error text from whichever field is present on a run object. */
+function extractErrorText(run: any): string | null {
+  if (!run) return null;
+  if (run.error_message) return run.error_message;
+  if (run.result?.error) return run.result.error;
+  const days = run.details?.price_bulk_gapfill?.days;
+  if (Array.isArray(days) && days.length > 0 && days[0]?.error) return days[0].error;
+  return run.error || null;
 }
 
 export default function PipelineTab({ sessionToken }: PipelineProps) {
@@ -943,16 +957,19 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   }, [jobRunsRaw, liveLastRuns]);
 
   // Derive benchmark running state from real backend status
-  const benchmarkRunStatus = jobRuns['benchmark_update']?.status;
-  const isBenchmarkRunning = benchmarkUpdating || benchmarkRunStatus === 'running';
+  // "running" only when status=="running" AND finished_at is null
+  const benchmarkRun = jobRuns['benchmark_update'];
+  const benchmarkRunStatus = benchmarkRun?.status;
+  const isBenchmarkRunning = benchmarkUpdating || (benchmarkRunStatus === 'running' && !benchmarkRun?.finished_at);
 
   // Derive news refresh running state from real backend status
-  const newsRefreshStatus = jobRuns['news_refresh']?.status;
-  const isNewsRefreshRunning = newsRefreshRunning || newsRefreshStatus === 'running';
+  const newsRefreshRun = jobRuns['news_refresh'];
+  const newsRefreshStatus = newsRefreshRun?.status;
+  const isNewsRefreshRunning = newsRefreshRunning || (newsRefreshStatus === 'running' && !newsRefreshRun?.finished_at);
 
   // Poll benchmark status while it is running so UI updates when the job finishes
   useEffect(() => {
-    if (benchmarkRunStatus !== 'running' || !sessionToken) {
+    if (!isBenchmarkRunning || !sessionToken) {
       if (benchmarkPollRef.current) {
         clearTimeout(benchmarkPollRef.current);
         benchmarkPollRef.current = null;
@@ -987,11 +1004,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         benchmarkPollRef.current = null;
       }
     };
-  }, [benchmarkRunStatus, sessionToken]);
+  }, [isBenchmarkRunning, sessionToken]);
 
   // Poll news_refresh status while it is running so UI updates when the job finishes
   useEffect(() => {
-    if (newsRefreshStatus !== 'running' || !sessionToken) {
+    if (!isNewsRefreshRunning || !sessionToken) {
       if (newsRefreshPollRef.current) {
         clearTimeout(newsRefreshPollRef.current);
         newsRefreshPollRef.current = null;
@@ -1026,7 +1043,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         newsRefreshPollRef.current = null;
       }
     };
-  }, [newsRefreshStatus, sessionToken]);
+  }, [isNewsRefreshRunning, sessionToken]);
 
   useEffect(() => {
     const lr = jobRuns['price_sync'];
@@ -1384,7 +1401,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       {/* Pipeline Steps */}
       {steps.map((step, idx) => {
         const run = jobRuns[step.job_name];
-        const status = run?.status;
+        const rawStatus = run?.status;
+        // Treat status="running" with finished_at present as an error (stale/stuck run).
+        const status = (rawStatus === 'running' && !!run?.finished_at) ? 'error' : rawStatus;
         const isExpanded = expandedSteps.has(step.step);
 
         // Chain icon override: when a chain run is active, derive icon state from chain progress.
@@ -1528,7 +1547,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 const lastDuration = run.duration_seconds ?? (
                   runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
                 );
-                const isLiveRun = run.status === 'running' && !chainStepDone;
+                const isLiveRun = run.status === 'running' && !run.finished_at && !chainStepDone;
                 const prevCompleted = run.previous_completed_run;
                 const prevEnd = prevCompleted?.finished_at_prague || prevCompleted?.finished_at;
                 const statusText = isLiveRun
@@ -1578,7 +1597,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     <Text style={s.runValue}>{nextRunLabel}</Text>
                   </View>
                   )}
-                  {(step.job_name === 'price_sync' || step.job_name === 'fundamentals_sync') && run.status === 'running' && (
+                  {(step.job_name === 'price_sync' || step.job_name === 'fundamentals_sync') && run.status === 'running' && !run.finished_at && (
                     <TouchableOpacity
                       style={s.cancelRunningBtn}
                       onPress={() => handleCancelRunningJob(step.job_name as 'price_sync' | 'fundamentals_sync')}
@@ -1586,9 +1605,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.cancelRunningBtnText}>Cancel running</Text>
                     </TouchableOpacity>
                   )}
-                  {run.error_message && (
-                    <Text style={s.errorText}>⚠️ {run.error_message}</Text>
-                  )}
+                  {(() => {
+                    const showError = run.status === 'error' || run.status === 'failed' || (run.status === 'running' && !!run.finished_at);
+                    const errorText = showError ? extractErrorText(run) : null;
+                    return errorText ? <Text style={s.errorText}>⚠️ {errorText}</Text> : null;
+                  })()}
                 </View>
                 );
               })() : step.job_name !== 'price_sync' ? (
