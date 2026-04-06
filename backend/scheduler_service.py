@@ -1267,7 +1267,11 @@ async def run_daily_price_sync(
 
     async def _price_sync_heartbeat_worker() -> None:
         while not _heartbeat_stop.is_set():
-            await asyncio.sleep(PRICE_SYNC_HEARTBEAT_SECONDS)
+            try:
+                await asyncio.wait_for(_heartbeat_stop.wait(), timeout=PRICE_SYNC_HEARTBEAT_SECONDS)
+                return  # stop event was set
+            except asyncio.TimeoutError:
+                pass  # normal: interval elapsed, do heartbeat
             try:
                 hb_now = datetime.now(timezone.utc)
                 await _heartbeat_price_sync_lock(db, _lock_owner_run_id, hb_now)
@@ -1277,8 +1281,8 @@ async def run_daily_price_sync(
                 )
             except asyncio.CancelledError:
                 return
-            except Exception:
-                pass  # best-effort
+            except Exception as _hb_exc:
+                logger.debug(f"price_sync heartbeat error (best-effort): {_hb_exc}")
 
     async def _release_price_sync_resources() -> None:
         nonlocal _heartbeat_task, _lock_acquired
