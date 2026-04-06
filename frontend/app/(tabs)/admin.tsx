@@ -702,7 +702,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         {/* Historical / Price Integrity truth */}
         <Text style={[d.subSection, { marginTop: 12 }]}>Price Completeness (process truth)</Text>
         <Text style={d.cpHint}>
-          Proven historical download + no missing bulk dates since download
+          Per-ticker proof: full history downloaded + no missing daily bulk dates since that download
         </Text>
         <IntegrityMetric
           label="Complete Prices (strict proof)"
@@ -710,7 +710,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           status={hdcStatus}
         />
         <IntegrityMetric
-          label="Gap-Free Since Download"
+          label="Gap-Free (no missing bulk days)"
           value={gfValue}
           status={gfStatus}
         />
@@ -718,8 +718,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
       {/* D) Bulk Completeness (since last full backfill) */}
       <View style={d.card}>
-        <Text style={d.sectionTitle}>Bulk Completeness (since last full backfill)</Text>
-        <Text style={d.cpHint}>Daily bulk snapshots since last full backfill baseline</Text>
+        <Text style={d.sectionTitle}>Daily Bulk Ingestion</Text>
+        <Text style={d.cpHint}>
+          After the full backfill downloads all individual prices, EODHD daily bulk reports fill in each new trading day.
+          This card shows whether we have a bulk report for every trading day since the backfill.
+        </Text>
         {!bcHasBaseline ? (
           <>
             <Text style={[d.cpHint, { color: '#F59E0B', fontStyle: 'normal', fontSize: 11 }]}>
@@ -750,7 +753,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
               />
             </View>
             <View style={d.cpRow}>
-              <Text style={d.cpLabel}>Last Full Backfill</Text>
+              <Text style={d.cpLabel}>Backfill Finished</Text>
               <Text style={d.cpDate}>
                 {bcBaseline?.completed_at_prague
                   ? bcBaseline.completed_at_prague.replace('T', ' ').slice(0, 19)
@@ -758,11 +761,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
               </Text>
             </View>
             <View style={d.cpRow}>
-              <Text style={d.cpLabel}>Through Date</Text>
+              <Text style={d.cpLabel}>All Prices Downloaded Through</Text>
               <Text style={d.cpDate}>{bcBaseline?.through_date ?? '—'}</Text>
             </View>
             <View style={d.cpRow}>
-              <Text style={d.cpLabel}>Latest Bulk Ingested</Text>
+              <Text style={d.cpLabel}>Latest Daily Bulk Date</Text>
               <Text style={d.cpDate}>{bc?.latest_bulk_date_ingested ?? '—'}</Text>
             </View>
             {(bc?.ingested_dates ?? []).length > 0 && (
