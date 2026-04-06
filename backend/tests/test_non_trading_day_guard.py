@@ -270,6 +270,15 @@ def _patch_non_gapfill_dependencies(monkeypatch):
     async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
         return {"enqueued_total": 0, "skipped_total": 0, "cancelled": False}
 
+    # Mock market_calendar helpers used by run_daily_price_sync
+    import services.market_calendar_service as _mc
+    async def _fake_is_calendar_fresh(db, market="US"):
+        return True
+    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+        return "2026-04-02"
+    monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
+    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+
     monkeypatch.setattr(scheduler_service, "sync_has_price_data_flags", _fake_flags)
     monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
     monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
@@ -303,7 +312,7 @@ class TestBulkCatchupNonTradingDayGuard:
         db = _FakeDB(calendar_rows=calendar_rows, seeded_tickers=["AAPL.US", "MSFT.US"])
 
         # Fake EODHD returning data for the holiday date
-        async def _fake_fetch(exchange, include_meta=False):
+        async def _fake_fetch(exchange, include_meta=False, **kwargs):
             data = [
                 {"code": "AAPL", "date": holiday_date, "open": 150, "high": 155, "low": 148, "close": 152, "adjusted_close": 152, "volume": 100},
                 {"code": "MSFT", "date": holiday_date, "open": 300, "high": 310, "low": 295, "close": 305, "adjusted_close": 305, "volume": 200},
@@ -341,7 +350,7 @@ class TestBulkCatchupNonTradingDayGuard:
         ]
         db = _FakeDB(calendar_rows=calendar_rows, seeded_tickers=["AAPL.US"])
 
-        async def _fake_fetch(exchange, include_meta=False):
+        async def _fake_fetch(exchange, include_meta=False, **kwargs):
             data = [
                 {"code": "AAPL", "date": weekend_date, "open": 150, "high": 155, "low": 148, "close": 152, "adjusted_close": 152, "volume": 0},
             ]
@@ -375,7 +384,7 @@ class TestBulkCatchupNonTradingDayGuard:
         ]
         db = _FakeDB(calendar_rows=calendar_rows, seeded_tickers=["AAPL.US"])
 
-        async def _fake_fetch(exchange, include_meta=False):
+        async def _fake_fetch(exchange, include_meta=False, **kwargs):
             data = [
                 {"code": "AAPL", "date": trading_date, "open": 150, "high": 155, "low": 148, "close": 152, "adjusted_close": 152, "volume": 50000000},
             ]
@@ -401,7 +410,7 @@ class TestBulkCatchupNonTradingDayGuard:
         # No calendar rows at all
         db = _FakeDB(calendar_rows=[], seeded_tickers=["AAPL.US"])
 
-        async def _fake_fetch(exchange, include_meta=False):
+        async def _fake_fetch(exchange, include_meta=False, **kwargs):
             data = [
                 {"code": "AAPL", "date": date_str, "open": 150, "high": 155, "low": 148, "close": 152, "adjusted_close": 152, "volume": 50000000},
             ]
@@ -436,7 +445,7 @@ class TestPriceSyncNonTradingDaySkip:
         _patch_non_gapfill_dependencies(monkeypatch)
         db = _FakeDB(seeded_tickers=["AAPL.US", "MSFT.US"])
 
-        async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+        async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
             return {
                 "status": "skipped",
                 "skipped_reason": "non_trading_day",
@@ -489,7 +498,7 @@ class TestPriceSyncNonTradingDaySkip:
         _patch_non_gapfill_dependencies(monkeypatch)
         db = _FakeDB(seeded_tickers=["AAPL.US"])
 
-        async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+        async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
             return {
                 "status": "skipped",
                 "skipped_reason": "non_trading_day",
@@ -533,7 +542,7 @@ class TestPriceSyncNonTradingDaySkip:
         _patch_non_gapfill_dependencies(monkeypatch)
         db = _FakeDB(seeded_tickers=["AAPL.US", "MSFT.US"])
 
-        async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+        async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
             return {
                 "status": "success",
                 "dates_processed": 1,
