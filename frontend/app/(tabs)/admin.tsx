@@ -80,6 +80,8 @@ interface BulkCompleteness {
   latest_bulk_date_ingested?: string | null;
   gap_free_since_baseline?: boolean | null;
   expected_days_count?: number | null;
+  ingested_days_count?: number | null;
+  ingested_dates?: string[];
   message?: string;
 }
 
@@ -161,12 +163,16 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     today?: string;
     today_is_trading_day?: boolean;
     today_holiday_name?: string | null;
+    last_closing_day?: string | null;
     latest_trading_day?: string | null;
     next_trading_day?: string | null;
     calendar_fresh?: boolean;
   } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // ── Calendar refresh state ──────────────────────────────────────────────
+  const [calendarRefreshing, setCalendarRefreshing] = useState(false);
 
   // ── News refresh (Morning Refresh) state ────────────────────────────────
   const [newsRefreshTriggered, setNewsRefreshTriggered] = useState(false);
@@ -271,6 +277,28 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       Alert.alert('Morning Refresh', e?.message || 'Could not start news refresh');
     } finally {
       setNewsRefreshTriggered(false);
+    }
+  };
+
+  const handleRefreshCalendar = async () => {
+    setCalendarRefreshing(true);
+    try {
+      const res = await fetch(`${API_URL}/api/admin/job/market_calendar/run`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
+        throw new Error(msg);
+      }
+      // Refresh to pick up new calendar data
+      await fetchAll();
+    } catch (e: any) {
+      Alert.alert('Calendar Refresh', e?.message || 'Could not refresh calendar');
+    } finally {
+      setCalendarRefreshing(false);
     }
   };
 
@@ -542,7 +570,20 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
       {/* US Market Calendar Widget */}
       <View style={d.card}>
-        <Text style={d.sectionTitle}>US Market Calendar</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Text style={d.sectionTitle}>US Market Calendar</Text>
+          <TouchableOpacity
+            style={[d.opsRunBtn, calendarRefreshing && { opacity: 0.5 }]}
+            onPress={handleRefreshCalendar}
+            disabled={calendarRefreshing}
+          >
+            {calendarRefreshing ? (
+              <ActivityIndicator size={10} color={COLORS.primary} />
+            ) : (
+              <Text style={d.opsRunBtnText}>Refresh</Text>
+            )}
+          </TouchableOpacity>
+        </View>
         {calendarSummary ? (
           <View style={d.opsGrid}>
             <View style={d.opsItem}>
@@ -698,7 +739,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                 status={bcStatusColor}
               />
               <IntegrityMetric
-                label="Missing Bulk Days"
+                label="Bulk Days (ingested / expected)"
+                value={`${bc?.ingested_days_count ?? '?'} / ${bc?.expected_days_count ?? '?'}`}
+                status={bcMissing === 0 ? 'green' : 'red'}
+              />
+              <IntegrityMetric
+                label="Missing"
                 value={String(bcMissing)}
                 status={bcMissing === 0 ? 'green' : 'red'}
               />
@@ -719,10 +765,18 @@ function DashboardTab({ sessionToken }: DashboardProps) {
               <Text style={d.cpLabel}>Latest Bulk Ingested</Text>
               <Text style={d.cpDate}>{bc?.latest_bulk_date_ingested ?? '—'}</Text>
             </View>
-            <View style={d.cpRow}>
-              <Text style={d.cpLabel}>Expected Days</Text>
-              <Text style={d.cpDate}>{bc?.expected_days_count ?? '—'}</Text>
-            </View>
+            {(bc?.ingested_dates ?? []).length > 0 && (
+              <>
+                <Text style={[d.subSection, { marginTop: 8 }]}>Ingested Bulk Dates</Text>
+                {(bc?.ingested_dates ?? []).map((dt) => (
+                  <View key={dt} style={d.cpRow}>
+                    <View style={[d.cpDot, { backgroundColor: '#22C55E' }]} />
+                    <Text style={d.cpLabel}>{dt}</Text>
+                    <Text style={[d.cpValue, { color: '#22C55E' }]}>✓</Text>
+                  </View>
+                ))}
+              </>
+            )}
             {bcBaseline?.job_run_id && (
               <View style={d.cpRow}>
                 <Text style={d.cpLabel}>Job Run ID</Text>
