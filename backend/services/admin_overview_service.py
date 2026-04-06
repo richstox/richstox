@@ -547,7 +547,7 @@ _SAFE_INTEGRITY = {
 }
 
 _CHECKPOINT_KIND = {
-    "latest_trading_day": "recent",
+    "last_closing_day": "recent",
     "1_week_ago": "recent",
     "1_month_ago": "historical",
     "1_year_ago": "historical",
@@ -851,7 +851,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
 
         # ── 4. Coverage checkpoints ─────────────────────────────────────────
         target_offsets = {
-            "latest_trading_day": last_bulk_date or today_str,
+            "last_closing_day": last_bulk_date or today_str,
             "1_week_ago": (date.today() - timedelta(days=7)).isoformat(),
             "1_month_ago": (date.today() - timedelta(days=30)).isoformat(),
             "1_year_ago": (date.today() - timedelta(days=365)).isoformat(),

@@ -6168,7 +6168,7 @@ async def market_open_closed(market: str = "US"):
 @api_router.get("/admin/market-calendar-summary")
 async def admin_market_calendar_summary(market: str = "US"):
     """
-    Dashboard widget data: today status, latest_trading_day, next trading day.
+    Dashboard widget data: today status, last_closing_day, next trading day.
     Admin-only — uses existing market_calendar collection, no external API calls.
     """
     from services.market_calendar_service import get_calendar_summary

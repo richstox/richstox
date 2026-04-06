@@ -812,6 +812,7 @@ async def run_daily_bulk_catchup(
     seeded_tickers_override: Optional[Set[str]] = None,
     *,
     latest_trading_day: Optional[str] = None,
+    bulk_data_override: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Fetch the EODHD latest-day bulk file once and upsert into stock_prices.
@@ -827,6 +828,9 @@ async def run_daily_bulk_catchup(
     latest_trading_day: when provided, the bulk URL includes ``?date={latest_trading_day}``
     so EODHD returns data for that exact date.  ``processed_date`` is set to this value
     instead of being derived from the payload.
+
+    bulk_data_override: when provided, skip the EODHD fetch and use this data directly.
+    Used by the LCD validation loop to avoid double-fetching the same bulk payload.
     """
     from pymongo import UpdateOne
 
@@ -844,12 +848,19 @@ async def run_daily_bulk_catchup(
     bulk_url_used = f"{EODHD_BASE_URL}/eod-bulk-last-day/US"
     if latest_trading_day:
         bulk_url_used = f"{bulk_url_used}?date={latest_trading_day}"
-    logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (date=%s)", latest_trading_day or "latest")
 
-    # Single API call — date param ensures EODHD returns data for the exact trading day
-    bulk_data, bulk_fetch_executed = await fetch_bulk_eod_latest(
-        "US", include_meta=True, for_date=latest_trading_day,
-    )
+    # Use pre-fetched bulk data when available (LCD validation loop already
+    # fetched it); otherwise make a fresh EODHD API call.
+    if bulk_data_override is not None:
+        bulk_data = bulk_data_override
+        bulk_fetch_executed = True
+        logger.info("[BULK CATCHUP] Using pre-fetched bulk data (date=%s, rows=%d)", latest_trading_day or "latest", len(bulk_data))
+    else:
+        logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (date=%s)", latest_trading_day or "latest")
+        # Single API call — date param ensures EODHD returns data for the exact trading day
+        bulk_data, bulk_fetch_executed = await fetch_bulk_eod_latest(
+            "US", include_meta=True, for_date=latest_trading_day,
+        )
     raw_row_count = len(bulk_data)
 
     # ── Cancel check 2a: immediately after the API call returns ──────────────
@@ -1020,10 +1031,12 @@ async def run_daily_bulk_catchup(
 
     unique_dates = sorted(set(row["date"] for row in parsed_rows))
     if len(unique_dates) != 1:
-        logger.error(
-            "[BULK CATCHUP] Expected exactly one payload date, got %s",
-            unique_dates,
+        _error_detail = (
+            f"bulk payload has no dates (empty payload) for date={latest_trading_day}"
+            if len(unique_dates) == 0
+            else f"bulk payload contains multiple dates ({unique_dates}) for date={latest_trading_day}"
         )
+        logger.error("[BULK CATCHUP] %s", _error_detail)
         return {
             "status": "error",
             "message": "Bulk payload contains zero or multiple dates",
