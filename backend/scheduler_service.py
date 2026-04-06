@@ -1471,7 +1471,15 @@ async def run_daily_price_sync(
                         _v_bulk_norm.add(f"{_tn}.US")
                 _v_matched = len(_v_bulk_norm & _seeded_norm)
 
-                if len(_v_unique) == 1 and _v_matched >= LCD_MIN_MATCHED_TICKERS:
+                # Accept candidate only when the bulk payload contains
+                # exactly one date AND that date matches the candidate.
+                # Without the date-match guard, a holiday candidate
+                # (e.g. Good Friday) could be accepted when EODHD returns
+                # the previous trading day's data under a different date.
+                _v_date_matches = (
+                    len(_v_unique) == 1 and _v_unique[0] == _lcd_candidate
+                )
+                if _v_date_matches and _v_matched >= LCD_MIN_MATCHED_TICKERS:
                     _last_closing_day = _lcd_candidate
                     _lcd_bulk_data = _v_data
                     break
@@ -1481,6 +1489,7 @@ async def run_daily_price_sync(
                     "unique_dates_count": len(_v_unique),
                     "unique_dates": _v_unique[:5],  # sample
                     "matched_seeded_tickers_count": _v_matched,
+                    "payload_date_mismatch": not _v_date_matches,
                 })
             else:
                 _lcd_tried.append({
@@ -1676,8 +1685,17 @@ async def run_daily_price_sync(
                     {"_id": _running_doc_id},
                     {"$set": {"details.price_bulk_gapfill.ticker_samples": result_gapfill["ticker_samples"]}},
                 )
-                day["processed_date"] = _last_closing_day
-                day["bulk_date"] = _last_closing_day
+                # Use the actual date from the bulk payload (date_seen)
+                # instead of blindly trusting the LCD candidate.  With the
+                # date-match guard in the LCD search loop the two should
+                # always be equal, but this provides defence-in-depth.
+                _actual_date = (
+                    day_result.get("processed_date")
+                    or day_result.get("date")
+                    or _last_closing_day
+                )
+                day["processed_date"] = _actual_date
+                day["bulk_date"] = _actual_date
                 day["unique_dates"] = day_result.get("unique_dates", [])
                 result["bulk_writes"] += day_result.get("bulk_writes", 0)
 
