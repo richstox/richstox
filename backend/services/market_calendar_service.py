@@ -115,14 +115,29 @@ async def refresh_market_calendar(
                 regular_close = parts[1].strip()
 
         # Parse holidays
+        # EODHD returns ExchangeHolidays as a dict with numeric string
+        # keys ("0", "1", …) where each value is a sub-dict containing
+        # "Holiday", "Date", and "Type".  Older/alternative payloads may
+        # use date strings as keys, or return a list of dicts.  We handle
+        # all three formats.
         raw_holidays = exchange_details.get("ExchangeHolidays") or {}
         if isinstance(raw_holidays, dict):
-            for date_str, info in raw_holidays.items():
-                name = info if isinstance(info, str) else (
-                    info.get("Holiday") or info.get("Name") or info.get("name") or "Holiday"
-                    if isinstance(info, dict) else "Holiday"
-                )
-                holidays[date_str] = name
+            for key, info in raw_holidays.items():
+                if isinstance(info, dict):
+                    # Value is a sub-dict — extract date from "Date" field.
+                    d = info.get("Date") or info.get("date") or key
+                    n = (
+                        info.get("Holiday")
+                        or info.get("Name")
+                        or info.get("name")
+                        or "Holiday"
+                    )
+                    holidays[d] = n
+                elif isinstance(info, str):
+                    # Key is the date, value is the holiday name (legacy).
+                    holidays[key] = info
+                else:
+                    holidays[key] = "Holiday"
         elif isinstance(raw_holidays, list):
             for item in raw_holidays:
                 if isinstance(item, dict):
@@ -132,15 +147,17 @@ async def refresh_market_calendar(
                         holidays[d] = n
 
         # Parse early close days
+        # Same numeric-key dict pattern as holidays.
         raw_early = exchange_details.get("ExchangeEarlyCloseDays") or {}
         if isinstance(raw_early, dict):
-            for date_str, close_time in raw_early.items():
-                if isinstance(close_time, str):
-                    early_close_dates[date_str] = close_time
-                elif isinstance(close_time, dict):
-                    early_close_dates[date_str] = (
-                        close_time.get("Close") or close_time.get("close") or ""
-                    )
+            for key, info in raw_early.items():
+                if isinstance(info, dict):
+                    d = info.get("Date") or info.get("date") or key
+                    c = info.get("Close") or info.get("close") or ""
+                    if c:
+                        early_close_dates[d] = c
+                elif isinstance(info, str):
+                    early_close_dates[key] = info
         elif isinstance(raw_early, list):
             for item in raw_early:
                 if isinstance(item, dict):

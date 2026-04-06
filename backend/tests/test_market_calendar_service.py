@@ -1070,3 +1070,140 @@ class TestMarketOpenClosedNow:
             result = await market_open_closed_now(db)
             assert result["is_open"] is False
             assert result["state"] == "AFTER_HOURS"
+
+
+# ── Calendar Refresh (holiday parsing) ──────────────────────────────────────
+
+
+class _BulkWriteResult:
+    """Minimal stand-in for pymongo BulkWriteResult."""
+    def __init__(self):
+        self.upserted_count = 0
+        self.modified_count = 0
+
+
+class _FakeCalendarCollection:
+    """Captures bulk_write calls so we can inspect generated docs."""
+    def __init__(self):
+        self.ops = []
+
+    async def bulk_write(self, ops, ordered=False):
+        self.ops.extend(ops)
+        return _BulkWriteResult()
+
+
+class _FakeCalendarDB:
+    """Minimal DB that stores a market_calendar collection."""
+    def __init__(self):
+        self.market_calendar = _FakeCalendarCollection()
+
+    def __getitem__(self, name):
+        return self.market_calendar
+
+
+class TestRefreshMarketCalendar:
+    """Test that refresh_market_calendar correctly parses EODHD exchange-details."""
+
+    # The real EODHD response uses numeric string keys.
+    EODHD_PAYLOAD = {
+        "Name": "USA Stocks",
+        "Code": "US",
+        "Timezone": "America/New_York",
+        "TradingHours": {
+            "Open": "09:30:00",
+            "Close": "16:00:00",
+            "WorkingDays": "Mon,Tue,Wed,Thu,Fri",
+        },
+        "ExchangeHolidays": {
+            "0": {"Holiday": "New Year\u2019s Day", "Date": "2026-01-01", "Type": "official"},
+            "1": {"Holiday": "Good Friday", "Date": "2026-04-03", "Type": "official"},
+            "2": {"Holiday": "Christmas Day", "Date": "2025-12-25", "Type": "official"},
+        },
+        "ExchangeEarlyCloseDays": {},
+    }
+
+    @pytest.mark.asyncio
+    async def test_numeric_key_holidays_parsed_correctly(self):
+        """Holidays with numeric-string keys must be indexed by date, not key."""
+        from services.market_calendar_service import refresh_market_calendar
+
+        db = _FakeCalendarDB()
+        with patch("services.market_calendar_service._fetch_exchange_details", return_value=self.EODHD_PAYLOAD):
+            summary = await refresh_market_calendar(db, "US", years_ahead=1)
+
+        assert summary["status"] == "success"
+        assert summary["holidays_count"] == 3
+
+        # Collect all upserted documents keyed by date
+        from pymongo import UpdateOne
+        docs_by_date = {}
+        for op in db.market_calendar.ops:
+            # UpdateOne stores the update spec in ._doc (internal)
+            update = op._doc  # {"$set": {...}, "$setOnInsert": {...}}
+            doc = update["$set"]
+            docs_by_date[doc["date"]] = doc
+
+        # Good Friday 2026-04-03 must be a non-trading holiday
+        assert "2026-04-03" in docs_by_date, "Good Friday row missing"
+        gf = docs_by_date["2026-04-03"]
+        assert gf["is_trading_day"] is False, "Good Friday must NOT be a trading day"
+        assert gf["holiday_name"] == "Good Friday"
+
+        # 2026-01-01 must also be a holiday
+        assert "2026-01-01" in docs_by_date
+        assert docs_by_date["2026-01-01"]["is_trading_day"] is False
+
+        # A regular weekday (e.g. 2026-04-02 Thursday) must be a trading day
+        if "2026-04-02" in docs_by_date:
+            assert docs_by_date["2026-04-02"]["is_trading_day"] is True
+
+    @pytest.mark.asyncio
+    async def test_legacy_date_key_holidays_still_work(self):
+        """Holidays with date-string keys and string names (legacy format)."""
+        from services.market_calendar_service import refresh_market_calendar
+
+        legacy = dict(self.EODHD_PAYLOAD)
+        legacy["ExchangeHolidays"] = {
+            "2026-04-03": "Good Friday",
+            "2026-01-01": "New Year's Day",
+        }
+
+        db = _FakeCalendarDB()
+        with patch("services.market_calendar_service._fetch_exchange_details", return_value=legacy):
+            summary = await refresh_market_calendar(db, "US", years_ahead=1)
+
+        assert summary["holidays_count"] == 2
+
+        from pymongo import UpdateOne
+        docs_by_date = {}
+        for op in db.market_calendar.ops:
+            doc = op._doc["$set"]
+            docs_by_date[doc["date"]] = doc
+
+        assert docs_by_date["2026-04-03"]["is_trading_day"] is False
+        assert docs_by_date["2026-04-03"]["holiday_name"] == "Good Friday"
+
+    @pytest.mark.asyncio
+    async def test_list_format_holidays_still_work(self):
+        """Holidays as a list of dicts (alternative format)."""
+        from services.market_calendar_service import refresh_market_calendar
+
+        list_fmt = dict(self.EODHD_PAYLOAD)
+        list_fmt["ExchangeHolidays"] = [
+            {"Holiday": "Good Friday", "Date": "2026-04-03"},
+            {"Holiday": "New Year's Day", "Date": "2026-01-01"},
+        ]
+
+        db = _FakeCalendarDB()
+        with patch("services.market_calendar_service._fetch_exchange_details", return_value=list_fmt):
+            summary = await refresh_market_calendar(db, "US", years_ahead=1)
+
+        assert summary["holidays_count"] == 2
+
+        from pymongo import UpdateOne
+        docs_by_date = {}
+        for op in db.market_calendar.ops:
+            doc = op._doc["$set"]
+            docs_by_date[doc["date"]] = doc
+
+        assert docs_by_date["2026-04-03"]["is_trading_day"] is False
