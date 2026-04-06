@@ -477,7 +477,7 @@ def test_gap_free_all_non_trading_days_means_trivially_gap_free():
 
 
 def test_coverage_checkpoints_present():
-    """Each checkpoint must carry a 'kind' field: recent or historical."""
+    """Coverage checkpoints present with correct 'kind' field: recent or historical."""
     db = _mock_db(
         bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
         checkpoint_counts={"2026-03-20": 3},
