@@ -342,7 +342,7 @@ def test_coverage_checkpoints_present():
     )
     result = asyncio.run(get_price_integrity_metrics(db))
     cp = result["coverage_checkpoints"]
-    assert "latest_trading_day" in cp
+    assert "last_closing_day" in cp
     assert "1_week_ago" in cp
     assert "1_month_ago" in cp
     assert "1_year_ago" in cp
@@ -356,7 +356,7 @@ def test_coverage_checkpoint_kind_field():
     )
     result = asyncio.run(get_price_integrity_metrics(db))
     cp = result["coverage_checkpoints"]
-    assert cp["latest_trading_day"]["kind"] == "recent"
+    assert cp["last_closing_day"]["kind"] == "recent"
     assert cp["1_week_ago"]["kind"] == "recent"
     assert cp["1_month_ago"]["kind"] == "historical"
     assert cp["1_year_ago"]["kind"] == "historical"
