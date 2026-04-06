@@ -59,6 +59,7 @@ def _mock_db(
     bulk_days=None,
     proven_ticker_docs=None,
     gap_free_coverage_docs=None,
+    **kwargs,
 ):
     """Build a mock db with the fields needed by get_price_integrity_metrics."""
     if visible_tickers is None:
@@ -110,11 +111,23 @@ def _mock_db(
         }
     }] if bulk_days else []
 
-    # Derive expected successful dates from bulk_days for mock alignment
+    # Derive expected successful dates from bulk_days for mock alignment.
+    # Must mirror the 3-stage filter in _get_bulk_processed_dates().
     expected_dates = [
         d["processed_date"] for d in bulk_days
         if d.get("status") == "success" and d.get("processed_date")
+        and (d.get("rows_written") or 0) > 0
+        and (d.get("matched_seeded_tickers_count") or 0) >= 4000
     ]
+
+    # Derive trading-day dates: by default all expected_dates are trading days
+    # unless the test explicitly provides calendar_trading_dates to override.
+    calendar_trading_dates = kwargs.get("calendar_trading_dates")
+    if calendar_trading_dates is None:
+        # Default: all expected_dates are assumed trading days
+        calendar_trading_dates = set(expected_dates)
+    else:
+        calendar_trading_dates = set(calendar_trading_dates)
 
     # stock_prices — find_one for nearest date, aggregate for counts & gap-free
     checkpoint_counts = checkpoint_counts or {}
@@ -143,11 +156,24 @@ def _mock_db(
         find_one=AsyncMock(return_value=None),
     )
 
-    # market_calendar — for get_last_10_completed_trading_days_health
-    # Default: empty calendar (returns yellow/no-data status)
+    # market_calendar — for get_last_10_completed_trading_days_health AND
+    # _get_bulk_processed_dates calendar filter.
+    # The find() mock returns trading-day docs for dates in
+    # calendar_trading_dates so the calendar filter works correctly.
+    calendar_docs = [{"date": d} for d in sorted(calendar_trading_dates)]
+
+    def _mc_find(query=None, projection=None, *a, **kw):
+        if query and query.get("is_trading_day") is True and "$in" in (query.get("date") or {}):
+            # Calendar filter query from _get_bulk_processed_dates
+            requested = set(query["date"]["$in"])
+            matching = [doc for doc in calendar_docs if doc["date"] in requested]
+            return _make_cursor(matching)
+        # Default: empty (for get_last_10_completed_trading_days_health etc.)
+        return _make_cursor([])
+
     market_calendar = SimpleNamespace(
         find_one=AsyncMock(return_value=None),
-        find=lambda *a, **kw: _make_cursor([]),
+        find=_mc_find,
         create_index=AsyncMock(),
     )
 
@@ -275,7 +301,7 @@ def test_gap_free_since_history_download_count():
     db = _mock_db(
         visible_tickers=["A.US", "B.US", "C.US"],
         history_download_completed_count=2,
-        bulk_days=[{"processed_date": "2026-03-11", "status": "success"}],
+        bulk_days=[{"processed_date": "2026-03-11", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000}],
         proven_ticker_docs=proven_docs,
         gap_free_coverage_docs=coverage_docs,
     )
@@ -312,7 +338,7 @@ def test_gap_free_with_missing_coverage():
     db = _mock_db(
         visible_tickers=["A.US", "B.US"],
         history_download_completed_count=1,
-        bulk_days=[{"processed_date": "2026-03-11", "status": "success"}],
+        bulk_days=[{"processed_date": "2026-03-11", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000}],
         proven_ticker_docs=proven_docs,
         gap_free_coverage_docs=coverage_docs,
     )
@@ -335,21 +361,183 @@ def test_gap_free_no_bulk_dates():
     assert result["gap_free_since_history_download_count"] == 1
 
 
-def test_coverage_checkpoints_present():
+def test_gap_free_ignores_zero_row_days():
+    """Days with rows_written=0 must be excluded from expected_dates.
+
+    This is the root cause of the 4/5661 gap-free bug: remediation runs that
+    processed non-trading dates (or dates with no EODHD data) wrote
+    status='success' with rows_written=0.  Those phantom dates had no
+    stock_prices, so every ticker failed the gap-free check.
+    """
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
     db = _mock_db(
-        bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
-        checkpoint_counts={"2026-03-20": 3},
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            # Real day with actual data → should count
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+            # Phantom day with zero rows → must be excluded
+            {"processed_date": "2026-03-12", "status": "success", "rows_written": 0, "matched_seeded_tickers_count": 0},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
     )
     result = asyncio.run(get_price_integrity_metrics(db))
-    cp = result["coverage_checkpoints"]
-    assert "last_closing_day" in cp
-    assert "1_week_ago" in cp
-    assert "1_month_ago" in cp
-    assert "1_year_ago" in cp
+    # A.US has coverage for 2026-03-11; 2026-03-12 is excluded (0 rows).
+    # Without the fix this would be 0 because A.US has no price for 2026-03-12.
+    assert result["gap_free_since_history_download_count"] == 1
 
 
-def test_coverage_checkpoint_kind_field():
-    """Each checkpoint must carry a 'kind' field: recent or historical."""
+def test_gap_free_ignores_missing_rows_written_field():
+    """Days without a rows_written field at all must be excluded."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+            {"processed_date": "2026-03-13", "status": "success"},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_gap_free_excludes_non_trading_days_via_calendar():
+    """Non-trading dates (weekends/holidays) with rows_written>0 must be
+    excluded by the market-calendar filter in _get_bulk_processed_dates.
+
+    This is the definitive fix for the 4/5661 gap-free bug: even if an
+    ops_job_runs entry has status=success and rows_written>0 for a
+    non-trading date, the calendar filter drops it so it never appears in
+    expected_dates.
+    """
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+        {"ticker": "B.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+        {"_id": "B.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US", "B.US"],
+        history_download_completed_count=2,
+        bulk_days=[
+            # Real trading day with data
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+            # Saturday — NOT a trading day, but leaked into ops_job_runs
+            # with rows_written > 0 (data quirk / bad remediation run)
+            {"processed_date": "2026-03-14", "status": "success", "rows_written": 3000, "matched_seeded_tickers_count": 4500},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+        # Only 2026-03-11 is a trading day; 2026-03-14 is NOT
+        calendar_trading_dates=["2026-03-11"],
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    # Both tickers have coverage for 2026-03-11.  2026-03-14 is dropped by
+    # the calendar filter (non-trading day).  Without the fix, both would
+    # fail because no ticker has stock_prices for a Saturday.
+    assert result["gap_free_since_history_download_count"] == 2
+
+
+def test_gap_free_all_non_trading_days_means_trivially_gap_free():
+    """When ALL bulk dates are non-trading (filtered out by calendar),
+    expected_dates becomes empty → proven tickers are trivially gap-free."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            # Both are non-trading days (both will be filtered out by calendar)
+            {"processed_date": "2026-03-14", "status": "success", "rows_written": 2000, "matched_seeded_tickers_count": 4500},
+            {"processed_date": "2026-03-15", "status": "success", "rows_written": 1500, "matched_seeded_tickers_count": 4200},
+        ],
+        proven_ticker_docs=proven_docs,
+        # Neither date is a trading day
+        calendar_trading_dates=[],
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    # expected_dates is empty → elif proven_anchors: gap_free = len(proven_anchors)
+    assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_gap_free_excludes_partial_bulk_days():
+    """Days with matched_seeded_tickers_count below sanity threshold must be
+    excluded from expected_dates.
+
+    This prevents partial / failed ingestion days (where EODHD returned
+    data for only a handful of tickers) from becoming expected_dates.
+    Without this filter, every ticker would fail gap-free because most
+    tickers have no stock_prices for that date.
+    """
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            # Full ingestion — passes all checks
+            {"processed_date": "2026-03-11", "status": "success",
+             "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+            # Partial ingestion — rows_written > 0 but matched count too low
+            {"processed_date": "2026-03-12", "status": "success",
+             "rows_written": 200, "matched_seeded_tickers_count": 150},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    # A.US has coverage for 2026-03-11.  2026-03-12 is excluded (matched < 4000).
+    assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_gap_free_excludes_day_missing_matched_count():
+    """Days without matched_seeded_tickers_count field → excluded (fail-closed)."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            {"processed_date": "2026-03-11", "status": "success",
+             "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+            # Has rows but no matched_seeded_tickers_count → excluded
+            {"processed_date": "2026-03-12", "status": "success",
+             "rows_written": 5000},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_coverage_checkpoints_present():
+    """Coverage checkpoints present with correct 'kind' field: recent or historical."""
     db = _mock_db(
         bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
         checkpoint_counts={"2026-03-20": 3},

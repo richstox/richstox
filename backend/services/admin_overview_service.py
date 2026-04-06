@@ -36,6 +36,13 @@ PRAGUE_TZ = ZoneInfo("Europe/Prague")
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 EODHD_DAILY_LIMIT = 100_000
 
+# Minimum matched_seeded_tickers_count a bulk day must have to be
+# considered a "full" ingestion.  Must match the sanity threshold used
+# in scheduler_service (MIN_BULK_MATCHED_SEEDED_SANITY_CHECK = 4000).
+# Days below this threshold are partial / failed and excluded from
+# expected_dates so they don't create false gaps.
+_MIN_MATCHED_SEEDED = 4000
+
 
 def _to_prague_iso(dt) -> Optional[str]:
     if dt is None:
@@ -617,11 +624,24 @@ async def _resolve_today_visible(db) -> tuple:
 
 async def _get_bulk_processed_dates(db) -> List[str]:
     """
-    Return the set of dates for which bulk ingestion succeeded, derived from
-    ops_job_runs.details.price_bulk_gapfill.days[] entries with status=success.
+    Return the set of dates for which bulk ingestion **fully** succeeded
+    and the market calendar confirms are actual trading days.
 
-    This is the *canonical* source of expected_dates — no rolling-date
-    heuristic or calendar approximation.
+    Three-stage filter — every stage is required to prevent false gaps:
+
+    1. **ops_job_runs sanity** (per-day entry):
+       - ``status == "success"``
+       - ``rows_written > 0``
+       - ``matched_seeded_tickers_count >= MIN_MATCHED_SEEDED`` (4 000)
+       Days that are empty, failed, or only partially ingested are excluded.
+
+    2. **market_calendar**: ``is_trading_day = True``
+       Non-trading days (weekends, holidays) that leaked into ops_job_runs
+       are dropped.
+
+    Any date that fails a stage is logged and excluded from expected_dates.
+    Without *all three* checks, the gap-free metric produces false gaps
+    for every ticker.
 
     NOTE: Only ``scheduler_service.run_daily_price_sync()`` writes
     ``details.price_bulk_gapfill.days`` to ``ops_job_runs``.
@@ -643,15 +663,58 @@ async def _get_bulk_processed_dates(db) -> List[str]:
         {"$project": {"_id": 0, "details.price_bulk_gapfill.days": 1}},
     ]
 
-    dates: set = set()
+    # ── Stage 1: rows_written > 0  AND  matched_seeded_tickers_count >= threshold
+    candidate_dates: set = set()
+    dropped_partial: list = []
     async for doc in db.ops_job_runs.aggregate(pipeline):
         details = doc.get("details") or {}
         gapfill = details.get("price_bulk_gapfill") or {}
         for day in gapfill.get("days", []):
-            if day.get("status") == "success" and day.get("processed_date"):
-                dates.add(day["processed_date"])
+            pd = day.get("processed_date")
+            if not pd or day.get("status") != "success":
+                continue
+            rows = day.get("rows_written") or 0
+            matched = day.get("matched_seeded_tickers_count") or 0
+            if rows > 0 and matched >= _MIN_MATCHED_SEEDED:
+                candidate_dates.add(pd)
+            else:
+                dropped_partial.append(
+                    f"{pd}(rows={rows},matched={matched})"
+                )
 
-    return sorted(dates)
+    if dropped_partial:
+        logger.warning(
+            "_get_bulk_processed_dates: dropped %d empty/partial day(s) "
+            "(rows_written=0 or matched_seeded_tickers_count < %d): %s",
+            len(dropped_partial), _MIN_MATCHED_SEEDED, dropped_partial,
+        )
+
+    if not candidate_dates:
+        return []
+
+    # ── Stage 2: Keep only actual trading days per market calendar ────────
+    # Single batch query — far cheaper than per-date is_trading_day() calls.
+    from services.market_calendar_service import COLLECTION as MC_COLLECTION
+    trading_day_docs = await db[MC_COLLECTION].find(
+        {
+            "market": "US",
+            "date": {"$in": sorted(candidate_dates)},
+            "is_trading_day": True,
+        },
+        {"date": 1, "_id": 0},
+    ).to_list(None)
+    trading_day_set = {doc["date"] for doc in trading_day_docs}
+
+    filtered = sorted(candidate_dates & trading_day_set)
+    if len(filtered) < len(candidate_dates):
+        dropped = sorted(candidate_dates - trading_day_set)
+        logger.warning(
+            "_get_bulk_processed_dates: dropped %d non-trading date(s) "
+            "from expected_dates: %s",
+            len(dropped), dropped,
+        )
+
+    return filtered
 
 
 SP500TR_TICKER = "SP500TR.INDX"
