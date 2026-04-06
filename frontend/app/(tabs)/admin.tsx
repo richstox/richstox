@@ -560,9 +560,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             </View>
             <View style={d.opsItem}>
               <Ionicons name="calendar-outline" size={14} color={COLORS.textMuted} />
-              <Text style={d.opsLabel}>Latest Trading Day</Text>
+              <Text style={d.opsLabel}>Last Closing Day</Text>
               <Text style={[d.opsValue, { color: COLORS.text }]}>
-                {calendarSummary.latest_trading_day ?? '—'}
+                {calendarSummary.last_closing_day ?? '—'}
               </Text>
             </View>
             <View style={d.opsItem}>

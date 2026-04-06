@@ -516,7 +516,7 @@ async def market_open_closed_now(db, market: str = "US") -> Dict[str, Any]:
     }
 
 
-# ─── Latest trading day (used by price_sync) ─────────────────────────────────
+# ─── Latest trading day & last closing day ────────────────────────────────────
 
 async def get_latest_trading_day(
     db,
@@ -536,6 +536,37 @@ async def get_latest_trading_day(
 
     doc = await db[COLLECTION].find_one(
         {"market": market, "is_trading_day": True, "date": {"$lte": as_of_date}},
+        {"date": 1, "_id": 0},
+        sort=[("date", -1)],
+    )
+    return doc["date"] if doc else None
+
+
+async def get_last_closing_day(
+    db,
+    market: str = "US",
+    *,
+    as_of_date: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Return the most recent trading day **strictly before** *as_of_date*
+    (default: today).
+
+    This is the calendar-based *estimate* of the Last Closing Day (LCD).
+    On any given day the market may still be open, so closing prices for
+    *today* are not yet available — the LCD is always a past trading day.
+
+    The full EODHD-validated LCD (with bulk-sanity confirmation) is
+    computed by ``price_sync`` at runtime; this lightweight helper is
+    intended for the admin dashboard widget where an API call would be
+    too expensive on every page load.
+    """
+    if as_of_date is None:
+        as_of_date = date.today().isoformat()
+
+    # Strictly less-than: never return today even if it is a trading day.
+    doc = await db[COLLECTION].find_one(
+        {"market": market, "is_trading_day": True, "date": {"$lt": as_of_date}},
         {"date": 1, "_id": 0},
         sort=[("date", -1)],
     )
@@ -573,7 +604,7 @@ async def get_calendar_summary(db, market: str = "US") -> Dict[str, Any]:
             "today": "2026-04-06",
             "today_is_trading_day": false,
             "today_holiday_name": null,          # or "Good Friday" etc.
-            "latest_trading_day": "2026-04-03",  # most recent trading day <= today
+            "last_closing_day": "2026-04-02",    # most recent trading day < today (LCD estimate)
             "next_trading_day": "2026-04-07",    # first trading day > today
             "calendar_fresh": true,
         }
@@ -588,7 +619,7 @@ async def get_calendar_summary(db, market: str = "US") -> Dict[str, Any]:
     today_is_trading = bool(today_doc and today_doc.get("is_trading_day"))
     today_holiday = (today_doc.get("holiday_name") if today_doc else None) or None
 
-    latest_td = await get_latest_trading_day(db, market, as_of_date=today_str)
+    lcd = await get_last_closing_day(db, market, as_of_date=today_str)
     next_td = await _next_trading_day(db, today_str, market)
     fresh = await is_calendar_fresh(db, market)
 
@@ -596,7 +627,7 @@ async def get_calendar_summary(db, market: str = "US") -> Dict[str, Any]:
         "today": today_str,
         "today_is_trading_day": today_is_trading,
         "today_holiday_name": today_holiday,
-        "latest_trading_day": latest_td,
+        "last_closing_day": lcd,
         "next_trading_day": next_td,
         "calendar_fresh": fresh,
     }
