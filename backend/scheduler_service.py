@@ -66,6 +66,7 @@ LOGO_BACKFILL_CONCURRENCY = 10
 LOGO_BACKFILL_TICKER_TIMEOUT = 30
 LOGO_BACKFILL_VISIBLE_LIMIT = 500
 CANCEL_REQUESTED_STUCK_SECONDS = 600
+PRICE_SYNC_STUCK_TIMEOUT_SECONDS = 1800  # 30 minutes
 PRICE_SYNC_LOCK_ID = "price_sync"
 PRICE_SYNC_LOCK_LEASE_SECONDS = 60
 PRICE_SYNC_HEARTBEAT_SECONDS = 10
@@ -1649,6 +1650,47 @@ async def run_daily_price_sync(
         result["api_calls"] = 1 if result.get("bulk_fetch_executed") else 0
         result["price_bulk_gapfill_days_count"] = len(days)
 
+        # ── Early exit on Phase A error (sanity failure / bulk exception) ─────
+        # When result["status"] is "error" after the bulk loop, finalize the
+        # ops_job_runs doc immediately instead of falling through to Phase B
+        # where downstream code may raise and leave the doc stuck at "running".
+        if result.get("status") == "error":
+            _err_msg = ""
+            if days:
+                _err_msg = days[-1].get("error") or ""
+            if not _err_msg:
+                _err_msg = "Phase A bulk price sync failed"
+            _phase_a_err_at = datetime.now(timezone.utc)
+            await db.ops_job_runs.update_one(
+                {"_id": _running_doc_id},
+                {"$set": {
+                    "status": "error",
+                    "finished_at": _phase_a_err_at,
+                    "finished_at_prague": _to_prague_iso(_phase_a_err_at),
+                    "log_timezone": "Europe/Prague",
+                    "phase": "2.1_bulk_catchup",
+                    "error": _err_msg,
+                    "error_message": _err_msg,
+                    "details": {
+                        **result,
+                        "price_bulk_gapfill": result_gapfill,
+                        "parent_run_id": parent_run_id,
+                        "chain_run_id": chain_run_id,
+                    },
+                }},
+            )
+            logger.error(f"{job_name}: Phase A error — {_err_msg}")
+            return {
+                "job_name": job_name,
+                "status": "error",
+                "error": _err_msg,
+                "records_upserted": result.get("records_upserted", 0),
+                "dates_processed": result.get("dates_processed", 0),
+                "api_calls": result.get("api_calls", 0),
+                "started_at": started_at.isoformat(),
+                "finished_at": _phase_a_err_at.isoformat(),
+            }
+
         if should_attempt_bulk_fetch and (not result.get("bulk_fetch_executed", False)):
             _bulk_guard_msg = (
                 "Step 2 bulk guard triggered: no bulk fetch executed "
@@ -2036,6 +2078,33 @@ async def run_daily_price_sync(
             "finished_at": _fail_finished_at.isoformat(),
         }
     finally:
+        # ── Safety net: guarantee ops_job_runs is never left at "running" ─────
+        try:
+            _still_running = await db.ops_job_runs.find_one(
+                {"_id": _running_doc_id, "status": "running"},
+                {"_id": 1},
+            )
+            if _still_running:
+                _safety_at = datetime.now(timezone.utc)
+                await db.ops_job_runs.update_one(
+                    {"_id": _running_doc_id, "status": "running"},
+                    {"$set": {
+                        "status": "error",
+                        "finished_at": _safety_at,
+                        "finished_at_prague": _to_prague_iso(_safety_at),
+                        "log_timezone": "Europe/Prague",
+                        "error": "terminated_without_final_status",
+                        "error_message": "terminated_without_final_status",
+                    }},
+                )
+                logger.error(
+                    f"{job_name}: finally safety net — forced status='error' "
+                    f"(doc was still 'running' at exit)"
+                )
+        except Exception as _safety_exc:
+            logger.error(
+                f"{job_name}: finally safety net DB update failed: {_safety_exc}"
+            )
         await _release_price_sync_resources()
 
 
@@ -2837,7 +2906,39 @@ async def _finalize_stuck_price_sync_runs(db, now: datetime) -> int:
             f"price_sync: finalized {cancel_zombie_result.modified_count} cancel_requested run(s) "
             f"(heartbeat cutoff={cancel_stale_before.isoformat()})"
         )
-    return running_zombie_result.modified_count + cancel_zombie_result.modified_count
+    # Watchdog: finalize runs stuck in "running" for > 30 minutes regardless
+    # of phase.  This catches runs where the process died mid-phase (e.g.
+    # sanity failure + exception left the doc at status="running" with an
+    # active phase like "2.1_bulk_catchup").
+    _stuck_cutoff = now - timedelta(seconds=PRICE_SYNC_STUCK_TIMEOUT_SECONDS)
+    stuck_timeout_result = await db.ops_job_runs.update_many(
+        {
+            "job_name": "price_sync",
+            "status": "running",
+            "started_at": {"$lt": _stuck_cutoff},
+        },
+        {"$set": {
+            "status": "error",
+            "finished_at": now,
+            "finished_at_prague": _to_prague_iso(now),
+            "log_timezone": "Europe/Prague",
+            "error": f"watchdog: running > {PRICE_SYNC_STUCK_TIMEOUT_SECONDS}s",
+            "error_message": f"watchdog: running > {PRICE_SYNC_STUCK_TIMEOUT_SECONDS}s",
+            "details.zombie_finalized": True,
+            "details.zombie_reason": "stuck_timeout_watchdog",
+        }},
+    )
+    if stuck_timeout_result.modified_count:
+        logger.warning(
+            f"price_sync: watchdog finalized {stuck_timeout_result.modified_count} run(s) "
+            f"stuck running > {PRICE_SYNC_STUCK_TIMEOUT_SECONDS}s "
+            f"(cutoff={_stuck_cutoff.isoformat()})"
+        )
+    return (
+        running_zombie_result.modified_count
+        + cancel_zombie_result.modified_count
+        + stuck_timeout_result.modified_count
+    )
 
 
 async def _finalize_orphaned_chain_runs(db, now: datetime) -> int:

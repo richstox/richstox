@@ -61,6 +61,13 @@ class _FakeOpsJobRuns:
         _id = filt.get("_id")
         if _id not in self.docs:
             return SimpleNamespace(matched_count=0)
+        doc = self.docs[_id]
+        # Respect additional filter fields (e.g. {"_id": X, "status": "running"})
+        for k, v in filt.items():
+            if k == "_id":
+                continue
+            if doc.get(k) != v:
+                return SimpleNamespace(matched_count=0)
         for key, value in (update.get("$set") or {}).items():
             _set_path(self.docs[_id], key, value)
         return SimpleNamespace(matched_count=1)
@@ -70,7 +77,14 @@ class _FakeOpsJobRuns:
             return {"details": {"seeded_total": self.seeded_total}}
         _id = filt.get("_id")
         if _id in self.docs:
-            return deepcopy(self.docs[_id])
+            doc = self.docs[_id]
+            # Respect additional filter fields (e.g. {"_id": X, "status": "running"})
+            for k, v in filt.items():
+                if k == "_id":
+                    continue
+                if doc.get(k) != v:
+                    return None
+            return deepcopy(doc)
         return None
 
     async def update_many(self, filt, update):
