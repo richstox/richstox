@@ -720,7 +720,6 @@ interface BmMetric {
   name: string;
   median: number | null;
   n_used?: number | null;
-  na_reason?: string | null;
 }
 
 interface BmData {
@@ -789,10 +788,8 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     ? groups.filter(g => g.toLowerCase().includes(search.toLowerCase()))
     : groups;
 
-  // Display order: the 7 required metrics first, then extras
-  const primaryKeys = ['pe_ttm', 'net_margin_ttm', 'fcf_yield', 'net_debt_ebitda', 'revenue_growth_3y', 'dividend_yield_ttm', 'roe'];
-  const extraKeys = data ? Object.keys(data.metrics).filter(k => !primaryKeys.includes(k)) : [];
-  const allKeys = [...primaryKeys, ...extraKeys];
+  // Display order: the 7 required Key Metrics only
+  const allKeys = ['net_margin_ttm', 'fcf_yield', 'net_debt_ebitda', 'revenue_growth_3y', 'dividend_yield_ttm', 'pe_ttm', 'roe'];
 
   // Compute max absolute median for bar scaling within this tab
   const allMedians = data ? allKeys.map(k => Math.abs(data.metrics[k]?.median ?? 0)).filter(v => v > 0) : [];
@@ -904,7 +901,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
                 <View style={bm.metricHeader}>
                   <Text style={bm.metricName}>{m.name}</Text>
                   <Text style={[bm.metricValue, isNA && { color: COLORS.textMuted }]}>
-                    {isNA ? (m.na_reason ? `N/A (${m.na_reason.replace(/_/g, ' ')})` : 'N/A') : formatVal(m)}
+                    {isNA ? 'N/A' : formatVal(m)}
                   </Text>
                 </View>
                 <View style={bm.barTrack}>

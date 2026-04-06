@@ -2685,9 +2685,7 @@ async def admin_peer_medians(
 ):
     """
     Read pre-computed peer medians from peer_benchmarks collection.
-    Returns medians for the 7 Key Metrics: P/E (TTM), Net Margin (TTM),
-    Free Cash Flow Yield, Net Debt / EBITDA, Revenue Growth (3Y CAGR),
-    Dividend Yield (TTM), ROE.
+    Returns medians for the 7 Key Metrics only.
     """
     from datetime import datetime as _dt, timezone as _tz
     import zoneinfo as _zi
@@ -2700,12 +2698,14 @@ async def admin_peer_medians(
     else:  # market
         query = {"sector": None, "industry": None}
 
-    doc = await db.peer_benchmarks.find_one(query, {"_id": 0, "metric_values": 0, "excluded_tickers": 0})
+    doc = await db.peer_benchmarks.find_one(
+        query,
+        {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count": 1, "computed_at": 1},
+    )
 
     if not doc:
         raise HTTPException(404, f"No peer benchmark data for {level}={key}")
 
-    benchmarks = doc.get("benchmarks", {})
     ticker_count = doc.get("peer_count_used") or doc.get("peer_count") or 0
     computed_at_raw = doc.get("computed_at")
 
@@ -2722,66 +2722,35 @@ async def admin_peer_medians(
         except Exception:
             updated_at_prague = str(computed_at_raw)
 
-    # Map the 7 required metrics to what exists in peer_benchmarks
-    metrics_count = doc.get("metrics_count", {})
-    metrics = {
-        "pe_ttm": {
-            "name": "P/E (TTM)",
-            "median": benchmarks.get("pe_median"),
-            "n_used": metrics_count.get("pe"),
-        },
-        "net_margin_ttm": {
-            "name": "Net Margin (TTM)",
-            "median": None,
-            "na_reason": "not_computed_in_peer_job",
-        },
-        "fcf_yield": {
-            "name": "Free Cash Flow Yield",
-            "median": None,
-            "na_reason": "not_computed_in_peer_job",
-        },
-        "net_debt_ebitda": {
-            "name": "Net Debt / EBITDA",
-            "median": None,
-            "na_reason": "not_computed_in_peer_job",
-        },
-        "revenue_growth_3y": {
-            "name": "Revenue Growth (3Y CAGR)",
-            "median": None,
-            "na_reason": "not_computed_in_peer_job",
-        },
-        "dividend_yield_ttm": {
-            "name": "Dividend Yield (TTM)",
-            "median": benchmarks.get("dividend_yield_median_all"),
-            "n_used": doc.get("dividend_peer_count"),
-        },
-        "roe": {
-            "name": "ROE",
-            "median": None,
-            "na_reason": "not_computed_in_peer_job",
-        },
-    }
+    # Read step4_medians computed by the peer_medians job
+    s4 = doc.get("step4_medians", {})
 
-    # Also include the additional valuation metrics that ARE stored
-    for mk, bk, mc_key, label in [
-        ("ps_ttm", "ps_median", "ps", "P/S (TTM)"),
-        ("pb", "pb_median", "pb", "P/B"),
-        ("ev_ebitda_ttm", "ev_ebitda_median", "ev_ebitda", "EV/EBITDA (TTM)"),
-        ("ev_revenue_ttm", "ev_revenue_median", "ev_revenue", "EV/Revenue (TTM)"),
-    ]:
-        metrics[mk] = {
-            "name": label,
-            "median": benchmarks.get(bk),
-            "n_used": metrics_count.get(mc_key),
-        }
+    # The 7 Key Metrics in display order with canonical names
+    metric_spec = [
+        ("net_margin_ttm", "Net Margin (TTM)"),
+        ("fcf_yield", "Free Cash Flow Yield"),
+        ("net_debt_ebitda", "Net Debt / EBITDA"),
+        ("revenue_growth_3y", "Revenue Growth (3Y CAGR)"),
+        ("dividend_yield_ttm", "Dividend Yield (TTM)"),
+        ("pe_ttm", "P/E (TTM)"),
+        ("roe", "ROE"),
+    ]
+
+    metrics = {}
+    for mk, name in metric_spec:
+        entry = s4.get(mk)
+        if entry:
+            metrics[mk] = {"name": name, "median": entry.get("median"), "n_used": entry.get("n_used")}
+        else:
+            metrics[mk] = {"name": name, "median": None}
 
     # Warning for insufficient peers
     warning = None
     if ticker_count < 5:
-        level_label = key if level != "market" else "Market"
+        level_label = level.capitalize()
         warning = (
-            f"No peer benchmark available\u2026 {level_label} has fewer than "
-            f"5 companies in our database."
+            f"No peer benchmark available for {key}. "
+            f"{level_label} has fewer than 5 companies in our database."
         )
 
     return {
