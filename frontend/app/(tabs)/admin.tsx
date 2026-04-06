@@ -196,7 +196,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
   // Poll news_refresh status while running (mirrors Benchmark Update pattern)
   useEffect(() => {
-    if ((newsRunStatus !== 'running' || !!newsRun?.finished_at || !!newsRun?.end_time) || !sessionToken) {
+    if (newsRunStatus !== 'running' || !!newsRun?.finished_at || !!newsRun?.end_time || !sessionToken) {
       if (newsRefreshPollRef.current) {
         clearTimeout(newsRefreshPollRef.current);
         newsRefreshPollRef.current = null;
