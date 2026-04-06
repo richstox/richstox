@@ -157,6 +157,14 @@ interface DashboardProps {
 function DashboardTab({ sessionToken }: DashboardProps) {
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [stats, setStats] = useState<StatsData | null>(null);
+  const [calendarSummary, setCalendarSummary] = useState<{
+    today?: string;
+    today_is_trading_day?: boolean;
+    today_holiday_name?: string | null;
+    latest_trading_day?: string | null;
+    next_trading_day?: string | null;
+    calendar_fresh?: boolean;
+  } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -171,12 +179,14 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const fetchAll = useCallback(async () => {
     try {
       const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-      const [ovRes, statsRes] = await Promise.allSettled([
+      const [ovRes, statsRes, calRes] = await Promise.allSettled([
         fetch(`${API_URL}/api/admin/overview`, { headers: requestHeaders }),
         fetch(`${API_URL}/api/admin/stats`, { headers: requestHeaders }),
+        fetch(`${API_URL}/api/admin/market-calendar-summary`, { headers: requestHeaders }),
       ]);
       if (ovRes.status === 'fulfilled' && ovRes.value.ok) setOverview(await ovRes.value.json());
       if (statsRes.status === 'fulfilled' && statsRes.value.ok) setStats(await statsRes.value.json());
+      if (calRes.status === 'fulfilled' && calRes.value.ok) setCalendarSummary(await calRes.value.json());
     } catch (e) {
       console.error(e);
     } finally {
@@ -528,6 +538,55 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={eodhCallsToday != null ? 'green' : undefined}
           />
         </View>
+      </View>
+
+      {/* US Market Calendar Widget */}
+      <View style={d.card}>
+        <Text style={d.sectionTitle}>US Market Calendar</Text>
+        {calendarSummary ? (
+          <View style={d.opsGrid}>
+            <View style={d.opsItem}>
+              <Ionicons
+                name={calendarSummary.today_is_trading_day ? 'checkmark-circle' : 'close-circle'}
+                size={14}
+                color={calendarSummary.today_is_trading_day ? '#22C55E' : '#F59E0B'}
+              />
+              <Text style={d.opsLabel}>Today</Text>
+              <Text style={[d.opsValue, { color: calendarSummary.today_is_trading_day ? '#22C55E' : '#F59E0B' }]}>
+                {calendarSummary.today_is_trading_day
+                  ? 'Trading day'
+                  : calendarSummary.today_holiday_name || 'Holiday / Weekend'}
+              </Text>
+            </View>
+            <View style={d.opsItem}>
+              <Ionicons name="calendar-outline" size={14} color={COLORS.textMuted} />
+              <Text style={d.opsLabel}>Latest Trading Day</Text>
+              <Text style={[d.opsValue, { color: COLORS.text }]}>
+                {calendarSummary.latest_trading_day ?? '—'}
+              </Text>
+            </View>
+            <View style={d.opsItem}>
+              <Ionicons name="arrow-forward-circle-outline" size={14} color={COLORS.textMuted} />
+              <Text style={d.opsLabel}>Next Trading Day</Text>
+              <Text style={[d.opsValue, { color: COLORS.text }]}>
+                {calendarSummary.next_trading_day ?? '—'}
+              </Text>
+            </View>
+            <View style={d.opsItem}>
+              <Ionicons
+                name={calendarSummary.calendar_fresh ? 'checkmark-circle' : 'warning'}
+                size={14}
+                color={calendarSummary.calendar_fresh ? '#22C55E' : '#EF4444'}
+              />
+              <Text style={d.opsLabel}>Calendar</Text>
+              <Text style={[d.opsValue, { color: calendarSummary.calendar_fresh ? '#22C55E' : '#EF4444' }]}>
+                {calendarSummary.calendar_fresh ? 'Fresh' : 'Stale'}
+              </Text>
+            </View>
+          </View>
+        ) : (
+          <Text style={d.cpHint}>Loading…</Text>
+        )}
       </View>
 
       {/* C) Price Integrity / Coverage */}

@@ -164,12 +164,20 @@ async def fetch_eod_history(ticker: str, from_date: str = None, to_date: str = N
 async def fetch_bulk_eod_latest(
     exchange: str = "US",
     include_meta: bool = False,
+    *,
+    for_date: Optional[str] = None,
 ) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], bool]]:
     """
-    Fetch bulk EOD data for latest trading day.
+    Fetch bulk EOD data for a specific (or latest) trading day.
     
     API: https://eodhd.com/api/eod-bulk-last-day/{exchange}?api_token=XXX&fmt=json
     Cost: 1 credit (covers entire exchange)
+
+    Args:
+        for_date: Optional YYYY-MM-DD date string.  When supplied the
+            ``date`` query-param is sent so EODHD returns data for that
+            exact trading day.  When ``None`` EODHD returns whatever it
+            considers the latest available day (legacy behaviour).
     
     Returns:
         List of EOD records for all tickers
@@ -179,10 +187,12 @@ async def fetch_bulk_eod_latest(
         return ([], False) if include_meta else []
     
     url = f"{EODHD_BASE_URL}/eod-bulk-last-day/{exchange}"
-    params = {
+    params: Dict[str, str] = {
         "api_token": EODHD_API_KEY,
         "fmt": "json",
     }
+    if for_date is not None:
+        params["date"] = for_date
     response_received = False
     try:
         async with httpx.AsyncClient(timeout=120) as client:
@@ -800,6 +810,8 @@ async def run_daily_bulk_catchup(
     job_name: str = "price_sync",
     progress_cb: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
     seeded_tickers_override: Optional[Set[str]] = None,
+    *,
+    latest_trading_day: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Fetch the EODHD latest-day bulk file once and upsert into stock_prices.
@@ -811,6 +823,10 @@ async def run_daily_bulk_catchup(
 
     Optional progress_cb receives (processed_tickers, expected_tickers_count, "2.1 bulk price sync")
     after each bulk_write batch to stream Step 2 progress.
+
+    latest_trading_day: when provided, the bulk URL includes ``?date={latest_trading_day}``
+    so EODHD returns data for that exact date.  ``processed_date`` is set to this value
+    instead of being derived from the payload.
     """
     from pymongo import UpdateOne
 
@@ -826,10 +842,14 @@ async def run_daily_bulk_catchup(
         return False
 
     bulk_url_used = f"{EODHD_BASE_URL}/eod-bulk-last-day/US"
-    logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (latest-day)")
+    if latest_trading_day:
+        bulk_url_used = f"{bulk_url_used}?date={latest_trading_day}"
+    logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (date=%s)", latest_trading_day or "latest")
 
-    # Single API call — no date param = EODHD returns the latest available trading day
-    bulk_data, bulk_fetch_executed = await fetch_bulk_eod_latest("US", include_meta=True)
+    # Single API call — date param ensures EODHD returns data for the exact trading day
+    bulk_data, bulk_fetch_executed = await fetch_bulk_eod_latest(
+        "US", include_meta=True, for_date=latest_trading_day,
+    )
     raw_row_count = len(bulk_data)
 
     # ── Cancel check 2a: immediately after the API call returns ──────────────

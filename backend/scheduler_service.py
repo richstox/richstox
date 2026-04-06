@@ -1404,6 +1404,30 @@ async def run_daily_price_sync(
         min_matched_seeded_tickers_ok = MIN_BULK_MATCHED_SEEDED_SANITY_CHECK
         sanity_threshold_used = STEP2_SANITY_THRESHOLD_USED
         target_end_date = datetime.now(PRAGUE_TZ).date()
+
+        # ── Determine latest_trading_day from market_calendar ─────────────
+        # This is the authoritative date used for the bulk URL and processed_date.
+        # Requirement: market_calendar MUST be populated and fresh.
+        from services.market_calendar_service import (
+            get_latest_trading_day as _get_latest_trading_day,
+            is_calendar_fresh as _is_calendar_fresh,
+        )
+        _calendar_fresh = await _is_calendar_fresh(db)
+        if not _calendar_fresh:
+            raise RuntimeError("market_calendar_missing_or_stale")
+        _latest_trading_day = await _get_latest_trading_day(
+            db, "US", as_of_date=target_end_date.isoformat(),
+        )
+        if not _latest_trading_day:
+            raise RuntimeError("market_calendar_missing_or_stale")
+        logger.info(
+            f"{job_name}: latest_trading_day={_latest_trading_day} "
+            f"(as_of={target_end_date.isoformat()})"
+        )
+        _bulk_url_display = (
+            f"https://eodhd.com/api/eod-bulk-last-day/US?date={_latest_trading_day}"
+        )
+
         price_bulk_state = await _read_price_bulk_state(db)
         watermark_before = (
             (price_bulk_state or {}).get("global_last_bulk_date_processed")
@@ -1429,10 +1453,11 @@ async def run_daily_price_sync(
             {"$set": {"details.price_bulk_gapfill": {
                 "watermark_before": watermark_before,
                 "target_end_date": target_end_date.strftime("%Y-%m-%d"),
+                "latest_trading_day": _latest_trading_day,
                 "min_bulk_rows_ok": min_bulk_rows_ok,
                 "min_matched_seeded_tickers_ok": min_matched_seeded_tickers_ok,
                 "sanity_threshold_used": sanity_threshold_used,
-                "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+                "bulk_url_used": _bulk_url_display,
                 "ticker_samples": {
                     "bulk_rows_sample": [],
                     "bulk_rows_normalized_sample": [],
@@ -1445,10 +1470,11 @@ async def run_daily_price_sync(
         result_gapfill = {
             "watermark_before": watermark_before,
             "target_end_date": target_end_date.strftime("%Y-%m-%d"),
+            "latest_trading_day": _latest_trading_day,
             "min_bulk_rows_ok": min_bulk_rows_ok,
             "min_matched_seeded_tickers_ok": min_matched_seeded_tickers_ok,
             "sanity_threshold_used": sanity_threshold_used,
-            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+            "bulk_url_used": _bulk_url_display,
             "ticker_samples": {
                 "bulk_rows_sample": [],
                 "bulk_rows_normalized_sample": [],
@@ -1476,7 +1502,8 @@ async def run_daily_price_sync(
             "rows_written": 0,
             "price_bulk_gapfill_days_count": 0,
             "bulk_writes": 0,
-            "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+            "bulk_url_used": _bulk_url_display,
+            "latest_trading_day": _latest_trading_day,
             "tickers_with_price": [],
             "price_bulk_gapfill": result_gapfill,
             "matched_seeded_tickers_count": 0,
@@ -1487,22 +1514,23 @@ async def run_daily_price_sync(
         bulk_attempts = [None] if should_attempt_bulk_fetch else []
         if should_attempt_bulk_fetch:
             await _progress(
-                "2.1 Fetching latest prices (bulk)…",
+                f"2.1 Fetching prices for {_latest_trading_day} (bulk)…",
                 processed=0,
                 total=progress_total_step2,
                 phase="2.1_bulk_catchup",
             )
         for idx, _ in enumerate(bulk_attempts):
             await _progress(
-                f"2.1 Bulk gapfill {idx + 1}/{len(bulk_attempts)} (provider latest available day)…",
+                f"2.1 Bulk gapfill {idx + 1}/{len(bulk_attempts)} "
+                f"(date={_latest_trading_day})…",
                 phase="2.1_bulk_catchup",
             )
             should_append_day = True
             day: Dict[str, Any] = {
-                "bulk_date": None,
-                "processed_date": None,
+                "bulk_date": _latest_trading_day,
+                "processed_date": _latest_trading_day,
                 "unique_dates": [],
-                "bulk_url_used": "https://eodhd.com/api/eod-bulk-last-day/US",
+                "bulk_url_used": _bulk_url_display,
                 "status": "error",
                 "rows_written": 0,
                 "advanced_watermark": False,
@@ -1513,6 +1541,7 @@ async def run_daily_price_sync(
                     db,
                     progress_cb=_bulk_progress,
                     seeded_tickers_override=_seeded_set,
+                    latest_trading_day=_latest_trading_day,
                 )
 
                 # ── Non-trading-day skip: treat as successful no-op ─────────
@@ -1558,16 +1587,8 @@ async def run_daily_price_sync(
                     {"_id": _running_doc_id},
                     {"$set": {"details.price_bulk_gapfill.ticker_samples": result_gapfill["ticker_samples"]}},
                 )
-                day["processed_date"] = (
-                    day_result.get("processed_date")
-                    or day_result.get("date")
-                    or (
-                        target_end_date.strftime("%Y-%m-%d")
-                        if day_bulk_fetch_executed
-                        else None
-                    )
-                )
-                day["bulk_date"] = day["processed_date"]
+                day["processed_date"] = _latest_trading_day
+                day["bulk_date"] = _latest_trading_day
                 day["unique_dates"] = day_result.get("unique_dates", [])
                 result["bulk_writes"] += day_result.get("bulk_writes", 0)
 

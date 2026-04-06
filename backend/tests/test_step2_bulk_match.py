@@ -69,7 +69,7 @@ def test_step2_bulk_match_normalizes_bulk_and_seeded_tickers(monkeypatch):
         },
     ]
 
-    async def _fake_fetch_bulk(_exchange="US", include_meta=False):
+    async def _fake_fetch_bulk(_exchange="US", include_meta=False, **kwargs):
         _ = _exchange
         if include_meta:
             return bulk_payload, True

@@ -66,7 +66,14 @@ class _FakeOpsJobRuns:
             return {"details": {"seeded_total": self.seeded_total}}
         _id = filt.get("_id")
         if _id in self.docs:
-            return deepcopy(self.docs[_id])
+            doc = self.docs[_id]
+            # Respect additional filter fields (e.g. {"_id": X, "status": "running"})
+            for k, v in filt.items():
+                if k == "_id":
+                    continue
+                if doc.get(k) != v:
+                    return None
+            return deepcopy(doc)
         return None
 
     async def update_many(self, filt, update):
@@ -152,13 +159,77 @@ class _FakeStockPrices:
         return SimpleNamespace(upserted_count=len(batch), modified_count=0)
 
 
+class _FakeOpsLocks:
+    """Fake ops_locks collection supporting single-flight lock operations."""
+    def __init__(self):
+        self.docs = {}
+
+    async def create_index(self, keys, name=None, expireAfterSeconds=None):
+        pass
+
+    async def update_one(self, filt, update):
+        _id = filt.get("_id")
+        if _id and _id in self.docs:
+            doc = self.docs[_id]
+            or_conditions = filt.get("$or", [])
+            matched = False
+            for cond in or_conditions:
+                if "owner_run_id" in cond and doc.get("owner_run_id") == cond["owner_run_id"]:
+                    matched = True
+                    break
+                if "expires_at" in cond:
+                    lte = cond["expires_at"].get("$lte")
+                    if lte and doc.get("expires_at") and doc["expires_at"] <= lte:
+                        matched = True
+                        break
+            if not matched and or_conditions:
+                return SimpleNamespace(matched_count=0)
+            for k, v in (update.get("$set") or {}).items():
+                doc[k] = v
+            return SimpleNamespace(matched_count=1)
+        return SimpleNamespace(matched_count=0)
+
+    async def insert_one(self, doc):
+        _id = doc.get("_id")
+        if _id in self.docs:
+            from pymongo.errors import DuplicateKeyError
+            raise DuplicateKeyError("duplicate key")
+        self.docs[_id] = deepcopy(doc)
+        return SimpleNamespace(inserted_id=_id)
+
+    async def delete_one(self, filt):
+        _id = filt.get("_id")
+        owner = filt.get("owner_run_id")
+        if _id in self.docs:
+            if owner is None or self.docs[_id].get("owner_run_id") == owner:
+                del self.docs[_id]
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
+
+
+class _FakeMarketCalendar:
+    """Fake market_calendar collection that returns trading-day=True for any date."""
+    async def find_one(self, filt, projection=None):
+        # Always return a trading day document (fail-open for tests)
+        return {"is_trading_day": True, "holiday_name": None}
+
+    async def count_documents(self, filt):
+        return 10  # Pretend calendar is fresh
+
+
 class _FakeDB:
     def __init__(self, *, stock_counts, initial_pipeline_state=None, seeded_tickers=None):
         self.ops_job_runs = _FakeOpsJobRuns()
         self.tracked_tickers = _FakeTrackedTickers(seeded_tickers or ["AAPL.US", "MSFT.US"])
         self.ops_config = _FakeOpsConfig()
+        self.ops_locks = _FakeOpsLocks()
         self.pipeline_state = _FakePipelineState(initial=initial_pipeline_state)
         self.stock_prices = _FakeStockPrices(stock_counts)
+        self.market_calendar = _FakeMarketCalendar()
+        self._collections = {"market_calendar": self.market_calendar}
+
+    def __getitem__(self, key):
+        return self._collections.get(key, self.market_calendar)
 
 
 def _patch_non_gapfill_dependencies(monkeypatch):
@@ -188,6 +259,15 @@ def _patch_non_gapfill_dependencies(monkeypatch):
         _ = processed_date
         return {"enqueued_total": 0, "skipped_total": 0, "cancelled": False}
 
+    # Mock market_calendar helpers used by run_daily_price_sync
+    import services.market_calendar_service as _mc
+    async def _fake_is_calendar_fresh(db, market="US"):
+        return True
+    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+        return "2026-03-18"
+    monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
+    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+
     monkeypatch.setattr(scheduler_service, "sync_has_price_data_flags", _fake_flags)
     monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
     monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
@@ -203,7 +283,7 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
     _patch_non_gapfill_dependencies(monkeypatch)
     db = _FakeDB(stock_counts={})
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         return {
             "status": "success",
@@ -237,7 +317,8 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
     assert result["status"] == "success"
     persisted = db.pipeline_state.docs["price_bulk"]
     assert persisted["_id"] == "price_bulk"
-    assert persisted["global_last_bulk_date_processed"] == "2026-03-17"
+    # processed_date is now set to latest_trading_day from market_calendar
+    assert persisted["global_last_bulk_date_processed"] == "2026-03-18"
     assert isinstance(persisted["updated_at"], datetime)
     assert persisted["updated_at"].tzinfo == timezone.utc
     assert isinstance(persisted["updated_at_prague"], str)
@@ -285,8 +366,10 @@ def test_step2_gapfill_bootstrap_fetches_provider_latest_without_bulk_date_kwarg
     assert result["dates_processed"] == 1
     assert result["api_calls"] > 0
     assert len(called_kwargs) == 1
-    assert "bulk_date" not in called_kwargs[0]
-    assert db.ops_job_runs.latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US"
+    # latest_trading_day is now always passed
+    assert called_kwargs[0].get("latest_trading_day") == "2026-03-18"
+    # bulk_url_used now includes ?date=...
+    assert db.ops_job_runs.latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US?date=2026-03-18"
 
 
 def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(monkeypatch):
@@ -304,7 +387,7 @@ def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(mon
     )
     calls_made = []
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         calls_made.append(True)
         return {
@@ -342,7 +425,8 @@ def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(mon
     assert latest["details"]["api_calls"] == 1
     days = latest["details"]["price_bulk_gapfill"]["days"]
     assert len(days) == 1
-    assert days[0]["processed_date"] == "2026-03-17"
+    # processed_date is now set from latest_trading_day (mock returns "2026-03-18")
+    assert days[0]["processed_date"] == "2026-03-18"
 
 
 def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
@@ -356,7 +440,7 @@ def test_step2_gapfill_stops_on_first_sanity_failure(monkeypatch):
     db = _FakeDB(stock_counts={})
     calls_made = []
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         calls_made.append(True)
         return {
@@ -399,7 +483,7 @@ def test_step2_gapfill_errors_when_bulk_payload_has_multiple_dates(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
     db = _FakeDB(stock_counts={})
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         return {
             "status": "error",
@@ -437,14 +521,14 @@ def test_step2_gapfill_errors_when_bulk_payload_has_multiple_dates(monkeypatch):
     day = latest["details"]["price_bulk_gapfill"]["days"][0]
     assert day["status"] == "error"
     assert day["unique_dates"] == ["2026-03-18", "2026-03-19"]
-    assert latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US"
+    assert latest["details"]["bulk_url_used"] == "https://eodhd.com/api/eod-bulk-last-day/US?date=2026-03-18"
 
 
 def test_step2_bulk_guard_uses_canonical_bulk_fetch_executed_signal(monkeypatch):
     _patch_non_gapfill_dependencies(monkeypatch)
     db = _FakeDB(stock_counts={})
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         # Regression case: legacy telemetry could have api_calls=1 but no
         # actual fetch decision/day output.
@@ -480,7 +564,9 @@ def test_step2_bulk_guard_uses_canonical_bulk_fetch_executed_signal(monkeypatch)
     )
 
     assert result["status"] == "error"
-    assert "no bulk fetch executed" in result["error"]
+    # When bulk_fetch_executed=False, the Phase A error exits with "bulk fetch not executed"
+    # (from day["error"]) or "Phase A bulk price sync failed" (fallback when days is empty)
+    assert "Phase A bulk price sync failed" in result["error"]
     latest = db.ops_job_runs.latest
     details = latest["details"]
     assert details["bulk_fetch_executed"] is False
@@ -494,7 +580,7 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
     all_days = [start + timedelta(days=i) for i in range(65)]
     db = _FakeDB(stock_counts={})
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         return {
             "status": "success",
@@ -527,7 +613,8 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
 
     days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
     assert len(days) == 1
-    assert days[0]["bulk_date"] == "2026-03-19"
+    # processed_date/bulk_date is now set from latest_trading_day (mock returns "2026-03-18")
+    assert days[0]["bulk_date"] == "2026-03-18"
 
 
 def test_step2_gapfill_days_empty_when_phase_not_entered_seeded_total_zero(monkeypatch):
@@ -536,7 +623,7 @@ def test_step2_gapfill_days_empty_when_phase_not_entered_seeded_total_zero(monke
     db.ops_job_runs.seeded_total = 0
     calls_made = []
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         calls_made.append(True)
         return {
@@ -607,6 +694,15 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
         "matched_seeded_tickers_count >= 2",
     )
 
+    # Mock market_calendar helpers
+    import services.market_calendar_service as _mc
+    async def _fake_is_calendar_fresh(db, market="US"):
+        return True
+    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+        return "2026-03-18"
+    monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
+    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+
     async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
         _ = db, include_exclusions, tickers_with_price
         return {
@@ -625,7 +721,7 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
             "exclusion_report_date": "2026-03-18",
         }
 
-    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None):
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
         _ = db, job_name, progress_cb, seeded_tickers_override
         return {
             "status": "success",
@@ -705,7 +801,16 @@ def test_step2_gapfill_bulk_matching_normalizes_tickers_and_persists_samples(mon
         "matched_seeded_tickers_count >= 1",
     )
 
-    async def _fake_fetch_bulk(_exchange="US", include_meta=False):
+    # Mock market_calendar helpers
+    import services.market_calendar_service as _mc
+    async def _fake_is_calendar_fresh(db, market="US"):
+        return True
+    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+        return "2026-03-18"
+    monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
+    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+
+    async def _fake_fetch_bulk(_exchange="US", include_meta=False, **kwargs):
         payload = [
             {
                 "code": " aapl ",
@@ -795,7 +900,16 @@ def test_step2_gapfill_sanity_uses_seeded_match_not_rows_written(monkeypatch):
         "matched_seeded_tickers_count >= 2",
     )
 
-    async def _fake_fetch_bulk(_exchange="US", include_meta=False):
+    # Mock market_calendar helpers
+    import services.market_calendar_service as _mc
+    async def _fake_is_calendar_fresh(db, market="US"):
+        return True
+    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+        return "2026-03-18"
+    monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
+    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+
+    async def _fake_fetch_bulk(_exchange="US", include_meta=False, **kwargs):
         payload = [
             {"code": "AAPL", "date": "2026-03-18", "close": 100, "adjusted_close": 100, "open": 99, "high": 101, "low": 98, "volume": 1000},
             {"code": "MSFT.US", "date": "2026-03-18", "close": 200, "adjusted_close": 200, "open": 199, "high": 201, "low": 198, "volume": 2000},
