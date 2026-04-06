@@ -1687,7 +1687,7 @@ async def run_daily_price_sync(
                     day["error"] = (
                         f"bulk payload has no dates (empty payload) for date={_last_closing_day}"
                         if len(_ud) == 0
-                        else f"bulk payload must contain exactly one date; got {_ud} for date={_last_closing_day}"
+                        else f"bulk payload contains multiple dates ({_ud}) for date={_last_closing_day}"
                     )
                     result["status"] = "error"
                     days.append(day)
