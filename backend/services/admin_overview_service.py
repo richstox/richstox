@@ -648,7 +648,11 @@ async def _get_bulk_processed_dates(db) -> List[str]:
         details = doc.get("details") or {}
         gapfill = details.get("price_bulk_gapfill") or {}
         for day in gapfill.get("days", []):
-            if day.get("status") == "success" and day.get("processed_date"):
+            if (
+                day.get("status") == "success"
+                and day.get("processed_date")
+                and (day.get("rows_written") or 0) > 0
+            ):
                 dates.add(day["processed_date"])
 
     return sorted(dates)

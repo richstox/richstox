@@ -137,8 +137,8 @@ def test_history_download_completed_and_gap_free():
     anchor_date = "2026-03-10"
     proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
-        {"processed_date": "2026-03-11", "status": "success"},
-        {"processed_date": "2026-03-12", "status": "success"},
+        {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
+        {"processed_date": "2026-03-12", "status": "success", "rows_written": 5000},
     ]
     visible_docs = [{
         "ticker": "AAPL.US",
@@ -173,8 +173,8 @@ def test_history_download_completed_with_missing_bulk_date():
     anchor_date = "2026-03-10"
     proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
-        {"processed_date": "2026-03-11", "status": "success"},
-        {"processed_date": "2026-03-12", "status": "success"},
+        {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
+        {"processed_date": "2026-03-12", "status": "success", "rows_written": 5000},
     ]
     visible_docs = [{
         "ticker": "AAPL.US",
@@ -203,7 +203,7 @@ def test_history_download_completed_with_missing_bulk_date():
 def test_no_proven_history_download():
     """Ticker without strict proof marker → history_download_completed=False."""
     bulk_days = [
-        {"processed_date": "2026-03-11", "status": "success"},
+        {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
     ]
     visible_docs = [{
         "ticker": "NEW.US",
@@ -229,9 +229,9 @@ def test_bulk_dates_before_anchor_are_ignored():
     anchor_date = "2026-03-15"
     proof_time = datetime(2026, 3, 15, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
-        {"processed_date": "2026-03-10", "status": "success"},  # before anchor
-        {"processed_date": "2026-03-12", "status": "success"},  # before anchor
-        {"processed_date": "2026-03-16", "status": "success"},  # after anchor
+        {"processed_date": "2026-03-10", "status": "success", "rows_written": 5000},  # before anchor
+        {"processed_date": "2026-03-12", "status": "success", "rows_written": 5000},  # before anchor
+        {"processed_date": "2026-03-16", "status": "success", "rows_written": 5000},  # after anchor
     ]
     visible_docs = [{
         "ticker": "AAPL.US",
@@ -351,8 +351,8 @@ def test_mixed_tickers():
     anchor = "2026-03-10"
     proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
-        {"processed_date": "2026-03-11", "status": "success"},
-        {"processed_date": "2026-03-12", "status": "success"},
+        {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
+        {"processed_date": "2026-03-12", "status": "success", "rows_written": 5000},
     ]
     visible_docs = [
         {"ticker": "FULL.US", "history_download_proven_at": proof_time, "history_download_proven_anchor": anchor},
@@ -413,7 +413,7 @@ def test_idempotent_recomputation():
     """Running backfill twice produces the same field values (idempotent)."""
     anchor = "2026-03-10"
     proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
-    bulk_days = [{"processed_date": "2026-03-11", "status": "success"}]
+    bulk_days = [{"processed_date": "2026-03-11", "status": "success", "rows_written": 5000}]
     visible_docs = [{
         "ticker": "AAPL.US",
         "history_download_proven_at": proof_time,
@@ -450,7 +450,7 @@ def test_legacy_complete_without_strict_proof_is_not_completed():
     must be treated as history_download_completed=False.
     This is the core strict-regime requirement: legacy evidence alone is insufficient."""
     bulk_days = [
-        {"processed_date": "2026-03-11", "status": "success"},
+        {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
     ]
     visible_docs = [{
         "ticker": "LEGACY.US",
@@ -480,7 +480,7 @@ def test_proof_marker_without_anchor_is_not_completed():
     A completed ticker must always have both proof marker AND anchor."""
     proof_time = datetime(2026, 3, 10, 12, 0, tzinfo=timezone.utc)
     bulk_days = [
-        {"processed_date": "2026-03-11", "status": "success"},
+        {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
     ]
     visible_docs = [{
         "ticker": "NOANCHOR.US",

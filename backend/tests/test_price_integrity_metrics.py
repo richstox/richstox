@@ -114,6 +114,7 @@ def _mock_db(
     expected_dates = [
         d["processed_date"] for d in bulk_days
         if d.get("status") == "success" and d.get("processed_date")
+        and (d.get("rows_written") or 0) > 0
     ]
 
     # stock_prices — find_one for nearest date, aggregate for counts & gap-free
@@ -275,7 +276,7 @@ def test_gap_free_since_history_download_count():
     db = _mock_db(
         visible_tickers=["A.US", "B.US", "C.US"],
         history_download_completed_count=2,
-        bulk_days=[{"processed_date": "2026-03-11", "status": "success"}],
+        bulk_days=[{"processed_date": "2026-03-11", "status": "success", "rows_written": 5000}],
         proven_ticker_docs=proven_docs,
         gap_free_coverage_docs=coverage_docs,
     )
@@ -312,7 +313,7 @@ def test_gap_free_with_missing_coverage():
     db = _mock_db(
         visible_tickers=["A.US", "B.US"],
         history_download_completed_count=1,
-        bulk_days=[{"processed_date": "2026-03-11", "status": "success"}],
+        bulk_days=[{"processed_date": "2026-03-11", "status": "success", "rows_written": 5000}],
         proven_ticker_docs=proven_docs,
         gap_free_coverage_docs=coverage_docs,
     )
@@ -335,7 +336,59 @@ def test_gap_free_no_bulk_dates():
     assert result["gap_free_since_history_download_count"] == 1
 
 
-def test_coverage_checkpoints_present():
+def test_gap_free_ignores_zero_row_days():
+    """Days with rows_written=0 must be excluded from expected_dates.
+
+    This is the root cause of the 4/5661 gap-free bug: remediation runs that
+    processed non-trading dates (or dates with no EODHD data) wrote
+    status='success' with rows_written=0.  Those phantom dates had no
+    stock_prices, so every ticker failed the gap-free check.
+    """
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            # Real day with actual data → should count
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
+            # Phantom day with zero rows → must be excluded
+            {"processed_date": "2026-03-12", "status": "success", "rows_written": 0},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    # A.US has coverage for 2026-03-11; 2026-03-12 is excluded (0 rows).
+    # Without the fix this would be 0 because A.US has no price for 2026-03-12.
+    assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_gap_free_ignores_missing_rows_written_field():
+    """Days without a rows_written field at all must be excluded."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
+            # No rows_written field → must be excluded
+            {"processed_date": "2026-03-13", "status": "success"},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["gap_free_since_history_download_count"] == 1
     db = _mock_db(
         bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
         checkpoint_counts={"2026-03-20": 3},
