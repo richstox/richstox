@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, SafeAreaView, Alert,
+  RefreshControl, ActivityIndicator, SafeAreaView, Alert, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
@@ -704,10 +704,260 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         </View>
       </View>
 
+      {/* Benchmark Medians */}
+      <BenchmarkMediansCard sessionToken={sessionToken} />
+
       <View style={{ height: 40 }} />
     </ScrollView>
   );
 }
+
+// ─── Benchmark Medians Card ──────────────────────────────────────────────────
+
+type BmLevel = 'industry' | 'sector' | 'market';
+
+interface BmMetric {
+  name: string;
+  median: number | null;
+  n_used?: number | null;
+}
+
+interface BmData {
+  level: string;
+  key: string;
+  ticker_count: number;
+  updated_at_prague: string | null;
+  warning: string | null;
+  metrics: Record<string, BmMetric>;
+}
+
+function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null }) {
+  const [level, setLevel] = useState<BmLevel>('industry');
+  const [groups, setGroups] = useState<string[]>([]);
+  const [search, setSearch] = useState('');
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [data, setData] = useState<BmData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [groupsLoading, setGroupsLoading] = useState(false);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+
+  const headers: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+
+  // Fetch groups when level changes
+  useEffect(() => {
+    setGroups([]);
+    setSelectedKey(null);
+    setData(null);
+    setSearch('');
+    setDropdownOpen(false);
+    (async () => {
+      setGroupsLoading(true);
+      try {
+        const res = await fetch(`${API_URL}/api/admin/peer-medians/groups?level=${level}`, { headers });
+        if (res.ok) {
+          const j = await res.json();
+          setGroups(j.groups || []);
+          // Auto-select first for market (only one group)
+          if (level === 'market' && j.groups?.length > 0) setSelectedKey(j.groups[0]);
+        }
+      } catch { /* non-fatal */ }
+      setGroupsLoading(false);
+    })();
+  }, [level, sessionToken]);
+
+  // Fetch medians when key selected
+  useEffect(() => {
+    if (!selectedKey) { setData(null); return; }
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `${API_URL}/api/admin/peer-medians?level=${level}&key=${encodeURIComponent(selectedKey)}`,
+          { headers },
+        );
+        if (res.ok && !cancelled) setData(await res.json());
+        else if (!cancelled) setData(null);
+      } catch { if (!cancelled) setData(null); }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [level, selectedKey, sessionToken]);
+
+  const filtered = search
+    ? groups.filter(g => g.toLowerCase().includes(search.toLowerCase()))
+    : groups;
+
+  // Display order: the 7 required Key Metrics only
+  const allKeys = ['net_margin_ttm', 'fcf_yield', 'net_debt_ebitda', 'revenue_growth_3y', 'dividend_yield_ttm', 'pe_ttm', 'roe'];
+
+  // Compute max absolute median for bar scaling within this tab
+  const allMedians = data ? allKeys.map(k => Math.abs(data.metrics[k]?.median ?? 0)).filter(v => v > 0) : [];
+  const maxMedian = allMedians.length > 0 ? Math.max(...allMedians) : 1;
+
+  const formatVal = (m: BmMetric): string => {
+    if (m.median == null) return 'N/A';
+    const v = m.median;
+    // Percentage metrics
+    if (['Net Margin (TTM)', 'Free Cash Flow Yield', 'Revenue Growth (3Y CAGR)', 'Dividend Yield (TTM)', 'ROE'].includes(m.name))
+      return `${v.toFixed(2)} %`;
+    // Ratio metrics
+    return v.toFixed(2);
+  };
+
+  const tabs: { id: BmLevel; label: string }[] = [
+    { id: 'industry', label: 'Industry' },
+    { id: 'sector', label: 'Sector' },
+    { id: 'market', label: 'Market' },
+  ];
+
+  return (
+    <View style={d.card}>
+      <Text style={d.sectionTitle}>Benchmark Medians</Text>
+
+      {/* Level tabs */}
+      <View style={bm.tabRow}>
+        {tabs.map(t => (
+          <TouchableOpacity
+            key={t.id}
+            style={[bm.tab, level === t.id && bm.tabActive]}
+            onPress={() => setLevel(t.id)}
+          >
+            <Text style={[bm.tabText, level === t.id && bm.tabTextActive]}>{t.label}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Searchable dropdown (not for market) */}
+      {level !== 'market' && (
+        <View style={bm.dropdownWrap}>
+          <TouchableOpacity style={bm.dropdownBtn} onPress={() => setDropdownOpen(!dropdownOpen)}>
+            <Text style={bm.dropdownBtnText} numberOfLines={1}>
+              {selectedKey || (groupsLoading ? 'Loading…' : 'Select group…')}
+            </Text>
+            <Ionicons name={dropdownOpen ? 'chevron-up' : 'chevron-down'} size={14} color={COLORS.textMuted} />
+          </TouchableOpacity>
+          {dropdownOpen && (
+            <View style={bm.dropdownList}>
+              <View style={bm.searchRow}>
+                <Ionicons name="search" size={13} color={COLORS.textMuted} />
+                <TextInput
+                  style={bm.searchInput}
+                  placeholder="Search…"
+                  placeholderTextColor={COLORS.textMuted}
+                  value={search}
+                  onChangeText={setSearch}
+                  autoFocus
+                />
+              </View>
+              <ScrollView style={bm.dropdownScroll} nestedScrollEnabled>
+                {filtered.length === 0 && (
+                  <Text style={bm.emptyText}>{groupsLoading ? 'Loading…' : 'No matches'}</Text>
+                )}
+                {filtered.map(g => (
+                  <TouchableOpacity
+                    key={g}
+                    style={[bm.dropdownItem, selectedKey === g && bm.dropdownItemActive]}
+                    onPress={() => { setSelectedKey(g); setDropdownOpen(false); setSearch(''); }}
+                  >
+                    <Text style={[bm.dropdownItemText, selectedKey === g && bm.dropdownItemTextActive]} numberOfLines={1}>{g}</Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* Content */}
+      {loading && <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 16 }} />}
+
+      {!loading && data && (
+        <View style={bm.content}>
+          {/* Ticker count + updated */}
+          <View style={bm.metaRow}>
+            <Text style={bm.metaText}>{data.ticker_count} tickers</Text>
+            {data.updated_at_prague && (
+              <Text style={bm.metaText}>Updated: {data.updated_at_prague.slice(0, 16).replace('T', ' ')}</Text>
+            )}
+          </View>
+
+          {/* Warning */}
+          {data.warning && (
+            <View style={bm.warningBox}>
+              <Ionicons name="warning" size={13} color="#D97706" />
+              <Text style={bm.warningText}>{data.warning}</Text>
+            </View>
+          )}
+
+          {/* Metrics */}
+          {allKeys.map(mk => {
+            const m = data.metrics[mk];
+            if (!m) return null;
+            const isNA = m.median == null;
+            const barPct = isNA ? 0 : Math.min(Math.abs(m.median!) / maxMedian * 100, 100);
+            return (
+              <View key={mk} style={bm.metricRow}>
+                <View style={bm.metricHeader}>
+                  <Text style={bm.metricName}>{m.name}</Text>
+                  <Text style={[bm.metricValue, isNA && { color: COLORS.textMuted }]}>
+                    {isNA ? 'N/A' : formatVal(m)}
+                  </Text>
+                </View>
+                <View style={bm.barTrack}>
+                  <View style={[bm.barFill, { width: `${barPct}%` }, isNA && { backgroundColor: COLORS.border }]} />
+                </View>
+                {m.n_used != null && (
+                  <Text style={bm.metricNUsed}>n={m.n_used}</Text>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {!loading && !data && selectedKey && (
+        <Text style={[bm.emptyText, { marginVertical: 12 }]}>No data found for this group.</Text>
+      )}
+    </View>
+  );
+}
+
+const bm = StyleSheet.create({
+  tabRow: { flexDirection: 'row', gap: 4, marginBottom: 10 },
+  tab: { flex: 1, paddingVertical: 6, borderRadius: 6, backgroundColor: COLORS.background, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
+  tabActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
+  tabText: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted },
+  tabTextActive: { color: '#fff' },
+
+  dropdownWrap: { marginBottom: 10, zIndex: 10 },
+  dropdownBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 10, borderRadius: 8, backgroundColor: COLORS.background, borderWidth: 1, borderColor: COLORS.border },
+  dropdownBtnText: { fontSize: 12, color: COLORS.text, flex: 1 },
+  dropdownList: { borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, backgroundColor: COLORS.card, marginTop: 4, overflow: 'hidden' },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 10, paddingVertical: 6, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  searchInput: { flex: 1, fontSize: 12, color: COLORS.text, padding: 0 },
+  dropdownScroll: { maxHeight: 180 },
+  dropdownItem: { paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: COLORS.border },
+  dropdownItemActive: { backgroundColor: COLORS.primary + '18' },
+  dropdownItemText: { fontSize: 12, color: COLORS.text },
+  dropdownItemTextActive: { color: COLORS.primary, fontWeight: '600' },
+  emptyText: { fontSize: 11, color: COLORS.textMuted, textAlign: 'center', paddingVertical: 12 },
+
+  content: { marginTop: 4 },
+  metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
+  metaText: { fontSize: 10, color: COLORS.textMuted },
+
+  warningBox: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#F59E0B14', borderRadius: 6, padding: 8, marginBottom: 10, borderWidth: 1, borderColor: '#F59E0B33' },
+  warningText: { fontSize: 11, color: '#D97706', flex: 1 },
+
+  metricRow: { marginBottom: 10 },
+  metricHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 },
+  metricName: { fontSize: 11, color: COLORS.text, fontWeight: '500' },
+  metricValue: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  barTrack: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden' },
+  barFill: { height: 6, backgroundColor: COLORS.primary, borderRadius: 3 },
+  metricNUsed: { fontSize: 9, color: COLORS.textMuted, marginTop: 1 },
+});
 
 function BizStat({ label, value, icon }: { label: string; value: string; icon: string }) {
   return (

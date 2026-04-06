@@ -1450,6 +1450,40 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 # EODHD returns decimal (0.025 = 2.5%), convert to percentage
                 metrics["dividend_yield"] = forward_div_yield * 100
             
+            # ── STEP 4 Key Metrics ──────────────────────────────────────
+            # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
+            if net_income_ttm is not None and revenue_ttm and revenue_ttm > 0:
+                metrics["net_margin_ttm"] = (net_income_ttm / revenue_ttm) * 100
+            
+            # Free Cash Flow Yield = (operating_cf_ttm - capex_ttm) / market_cap * 100
+            operating_cf_ttm = get_ttm_sum(quarterly_cashflow, "totalCashFromOperatingActivities")
+            if not operating_cf_ttm:
+                operating_cf_ttm = get_ttm_sum(quarterly_cashflow, "operatingCashflow")
+            capex_ttm = get_ttm_sum(quarterly_cashflow, "capitalExpenditures")
+            if operating_cf_ttm is not None and market_cap > 0:
+                # EODHD stores capex as negative; abs() ensures subtraction is correct
+                fcf_ttm = operating_cf_ttm - abs(capex_ttm or 0)
+                metrics["fcf_yield"] = (fcf_ttm / market_cap) * 100
+            
+            # Net Debt / EBITDA  (net_debt can be negative if cash > debt)
+            net_debt = (total_debt or 0) - cash
+            if ebitda_ttm and ebitda_ttm > 0:
+                metrics["net_debt_ebitda"] = net_debt / ebitda_ttm
+            
+            # Revenue Growth (3Y CAGR) from annual Income_Statement
+            annual_income = financials_data.get("Income_Statement", {}).get("yearly", {})
+            if annual_income:
+                sorted_years = sorted(annual_income.keys(), reverse=True)
+                if len(sorted_years) >= 4:
+                    rev_current = safe_float(annual_income[sorted_years[0]].get("totalRevenue"))
+                    rev_3y_ago = safe_float(annual_income[sorted_years[3]].get("totalRevenue"))
+                    if rev_current and rev_3y_ago and rev_3y_ago > 0 and rev_current > 0:
+                        metrics["revenue_growth_3y"] = ((rev_current / rev_3y_ago) ** (1.0 / 3.0) - 1) * 100
+            
+            # ROE = net_income_ttm / total_equity * 100
+            if net_income_ttm is not None and total_equity and total_equity > 0:
+                metrics["roe"] = (net_income_ttm / total_equity) * 100
+            
             # CURRENCY MISMATCH DETECTION - P1 Policy using persisted financial_currency
             # Non-USD tickers are excluded from peer median calculations
             metrics["currency_mismatch"] = not is_usd
@@ -1481,6 +1515,10 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     # FIX-2: Dual dividend medians (median_all + median_payers)
     stored = 0
     non_dividend_metrics = ["pe", "ps", "pb", "ev_ebitda", "ev_revenue"]
+    # STEP 4 Key Metrics for admin overview (allow negative values for some)
+    step4_metric_keys = ["pe", "net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "dividend_yield", "roe"]
+    # Metrics that can be negative (don't filter > 0)
+    step4_allow_negative = {"net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "roe"}
     
     for industry, data in industries.items():
         sector = data["sector"]
@@ -1584,6 +1622,29 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         benchmarks["dividend_yield_median_all"] = dividend_median_all
         benchmarks["dividend_yield_median_payers"] = dividend_median_payers
         
+        # ── STEP 4: Compute medians for the 7 admin Key Metrics ─────
+        step4 = {}
+        for mk in step4_metric_keys:
+            if mk == "dividend_yield":
+                # Use the already-computed dividend_median_all
+                if dividend_median_all is not None:
+                    step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
+                continue
+            if mk in step4_allow_negative:
+                pairs_s4 = [t[mk] for t in tickers_data if t.get(mk) is not None]
+            else:
+                pairs_s4 = [t[mk] for t in tickers_data if t.get(mk) is not None and t.get(mk) > 0]
+            if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4.sort()
+                n_s4 = len(pairs_s4)
+                if n_s4 % 2 == 1:
+                    med = round(pairs_s4[n_s4 // 2], 2)
+                else:
+                    med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
+                # Map key to spec name (pe -> pe_ttm)
+                out_key = "pe_ttm" if mk == "pe" else mk
+                step4[out_key] = {"median": med, "n_used": n_s4}
+        
         if metric_values:
             await db.peer_benchmarks.update_one(
                 {"industry": industry},
@@ -1597,6 +1658,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     "metrics_count": metrics_count,
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
+                    "step4_medians": step4,
                     # FIX-2: Dividend-specific fields
                     "dividend_peer_count": dividend_peer_count,
                     "dividend_payers_count": dividend_payers_count,
@@ -1724,6 +1786,27 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         benchmarks["dividend_yield_median_all"] = dividend_median_all
         benchmarks["dividend_yield_median_payers"] = dividend_median_payers
         
+        # ── STEP 4: Compute medians for the 7 admin Key Metrics (sector) ─
+        step4 = {}
+        for mk in step4_metric_keys:
+            if mk == "dividend_yield":
+                if dividend_median_all is not None:
+                    step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
+                continue
+            if mk in step4_allow_negative:
+                pairs_s4 = [t[mk] for t in usd_tickers if t.get(mk) is not None]
+            else:
+                pairs_s4 = [t[mk] for t in usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
+            if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4.sort()
+                n_s4 = len(pairs_s4)
+                if n_s4 % 2 == 1:
+                    med = round(pairs_s4[n_s4 // 2], 2)
+                else:
+                    med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
+                out_key = "pe_ttm" if mk == "pe" else mk
+                step4[out_key] = {"median": med, "n_used": n_s4}
+        
         if metric_values:
             await db.peer_benchmarks.update_one(
                 {"sector": sector, "industry": None},
@@ -1735,6 +1818,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     "metrics_count": metrics_count,
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
+                    "step4_medians": step4,
                     # FIX-2: Dividend-specific fields
                     "dividend_peer_count": dividend_peer_count,
                     "dividend_payers_count": dividend_payers_count,
@@ -1847,6 +1931,27 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         benchmarks["dividend_yield_median_all"] = dividend_median_all
         benchmarks["dividend_yield_median_payers"] = dividend_median_payers
         
+        # ── STEP 4: Compute medians for the 7 admin Key Metrics (market) ─
+        step4 = {}
+        for mk in step4_metric_keys:
+            if mk == "dividend_yield":
+                if dividend_median_all is not None:
+                    step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
+                continue
+            if mk in step4_allow_negative:
+                pairs_s4 = [t[mk] for t in all_usd_tickers if t.get(mk) is not None]
+            else:
+                pairs_s4 = [t[mk] for t in all_usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
+            if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4.sort()
+                n_s4 = len(pairs_s4)
+                if n_s4 % 2 == 1:
+                    med = round(pairs_s4[n_s4 // 2], 2)
+                else:
+                    med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
+                out_key = "pe_ttm" if mk == "pe" else mk
+                step4[out_key] = {"median": med, "n_used": n_s4}
+        
         if metric_values:
             await db.peer_benchmarks.update_one(
                 {"sector": None, "industry": None},
@@ -1859,6 +1964,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     "metrics_count": metrics_count,
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
+                    "step4_medians": step4,
                     # FIX-2: Dividend-specific fields
                     "dividend_peer_count": dividend_peer_count,
                     "dividend_payers_count": dividend_payers_count,

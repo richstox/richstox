@@ -2663,6 +2663,106 @@ async def get_industry_benchmark_detail(industry: str):
         raise HTTPException(404, f"No benchmark data for industry: {industry}")
     return benchmark
 
+# ----- Peer Medians Admin Endpoints -----
+
+@api_router.get("/admin/peer-medians/groups")
+async def admin_peer_medians_groups(level: str = Query(..., regex="^(industry|sector|market)$")):
+    """Return available group names for a given level from peer_benchmarks."""
+    if level == "industry":
+        names = await db.peer_benchmarks.distinct("industry", {"industry": {"$ne": None}})
+    elif level == "sector":
+        names = await db.peer_benchmarks.distinct("sector", {"industry": None, "sector": {"$ne": None}})
+    else:
+        names = ["US Market"]
+    names = sorted([n for n in names if n])
+    return {"level": level, "groups": names}
+
+
+@api_router.get("/admin/peer-medians")
+async def admin_peer_medians(
+    level: str = Query(..., regex="^(industry|sector|market)$"),
+    key: str = Query(..., min_length=1),
+):
+    """
+    Read pre-computed peer medians from peer_benchmarks collection.
+    Returns medians for the 7 Key Metrics only.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+    import zoneinfo as _zi
+
+    # Query the correct document based on level
+    if level == "industry":
+        query = {"industry": key}
+    elif level == "sector":
+        query = {"sector": key, "industry": None}
+    else:  # market
+        query = {"sector": None, "industry": None}
+
+    doc = await db.peer_benchmarks.find_one(
+        query,
+        {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count": 1, "computed_at": 1},
+    )
+
+    if not doc:
+        raise HTTPException(404, f"No peer benchmark data for {level}={key}")
+
+    ticker_count = doc.get("peer_count_used") or doc.get("peer_count") or 0
+    computed_at_raw = doc.get("computed_at")
+
+    # Convert computed_at to Europe/Prague
+    updated_at_prague = None
+    if computed_at_raw:
+        try:
+            prague = _zi.ZoneInfo("Europe/Prague")
+            if isinstance(computed_at_raw, str):
+                utc_dt = _dt.fromisoformat(computed_at_raw.replace("Z", "+00:00"))
+            else:
+                utc_dt = computed_at_raw if computed_at_raw.tzinfo else computed_at_raw.replace(tzinfo=_tz.utc)
+            updated_at_prague = utc_dt.astimezone(prague).isoformat()
+        except Exception:
+            updated_at_prague = str(computed_at_raw)
+
+    # Read step4_medians computed by the peer_medians job
+    s4 = doc.get("step4_medians", {})
+
+    # The 7 Key Metrics in display order with canonical names
+    metric_spec = [
+        ("net_margin_ttm", "Net Margin (TTM)"),
+        ("fcf_yield", "Free Cash Flow Yield"),
+        ("net_debt_ebitda", "Net Debt / EBITDA"),
+        ("revenue_growth_3y", "Revenue Growth (3Y CAGR)"),
+        ("dividend_yield_ttm", "Dividend Yield (TTM)"),
+        ("pe_ttm", "P/E (TTM)"),
+        ("roe", "ROE"),
+    ]
+
+    metrics = {}
+    for mk, name in metric_spec:
+        entry = s4.get(mk)
+        if entry:
+            metrics[mk] = {"name": name, "median": entry.get("median"), "n_used": entry.get("n_used")}
+        else:
+            metrics[mk] = {"name": name, "median": None}
+
+    # Warning for insufficient peers
+    warning = None
+    if ticker_count < 5:
+        level_label = level.capitalize()
+        warning = (
+            f"No peer benchmark available for {key}. "
+            f"{level_label} has fewer than 5 companies in our database."
+        )
+
+    return {
+        "level": level,
+        "key": key,
+        "ticker_count": ticker_count,
+        "updated_at_prague": updated_at_prague,
+        "warning": warning,
+        "metrics": metrics,
+    }
+
+
 # ----- Dividend History Endpoints -----
 
 @api_router.post("/admin/dividends/sync-ticker/{ticker}")
