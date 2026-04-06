@@ -61,6 +61,13 @@ class _FakeOpsJobRuns:
         _id = filt.get("_id")
         if _id not in self.docs:
             return SimpleNamespace(matched_count=0)
+        doc = self.docs[_id]
+        # Respect additional filter fields (e.g. {"_id": X, "status": "running"})
+        for k, v in filt.items():
+            if k == "_id":
+                continue
+            if doc.get(k) != v:
+                return SimpleNamespace(matched_count=0)
         for key, value in (update.get("$set") or {}).items():
             _set_path(self.docs[_id], key, value)
         return SimpleNamespace(matched_count=1)
@@ -70,7 +77,14 @@ class _FakeOpsJobRuns:
             return {"details": {"seeded_total": self.seeded_total}}
         _id = filt.get("_id")
         if _id in self.docs:
-            return deepcopy(self.docs[_id])
+            doc = self.docs[_id]
+            # Respect additional filter fields (e.g. {"_id": X, "status": "running"})
+            for k, v in filt.items():
+                if k == "_id":
+                    continue
+                if doc.get(k) != v:
+                    return None
+            return deepcopy(doc)
         return None
 
     async def update_many(self, filt, update):
@@ -165,6 +179,55 @@ class _FakeMarketCalendar:
         return None
 
 
+class _FakeOpsLocks:
+    """Fake ops_locks collection supporting single-flight lock operations."""
+    def __init__(self):
+        self.docs = {}
+
+    async def create_index(self, keys, name=None, expireAfterSeconds=None):
+        pass
+
+    async def update_one(self, filt, update):
+        _id = filt.get("_id")
+        if _id and _id in self.docs:
+            doc = self.docs[_id]
+            # Check $or conditions for lock reuse
+            or_conditions = filt.get("$or", [])
+            matched = False
+            for cond in or_conditions:
+                if "owner_run_id" in cond and doc.get("owner_run_id") == cond["owner_run_id"]:
+                    matched = True
+                    break
+                if "expires_at" in cond:
+                    lte = cond["expires_at"].get("$lte")
+                    if lte and doc.get("expires_at") and doc["expires_at"] <= lte:
+                        matched = True
+                        break
+            if not matched and or_conditions:
+                return SimpleNamespace(matched_count=0)
+            for k, v in (update.get("$set") or {}).items():
+                doc[k] = v
+            return SimpleNamespace(matched_count=1)
+        return SimpleNamespace(matched_count=0)
+
+    async def insert_one(self, doc):
+        _id = doc.get("_id")
+        if _id in self.docs:
+            from pymongo.errors import DuplicateKeyError
+            raise DuplicateKeyError("duplicate key")
+        self.docs[_id] = deepcopy(doc)
+        return SimpleNamespace(inserted_id=_id)
+
+    async def delete_one(self, filt):
+        _id = filt.get("_id")
+        owner = filt.get("owner_run_id")
+        if _id in self.docs:
+            if owner is None or self.docs[_id].get("owner_run_id") == owner:
+                del self.docs[_id]
+                return SimpleNamespace(deleted_count=1)
+        return SimpleNamespace(deleted_count=0)
+
+
 class _FakeDB:
     def __init__(
         self, *, stock_counts=None, initial_pipeline_state=None,
@@ -173,6 +236,7 @@ class _FakeDB:
         self.ops_job_runs = _FakeOpsJobRuns(seeded_total=seeded_total)
         self.tracked_tickers = _FakeTrackedTickers(seeded_tickers or ["AAPL.US", "MSFT.US"])
         self.ops_config = _FakeOpsConfig()
+        self.ops_locks = _FakeOpsLocks()
         self.pipeline_state = _FakePipelineState(initial=initial_pipeline_state)
         self.stock_prices = _FakeStockPrices()
         self.market_calendar = _FakeMarketCalendar(rows=calendar_rows)
