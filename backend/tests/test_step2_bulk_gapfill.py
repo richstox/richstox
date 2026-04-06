@@ -564,7 +564,9 @@ def test_step2_bulk_guard_uses_canonical_bulk_fetch_executed_signal(monkeypatch)
     )
 
     assert result["status"] == "error"
-    assert "bulk price sync failed" in result["error"] or "no bulk fetch executed" in result["error"]
+    # When bulk_fetch_executed=False, the Phase A error exits with "bulk fetch not executed"
+    # (from day["error"]) or "Phase A bulk price sync failed" (fallback when days is empty)
+    assert "Phase A bulk price sync failed" in result["error"]
     latest = db.ops_job_runs.latest
     details = latest["details"]
     assert details["bulk_fetch_executed"] is False
