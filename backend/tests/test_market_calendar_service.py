@@ -1132,7 +1132,9 @@ class TestRefreshMarketCalendar:
             summary = await refresh_market_calendar(db, "US", years_ahead=1)
 
         assert summary["status"] == "success"
-        assert summary["holidays_count"] == 3
+        assert summary["eodhd_holidays_count"] == 3
+        # holidays_count >= eodhd count because hardcoded NYSE holidays are merged
+        assert summary["holidays_count"] >= 3
 
         # Collect all upserted documents keyed by date
         from pymongo import UpdateOne
@@ -1172,7 +1174,9 @@ class TestRefreshMarketCalendar:
         with patch("services.market_calendar_service._fetch_exchange_details", return_value=legacy):
             summary = await refresh_market_calendar(db, "US", years_ahead=1)
 
-        assert summary["holidays_count"] == 2
+        assert summary["eodhd_holidays_count"] == 2
+        # holidays_count >= eodhd count because hardcoded NYSE holidays are merged
+        assert summary["holidays_count"] >= 2
 
         from pymongo import UpdateOne
         docs_by_date = {}
@@ -1198,7 +1202,9 @@ class TestRefreshMarketCalendar:
         with patch("services.market_calendar_service._fetch_exchange_details", return_value=list_fmt):
             summary = await refresh_market_calendar(db, "US", years_ahead=1)
 
-        assert summary["holidays_count"] == 2
+        assert summary["eodhd_holidays_count"] == 2
+        # holidays_count >= eodhd count because hardcoded NYSE holidays are merged
+        assert summary["holidays_count"] >= 2
 
         from pymongo import UpdateOne
         docs_by_date = {}
@@ -1207,3 +1213,151 @@ class TestRefreshMarketCalendar:
             docs_by_date[doc["date"]] = doc
 
         assert docs_by_date["2026-04-03"]["is_trading_day"] is False
+
+
+# ── Hardcoded NYSE Holiday Computation ──────────────────────────────────────
+
+
+class TestComputeNYSEHolidays:
+    """Verify compute_nyse_holidays produces correct dates for known years."""
+
+    def test_good_friday_2026(self):
+        """Good Friday 2026 is April 3."""
+        from services.market_calendar_service import compute_nyse_holidays
+        holidays = compute_nyse_holidays(2026)
+        assert "2026-04-03" in holidays
+        assert holidays["2026-04-03"] == "Good Friday"
+
+    def test_good_friday_2025(self):
+        """Good Friday 2025 is April 18."""
+        from services.market_calendar_service import compute_nyse_holidays
+        holidays = compute_nyse_holidays(2025)
+        assert "2025-04-18" in holidays
+        assert holidays["2025-04-18"] == "Good Friday"
+
+    def test_good_friday_2024(self):
+        """Good Friday 2024 is March 29."""
+        from services.market_calendar_service import compute_nyse_holidays
+        holidays = compute_nyse_holidays(2024)
+        assert "2024-03-29" in holidays
+
+    def test_all_10_holidays_present_2026(self):
+        """2026 should have all 10 NYSE holidays."""
+        from services.market_calendar_service import compute_nyse_holidays
+        holidays = compute_nyse_holidays(2026)
+        assert len(holidays) == 10, f"Expected 10, got {len(holidays)}: {sorted(holidays.keys())}"
+        assert "2026-01-01" in holidays   # New Year's Day (Thursday)
+        assert "2026-01-19" in holidays   # MLK Day (3rd Monday)
+        assert "2026-02-16" in holidays   # Presidents' Day (3rd Monday)
+        assert "2026-04-03" in holidays   # Good Friday
+        assert "2026-05-25" in holidays   # Memorial Day (last Monday)
+        assert "2026-06-19" in holidays   # Juneteenth (Friday)
+        assert "2026-07-03" in holidays   # Independence Day observed (Jul 4 = Sat → Fri)
+        assert "2026-09-07" in holidays   # Labor Day (1st Monday)
+        assert "2026-11-26" in holidays   # Thanksgiving (4th Thursday)
+        assert "2026-12-25" in holidays   # Christmas (Friday)
+
+    def test_new_years_day_on_saturday_skipped(self):
+        """When Jan 1 is Saturday, NYSE does NOT observe on Friday Dec 31."""
+        from services.market_calendar_service import compute_nyse_holidays
+        # 2022-01-01 is Saturday
+        holidays = compute_nyse_holidays(2022)
+        assert "2022-01-01" not in holidays
+        assert "2021-12-31" not in holidays
+
+    def test_new_years_day_on_sunday_observed_monday(self):
+        """When Jan 1 is Sunday, NYSE observes on Monday Jan 2."""
+        from services.market_calendar_service import compute_nyse_holidays
+        # 2023-01-01 is Sunday
+        holidays = compute_nyse_holidays(2023)
+        assert "2023-01-02" in holidays
+        assert holidays["2023-01-02"] == "New Year's Day"
+
+    def test_independence_day_on_sunday_observed_monday(self):
+        """When Jul 4 is Sunday, NYSE observes on Monday Jul 5."""
+        from services.market_calendar_service import compute_nyse_holidays
+        # 2021-07-04 is Sunday
+        holidays = compute_nyse_holidays(2021)
+        assert "2021-07-05" in holidays
+        assert holidays["2021-07-05"] == "Independence Day"
+
+    def test_christmas_on_saturday_observed_friday(self):
+        """When Dec 25 is Saturday, NYSE observes on Friday Dec 24."""
+        from services.market_calendar_service import compute_nyse_holidays
+        # 2021-12-25 is Saturday
+        holidays = compute_nyse_holidays(2021)
+        assert "2021-12-24" in holidays
+        assert holidays["2021-12-24"] == "Christmas Day"
+
+    def test_juneteenth_not_before_2022(self):
+        """Juneteenth was only added in 2022."""
+        from services.market_calendar_service import compute_nyse_holidays
+        holidays_2021 = compute_nyse_holidays(2021)
+        assert all("Juneteenth" not in v for v in holidays_2021.values())
+        holidays_2022 = compute_nyse_holidays(2022)
+        assert any("Juneteenth" in v for v in holidays_2022.values())
+
+    def test_holidays_are_never_on_weekends(self):
+        """All observed holidays must fall on weekdays."""
+        from services.market_calendar_service import compute_nyse_holidays
+        for year in range(2020, 2030):
+            holidays = compute_nyse_holidays(year)
+            for d_str in holidays:
+                d = date.fromisoformat(d_str)
+                assert d.weekday() < 5, f"{d_str} ({holidays[d_str]}) is on a weekend"
+
+    @pytest.mark.asyncio
+    async def test_eodhd_missing_good_friday_merged_by_refresh(self):
+        """If EODHD omits Good Friday, compute_nyse_holidays adds it."""
+        from services.market_calendar_service import refresh_market_calendar
+
+        payload_no_holidays = {
+            "Name": "USA Stocks",
+            "Code": "US",
+            "Timezone": "America/New_York",
+            "TradingHours": {"Open": "09:30:00", "Close": "16:00:00"},
+            "ExchangeHolidays": {},
+            "ExchangeEarlyCloseDays": {},
+        }
+
+        db = _FakeCalendarDB()
+        with patch("services.market_calendar_service._fetch_exchange_details", return_value=payload_no_holidays):
+            summary = await refresh_market_calendar(db, "US", years_ahead=1)
+
+        assert summary["eodhd_holidays_count"] == 0
+        assert summary["computed_holidays_added"] > 0
+        assert summary["holidays_count"] > 0
+
+        docs_by_date = {}
+        for op in db.market_calendar.ops:
+            doc = op._doc["$set"]
+            docs_by_date[doc["date"]] = doc
+
+        assert "2026-04-03" in docs_by_date
+        gf = docs_by_date["2026-04-03"]
+        assert gf["is_trading_day"] is False
+        assert gf["holiday_name"] == "Good Friday"
+
+
+class TestEasterDate:
+    """Verify the Easter computation against known dates."""
+
+    def test_known_easter_dates(self):
+        from services.market_calendar_service import _easter_date
+        known = {
+            2020: date(2020, 4, 12),
+            2021: date(2021, 4, 4),
+            2022: date(2022, 4, 17),
+            2023: date(2023, 4, 9),
+            2024: date(2024, 3, 31),
+            2025: date(2025, 4, 20),
+            2026: date(2026, 4, 5),
+            2027: date(2027, 3, 28),
+            2028: date(2028, 4, 16),
+            2029: date(2029, 4, 1),
+            2030: date(2030, 4, 21),
+        }
+        for year, expected in known.items():
+            assert _easter_date(year) == expected, (
+                f"Easter {year}: expected {expected}, got {_easter_date(year)}"
+            )
