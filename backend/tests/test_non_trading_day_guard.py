@@ -274,12 +274,12 @@ def _patch_non_gapfill_dependencies(monkeypatch):
     import services.market_calendar_service as _mc
     async def _fake_is_calendar_fresh(db, market="US"):
         return True
-    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+    async def _fake_get_last_closing_day(db, market="US", *, as_of_date=None):
         return "2026-04-02"
     monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
-    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+    monkeypatch.setattr(_mc, "get_last_closing_day", _fake_get_last_closing_day)
 
-    # Mock fetch_bulk_eod_latest for LCD validation
+    # Mock fetch_bulk_eod_latest for LCD pre-fetch
     async def _fake_fetch_bulk_for_lcd(_exchange="US", include_meta=False, *, for_date=None):
         _d = for_date or "2026-04-02"
         payload = [
@@ -295,7 +295,6 @@ def _patch_non_gapfill_dependencies(monkeypatch):
     monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
     monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
     monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 1)
-    monkeypatch.setattr(scheduler_service, "LCD_MIN_MATCHED_TICKERS", 1)
     monkeypatch.setattr(
         scheduler_service,
         "STEP2_SANITY_THRESHOLD_USED",

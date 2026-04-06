@@ -263,12 +263,12 @@ def _patch_non_gapfill_dependencies(monkeypatch):
     import services.market_calendar_service as _mc
     async def _fake_is_calendar_fresh(db, market="US"):
         return True
-    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+    async def _fake_get_last_closing_day(db, market="US", *, as_of_date=None):
         return "2026-03-18"
     monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
-    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+    monkeypatch.setattr(_mc, "get_last_closing_day", _fake_get_last_closing_day)
 
-    # Mock fetch_bulk_eod_latest for LCD validation (returns valid single-date data
+    # Mock fetch_bulk_eod_latest for LCD pre-fetch (returns valid single-date data
     # with tickers matching the default seeded set).
     async def _fake_fetch_bulk_for_lcd(_exchange="US", include_meta=False, *, for_date=None):
         _d = for_date or "2026-03-18"
@@ -285,7 +285,6 @@ def _patch_non_gapfill_dependencies(monkeypatch):
     monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
     monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
     monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 1)
-    monkeypatch.setattr(scheduler_service, "LCD_MIN_MATCHED_TICKERS", 1)
     monkeypatch.setattr(
         scheduler_service,
         "STEP2_SANITY_THRESHOLD_USED",
@@ -307,9 +306,9 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
             "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US", "MSFT.US"],
-            "date": "2026-03-17",
-            "processed_date": "2026-03-17",
-            "unique_dates": ["2026-03-17"],
+            "date": "2026-03-18",
+            "processed_date": "2026-03-18",
+            "unique_dates": ["2026-03-18"],
         }
 
     async def _fake_missed_dates(db, today_dt):
@@ -331,7 +330,7 @@ def test_step2_gapfill_bootstrap_writes_pipeline_state_with_prague_timestamp(mon
     assert result["status"] == "success"
     persisted = db.pipeline_state.docs["price_bulk"]
     assert persisted["_id"] == "price_bulk"
-    # processed_date is now set to last_closing_day from market_calendar
+    # processed_date comes from the bulk result (must match LCD after date-match guard)
     assert persisted["global_last_bulk_date_processed"] == "2026-03-18"
     assert isinstance(persisted["updated_at"], datetime)
     assert persisted["updated_at"].tzinfo == timezone.utc
@@ -412,9 +411,9 @@ def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(mon
             "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US", "MSFT.US"],
-            "date": "2026-03-17",
-            "processed_date": "2026-03-17",
-            "unique_dates": ["2026-03-17"],
+            "date": "2026-03-18",
+            "processed_date": "2026-03-18",
+            "unique_dates": ["2026-03-18"],
         }
 
     async def _fake_missed_dates(db, today_dt):
@@ -439,7 +438,7 @@ def test_step2_gapfill_watermark_boundary_still_executes_single_latest_fetch(mon
     assert latest["details"]["api_calls"] == 1
     days = latest["details"]["price_bulk_gapfill"]["days"]
     assert len(days) == 1
-    # processed_date is now set from last_closing_day (mock returns "2026-03-18")
+    # processed_date comes from bulk result (must match LCD after date-match guard)
     assert days[0]["processed_date"] == "2026-03-18"
 
 
@@ -604,9 +603,9 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
             "bulk_fetch_executed": True,
             "bulk_writes": 1,
             "tickers_with_price": ["AAPL.US"],
-            "date": "2026-03-19",
-            "processed_date": "2026-03-19",
-            "unique_dates": ["2026-03-19"],
+            "date": "2026-03-18",
+            "processed_date": "2026-03-18",
+            "unique_dates": ["2026-03-18"],
         }
 
     async def _fake_missed_dates(db, today_dt):
@@ -627,7 +626,7 @@ def test_step2_gapfill_days_history_capped_to_60(monkeypatch):
 
     days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
     assert len(days) == 1
-    # processed_date/bulk_date is now set from last_closing_day (mock returns "2026-03-18")
+    # processed_date/bulk_date comes from bulk result (must match LCD after date-match guard)
     assert days[0]["bulk_date"] == "2026-03-18"
 
 
@@ -702,7 +701,6 @@ def test_step2_detectors_use_bulk_processed_date_for_endpoints(monkeypatch):
 def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeypatch):
     db = _FakeDB(stock_counts={})
     monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 2)
-    monkeypatch.setattr(scheduler_service, "LCD_MIN_MATCHED_TICKERS", 1)
     monkeypatch.setattr(
         scheduler_service,
         "STEP2_SANITY_THRESHOLD_USED",
@@ -713,12 +711,12 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
     import services.market_calendar_service as _mc
     async def _fake_is_calendar_fresh(db, market="US"):
         return True
-    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+    async def _fake_get_last_closing_day(db, market="US", *, as_of_date=None):
         return "2026-03-18"
     monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
-    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+    monkeypatch.setattr(_mc, "get_last_closing_day", _fake_get_last_closing_day)
 
-    # LCD validation mock
+    # LCD pre-fetch mock
     async def _fake_fetch_bulk_lcd(_exchange="US", include_meta=False, *, for_date=None):
         _d = for_date or "2026-03-18"
         payload = [
@@ -822,7 +820,6 @@ def test_step2_gapfill_bulk_matching_normalizes_tickers_and_persists_samples(mon
     db = _FakeDB(stock_counts={"2026-03-18": 2}, seeded_tickers=["AAPL.US", "MSFT.US"])
     monkeypatch.setattr(scheduler_service, "MIN_BULK_ROWS_SANITY_CHECK", 0)
     monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 1)
-    monkeypatch.setattr(scheduler_service, "LCD_MIN_MATCHED_TICKERS", 1)
     monkeypatch.setattr(
         scheduler_service,
         "STEP2_SANITY_THRESHOLD_USED",
@@ -833,10 +830,10 @@ def test_step2_gapfill_bulk_matching_normalizes_tickers_and_persists_samples(mon
     import services.market_calendar_service as _mc
     async def _fake_is_calendar_fresh(db, market="US"):
         return True
-    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+    async def _fake_get_last_closing_day(db, market="US", *, as_of_date=None):
         return "2026-03-18"
     monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
-    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+    monkeypatch.setattr(_mc, "get_last_closing_day", _fake_get_last_closing_day)
 
     async def _fake_fetch_bulk(_exchange="US", include_meta=False, **kwargs):
         payload = [
@@ -922,7 +919,6 @@ def test_step2_gapfill_sanity_uses_seeded_match_not_rows_written(monkeypatch):
     db.ops_job_runs.seeded_total = len(seeded)
     monkeypatch.setattr(scheduler_service, "MIN_BULK_ROWS_SANITY_CHECK", 9999)
     monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 2)
-    monkeypatch.setattr(scheduler_service, "LCD_MIN_MATCHED_TICKERS", 1)
     monkeypatch.setattr(
         scheduler_service,
         "STEP2_SANITY_THRESHOLD_USED",
@@ -933,10 +929,10 @@ def test_step2_gapfill_sanity_uses_seeded_match_not_rows_written(monkeypatch):
     import services.market_calendar_service as _mc
     async def _fake_is_calendar_fresh(db, market="US"):
         return True
-    async def _fake_get_latest_trading_day(db, market="US", *, as_of_date=None):
+    async def _fake_get_last_closing_day(db, market="US", *, as_of_date=None):
         return "2026-03-18"
     monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
-    monkeypatch.setattr(_mc, "get_latest_trading_day", _fake_get_latest_trading_day)
+    monkeypatch.setattr(_mc, "get_last_closing_day", _fake_get_last_closing_day)
 
     async def _fake_fetch_bulk(_exchange="US", include_meta=False, **kwargs):
         payload = [
@@ -1021,3 +1017,117 @@ def test_step2_gapfill_sanity_uses_seeded_match_not_rows_written(monkeypatch):
     assert day["sanity_threshold_used"] == "matched_seeded_tickers_count >= 2"
     assert details["matched_price_tickers_raw"] == 2
     assert details["tickers_with_price_data"] == 2
+
+
+# ── Calendar-based LCD (no backward iteration) ──────────────────────────────
+
+
+def test_lcd_uses_calendar_last_closing_day_directly(monkeypatch):
+    """price_sync must use get_last_closing_day() from the calendar to
+    determine the bulk date — no iterative probing of EODHD.
+
+    Scenario: calendar correctly marks 2026-04-03 (Good Friday) as a
+    holiday, so get_last_closing_day returns 2026-04-02.  price_sync
+    fetches bulk for 2026-04-02 directly.
+    """
+    # ── 1. Calendar helpers: last closing day is 2026-04-02 ──────────────
+    import services.market_calendar_service as _mc
+
+    async def _fake_is_calendar_fresh(db, market="US"):
+        return True
+
+    async def _fake_get_last_closing_day(db, market="US", *, as_of_date=None):
+        # On 2026-04-06 (Monday), Good Friday was 04-03 (holiday),
+        # so the last closed trading day is 04-02 (Thursday).
+        return "2026-04-02"
+
+    monkeypatch.setattr(_mc, "is_calendar_fresh", _fake_is_calendar_fresh)
+    monkeypatch.setattr(_mc, "get_last_closing_day", _fake_get_last_closing_day)
+
+    # ── 2. EODHD bulk returns data dated 2026-04-02 ─────────────────────
+    async def _fake_fetch_bulk(_exchange="US", include_meta=False, *, for_date=None):
+        payload = [
+            {"code": "AAPL", "date": "2026-04-02", "close": 150, "open": 149,
+             "high": 151, "low": 148, "volume": 1000, "adjusted_close": 150},
+            {"code": "MSFT", "date": "2026-04-02", "close": 300, "open": 299,
+             "high": 301, "low": 298, "volume": 2000, "adjusted_close": 300},
+        ]
+        if include_meta:
+            return payload, True
+        return payload
+
+    monkeypatch.setattr(price_ingestion_service, "fetch_bulk_eod_latest", _fake_fetch_bulk)
+
+    # ── 3. Bulk catchup mock: returns processed_date matching payload ────
+    bulk_calls = []
+
+    async def _fake_bulk(db, job_name="price_sync", progress_cb=None, seeded_tickers_override=None, **kwargs):
+        _ = db, job_name, progress_cb, seeded_tickers_override
+        bulk_calls.append(kwargs)
+        return {
+            "status": "success",
+            "dates_processed": 1,
+            "records_upserted": 5001,
+            "api_calls": 1,
+            "bulk_fetch_executed": True,
+            "bulk_writes": 1,
+            "tickers_with_price": ["AAPL.US", "MSFT.US"],
+            "date": "2026-04-02",
+            "processed_date": "2026-04-02",
+            "unique_dates": ["2026-04-02"],
+        }
+
+    monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)
+
+    # ── 4. Remaining non-gapfill mocks ──────────────────────────────────
+    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
+        return {
+            "seeded_total": 2, "with_price_data": 2,
+            "without_price_data": 0, "matched_price_tickers_raw": 2,
+            "exclusions": [],
+        }
+
+    async def _fake_save_report(db, rows, now):
+        return {"exclusion_report_rows": 0, "exclusion_report_run_id": "r", "exclusion_report_date": "2026-04-02"}
+
+    async def _fake_detectors(db, progress_cb=None, exclusion_meta=None, cancel_check=None, processed_date=None):
+        return {"enqueued_total": 0, "skipped_total": 0, "cancelled": False}
+
+    monkeypatch.setattr(scheduler_service, "sync_has_price_data_flags", _fake_flags)
+    monkeypatch.setattr(scheduler_service, "save_price_sync_exclusion_report", _fake_save_report)
+    monkeypatch.setattr(scheduler_service, "run_step2_event_detectors", _fake_detectors)
+    monkeypatch.setattr(scheduler_service, "MIN_BULK_MATCHED_SEEDED_SANITY_CHECK", 1)
+    monkeypatch.setattr(scheduler_service, "STEP2_SANITY_THRESHOLD_USED", "matched_seeded_tickers_count >= 1")
+
+    async def _fake_missed_dates(db, today_dt):
+        return [date(2026, 4, 2)]
+    monkeypatch.setattr(scheduler_service, "_get_missed_trading_dates", _fake_missed_dates)
+
+    # ── 5. Run ───────────────────────────────────────────────────────────
+    db = _FakeDB(stock_counts={}, seeded_tickers=["AAPL.US", "MSFT.US"])
+
+    result = asyncio.run(
+        scheduler_service.run_daily_price_sync(
+            db,
+            ignore_kill_switch=True,
+            parent_run_id="parent",
+            chain_run_id="chain",
+        )
+    )
+
+    # ── 6. Assertions ────────────────────────────────────────────────────
+    assert result["status"] == "success"
+
+    # The LCD must be 2026-04-02 (calendar-determined, not probed).
+    days = db.ops_job_runs.latest["details"]["price_bulk_gapfill"]["days"]
+    assert len(days) == 1
+    assert days[0]["processed_date"] == "2026-04-02"
+    assert days[0]["bulk_date"] == "2026-04-02"
+
+    # Watermark should reflect the calendar-determined date.
+    persisted = db.pipeline_state.docs["price_bulk"]
+    assert persisted["global_last_bulk_date_processed"] == "2026-04-02"
+
+    # Bulk catchup must have been called with the correct LCD.
+    assert len(bulk_calls) == 1
+    assert bulk_calls[0].get("latest_trading_day") == "2026-04-02"

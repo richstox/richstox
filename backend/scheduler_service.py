@@ -92,8 +92,6 @@ _OPS_LOCKS_TTL_INDEX_LOCK: Optional[asyncio.Lock] = None
 _DETECTOR_PHASE_POLL_DELAY = 0.5
 MIN_BULK_ROWS_SANITY_CHECK = 4000
 MIN_BULK_MATCHED_SEEDED_SANITY_CHECK = 4000
-LCD_MIN_MATCHED_TICKERS = 4000  # Last Closing Day validation threshold
-LCD_MAX_RETRIES = 10
 STEP2_SANITY_THRESHOLD_USED = (
     f"matched_seeded_tickers_count >= {MIN_BULK_MATCHED_SEEDED_SANITY_CHECK}"
 )
@@ -1409,13 +1407,18 @@ async def run_daily_price_sync(
 
         # ── Determine last_closing_day (LCD) from market_calendar ─────────
         # LCD is the authoritative date used for the bulk URL and
-        # processed_date.  It is found by iterating backward from the
-        # latest trading day <= today, validating each candidate against
-        # the EODHD bulk payload (unique_dates == 1 AND
-        # matched_seeded_tickers >= 4000).
+        # processed_date.  It is the most recent trading day that has
+        # already fully closed — obtained directly from the calendar via
+        # get_last_closing_day() (strictly before today in Prague time).
+        #
+        # The calendar is the single source of truth for holidays and
+        # weekends.  There is NO backward-iteration / speculative
+        # probing of the EODHD bulk API.  If the calendar says the last
+        # closed trading day is 2026-04-02 (because 2026-04-03 is Good
+        # Friday), we ask EODHD for exactly that date.
         # Requirement: market_calendar MUST be populated and fresh.
         from services.market_calendar_service import (
-            get_latest_trading_day as _get_latest_trading_day,
+            get_last_closing_day as _get_last_closing_day,
             is_calendar_fresh as _is_calendar_fresh,
         )
         from price_ingestion_service import (
@@ -1424,91 +1427,29 @@ async def run_daily_price_sync(
         _calendar_fresh = await _is_calendar_fresh(db)
         if not _calendar_fresh:
             raise RuntimeError("market_calendar_missing_or_stale")
-        _lcd_candidate = await _get_latest_trading_day(
+        _last_closing_day = await _get_last_closing_day(
             db, "US", as_of_date=target_end_date.isoformat(),
         )
-        if not _lcd_candidate:
+        if not _last_closing_day:
             raise RuntimeError("market_calendar_missing_or_stale")
 
-        # Build a quick normalised seeded set for LCD validation.
-        _seeded_norm = set()
-        for _st in _seeded_set:
-            _n = str(_st).strip().upper()
-            if _n.endswith(".US"):
-                _n = _n[:-3]
-            _n = f"{_n}.US"
-            _seeded_norm.add(_n)
+        await _progress(
+            f"2.1 Fetching bulk EOD for last closed trading day: {_last_closing_day}",
+            phase="2.1_bulk_catchup",
+        )
 
-        _lcd_tried: List[Dict[str, Any]] = []
-        _last_closing_day: Optional[str] = None
-        _lcd_bulk_data: Optional[list] = None  # reused for run_daily_bulk_catchup
-
-        for _lcd_attempt in range(LCD_MAX_RETRIES):
-            if not _lcd_candidate:
-                break
-
-            await _progress(
-                f"2.1 LCD search: trying {_lcd_candidate} "
-                f"(attempt {_lcd_attempt + 1}/{LCD_MAX_RETRIES})…",
-                phase="2.1_bulk_catchup",
-            )
-
-            _v_data, _v_fetched = await _fetch_bulk_eod_latest(
-                "US", include_meta=True, for_date=_lcd_candidate,
-            )
-            if _v_data:
-                _v_unique = sorted(set(
-                    r.get("date") for r in _v_data if r.get("date")
-                ))
-                # Quick matched-ticker count using same .US normalisation
-                _v_bulk_norm: set = set()
-                for _r in _v_data:
-                    _t = _r.get("code") or _r.get("symbol")
-                    if _t:
-                        _tn = str(_t).strip().upper()
-                        if _tn.endswith(".US"):
-                            _tn = _tn[:-3]
-                        _v_bulk_norm.add(f"{_tn}.US")
-                _v_matched = len(_v_bulk_norm & _seeded_norm)
-
-                if len(_v_unique) == 1 and _v_matched >= LCD_MIN_MATCHED_TICKERS:
-                    _last_closing_day = _lcd_candidate
-                    _lcd_bulk_data = _v_data
-                    break
-
-                _lcd_tried.append({
-                    "date": _lcd_candidate,
-                    "unique_dates_count": len(_v_unique),
-                    "unique_dates": _v_unique[:5],  # sample
-                    "matched_seeded_tickers_count": _v_matched,
-                })
-            else:
-                _lcd_tried.append({
-                    "date": _lcd_candidate,
-                    "unique_dates_count": 0,
-                    "matched_seeded_tickers_count": 0,
-                    "empty_payload": True,
-                })
-
-            # Step back to previous trading day
-            _prev_iso = (
-                date.fromisoformat(_lcd_candidate) - timedelta(days=1)
-            ).isoformat()
-            _lcd_candidate = await _get_latest_trading_day(
-                db, "US", as_of_date=_prev_iso,
-            )
-
-        if not _last_closing_day:
-            import json as _json
-            raise RuntimeError(
-                "no_valid_last_closing_day_found"
-                f" (tried: {_json.dumps(_lcd_tried, default=str)})"
-            )
+        # Pre-fetch bulk data for the last closing day so we can pass it
+        # to run_daily_bulk_catchup (avoids a redundant API call).
+        _lcd_bulk_data: Optional[list] = None
+        _v_data, _v_fetched = await _fetch_bulk_eod_latest(
+            "US", include_meta=True, for_date=_last_closing_day,
+        )
+        if _v_data:
+            _lcd_bulk_data = _v_data
 
         logger.info(
             f"{job_name}: last_closing_day={_last_closing_day} "
-            f"(as_of={target_end_date.isoformat()}, "
-            f"attempts={len(_lcd_tried) + 1})"
+            f"(as_of={target_end_date.isoformat()})"
         )
         _bulk_url_display = (
             f"https://eodhd.com/api/eod-bulk-last-day/US?date={_last_closing_day}"
@@ -1540,7 +1481,6 @@ async def run_daily_price_sync(
                 "watermark_before": watermark_before,
                 "target_end_date": target_end_date.strftime("%Y-%m-%d"),
                 "last_closing_day": _last_closing_day,
-                "lcd_tried_dates": _lcd_tried,
                 "min_bulk_rows_ok": min_bulk_rows_ok,
                 "min_matched_seeded_tickers_ok": min_matched_seeded_tickers_ok,
                 "sanity_threshold_used": sanity_threshold_used,
@@ -1558,7 +1498,6 @@ async def run_daily_price_sync(
             "watermark_before": watermark_before,
             "target_end_date": target_end_date.strftime("%Y-%m-%d"),
             "last_closing_day": _last_closing_day,
-            "lcd_tried_dates": _lcd_tried,
             "min_bulk_rows_ok": min_bulk_rows_ok,
             "min_matched_seeded_tickers_ok": min_matched_seeded_tickers_ok,
             "sanity_threshold_used": sanity_threshold_used,
@@ -1676,8 +1615,17 @@ async def run_daily_price_sync(
                     {"_id": _running_doc_id},
                     {"$set": {"details.price_bulk_gapfill.ticker_samples": result_gapfill["ticker_samples"]}},
                 )
-                day["processed_date"] = _last_closing_day
-                day["bulk_date"] = _last_closing_day
+                # Use the actual date from the bulk payload (date_seen)
+                # instead of blindly trusting the calendar's last_closing_day.
+                # If the calendar is correct both should always be equal,
+                # but this provides defence-in-depth.
+                _actual_date = (
+                    day_result.get("processed_date")
+                    or day_result.get("date")
+                    or _last_closing_day
+                )
+                day["processed_date"] = _actual_date
+                day["bulk_date"] = _actual_date
                 day["unique_dates"] = day_result.get("unique_dates", [])
                 result["bulk_writes"] += day_result.get("bulk_writes", 0)
 
