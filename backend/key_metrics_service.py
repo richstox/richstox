@@ -1461,6 +1461,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 operating_cf_ttm = get_ttm_sum(quarterly_cashflow, "operatingCashflow")
             capex_ttm = get_ttm_sum(quarterly_cashflow, "capitalExpenditures")
             if operating_cf_ttm is not None and market_cap > 0:
+                # EODHD stores capex as negative; abs() ensures subtraction is correct
                 fcf_ttm = operating_cf_ttm - abs(capex_ttm or 0)
                 metrics["fcf_yield"] = (fcf_ttm / market_cap) * 100
             
@@ -1630,9 +1631,9 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
                 continue
             if mk in step4_allow_negative:
-                pairs_s4 = [(t[mk]) for t in tickers_data if t.get(mk) is not None]
+                pairs_s4 = [t[mk] for t in tickers_data if t.get(mk) is not None]
             else:
-                pairs_s4 = [(t[mk]) for t in tickers_data if t.get(mk) is not None and t.get(mk) > 0]
+                pairs_s4 = [t[mk] for t in tickers_data if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
                 pairs_s4.sort()
                 n_s4 = len(pairs_s4)
@@ -1793,9 +1794,9 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
                 continue
             if mk in step4_allow_negative:
-                pairs_s4 = [(t[mk]) for t in usd_tickers if t.get(mk) is not None]
+                pairs_s4 = [t[mk] for t in usd_tickers if t.get(mk) is not None]
             else:
-                pairs_s4 = [(t[mk]) for t in usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
+                pairs_s4 = [t[mk] for t in usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
                 pairs_s4.sort()
                 n_s4 = len(pairs_s4)
@@ -1938,9 +1939,9 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
                 continue
             if mk in step4_allow_negative:
-                pairs_s4 = [(t[mk]) for t in all_usd_tickers if t.get(mk) is not None]
+                pairs_s4 = [t[mk] for t in all_usd_tickers if t.get(mk) is not None]
             else:
-                pairs_s4 = [(t[mk]) for t in all_usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
+                pairs_s4 = [t[mk] for t in all_usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
                 pairs_s4.sort()
                 n_s4 = len(pairs_s4)
