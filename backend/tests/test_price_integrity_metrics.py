@@ -534,6 +534,9 @@ def test_gap_free_excludes_day_missing_matched_count():
     )
     result = asyncio.run(get_price_integrity_metrics(db))
     assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_coverage_checkpoints_present():
     """Coverage checkpoints present with correct 'kind' field: recent or historical."""
     db = _mock_db(
         bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
