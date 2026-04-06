@@ -516,6 +516,92 @@ async def market_open_closed_now(db, market: str = "US") -> Dict[str, Any]:
     }
 
 
+# ─── Latest trading day (used by price_sync) ─────────────────────────────────
+
+async def get_latest_trading_day(
+    db,
+    market: str = "US",
+    *,
+    as_of_date: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Return the most recent trading day <= as_of_date (default: today).
+
+    Uses the ``market_trading_day_lookup`` index for an efficient
+    descending scan.  Returns ``None`` only when the calendar is empty
+    or completely stale (no trading-day rows at or before as_of_date).
+    """
+    if as_of_date is None:
+        as_of_date = date.today().isoformat()
+
+    doc = await db[COLLECTION].find_one(
+        {"market": market, "is_trading_day": True, "date": {"$lte": as_of_date}},
+        {"date": 1, "_id": 0},
+        sort=[("date", -1)],
+    )
+    return doc["date"] if doc else None
+
+
+async def is_calendar_fresh(db, market: str = "US") -> bool:
+    """
+    Return True when the market_calendar has rows covering every date in
+    the recent staleness window ([today - N + 1 .. today]).
+
+    This mirrors the staleness logic in
+    ``get_last_10_completed_trading_days_health`` but is a lightweight
+    boolean check suitable for a fast pre-flight guard.
+    """
+    today_d = date.today()
+    window_dates = [
+        (today_d - timedelta(days=i)).isoformat()
+        for i in range(_STALE_CALENDAR_WINDOW_DAYS)
+    ]
+    count = await db[COLLECTION].count_documents(
+        {"market": market, "date": {"$in": window_dates}},
+    )
+    return count == len(window_dates)
+
+
+async def get_calendar_summary(db, market: str = "US") -> Dict[str, Any]:
+    """
+    Dashboard helper: return a small summary for the "US Market Calendar"
+    admin widget.
+
+    Returns::
+
+        {
+            "today": "2026-04-06",
+            "today_is_trading_day": false,
+            "today_holiday_name": null,          # or "Good Friday" etc.
+            "latest_trading_day": "2026-04-03",  # most recent trading day <= today
+            "next_trading_day": "2026-04-07",    # first trading day > today
+            "calendar_fresh": true,
+        }
+    """
+    today_str = date.today().isoformat()
+
+    today_doc = await db[COLLECTION].find_one(
+        {"market": market, "date": today_str},
+        {"is_trading_day": 1, "holiday_name": 1, "_id": 0},
+    )
+
+    today_is_trading = bool(today_doc and today_doc.get("is_trading_day"))
+    today_holiday = (today_doc.get("holiday_name") if today_doc else None) or None
+
+    latest_td = await get_latest_trading_day(db, market, as_of_date=today_str)
+    next_td = await _next_trading_day(db, today_str, market)
+    fresh = await is_calendar_fresh(db, market)
+
+    return {
+        "today": today_str,
+        "today_is_trading_day": today_is_trading,
+        "today_holiday_name": today_holiday,
+        "latest_trading_day": latest_td,
+        "next_trading_day": next_td,
+        "calendar_fresh": fresh,
+    }
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 async def _next_trading_day(db, after_date: str, market: str) -> Optional[str]:
