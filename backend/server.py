@@ -7872,7 +7872,7 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                 if s2_result.get("status") == "cancelled":
                     chain_status = "cancelled"
                     raise Exception("cancelled")
-                if s2_result.get("status") == "failed":
+                if s2_result.get("status") in ("failed", "error"):
                     raise RuntimeError(
                         f"Step 2 price_sync failed: {s2_result.get('error', 'unknown error')}"
                     )
@@ -7926,6 +7926,10 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
             if s3_result.get("status") == "cancelled":
                 chain_status = "cancelled"
                 raise Exception("cancelled")
+            if s3_result.get("status") in ("failed", "error"):
+                raise RuntimeError(
+                    f"Step 3 fundamentals_sync failed: {s3_result.get('error', 'unknown error')}"
+                )
             s3_run_id: Optional[str] = s3_result.get("exclusion_report_run_id")
             # Visibility exclusion_report_run_id is set by the Step 3 visibility recompute.
             s3_vis_run_id: Optional[str] = s3_result.get("step3_visibility_exclusion_report_run_id")
@@ -8120,6 +8124,61 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     _current_step = doc.get("current_step")
     _failed_step: Optional[int] = None
 
+    # ── Self-heal: if chain claims "running" but the current step's job is
+    # terminal in ops_job_runs, force the chain to "failed".  This covers
+    # edge cases where the chain orchestrator crashed before updating the
+    # chain document (e.g. OOM, process kill).
+    _STEP_JOB_NAMES = {1: "universe_seed", 2: "price_sync", 3: "fundamentals_sync"}
+    _TERMINAL_JOB_STATUSES = {"completed", "success", "failed", "error", "cancelled", "skipped"}
+    if _status == "running" and _current_step in _STEP_JOB_NAMES:
+        _job_name = _STEP_JOB_NAMES[_current_step]
+        _job_doc = await db.ops_job_runs.find_one(
+            {"job_name": _job_name, "details.chain_run_id": chain_run_id},
+            {"status": 1, "finished_at": 1},
+            sort=[("started_at", -1)],
+        )
+        if _job_doc:
+            _job_status = _job_doc.get("status")
+            _job_finished = _job_doc.get("finished_at")
+            if (
+                _job_status in _TERMINAL_JOB_STATUSES
+                and _job_finished is not None
+            ):
+                # The step's job finished but the chain doc is still "running".
+                # Auto-heal: mark the chain as "failed" so the UI stops showing
+                # "Running" with an ever-increasing timer.
+                _healed_status = "failed"
+                _heal_at = datetime.now(timezone.utc)
+                await db.pipeline_chain_runs.update_one(
+                    {"chain_run_id": chain_run_id, "status": "running"},
+                    {"$set": {
+                        "status": _healed_status,
+                        "finished_at": _heal_at,
+                        "finished_at_prague": _sched_to_prague_iso(_heal_at),
+                        "failed_step": _current_step,
+                        "error": (
+                            f"auto-healed: step {_current_step} ({_job_name}) "
+                            f"finished with status={_job_status!r} but chain "
+                            f"was still 'running'"
+                        ),
+                    }},
+                )
+                _status = _healed_status
+                _failed_step = _current_step
+                doc["status"] = _healed_status
+                doc["error"] = (
+                    f"auto-healed: step {_current_step} ({_job_name}) "
+                    f"finished with status={_job_status!r} but chain "
+                    f"was still 'running'"
+                )
+                if "finished_at" not in doc or doc["finished_at"] is None:
+                    doc["finished_at"] = _heal_at.isoformat()
+                logger.warning(
+                    f"[chain-status] Auto-healed chain {chain_run_id}: "
+                    f"step {_current_step} ({_job_name}) was {_job_status!r} "
+                    f"but chain was stuck at 'running'"
+                )
+
     # Legacy fallback: derive from status string if stored fields are absent
     if _steps_done is None:
         _steps_done = [i for i, k in enumerate(("step1", "step2", "step3"), 1) if _srids.get(k)]
@@ -8132,8 +8191,8 @@ async def admin_pipeline_chain_status(chain_run_id: str):
             _current_step = 3
         elif _status == "step3_done":
             _current_step = None
-    if _status == "failed":
-        _failed_step = next(
+    if _status in ("failed", "error"):
+        _failed_step = doc.get("failed_step") or next(
             (i for i, k in enumerate(("step1", "step2", "step3"), 1) if not _srids.get(k)),
             3,
         )

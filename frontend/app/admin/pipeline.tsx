@@ -392,6 +392,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [chainRunning, setChainRunning] = useState(false);
   const [chainCurrentStep, setChainCurrentStep] = useState<number | null>(null);
   const [chainStepsDone, setChainStepsDone] = useState<number[]>([]);
+  const [chainFailedStep, setChainFailedStep] = useState<number | null>(null);
   const [canonicalReport, setCanonicalReport] = useState<Record<string, any> | null>(null);
   const chainStateRef = useRef<{ chainRunId: string | null; chainStatus: string | null }>({
     chainRunId: null,
@@ -458,6 +459,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       chainStateRef.current = { chainRunId: cid, chainStatus: nextStatus };
       setChainCurrentStep(sd.current_step ?? null);
       setChainStepsDone(sd.steps_done ?? []);
+      setChainFailedStep(sd.failed_step ?? null);
       setChainRunning(nextRunning);
 
       if (nextRunning) {
@@ -597,6 +599,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           chainStateRef.current = { chainRunId: null, chainStatus: null };
           setChainCurrentStep(null);
           setChainStepsDone([]);
+          setChainFailedStep(null);
           setChainRunning(false);
           userStartedRunRef.current = false;
           stopChainTimer();
@@ -1364,7 +1367,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       {chainStatus === 'completed'
         ? `Done — chain_run_id: ${chainRunId}`
         : isChainFailed
-        ? 'Failed — check logs'
+        ? `Failed — Step ${chainFailedStep ?? chainCurrentStep ?? '?'}/3 (${CHAIN_STEP_NAMES[chainFailedStep ?? chainCurrentStep ?? 0] ?? 'unknown'})`
         : isChainCancelled
         ? 'Cancelled'
         : chainCurrentStep !== null
