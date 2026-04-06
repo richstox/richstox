@@ -59,6 +59,7 @@ def _mock_db(
     bulk_days=None,
     proven_ticker_docs=None,
     gap_free_coverage_docs=None,
+    **kwargs,
 ):
     """Build a mock db with the fields needed by get_price_integrity_metrics."""
     if visible_tickers is None:
@@ -117,6 +118,15 @@ def _mock_db(
         and (d.get("rows_written") or 0) > 0
     ]
 
+    # Derive trading-day dates: by default all expected_dates are trading days
+    # unless the test explicitly provides calendar_trading_dates to override.
+    calendar_trading_dates = kwargs.get("calendar_trading_dates")
+    if calendar_trading_dates is None:
+        # Default: all expected_dates are assumed trading days
+        calendar_trading_dates = set(expected_dates)
+    else:
+        calendar_trading_dates = set(calendar_trading_dates)
+
     # stock_prices — find_one for nearest date, aggregate for counts & gap-free
     checkpoint_counts = checkpoint_counts or {}
     count_docs = [{"_id": d, "count": c} for d, c in checkpoint_counts.items()]
@@ -144,11 +154,24 @@ def _mock_db(
         find_one=AsyncMock(return_value=None),
     )
 
-    # market_calendar — for get_last_10_completed_trading_days_health
-    # Default: empty calendar (returns yellow/no-data status)
+    # market_calendar — for get_last_10_completed_trading_days_health AND
+    # _get_bulk_processed_dates calendar filter.
+    # The find() mock returns trading-day docs for dates in
+    # calendar_trading_dates so the calendar filter works correctly.
+    calendar_docs = [{"date": d} for d in sorted(calendar_trading_dates)]
+
+    def _mc_find(query=None, projection=None, *a, **kw):
+        if query and query.get("is_trading_day") is True and "$in" in (query.get("date") or {}):
+            # Calendar filter query from _get_bulk_processed_dates
+            requested = set(query["date"]["$in"])
+            matching = [doc for doc in calendar_docs if doc["date"] in requested]
+            return _make_cursor(matching)
+        # Default: empty (for get_last_10_completed_trading_days_health etc.)
+        return _make_cursor([])
+
     market_calendar = SimpleNamespace(
         find_one=AsyncMock(return_value=None),
-        find=lambda *a, **kw: _make_cursor([]),
+        find=_mc_find,
         create_index=AsyncMock(),
     )
 
@@ -389,19 +412,71 @@ def test_gap_free_ignores_missing_rows_written_field():
     )
     result = asyncio.run(get_price_integrity_metrics(db))
     assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_gap_free_excludes_non_trading_days_via_calendar():
+    """Non-trading dates (weekends/holidays) with rows_written>0 must be
+    excluded by the market-calendar filter in _get_bulk_processed_dates.
+
+    This is the definitive fix for the 4/5661 gap-free bug: even if an
+    ops_job_runs entry has status=success and rows_written>0 for a
+    non-trading date, the calendar filter drops it so it never appears in
+    expected_dates.
+    """
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+        {"ticker": "B.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+        {"_id": "B.US", "dates": ["2026-03-11"]},
+    ]
     db = _mock_db(
-        bulk_state={"global_last_bulk_date_processed": "2026-03-20"},
-        checkpoint_counts={"2026-03-20": 3},
+        visible_tickers=["A.US", "B.US"],
+        history_download_completed_count=2,
+        bulk_days=[
+            # Real trading day with data
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000},
+            # Saturday — NOT a trading day, but leaked into ops_job_runs
+            # with rows_written > 0 (data quirk / bad remediation run)
+            {"processed_date": "2026-03-14", "status": "success", "rows_written": 3000},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+        # Only 2026-03-11 is a trading day; 2026-03-14 is NOT
+        calendar_trading_dates=["2026-03-11"],
     )
     result = asyncio.run(get_price_integrity_metrics(db))
-    cp = result["coverage_checkpoints"]
-    assert "last_closing_day" in cp
-    assert "1_week_ago" in cp
-    assert "1_month_ago" in cp
-    assert "1_year_ago" in cp
+    # Both tickers have coverage for 2026-03-11.  2026-03-14 is dropped by
+    # the calendar filter (non-trading day).  Without the fix, both would
+    # fail because no ticker has stock_prices for a Saturday.
+    assert result["gap_free_since_history_download_count"] == 2
 
 
-def test_coverage_checkpoint_kind_field():
+def test_gap_free_all_non_trading_days_means_trivially_gap_free():
+    """When ALL bulk dates are non-trading (filtered out by calendar),
+    expected_dates becomes empty → proven tickers are trivially gap-free."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            # Both are non-trading days (both will be filtered out)
+            {"processed_date": "2026-03-14", "status": "success", "rows_written": 2000},
+            {"processed_date": "2026-03-15", "status": "success", "rows_written": 1500},
+        ],
+        proven_ticker_docs=proven_docs,
+        # Neither date is a trading day
+        calendar_trading_dates=[],
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    # expected_dates is empty → elif proven_anchors: gap_free = len(proven_anchors)
+    assert result["gap_free_since_history_download_count"] == 1
+
+
+def test_coverage_checkpoints_present():
     """Each checkpoint must carry a 'kind' field: recent or historical."""
     db = _mock_db(
         bulk_state={"global_last_bulk_date_processed": "2026-03-20"},

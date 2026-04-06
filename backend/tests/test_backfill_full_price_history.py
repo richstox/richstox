@@ -113,10 +113,42 @@ def _mock_backfill_db(
         insert_one=AsyncMock(),
     )
 
-    return SimpleNamespace(
+    # market_calendar → for _get_bulk_processed_dates calendar filter
+    # By default, all successful bulk_days with rows_written>0 are trading days.
+    trading_dates = [
+        d["processed_date"] for d in bulk_days
+        if d.get("status") == "success" and d.get("processed_date")
+        and (d.get("rows_written") or 0) > 0
+    ]
+    calendar_docs = [{"date": d} for d in trading_dates]
+
+    def _mc_find(query=None, projection=None, *a, **kw):
+        if query and query.get("is_trading_day") is True and "$in" in (query.get("date") or {}):
+            requested = set(query["date"]["$in"])
+            return _make_cursor([doc for doc in calendar_docs if doc["date"] in requested])
+        return _make_cursor([])
+
+    market_calendar = SimpleNamespace(
+        find_one=AsyncMock(return_value=None),
+        find=_mc_find,
+    )
+
+    class _DB:
+        """Namespace that also supports __getitem__ for collection-name access."""
+        def __init__(self, **collections):
+            for k, v in collections.items():
+                setattr(self, k, v)
+        def __getitem__(self, key):
+            return getattr(self, key, SimpleNamespace(
+                find_one=AsyncMock(return_value=None),
+                find=lambda *a, **kw: _make_cursor([]),
+            ))
+
+    return _DB(
         tracked_tickers=tracked_tickers,
         stock_prices=stock_prices,
         ops_job_runs=ops_job_runs,
+        market_calendar=market_calendar,
     )
 
 

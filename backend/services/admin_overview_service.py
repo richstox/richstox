@@ -617,11 +617,17 @@ async def _resolve_today_visible(db) -> tuple:
 
 async def _get_bulk_processed_dates(db) -> List[str]:
     """
-    Return the set of dates for which bulk ingestion succeeded, derived from
-    ops_job_runs.details.price_bulk_gapfill.days[] entries with status=success.
+    Return the set of dates for which bulk ingestion succeeded **and** the
+    market calendar confirms are actual trading days.
 
-    This is the *canonical* source of expected_dates — no rolling-date
-    heuristic or calendar approximation.
+    Two-stage filter:
+    1. ops_job_runs: status=success, rows_written > 0
+    2. market_calendar: is_trading_day = True
+
+    Stage 2 is critical — without it, non-trading days that leaked into
+    ops_job_runs (holidays, weekends with stale data, remediation quirks)
+    would appear as expected_dates.  Since no ticker has stock_prices for
+    non-trading days, the gap-free check would fail for every ticker.
 
     NOTE: Only ``scheduler_service.run_daily_price_sync()`` writes
     ``details.price_bulk_gapfill.days`` to ``ops_job_runs``.
@@ -643,7 +649,7 @@ async def _get_bulk_processed_dates(db) -> List[str]:
         {"$project": {"_id": 0, "details.price_bulk_gapfill.days": 1}},
     ]
 
-    dates: set = set()
+    candidate_dates: set = set()
     async for doc in db.ops_job_runs.aggregate(pipeline):
         details = doc.get("details") or {}
         gapfill = details.get("price_bulk_gapfill") or {}
@@ -653,9 +659,34 @@ async def _get_bulk_processed_dates(db) -> List[str]:
                 and day.get("processed_date")
                 and (day.get("rows_written") or 0) > 0
             ):
-                dates.add(day["processed_date"])
+                candidate_dates.add(day["processed_date"])
 
-    return sorted(dates)
+    if not candidate_dates:
+        return []
+
+    # ── Stage 2: Keep only actual trading days per market calendar ────────
+    # Single batch query — far cheaper than per-date is_trading_day() calls.
+    from services.market_calendar_service import COLLECTION as MC_COLLECTION
+    trading_day_docs = await db[MC_COLLECTION].find(
+        {
+            "market": "US",
+            "date": {"$in": sorted(candidate_dates)},
+            "is_trading_day": True,
+        },
+        {"date": 1, "_id": 0},
+    ).to_list(None)
+    trading_day_set = {doc["date"] for doc in trading_day_docs}
+
+    filtered = sorted(candidate_dates & trading_day_set)
+    if len(filtered) < len(candidate_dates):
+        dropped = sorted(candidate_dates - trading_day_set)
+        logger.warning(
+            "_get_bulk_processed_dates: dropped %d non-trading date(s) "
+            "from expected_dates: %s",
+            len(dropped), dropped,
+        )
+
+    return filtered
 
 
 SP500TR_TICKER = "SP500TR.INDX"
