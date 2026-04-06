@@ -53,6 +53,8 @@ interface PriceIntegrity {
   full_price_history_count?: number;
   history_download_completed_count?: number;
   gap_free_since_history_download_count?: number;
+  non_gap_free_sample?: { ticker: string; missing_dates: string[] }[];
+  top_missing_dates?: { date: string; missing_ticker_count: number }[];
   fundamentals_complete_count?: number;
   completed_trading_days_health?: CompletedTradingDayHealth | null;
   coverage_checkpoints?: Record<string, CoverageCheckpoint>;
@@ -714,6 +716,32 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           value={gfValue}
           status={gfStatus}
         />
+        {gfCount < tvTotal && (pi?.non_gap_free_sample ?? []).length > 0 && (
+          <View style={{ marginTop: 8 }}>
+            <Text style={[d.subSection, { marginTop: 4 }]}>Why not gap-free?</Text>
+            <Text style={d.cpHint}>Up to 20 tickers with missing bulk dates after their download anchor</Text>
+            {(pi?.non_gap_free_sample ?? []).map((item) => (
+              <View key={item.ticker} style={d.cpRow}>
+                <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
+                <Text style={[d.cpDate, { flex: 1, color: '#EF4444' }]}>{item.missing_dates.join(', ')}</Text>
+              </View>
+            ))}
+            {(pi?.top_missing_dates ?? []).length > 0 && (
+              <>
+                <Text style={[d.subSection, { marginTop: 8 }]}>Top missing dates</Text>
+                <Text style={d.cpHint}>Dates most commonly absent across all non-gap-free tickers (desc)</Text>
+                {(pi?.top_missing_dates ?? []).map((item) => (
+                  <View key={item.date} style={d.cpRow}>
+                    <Text style={[d.cpLabel, { width: 90 }]}>{item.date}</Text>
+                    <Text style={[d.cpDate, { flex: 1 }]}>
+                      {item.missing_ticker_count} ticker{item.missing_ticker_count === 1 ? '' : 's'}
+                    </Text>
+                  </View>
+                ))}
+              </>
+            )}
+          </View>
+        )}
       </View>
 
       {/* D) Bulk Completeness (since last full backfill) */}

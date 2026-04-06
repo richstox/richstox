@@ -594,6 +594,84 @@ def test_completed_trading_days_health_key_replaces_missing_expected_dates():
     assert "completed_trading_days_health" in result
 
 
+def test_non_gap_free_sample_and_top_missing_dates():
+    """non_gap_free_sample lists up to 20 non-gap-free tickers with their
+    missing dates; top_missing_dates lists dates sorted by miss-count desc."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+        {"ticker": "B.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    # A.US has coverage for 2026-03-11 only (missing 2026-03-12)
+    # B.US has no coverage at all (missing both dates)
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US", "B.US", "C.US"],
+        history_download_completed_count=2,
+        bulk_days=[
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+            {"processed_date": "2026-03-12", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+
+    assert result["gap_free_since_history_download_count"] == 0
+
+    sample = result["non_gap_free_sample"]
+    assert len(sample) == 2
+    sample_by_ticker = {s["ticker"]: s for s in sample}
+    assert "A.US" in sample_by_ticker
+    assert "B.US" in sample_by_ticker
+    # A.US is missing only 2026-03-12 (has 2026-03-11)
+    assert sample_by_ticker["A.US"]["missing_dates"] == ["2026-03-12"]
+    # B.US is missing both dates
+    assert sorted(sample_by_ticker["B.US"]["missing_dates"]) == ["2026-03-11", "2026-03-12"]
+
+    top = result["top_missing_dates"]
+    # 2026-03-12 is missing for both A.US and B.US → count 2
+    # 2026-03-11 is missing only for B.US → count 1
+    assert top[0]["date"] == "2026-03-12"
+    assert top[0]["missing_ticker_count"] == 2
+    assert top[1]["date"] == "2026-03-11"
+    assert top[1]["missing_ticker_count"] == 1
+
+
+def test_non_gap_free_sample_empty_when_all_gap_free():
+    """When all proven tickers are gap-free, sample and top_missing_dates are empty."""
+    proven_docs = [
+        {"ticker": "A.US", "history_download_proven_anchor": "2026-03-10"},
+    ]
+    coverage_docs = [
+        {"_id": "A.US", "dates": ["2026-03-11"]},
+    ]
+    db = _mock_db(
+        visible_tickers=["A.US"],
+        history_download_completed_count=1,
+        bulk_days=[
+            {"processed_date": "2026-03-11", "status": "success", "rows_written": 5000, "matched_seeded_tickers_count": 5000},
+        ],
+        proven_ticker_docs=proven_docs,
+        gap_free_coverage_docs=coverage_docs,
+    )
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert result["gap_free_since_history_download_count"] == 1
+    assert result["non_gap_free_sample"] == []
+    assert result["top_missing_dates"] == []
+
+
+def test_safe_defaults_include_gap_free_diagnostic_fields():
+    """_SAFE_INTEGRITY (returned on error / zero-visible) includes new fields."""
+    db = _mock_db(visible_tickers=[])
+    result = asyncio.run(get_price_integrity_metrics(db))
+    assert "non_gap_free_sample" in result
+    assert "top_missing_dates" in result
+    assert result["non_gap_free_sample"] == []
+    assert result["top_missing_dates"] == []
+
+
 # ── Tests: get_pipeline_last_success_age ────────────────────────────────────
 
 
