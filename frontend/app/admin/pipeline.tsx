@@ -392,6 +392,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [chainRunning, setChainRunning] = useState(false);
   const [chainCurrentStep, setChainCurrentStep] = useState<number | null>(null);
   const [chainStepsDone, setChainStepsDone] = useState<number[]>([]);
+  const [chainFailedStep, setChainFailedStep] = useState<number | null>(null);
   const [canonicalReport, setCanonicalReport] = useState<Record<string, any> | null>(null);
   const chainStateRef = useRef<{ chainRunId: string | null; chainStatus: string | null }>({
     chainRunId: null,
@@ -458,6 +459,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       chainStateRef.current = { chainRunId: cid, chainStatus: nextStatus };
       setChainCurrentStep(sd.current_step ?? null);
       setChainStepsDone(sd.steps_done ?? []);
+      setChainFailedStep(sd.failed_step ?? null);
       setChainRunning(nextRunning);
 
       if (nextRunning) {
@@ -597,6 +599,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           chainStateRef.current = { chainRunId: null, chainStatus: null };
           setChainCurrentStep(null);
           setChainStepsDone([]);
+          setChainFailedStep(null);
           setChainRunning(false);
           userStartedRunRef.current = false;
           stopChainTimer();
@@ -1352,7 +1355,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     </>
   )}
 
-  {chainStatus && chainStatus !== 'starting' && (
+  {chainStatus && chainStatus !== 'starting' && (() => {
+    const failStep = chainFailedStep ?? chainCurrentStep;
+    const failStepLabel = failStep != null ? `Step ${failStep}/3 (${CHAIN_STEP_NAMES[failStep] ?? 'unknown'})` : 'unknown step';
+    return (
     <Text style={[
       s.fullChainStatus,
       chainStatus === 'completed' ? { color: '#22C55E' }
@@ -1364,14 +1370,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       {chainStatus === 'completed'
         ? `Done — chain_run_id: ${chainRunId}`
         : isChainFailed
-        ? 'Failed — check logs'
+        ? `Failed — ${failStepLabel}`
         : isChainCancelled
         ? 'Cancelled'
         : chainCurrentStep !== null
         ? `Running — Step ${chainCurrentStep}/3 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${formatElapsed(elapsedSeconds)}`
         : 'Running…'}
     </Text>
-  )}
+    );
+  })()}
 </View>
         </View>
         {/* Mini funnel summary */}
