@@ -56,6 +56,124 @@ _STALE_CALENDAR_WINDOW_DAYS = 3
 NY_TZ = ZoneInfo("America/New_York")
 
 
+# ─── Hardcoded NYSE Holiday Rules ─────────────────────────────────────────────
+# Safety-net: even if EODHD omits a holiday, the system will still know about
+# every standard NYSE closure.  These rules cover all 10 official NYSE holidays
+# and their observation conventions.
+
+
+def _easter_date(year: int) -> date:
+    """Compute Easter Sunday for *year* (Anonymous Gregorian algorithm)."""
+    a = year % 19
+    b, c = divmod(year, 100)
+    d, e = divmod(b, 4)
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i, k = divmod(c, 4)
+    l_val = (32 + 2 * e + 2 * i - h - k) % 7  # noqa: E741
+    m = (a + 11 * h + 22 * l_val) // 451
+    month, day = divmod(h + l_val - 7 * m + 114, 31)
+    return date(year, month, day + 1)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    """Return the *n*-th occurrence of *weekday* (0=Mon) in *year*/*month*."""
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def _last_weekday(year: int, month: int, weekday: int) -> date:
+    """Return the last occurrence of *weekday* in *year*/*month*."""
+    # Start from 5th occurrence attempt, walk back.
+    if month == 12:
+        last_day = date(year + 1, 1, 1) - timedelta(days=1)
+    else:
+        last_day = date(year, month + 1, 1) - timedelta(days=1)
+    offset = (last_day.weekday() - weekday) % 7
+    return last_day - timedelta(days=offset)
+
+
+def _observe_fixed_holiday(d: date, *, skip_saturday: bool = False) -> Optional[date]:
+    """
+    Return the observed date for a fixed-calendar holiday.
+
+    NYSE convention:
+    - Saturday → observed on preceding Friday (unless *skip_saturday*)
+    - Sunday  → observed on following Monday
+
+    *skip_saturday* is used for New Year's Day: when Jan 1 falls on
+    Saturday the NYSE simply does NOT observe the holiday (no Friday
+    closure for Dec 31).
+    """
+    wd = d.weekday()  # 0=Mon … 6=Sun
+    if wd == 5:  # Saturday
+        return None if skip_saturday else d - timedelta(days=1)
+    if wd == 6:  # Sunday
+        return d + timedelta(days=1)
+    return d
+
+
+def compute_nyse_holidays(year: int) -> Dict[str, str]:
+    """
+    Compute all NYSE official holidays for *year*.
+
+    Returns ``{date_iso: holiday_name}`` for each **observed** closure date.
+    The 10 standard NYSE holidays are:
+
+    1. New Year's Day        – Jan 1  (Sat → skip, Sun → Mon)
+    2. MLK Jr. Day           – 3rd Monday of January
+    3. Presidents' Day       – 3rd Monday of February
+    4. Good Friday           – Friday before Easter
+    5. Memorial Day          – last Monday of May
+    6. Juneteenth            – Jun 19 (since 2022; Sat → Fri, Sun → Mon)
+    7. Independence Day      – Jul 4  (Sat → Fri, Sun → Mon)
+    8. Labor Day             – 1st Monday of September
+    9. Thanksgiving Day      – 4th Thursday of November
+    10. Christmas Day        – Dec 25 (Sat → Fri, Sun → Mon)
+    """
+    holidays: Dict[str, str] = {}
+
+    def _add(d: Optional[date], name: str) -> None:
+        if d is not None:
+            holidays[d.isoformat()] = name
+
+    # 1. New Year's Day (skip_saturday=True — no Dec 31 closure)
+    _add(_observe_fixed_holiday(date(year, 1, 1), skip_saturday=True), "New Year's Day")
+
+    # 2. Martin Luther King Jr. Day — 3rd Monday of January
+    _add(_nth_weekday(year, 1, 0, 3), "Martin Luther King Jr. Day")
+
+    # 3. Presidents' Day — 3rd Monday of February
+    _add(_nth_weekday(year, 2, 0, 3), "Presidents' Day")
+
+    # 4. Good Friday — Friday before Easter Sunday
+    easter = _easter_date(year)
+    _add(easter - timedelta(days=2), "Good Friday")
+
+    # 5. Memorial Day — last Monday of May
+    _add(_last_weekday(year, 5, 0), "Memorial Day")
+
+    # 6. Juneteenth National Independence Day (observed since 2022)
+    if year >= 2022:
+        _add(_observe_fixed_holiday(date(year, 6, 19)), "Juneteenth National Independence Day")
+
+    # 7. Independence Day
+    _add(_observe_fixed_holiday(date(year, 7, 4)), "Independence Day")
+
+    # 8. Labor Day — 1st Monday of September
+    _add(_nth_weekday(year, 9, 0, 1), "Labor Day")
+
+    # 9. Thanksgiving Day — 4th Thursday of November
+    _add(_nth_weekday(year, 11, 3, 4), "Thanksgiving Day")
+
+    # 10. Christmas Day
+    _add(_observe_fixed_holiday(date(year, 12, 25)), "Christmas Day")
+
+    return holidays
+
+
 # ─── Index setup ──────────────────────────────────────────────────────────────
 
 async def ensure_indexes(db) -> None:
@@ -181,6 +299,27 @@ async def refresh_market_calendar(
             if parsed:
                 working_days = parsed
 
+    # ── Merge hardcoded NYSE holidays (safety-net) ─────────────────────
+    # Even if EODHD omits a holiday (or the API is unreachable), the
+    # computed rules guarantee every standard NYSE closure is present.
+    # EODHD-sourced names take precedence when both provide the same date.
+    eodhd_holidays_count = len(holidays)
+    computed_holidays_added = 0
+    if market == "US":
+        today_pre = date.today()
+        start_year = today_pre.year - 2
+        end_year = today_pre.year + years_ahead
+        for yr in range(start_year, end_year + 1):
+            for d_str, h_name in compute_nyse_holidays(yr).items():
+                if d_str not in holidays:
+                    holidays[d_str] = h_name
+                    computed_holidays_added += 1
+        if computed_holidays_added:
+            logger.info(
+                "Merged %d hardcoded NYSE holidays (years %d–%d) that EODHD did not provide",
+                computed_holidays_added, start_year, end_year,
+            )
+
     # Generate calendar rows
     today = date.today()
     start_date = today - timedelta(days=365 * 2)
@@ -242,6 +381,8 @@ async def refresh_market_calendar(
         "total_days_generated": total_days,
         "date_range": {"from": start_date.isoformat(), "to": end_date.isoformat()},
         "holidays_count": len(holidays),
+        "eodhd_holidays_count": eodhd_holidays_count,
+        "computed_holidays_added": computed_holidays_added,
         "early_close_count": len(early_close_dates),
         "api_elapsed_ms": api_elapsed_ms,
         "exchange_details_available": exchange_details is not None,

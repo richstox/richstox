@@ -1414,6 +1414,8 @@ async def get_bulk_completeness_since_baseline(db) -> Dict[str, Any]:
             "latest_bulk_date_ingested": latest_bulk_date,
             "gap_free_since_baseline": missing_count == 0,
             "expected_days_count": len(expected_days),
+            "ingested_days_count": len(ingested_in_range),
+            "ingested_dates": ingested_in_range,
         }
     except Exception as exc:
         logger.warning("get_bulk_completeness_since_baseline failed: %s", exc)
