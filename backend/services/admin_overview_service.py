@@ -547,6 +547,8 @@ _SAFE_INTEGRITY = {
     "full_price_history_count": 0,
     "history_download_completed_count": 0,
     "gap_free_since_history_download_count": 0,
+    "non_gap_free_sample": [],
+    "top_missing_dates": [],
     "fundamentals_complete_count": 0,
     "completed_trading_days_health": None,
     "coverage_checkpoints": {},
@@ -961,6 +963,8 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         # data for every canonical bulk date after its anchor.
         # Source bulk dates from ops_job_runs (same as before).
         expected_dates = await _get_bulk_processed_dates(db)
+        non_gap_free_sample: List[Dict[str, Any]] = []
+        top_missing_dates: List[Dict[str, Any]] = []
         if proven_anchors and expected_dates:
             coverage_pipeline = [
                 {"$match": {
@@ -980,6 +984,30 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                     for d in expected_dates if d > anchor
                 )
             )
+
+            # ── Diagnostic: why not gap-free? ──────────────────────────────
+            # Identify non-gap-free tickers and aggregate missing-date counts.
+            missing_dates_counter: Dict[str, int] = {}
+            for ticker, anchor in proven_anchors.items():
+                relevant = sorted(d for d in expected_dates if d > anchor)
+                ticker_dates = dates_by_proven.get(ticker, set())
+                missing = [d for d in relevant if d not in ticker_dates]
+                if missing:
+                    for d in missing:
+                        missing_dates_counter[d] = missing_dates_counter.get(d, 0) + 1
+                    if len(non_gap_free_sample) < 20:
+                        non_gap_free_sample.append({
+                            "ticker": ticker,
+                            "missing_dates": missing,
+                        })
+            top_missing_dates = sorted(
+                [
+                    {"date": d, "missing_ticker_count": c}
+                    for d, c in missing_dates_counter.items()
+                ],
+                key=lambda x: x["missing_ticker_count"],
+                reverse=True,
+            )[:20]
         elif proven_anchors:
             # No bulk dates processed → no gaps possible
             gap_free_count = len(proven_anchors)
@@ -998,6 +1026,8 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             "full_price_history_count": full_price_history_count,
             "history_download_completed_count": history_download_completed_count,
             "gap_free_since_history_download_count": gap_free_count,
+            "non_gap_free_sample": non_gap_free_sample,
+            "top_missing_dates": top_missing_dates,
             "fundamentals_complete_count": fundamentals_complete_count,
             "completed_trading_days_health": completed_trading_days_health,
             "coverage_checkpoints": checkpoints,
