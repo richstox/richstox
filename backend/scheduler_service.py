@@ -1616,9 +1616,9 @@ async def run_daily_price_sync(
                     {"$set": {"details.price_bulk_gapfill.ticker_samples": result_gapfill["ticker_samples"]}},
                 )
                 # Use the actual date from the bulk payload (date_seen)
-                # instead of blindly trusting the LCD candidate.  With the
-                # date-match guard in the LCD search loop the two should
-                # always be equal, but this provides defence-in-depth.
+                # instead of blindly trusting the calendar's last_closing_day.
+                # If the calendar is correct both should always be equal,
+                # but this provides defence-in-depth.
                 _actual_date = (
                     day_result.get("processed_date")
                     or day_result.get("date")
