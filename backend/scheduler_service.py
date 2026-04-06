@@ -66,6 +66,9 @@ LOGO_BACKFILL_CONCURRENCY = 10
 LOGO_BACKFILL_TICKER_TIMEOUT = 30
 LOGO_BACKFILL_VISIBLE_LIMIT = 500
 CANCEL_REQUESTED_STUCK_SECONDS = 600
+PRICE_SYNC_LOCK_ID = "price_sync"
+PRICE_SYNC_LOCK_LEASE_SECONDS = 60
+PRICE_SYNC_HEARTBEAT_SECONDS = 10
 PRICE_SYNC_ACTIVE_PHASES = {
     "bulk_catchup",
     "2.1_bulk_catchup",
@@ -1232,6 +1235,64 @@ async def run_daily_price_sync(
             return True
         return await is_cancel_requested(db, _running_doc_id)
 
+    # ── Single-flight lock: skip if another price_sync is already running ───
+    _lock_owner_run_id = str(_running_doc_id)
+    _lock_acquired = await _acquire_price_sync_lock(db, _lock_owner_run_id, started_at)
+    if not _lock_acquired:
+        finished_at = datetime.now(timezone.utc)
+        await db.ops_job_runs.update_one(
+            {"_id": _running_doc_id},
+            {"$set": {
+                "status": "skipped",
+                "finished_at": finished_at,
+                "started_at_prague": _to_prague_iso(started_at),
+                "finished_at_prague": _to_prague_iso(finished_at),
+                "log_timezone": "Europe/Prague",
+                "error": "single_flight_lock_held",
+                "progress": "Skipped: price_sync already running",
+                "details.lock_id": PRICE_SYNC_LOCK_ID,
+                "details.owner_run_id": _lock_owner_run_id,
+            }},
+        )
+        logger.warning(f"{job_name}: single-flight lock held, skipping run")
+        return {
+            "job_name": job_name,
+            "status": "skipped",
+            "reason": "single_flight_lock_held",
+            "started_at": started_at.isoformat(),
+        }
+
+    _heartbeat_stop = asyncio.Event()
+    _heartbeat_task: Optional[asyncio.Task] = None
+
+    async def _price_sync_heartbeat_worker() -> None:
+        while not _heartbeat_stop.is_set():
+            await asyncio.sleep(PRICE_SYNC_HEARTBEAT_SECONDS)
+            try:
+                hb_now = datetime.now(timezone.utc)
+                await _heartbeat_price_sync_lock(db, _lock_owner_run_id, hb_now)
+                await db.ops_job_runs.update_one(
+                    {"_id": _running_doc_id},
+                    {"$set": {"heartbeat_at": hb_now}},
+                )
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                pass  # best-effort
+
+    async def _release_price_sync_resources() -> None:
+        nonlocal _heartbeat_task, _lock_acquired
+        _heartbeat_stop.set()
+        if _heartbeat_task is not None:
+            _heartbeat_task.cancel()
+            await asyncio.gather(_heartbeat_task, return_exceptions=True)
+            _heartbeat_task = None
+        if _lock_acquired:
+            await _release_price_sync_lock(db, _lock_owner_run_id)
+            _lock_acquired = False
+
+    _heartbeat_task = asyncio.create_task(_price_sync_heartbeat_worker())
+
     try:
         # Check kill switch (manual endpoints can explicitly bypass)
         if (not ignore_kill_switch) and (not await get_scheduler_enabled(db)):
@@ -1970,6 +2031,8 @@ async def run_daily_price_sync(
             "started_at": started_at.isoformat(),
             "finished_at": _fail_finished_at.isoformat(),
         }
+    finally:
+        await _release_price_sync_resources()
 
 
 async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -2902,6 +2965,62 @@ async def _heartbeat_fundamentals_sync_lock(db, owner_run_id: str, now: datetime
 async def _release_fundamentals_sync_lock(db, owner_run_id: str) -> None:
     await db.ops_locks.delete_one({
         "_id": FUNDAMENTALS_SYNC_LOCK_ID,
+        "owner_run_id": owner_run_id,
+    })
+
+
+# ── Price sync single-flight lock (mirrors fundamentals_sync lock) ──────────
+
+async def _acquire_price_sync_lock(db, owner_run_id: str, now: datetime) -> bool:
+    """Acquire distributed single-flight lock for price_sync."""
+    await _ensure_ops_locks_ttl_index(db)
+    lease_expires_at = now + timedelta(seconds=PRICE_SYNC_LOCK_LEASE_SECONDS)
+
+    reusable = await db.ops_locks.update_one(
+        {
+            "_id": PRICE_SYNC_LOCK_ID,
+            "$or": [
+                {"owner_run_id": owner_run_id},
+                {"expires_at": {"$lte": now}},
+            ],
+        },
+        {"$set": {
+            "owner_run_id": owner_run_id,
+            "acquired_at": now,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        }},
+    )
+    if reusable.matched_count:
+        return True
+
+    try:
+        await db.ops_locks.insert_one({
+            "_id": PRICE_SYNC_LOCK_ID,
+            "owner_run_id": owner_run_id,
+            "acquired_at": now,
+            "heartbeat_at": now,
+            "expires_at": lease_expires_at,
+        })
+        return True
+    except DuplicateKeyError:
+        return False
+
+
+async def _heartbeat_price_sync_lock(db, owner_run_id: str, now: datetime) -> None:
+    """Refresh lock lease while price_sync is running."""
+    await db.ops_locks.update_one(
+        {"_id": PRICE_SYNC_LOCK_ID, "owner_run_id": owner_run_id},
+        {"$set": {
+            "heartbeat_at": now,
+            "expires_at": now + timedelta(seconds=PRICE_SYNC_LOCK_LEASE_SECONDS),
+        }},
+    )
+
+
+async def _release_price_sync_lock(db, owner_run_id: str) -> None:
+    await db.ops_locks.delete_one({
+        "_id": PRICE_SYNC_LOCK_ID,
         "owner_run_id": owner_run_id,
     })
 
