@@ -8192,7 +8192,8 @@ async def admin_pipeline_chain_status(chain_run_id: str):
         elif _status == "step3_done":
             _current_step = None
     if _status in ("failed", "error"):
-        _failed_step = doc.get("failed_step") or next(
+        _stored_fs = doc.get("failed_step")
+        _failed_step = _stored_fs if _stored_fs is not None else next(
             (i for i, k in enumerate(("step1", "step2", "step3"), 1) if not _srids.get(k)),
             3,
         )

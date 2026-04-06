@@ -1355,7 +1355,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     </>
   )}
 
-  {chainStatus && chainStatus !== 'starting' && (
+  {chainStatus && chainStatus !== 'starting' && (() => {
+    const failStep = chainFailedStep ?? chainCurrentStep;
+    const failStepLabel = failStep != null ? `Step ${failStep}/3 (${CHAIN_STEP_NAMES[failStep] ?? 'unknown'})` : 'unknown step';
+    return (
     <Text style={[
       s.fullChainStatus,
       chainStatus === 'completed' ? { color: '#22C55E' }
@@ -1367,14 +1370,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       {chainStatus === 'completed'
         ? `Done — chain_run_id: ${chainRunId}`
         : isChainFailed
-        ? `Failed — Step ${chainFailedStep ?? chainCurrentStep ?? '?'}/3 (${CHAIN_STEP_NAMES[chainFailedStep ?? chainCurrentStep ?? 0] ?? 'unknown'})`
+        ? `Failed — ${failStepLabel}`
         : isChainCancelled
         ? 'Cancelled'
         : chainCurrentStep !== null
         ? `Running — Step ${chainCurrentStep}/3 (${CHAIN_STEP_NAMES[chainCurrentStep] ?? ''}) · ${formatElapsed(elapsedSeconds)}`
         : 'Running…'}
     </Text>
-  )}
+    );
+  })()}
 </View>
         </View>
         {/* Mini funnel summary */}
