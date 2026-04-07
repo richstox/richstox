@@ -957,3 +957,194 @@ class TestRemediateGapDateBulkFetchFailed:
         assert proof["bulk_found"] is None  # bulk failed
         assert proof["inserted"] is True
         assert proof["primary_reason"] == "resolved_from_per_ticker_api"
+
+
+class TestRemediateGapDateZeroPriceBulk:
+    """Bulk has the ticker but close=0 → not inserted, honest primary_reason."""
+
+    @pytest.mark.asyncio
+    async def test_bulk_close_zero_skipped(self):
+        proven = [
+            {
+                "ticker": "NYC.US",
+                "history_download_proven_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2026-03-01",
+            },
+        ]
+        db = _make_db_for_gap_date(
+            ops_agg_docs=_make_ops_agg_docs(GAP_DATE_OPS),
+            proven_tracked_docs=proven,
+            existing_stock_prices_tickers=[],
+            market_calendar_docs=GAP_DATE_MC,
+            find_one_result=None,  # still not found after (zero not inserted)
+        )
+
+        # EODHD bulk has NYC but with close=0 (halted/delisted)
+        bulk_data = [
+            {"code": "NYC", "date": "2026-04-02", "close": 0,
+             "open": 0, "high": 0, "low": 0,
+             "adjusted_close": 0, "volume": 0},
+            {"code": "AAPL", "date": "2026-04-02", "close": 200,
+             "open": 199, "high": 201, "low": 198,
+             "adjusted_close": 200, "volume": 50000},
+        ]
+
+        with patch(
+            "price_ingestion_service.fetch_bulk_eod_latest",
+            new=AsyncMock(return_value=(bulk_data, True)),
+        ), patch(
+            "price_ingestion_service.parse_eod_record",
+            side_effect=lambda t, r: {
+                "ticker": t, "date": r.get("date"),
+                "close": r.get("close"),
+            },
+        ), patch(
+            "price_ingestion_service.fetch_eod_history",
+            new=AsyncMock(return_value=[]),
+        ):
+            from scheduler_service import remediate_gap_date
+            result = await remediate_gap_date(db, target_date=GAP_DATE)
+
+        assert result["gap_tickers_count"] == 1
+        assert result["total_inserted"] == 0  # NOT inserted
+
+        proof = result["proof_table"][0]
+        assert proof["ticker"] == "NYC.US"
+        assert proof["bulk_found"] is True
+        assert proof["matched_symbol"] == "NYC"
+        assert proof["inserted"] is False
+        assert proof["primary_reason"] == "bulk_found_but_close_is_zero"
+        # bulk_row_snippet must show the actual zero values
+        assert proof["bulk_row_snippet"] is not None
+        assert proof["bulk_row_snippet"]["close"] == 0
+
+
+class TestRemediateGapDateNotInBulkApiZero:
+    """Ticker not in bulk, per-ticker API returns close=0 → not inserted."""
+
+    @pytest.mark.asyncio
+    async def test_api_returns_zero_price(self):
+        proven = [
+            {
+                "ticker": "NYC.US",
+                "history_download_proven_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2026-03-01",
+            },
+        ]
+        db = _make_db_for_gap_date(
+            ops_agg_docs=_make_ops_agg_docs(GAP_DATE_OPS),
+            proven_tracked_docs=proven,
+            existing_stock_prices_tickers=[],
+            market_calendar_docs=GAP_DATE_MC,
+            find_one_result=None,
+        )
+
+        # Bulk does NOT have NYC
+        bulk_data = [
+            {"code": "AAPL", "date": "2026-04-02", "close": 200},
+        ]
+
+        with patch(
+            "price_ingestion_service.fetch_bulk_eod_latest",
+            new=AsyncMock(return_value=(bulk_data, True)),
+        ), patch(
+            "price_ingestion_service.parse_eod_record",
+            side_effect=lambda t, r: {"ticker": t, "date": r.get("date")},
+        ), patch(
+            "price_ingestion_service.fetch_eod_history",
+            new=AsyncMock(return_value=[
+                {"date": "2026-04-02", "close": 0, "open": 0,
+                 "high": 0, "low": 0, "adjusted_close": 0, "volume": 0},
+            ]),
+        ):
+            from scheduler_service import remediate_gap_date
+            result = await remediate_gap_date(db, target_date=GAP_DATE)
+
+        proof = result["proof_table"][0]
+        assert proof["bulk_found"] is False
+        assert proof["inserted"] is False
+        assert proof["primary_reason"] == "api_returned_only_zero_price"
+
+
+class TestRemediateGapDateMixedTickers:
+    """Mix of: not-in-bulk, in-bulk-with-zero, in-bulk-with-valid-price."""
+
+    @pytest.mark.asyncio
+    async def test_mixed_results(self):
+        proven = [
+            {
+                "ticker": "NYC.US",
+                "history_download_proven_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2026-03-01",
+            },
+            {
+                "ticker": "EXAS.US",
+                "history_download_proven_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2026-03-01",
+            },
+            {
+                "ticker": "RAND.US",
+                "history_download_proven_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2026-03-01",
+            },
+        ]
+        find_one_after = {"_id": "fake"}
+
+        db = _make_db_for_gap_date(
+            ops_agg_docs=_make_ops_agg_docs(GAP_DATE_OPS),
+            proven_tracked_docs=proven,
+            existing_stock_prices_tickers=[],
+            market_calendar_docs=GAP_DATE_MC,
+            bulk_write_result=_FakeWriteResult(upserted=1),
+            find_one_result=find_one_after,
+        )
+
+        # NYC: in bulk with close=0 (halted)
+        # EXAS: NOT in bulk at all
+        # RAND: in bulk with valid close
+        bulk_data = [
+            {"code": "NYC", "date": "2026-04-02", "close": 0,
+             "open": 0, "high": 0, "low": 0,
+             "adjusted_close": 0, "volume": 0},
+            {"code": "RAND", "date": "2026-04-02", "close": 15.5,
+             "open": 15.0, "high": 16.0, "low": 14.5,
+             "adjusted_close": 15.5, "volume": 5000},
+        ]
+
+        with patch(
+            "price_ingestion_service.fetch_bulk_eod_latest",
+            new=AsyncMock(return_value=(bulk_data, True)),
+        ), patch(
+            "price_ingestion_service.parse_eod_record",
+            side_effect=lambda t, r: {
+                "ticker": t, "date": r.get("date"),
+                "close": r.get("close"),
+            },
+        ), patch(
+            "price_ingestion_service.fetch_eod_history",
+            new=AsyncMock(return_value=[]),
+        ):
+            from scheduler_service import remediate_gap_date
+            result = await remediate_gap_date(db, target_date=GAP_DATE)
+
+        assert result["gap_tickers_count"] == 3
+        # Only RAND should be inserted (valid close)
+        assert result["total_inserted"] == 1
+
+        by_ticker = {r["ticker"]: r for r in result["proof_table"]}
+
+        # NYC: in bulk but close=0
+        assert by_ticker["NYC.US"]["bulk_found"] is True
+        assert by_ticker["NYC.US"]["inserted"] is False
+        assert by_ticker["NYC.US"]["primary_reason"] == "bulk_found_but_close_is_zero"
+        assert by_ticker["NYC.US"]["bulk_row_snippet"]["close"] == 0
+
+        # EXAS: not in bulk, not in API
+        assert by_ticker["EXAS.US"]["bulk_found"] is False
+        assert by_ticker["EXAS.US"]["inserted"] is False
+        assert by_ticker["EXAS.US"]["primary_reason"] == "not_in_bulk_not_in_api"
+
+        # RAND: in bulk with valid close
+        assert by_ticker["RAND.US"]["bulk_found"] is True
+        assert by_ticker["RAND.US"]["inserted"] is True
+        assert by_ticker["RAND.US"]["primary_reason"] == "resolved_from_bulk"

@@ -5317,6 +5317,11 @@ async def run_single_ticker_gap_remediation(
                 if records:
                     ops = []
                     for record in records:
+                        # Reject zero-price records
+                        api_close = record.get("close")
+                        if not api_close or float(api_close) == 0:
+                            report["skip_reason"] = "api_returned_zero_price"
+                            continue
                         parsed = parse_eod_record(normalized, record)
                         if not parsed.get("date"):
                             report["skip_reason"] = "parse_failed_no_date"
@@ -5369,6 +5374,7 @@ async def run_single_ticker_gap_remediation(
             # ── 4c. Bulk-data fallback ───────────────────────────────
             # If per-ticker API returned nothing but bulk has the data,
             # extract the row from bulk and insert it directly.
+            # Skip if bulk close is zero (halted/delisted).
             if (
                 inserted_count == 0
                 and bulk_check
@@ -5384,6 +5390,18 @@ async def run_single_ticker_gap_remediation(
                             continue
                         norm = _normalize_step2_ticker(str(raw_sym))
                         if norm == normalized:
+                            # Reject zero-price bulk row
+                            bulk_close = record.get("close")
+                            if not bulk_close or float(bulk_close) == 0:
+                                report["skip_reason"] = (
+                                    "bulk_found_but_close_is_zero"
+                                )
+                                logger.info(
+                                    "[SINGLE TICKER GAP REMEDIATION] %s %s: "
+                                    "bulk fallback skipped — close=0",
+                                    normalized, target_date,
+                                )
+                                break
                             parsed = parse_eod_record(normalized, record)
                             if parsed.get("date"):
                                 wr = await db.stock_prices.bulk_write(
@@ -5620,6 +5638,7 @@ async def remediate_gap_date(
             "ticker": ticker,
             "bulk_found": None,
             "matched_symbol": None,
+            "bulk_row_snippet": None,
             "db_found_before": False,
             "db_found_after": False,
             "inserted": False,
@@ -5638,12 +5657,32 @@ async def remediate_gap_date(
                 row["matched_symbol"] = str(
                     bulk_record.get(bulk_ticker_field)
                 )
+                # Always include the raw snippet so the user can verify
+                row["bulk_row_snippet"] = {
+                    "code": bulk_record.get("code"),
+                    "date": bulk_record.get("date"),
+                    "open": bulk_record.get("open"),
+                    "high": bulk_record.get("high"),
+                    "low": bulk_record.get("low"),
+                    "close": bulk_record.get("close"),
+                    "adjusted_close": bulk_record.get("adjusted_close"),
+                    "volume": bulk_record.get("volume"),
+                }
             else:
                 row["bulk_found"] = False
 
+        # ── Close-price sanity: reject zero/None close ───────────────
+        # EODHD sometimes includes halted/delisted tickers with all-zero
+        # prices.  Writing them creates garbage stock_prices rows.
+        bulk_close_is_zero = False
+        if bulk_record:
+            raw_close = bulk_record.get("close")
+            if not raw_close or float(raw_close) == 0:
+                bulk_close_is_zero = True
+
         # Try to insert from bulk data first (fastest)
         inserted = False
-        if row["bulk_found"] is True and bulk_record:
+        if row["bulk_found"] is True and bulk_record and not bulk_close_is_zero:
             try:
                 parsed = parse_eod_record(ticker, bulk_record)
                 if parsed.get("date"):
@@ -5668,6 +5707,8 @@ async def remediate_gap_date(
                 row["primary_reason"] = (
                     f"bulk_insert_error: {type(exc).__name__}"
                 )
+        elif row["bulk_found"] is True and bulk_close_is_zero:
+            row["primary_reason"] = "bulk_found_but_close_is_zero"
 
         # Fallback: per-ticker API
         if not inserted:
@@ -5678,6 +5719,10 @@ async def remediate_gap_date(
                 if records:
                     ops = []
                     for record in records:
+                        # Reject zero-price records from per-ticker API too
+                        api_close = record.get("close")
+                        if not api_close or float(api_close) == 0:
+                            continue
                         parsed = parse_eod_record(ticker, record)
                         if parsed.get("date"):
                             ops.append(
@@ -5699,9 +5744,21 @@ async def remediate_gap_date(
                             row["primary_reason"] = (
                                 "resolved_from_per_ticker_api"
                             )
+                        elif not row["primary_reason"]:
+                            row["primary_reason"] = (
+                                "api_returned_only_zero_price"
+                            )
+                    elif not row["primary_reason"]:
+                        row["primary_reason"] = (
+                            "api_returned_only_zero_price"
+                        )
                 elif not row["primary_reason"]:
                     if row["bulk_found"] is True:
-                        row["primary_reason"] = "in_bulk_but_api_returned_empty"
+                        row["primary_reason"] = (
+                            "bulk_close_zero_api_returned_empty"
+                            if bulk_close_is_zero
+                            else "in_bulk_but_api_returned_empty"
+                        )
                     elif row["bulk_found"] is False:
                         row["primary_reason"] = "not_in_bulk_not_in_api"
                     else:

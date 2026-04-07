@@ -377,3 +377,58 @@ class TestProofModeTickerSkippedDuringBulk:
         assert sr["write_failed"] is False
         assert sr["primary_reason"] == "ticker_skipped_during_successful_bulk"
         assert "GAP DETECTED" in result["summary"]
+
+
+class TestProofModeZeroPriceBulk:
+    """Bulk has the ticker but close=0 → primary_reason is bulk_found_but_close_is_zero."""
+
+    @pytest.mark.asyncio
+    async def test_zero_close_detected(self):
+        # Bulk row with close=0
+        bulk_data = [
+            _make_bulk_row("NYC", "2026-04-02", close=0),
+        ]
+
+        seeded = {
+            "ticker": "NYC.US",
+            "exchange": "NYSE",
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+            "is_visible": True,
+        }
+        ops_doc = {
+            "status": "success",
+            "details": {
+                "price_bulk_gapfill": {
+                    "days": [{
+                        "processed_date": "2026-04-02",
+                        "status": "success",
+                        "rows_written": 5000,
+                        "matched_seeded_tickers_count": 5000,
+                    }],
+                },
+            },
+        }
+
+        db = _make_db(
+            tracked_tickers_doc=seeded,
+            ops_job_runs_doc=ops_doc,
+        )
+        db.tracked_tickers.find_one = AsyncMock(return_value=seeded)
+
+        with patch(
+            "visibility_rules.compute_visibility",
+            return_value=(True, None),
+        ):
+            result = await run_proof_mode(
+                db, ticker="NYC.US", date="2026-04-02",
+                bulk_data_override=bulk_data,
+            )
+
+        assert result["bulk_check"]["found"] is True
+        assert result["bulk_check"]["matched_row"]["close"] == 0
+        assert result["db_check"]["found"] is False
+        sr = result["skip_reasons"]
+        assert sr["bulk_close_is_zero"] is True
+        assert sr["primary_reason"] == "bulk_found_but_close_is_zero"
+        assert "close=0" in result["summary"]

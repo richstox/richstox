@@ -1026,6 +1026,12 @@ async def run_daily_bulk_catchup(
     parsed_rows: List[Dict[str, Any]] = []
     matched_seeded_tickers: Set[str] = set()
 
+    # Tickers that appear in bulk with close=0/None are tracked separately.
+    # They are NOT written to stock_prices (the UI says "Close price = 0 or
+    # missing" is an exclusion filter).  They *are* counted in the overlap
+    # (matched_seeded_tickers) but do NOT generate UpdateOne ops.
+    zero_price_tickers: Set[str] = set()
+
     normalized_overlap = (
         set(normalized_seeded_to_canonical.keys()) & set(normalized_bulk_rows.keys())
     )
@@ -1035,6 +1041,16 @@ async def run_daily_bulk_catchup(
             date = record.get("date")
             if not date:
                 continue
+
+            # ── Close-price sanity filter ────────────────────────────
+            # Skip rows where close is 0, None, or missing.  EODHD
+            # sometimes includes halted / delisted tickers with all-zero
+            # prices.  Writing them creates garbage stock_prices rows.
+            raw_close = record.get("close")
+            if not raw_close or float(raw_close) == 0:
+                zero_price_tickers.add(canonical_ticker)
+                continue
+
             parsed_rows.append({"ticker": canonical_ticker, "date": date})
             current_batch_ops.append(
                 UpdateOne(
@@ -1155,6 +1171,13 @@ async def run_daily_bulk_catchup(
             (current_batch_ops, current_batch_tickers)
         )
 
+    if zero_price_tickers:
+        logger.info(
+            "[BULK CATCHUP] Skipped %d ticker(s) with close=0: %s",
+            len(zero_price_tickers),
+            sorted(zero_price_tickers)[:20],
+        )
+
     if not batched_operations_with_tickers:
         logger.info("[BULK CATCHUP] No matching tickers in bulk response")
         return {
@@ -1234,6 +1257,7 @@ async def run_daily_bulk_catchup(
         "rows_written": records_upserted,
         "matched_price_tickers_raw": len(matched_seeded_tickers),
         "tickers_with_price_data": len(matched_seeded_tickers),
+        "zero_price_tickers_count": len(zero_price_tickers),
         "api_calls": 1 if bulk_fetch_executed else 0,
         "bulk_fetch_executed": bulk_fetch_executed,
         "raw_row_count": raw_row_count,
