@@ -184,10 +184,14 @@ async def run_proof_mode(
         }
         seeded_step2 = await db.tracked_tickers.find_one(
             {**_STEP2_QUERY, "ticker": normalized_input},
-            {"_id": 0, "ticker": 1},
+            {"_id": 0, "ticker": 1, "is_seeded": 1},
         )
         is_in_seeded = seeded_step2 is not None
+        is_currently_seeded = (
+            seeded_step2 is not None and seeded_step2.get("is_seeded") is True
+        )
         skip_reasons["not_in_seeded"] = not is_in_seeded
+        skip_reasons["is_currently_seeded"] = is_currently_seeded
 
         # 4b. not_visible: compute visibility if seeded
         visibility_info: Optional[Dict[str, Any]] = None
@@ -265,12 +269,19 @@ async def run_proof_mode(
         # 4f. Determine the primary skip reason
         if not is_in_seeded:
             skip_reasons["primary_reason"] = "not_in_seeded"
+        elif not is_currently_seeded:
+            skip_reasons["primary_reason"] = "temporarily_unseeded"
         elif skip_reasons.get("normalization_mismatch"):
             skip_reasons["primary_reason"] = "normalization_mismatch"
         elif non_trading_day:
             skip_reasons["primary_reason"] = "filtered_by_non_trading_day"
         elif write_failed:
             skip_reasons["primary_reason"] = "write_failed"
+        elif ops_day_status == "success" and (ops_rows_written or 0) > 0:
+            # Bulk ran successfully but this specific ticker wasn't written.
+            # Most likely cause: ticker was temporarily un-seeded when the
+            # Step 1 → Step 2 chain ran for this date.
+            skip_reasons["primary_reason"] = "ticker_skipped_during_successful_bulk"
         else:
             skip_reasons["primary_reason"] = "unknown"
 

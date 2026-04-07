@@ -627,13 +627,29 @@ async def sync_ticker_whitelist(
         return result
     
     # LIVE MODE
-    # Reset is_seeded on all previously-seeded tickers so that tickers which
-    # no longer pass filters get un-seeded before the new upsert loop re-seeds
-    # the current candidate set.
-    await db.tracked_tickers.update_many(
-        {"is_seeded": True},
+    # ── Surgical unseed: only un-seed tickers that are NOT in the current
+    # candidate set.  The previous "reset ALL to False then re-seed" pattern
+    # was destructive: if ANY batch write in the re-seeding loop failed
+    # (silently caught), or if the EODHD API returned fewer tickers than
+    # usual, those tickers stayed is_seeded=False.  Step 2 bulk catchup
+    # then skipped them, creating permanent price gaps.
+    #
+    # New approach:
+    #   1. Build candidate_tickers FIRST (already done above).
+    #   2. Un-seed ONLY tickers not in the current candidate set.
+    #   3. Then upsert candidates with is_seeded=True.
+    # This way, if a batch write fails, the ticker keeps is_seeded=True
+    # from the previous run — no gap is created.
+    _unseed_result = await db.tracked_tickers.update_many(
+        {"is_seeded": True, "ticker": {"$nin": list(candidate_tickers)}},
         {"$set": {"is_seeded": False, "updated_at": datetime.now(timezone.utc)}}
     )
+    _unseeded_count = _unseed_result.modified_count
+    if _unseeded_count > 0:
+        logger.info(
+            f"Surgically un-seeded {_unseeded_count} tickers not in current candidate set "
+            f"(candidate_count={len(candidate_tickers)})"
+        )
 
     # BULK UPSERT tracked_tickers v batchích po 500
     from pymongo import UpdateOne

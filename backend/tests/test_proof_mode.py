@@ -280,3 +280,58 @@ class TestProofModeEmptyBulk:
 
         assert result["bulk_check"]["found"] is False
         assert result["bulk_check"]["raw_row_count"] == 0
+
+
+class TestProofModeTickerSkippedDuringBulk:
+    """
+    Ticker is in bulk AND seeded AND visible, bulk ran successfully,
+    but stock_prices has no row → ticker_skipped_during_successful_bulk.
+
+    This is the scenario the user hit: tickers in EODHD bulk but missing
+    from stock_prices because they were temporarily un-seeded when the
+    Step 1→Step 2 chain ran.
+    """
+
+    @pytest.mark.asyncio
+    async def test_skipped_during_successful_bulk(self, bulk_data_ahh):
+        seeded = {
+            "ticker": "AHH.US", "exchange": "NYSE",
+            "asset_type": "Common Stock", "is_seeded": True,
+            "is_visible": True,
+        }
+
+        # Bulk ran successfully with 5000 matched tickers
+        ops_doc = {
+            "status": "success",
+            "details": {
+                "price_bulk_gapfill": {
+                    "days": [{
+                        "processed_date": "2026-03-31",
+                        "status": "success",
+                        "rows_written": 5000,
+                        "matched_seeded_tickers_count": 5000,
+                    }],
+                },
+            },
+        }
+
+        db = _make_db(
+            tracked_tickers_doc=seeded,
+            ops_job_runs_doc=ops_doc,
+        )
+        # All find_one calls return seeded doc
+        db.tracked_tickers.find_one = AsyncMock(return_value=seeded)
+
+        result = await run_proof_mode(
+            db, ticker="AHH.US", date="2026-03-31",
+            bulk_data_override=bulk_data_ahh,
+        )
+
+        assert result["bulk_check"]["found"] is True
+        assert result["db_check"]["found"] is False
+        sr = result["skip_reasons"]
+        assert sr["not_in_seeded"] is False
+        assert sr["is_currently_seeded"] is True
+        assert sr["write_failed"] is False
+        assert sr["primary_reason"] == "ticker_skipped_during_successful_bulk"
+        assert "GAP DETECTED" in result["summary"]

@@ -4884,3 +4884,193 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
     }
+
+
+# ── Ticker-level gap remediation ──────────────────────────────────────────
+# Fills price gaps for individual (ticker, date) pairs that were missed
+# by the bulk ingestion — typically because the ticker was temporarily
+# un-seeded when the bulk ran (see whitelist_service.py surgical-unseed fix).
+MAX_TICKER_GAP_REMEDIATION_PAIRS = 200  # safety cap per run
+
+
+async def run_ticker_gap_remediation(db) -> Dict[str, Any]:
+    """
+    Detect per-ticker price gaps (proven tickers missing stock_prices rows
+    for dates that passed bulk sanity) and fill them via per-ticker EODHD
+    API.
+
+    This complements run_bulk_gapfill_remediation() which operates at the
+    DATE level.  This function operates at the (ticker, date) level —
+    fixing tickers that were skipped during an otherwise-successful bulk
+    ingestion (e.g. because they were temporarily un-seeded).
+    """
+    from services.admin_overview_service import _get_bulk_processed_dates
+    from price_ingestion_service import fetch_eod_history, parse_eod_record
+
+    started_at = datetime.now(timezone.utc)
+    job_name = "ticker_gap_remediation"
+
+    run_doc_id = (await db.ops_job_runs.insert_one({
+        "job_name": job_name,
+        "status": "running",
+        "started_at": started_at,
+        "started_at_prague": _to_prague_iso(started_at),
+        "source": "scheduler",
+        "details": {},
+    })).inserted_id
+
+    overall_status = "success"
+    pairs_attempted = 0
+    pairs_filled = 0
+    rows_written_total = 0
+    pair_errors = 0
+
+    try:
+        # 1) Get expected dates
+        expected_dates = await _get_bulk_processed_dates(db)
+        if not expected_dates:
+            logger.info("[TICKER GAP REMEDIATION] No expected dates — nothing to do")
+            overall_status = "success"
+            await db.ops_job_runs.update_one(
+                {"_id": run_doc_id},
+                {"$set": {"details.expected_dates": [], "details.reason": "no_expected_dates"}},
+            )
+        else:
+            # 2) Get proven tickers with anchors
+            proven_docs = await db.tracked_tickers.find(
+                {
+                    "is_visible": True,
+                    "history_download_proven_at": {"$exists": True, "$type": "date"},
+                    "history_download_proven_anchor": {"$exists": True, "$ne": None},
+                },
+                {"ticker": 1, "history_download_proven_anchor": 1, "_id": 0},
+            ).to_list(None)
+            proven_anchors = {
+                d["ticker"]: d["history_download_proven_anchor"]
+                for d in proven_docs
+            }
+
+            if not proven_anchors:
+                logger.info("[TICKER GAP REMEDIATION] No proven tickers — nothing to do")
+                overall_status = "success"
+            else:
+                # 3) Find coverage — which (ticker, date) pairs exist
+                coverage_pipeline = [
+                    {"$match": {
+                        "ticker": {"$in": list(proven_anchors.keys())},
+                        "date": {"$in": expected_dates},
+                    }},
+                    {"$group": {"_id": "$ticker", "dates": {"$addToSet": "$date"}}},
+                ]
+                dates_by_proven: Dict[str, set] = {}
+                async for doc in db.stock_prices.aggregate(coverage_pipeline):
+                    dates_by_proven[doc["_id"]] = set(doc["dates"])
+
+                # 4) Detect gaps — (ticker, date) pairs that are missing
+                gaps: List[Dict[str, str]] = []
+                for ticker, anchor in proven_anchors.items():
+                    ticker_dates = dates_by_proven.get(ticker, set())
+                    for d in expected_dates:
+                        if d > anchor and d not in ticker_dates:
+                            gaps.append({"ticker": ticker, "date": d})
+                            if len(gaps) >= MAX_TICKER_GAP_REMEDIATION_PAIRS:
+                                break
+                    if len(gaps) >= MAX_TICKER_GAP_REMEDIATION_PAIRS:
+                        break
+
+                logger.info(
+                    f"[TICKER GAP REMEDIATION] Found {len(gaps)} (ticker,date) gaps "
+                    f"(capped at {MAX_TICKER_GAP_REMEDIATION_PAIRS})"
+                )
+
+                await db.ops_job_runs.update_one(
+                    {"_id": run_doc_id},
+                    {"$set": {
+                        "details.expected_dates_count": len(expected_dates),
+                        "details.proven_tickers_count": len(proven_anchors),
+                        "details.gaps_detected": len(gaps),
+                    }},
+                )
+
+                # 5) Fill gaps using per-ticker EODHD API
+                batch_ops: List = []
+                for gap in gaps:
+                    pairs_attempted += 1
+                    ticker = gap["ticker"]
+                    target_date = gap["date"]
+                    try:
+                        records = await fetch_eod_history(
+                            ticker, from_date=target_date, to_date=target_date,
+                        )
+                        for record in records:
+                            parsed = parse_eod_record(ticker, record)
+                            if not parsed.get("date"):
+                                continue
+                            batch_ops.append(
+                                UpdateOne(
+                                    {"ticker": parsed["ticker"], "date": parsed["date"]},
+                                    {"$set": parsed},
+                                    upsert=True,
+                                )
+                            )
+                            pairs_filled += 1
+                    except Exception as ticker_err:
+                        pair_errors += 1
+                        logger.warning(
+                            f"[TICKER GAP REMEDIATION] {ticker} {target_date} "
+                            f"error: {ticker_err}"
+                        )
+
+                # 6) Bulk-write all collected operations
+                if batch_ops:
+                    write_result = await db.stock_prices.bulk_write(
+                        batch_ops, ordered=False,
+                    )
+                    rows_written_total = (
+                        write_result.upserted_count + write_result.modified_count
+                    )
+                    logger.info(
+                        f"[TICKER GAP REMEDIATION] Wrote {rows_written_total} rows "
+                        f"({write_result.upserted_count} new, "
+                        f"{write_result.modified_count} updated)"
+                    )
+
+    except Exception as exc:
+        overall_status = "error"
+        logger.error(f"[TICKER GAP REMEDIATION] Unhandled error: {exc}")
+        await db.ops_job_runs.update_one(
+            {"_id": run_doc_id},
+            {"$set": {"details.error": str(exc)[:500]}},
+        )
+
+    finished_at = datetime.now(timezone.utc)
+    await db.ops_job_runs.update_one(
+        {"_id": run_doc_id},
+        {"$set": {
+            "status": overall_status,
+            "finished_at": finished_at,
+            "finished_at_prague": _to_prague_iso(finished_at),
+            "log_timezone": "Europe/Prague",
+            "details.pairs_attempted": pairs_attempted,
+            "details.pairs_filled": pairs_filled,
+            "details.pair_errors": pair_errors,
+            "details.rows_written": rows_written_total,
+        }},
+    )
+
+    logger.info(
+        f"[TICKER GAP REMEDIATION] Done: status={overall_status}, "
+        f"pairs_attempted={pairs_attempted}, pairs_filled={pairs_filled}, "
+        f"rows_written={rows_written_total}"
+    )
+
+    return {
+        "job_name": job_name,
+        "status": overall_status,
+        "pairs_attempted": pairs_attempted,
+        "pairs_filled": pairs_filled,
+        "pair_errors": pair_errors,
+        "rows_written": rows_written_total,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+    }

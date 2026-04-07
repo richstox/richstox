@@ -6313,6 +6313,24 @@ async def admin_proof_mode(
     return result
 
 
+@api_router.post("/admin/ticker-gap-remediation")
+async def admin_ticker_gap_remediation():
+    """
+    Detect per-ticker price gaps (proven tickers missing stock_prices rows
+    for dates that passed bulk sanity) and fill them via per-ticker EODHD API.
+
+    This fixes tickers that were skipped during an otherwise-successful bulk
+    ingestion — typically because the ticker was temporarily un-seeded when
+    the bulk ran.
+
+    Auth: AdminAuthMiddleware.
+    """
+    from scheduler_service import run_ticker_gap_remediation
+
+    result = await run_ticker_gap_remediation(db)
+    return result
+
+
 # =========================================================================
 # VISIBILITY AUDIT ENDPOINT (DATA SUPREMACY MANIFESTO v1.0)
 # =========================================================================
