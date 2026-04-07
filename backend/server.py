@@ -6288,6 +6288,50 @@ async def admin_provider_debug_snapshot_list(limit: int = Query(50, ge=1, le=500
 
 
 # =========================================================================
+# PROOF MODE — Single-ticker/date reconciliation debug endpoint
+# =========================================================================
+@api_router.get("/admin/proof-mode")
+async def admin_proof_mode(
+    ticker: str = Query(..., description="Ticker symbol, e.g. AHH.US"),
+    date: str = Query(..., description="Date in YYYY-MM-DD format, e.g. 2026-03-31"),
+):
+    """
+    Reconcile a single (ticker, date) pair across EODHD bulk data,
+    stock_prices DB, seeded tickers, and ingestion pipeline state.
+
+    Returns a structured diagnostic explaining whether and why the
+    ticker/date is present or absent at each stage.
+
+    Auth: AdminAuthMiddleware.
+    """
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD format")
+
+    from services.proof_mode_service import run_proof_mode
+    result = await run_proof_mode(db, ticker=ticker, date=date)
+    return result
+
+
+@api_router.post("/admin/ticker-gap-remediation")
+async def admin_ticker_gap_remediation():
+    """
+    Detect per-ticker price gaps (proven tickers missing stock_prices rows
+    for dates that passed bulk sanity) and fill them via per-ticker EODHD API.
+
+    This fixes tickers that were skipped during an otherwise-successful bulk
+    ingestion — typically because the ticker was temporarily un-seeded when
+    the bulk ran.
+
+    Auth: AdminAuthMiddleware.
+    """
+    from scheduler_service import run_ticker_gap_remediation
+
+    result = await run_ticker_gap_remediation(db)
+    return result
+
+
+# =========================================================================
 # VISIBILITY AUDIT ENDPOINT (DATA SUPREMACY MANIFESTO v1.0)
 # =========================================================================
 @api_router.get("/admin/visibility-audit")
