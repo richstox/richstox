@@ -370,6 +370,7 @@ export default function StockDetail() {
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState<string | null>(null);
   const [chartWMeasured, setChartWMeasured] = useState(0);
+  const [chartDataNotices, setChartDataNotices] = useState<string[]>([]);
   
   // Chart tooltip state (CHART-TOOLTIP: simple hover/touch, like stockanalysis.com)
   const [chartTooltipVisible, setChartTooltipVisible] = useState(false);
@@ -486,6 +487,7 @@ export default function StockDetail() {
       const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/chart?period=${range}&include_benchmark=true`);
       const prices = response.data.prices || [];
       const benchmark = response.data.benchmark;
+      const notices: string[] = response.data.data_notices || [];
       
       // Downsample to ~400 points for performance
       const targetPoints = 400;
@@ -535,6 +537,7 @@ export default function StockDetail() {
 
       setChartData(formattedPrices);
       setBenchmarkChartData(benchData);
+      setChartDataNotices(notices);
     } catch (err: any) {
       console.error('Error fetching chart data:', err);
       setChartError('Failed to load chart');
@@ -1669,6 +1672,18 @@ export default function StockDetail() {
             ))}
           </ScrollView>
           
+          {/* ===== DATA NOTICE BANNER ===== */}
+          {chartDataNotices.length > 0 && (
+            <View style={styles.dataNoticeBanner} data-testid="data-notice-banner">
+              <Ionicons name="information-circle-outline" size={16} color="#92400E" />
+              <View style={{ flex: 1 }}>
+                {chartDataNotices.map((notice, idx) => (
+                  <Text key={idx} style={styles.dataNoticeText}>{notice}</Text>
+                ))}
+              </View>
+            </View>
+          )}
+
           {visibleChartData.length > 0 && (
             <Text style={styles.dateRangeText}>
               {formatDateDMY(visibleChartData[0]?.date)} – {formatDateDMY(visibleChartData[visibleChartData.length - 1]?.date)}
@@ -3252,6 +3267,8 @@ const styles = StyleSheet.create({
   pendingBannerContent: { flex: 1 },
   pendingBannerTitle: { fontSize: 14, fontWeight: '600', color: '#92400E', marginBottom: 2 },
   pendingBannerText: { fontSize: 12, color: '#B45309', lineHeight: 16 },
+  dataNoticeBanner: { flexDirection: 'row', alignItems: 'flex-start', gap: 6, backgroundColor: '#FEF9C3', borderRadius: 8, padding: 8, marginTop: 6, marginBottom: 2, borderWidth: 1, borderColor: '#FDE68A' },
+  dataNoticeText: { fontSize: 11, color: '#92400E', lineHeight: 15 },
   
   // ============================================================================
   // NEW: Compact Header Row (replaces big identity card)

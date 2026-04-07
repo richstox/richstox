@@ -53,7 +53,8 @@ interface PriceIntegrity {
   full_price_history_count?: number;
   history_download_completed_count?: number;
   gap_free_since_history_download_count?: number;
-  non_gap_free_sample?: { ticker: string; missing_dates: string[] }[];
+  non_gap_free_sample?: { ticker: string; missing_dates: string[]; classification?: string }[];
+  gap_excluded_sample?: { ticker: string; excluded_dates: { date: string; reason: string }[]; classification?: string }[];
   top_missing_dates?: { date: string; missing_ticker_count: number }[];
   fundamentals_complete_count?: number;
   completed_trading_days_health?: CompletedTradingDayHealth | null;
@@ -726,16 +727,34 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           value={gfValue}
           status={gfStatus}
         />
-        {gfCount < tvTotal && (pi?.non_gap_free_sample ?? []).length > 0 && (
+        {((pi?.non_gap_free_sample ?? []).length > 0 || (pi?.gap_excluded_sample ?? []).length > 0) && (
           <View style={{ marginTop: 6 }}>
-            <Text style={[d.subSection, { marginTop: 2 }]}>Why not gap-free?</Text>
-            <Text style={d.cpHint}>Up to 20 tickers with missing bulk dates after their download anchor</Text>
-            {(pi?.non_gap_free_sample ?? []).map((item) => (
-              <View key={item.ticker} style={d.cpRow}>
-                <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
-                <Text style={[d.cpDate, { flex: 1, color: '#EF4444' }]}>{item.missing_dates.join(', ')}</Text>
-              </View>
-            ))}
+            {(pi?.non_gap_free_sample ?? []).length > 0 && (
+              <>
+                <Text style={[d.subSection, { marginTop: 2 }]}>Why not gap-free?</Text>
+                <Text style={d.cpHint}>True gaps: bulk found, close {'>'} 0, DB row still missing</Text>
+                {(pi?.non_gap_free_sample ?? []).map((item) => (
+                  <View key={item.ticker} style={d.cpRow}>
+                    <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
+                    <Text style={[d.cpDate, { flex: 1, color: '#EF4444' }]}>{item.missing_dates.join(', ')}</Text>
+                  </View>
+                ))}
+              </>
+            )}
+            {(pi?.gap_excluded_sample ?? []).length > 0 && (
+              <>
+                <Text style={[d.subSection, { marginTop: 6 }]}>Not applicable (not a gap)</Text>
+                <Text style={d.cpHint}>Ticker absent from bulk or close=0 — halted/delisted/no trade</Text>
+                {(pi?.gap_excluded_sample ?? []).map((item) => (
+                  <View key={item.ticker} style={d.cpRow}>
+                    <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
+                    <Text style={[d.cpDate, { flex: 1, color: '#9CA3AF' }]}>
+                      {item.excluded_dates.map(ed => `${ed.date} (${ed.reason.replace(/_/g, ' ')})`).join(', ')}
+                    </Text>
+                  </View>
+                ))}
+              </>
+            )}
             {(pi?.top_missing_dates ?? []).length > 0 && (
               <>
                 <Text style={[d.subSection, { marginTop: 6 }]}>Top missing dates</Text>

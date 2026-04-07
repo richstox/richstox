@@ -4438,6 +4438,10 @@ async def get_ticker_chart_data(
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     SP500TR_TICKER = "SP500TR.INDX"
+    _DATA_NOTICE_GENERIC = (
+        "Data notice: Some daily closes are unavailable "
+        "(halted/delisted/no trade or provider gap)."
+    )
 
     # Calculate start date based on period
     from datetime import datetime, timezone, timedelta
@@ -4490,7 +4494,7 @@ async def get_ticker_chart_data(
         all_prices = [p for p in all_prices if _is_valid_price(p)]
 
         logger.info(f"[CHART] MAX: {ticker_full} has {len(all_prices)} valid records")
-        
+
         # Smart downsample: evenly distribute across ENTIRE date range
         # FIXED: Use proper sampling to cover all years
         target_points = 2000
@@ -4580,12 +4584,28 @@ async def get_ticker_chart_data(
                 "volume": p.get("volume")
             })
 
+    # ── Data notices: flag tickers with known missing closes ────────────
+    data_notices = []
+    try:
+        exclusions = await db.gap_free_exclusions.find(
+            {"ticker": ticker_full},
+            {"_id": 0, "date": 1, "reason": 1},
+        ).sort("date", -1).to_list(length=10)
+        if exclusions:
+            data_notices.append(_DATA_NOTICE_GENERIC)
+            # Specific missing dates (most recent first, up to 5)
+            for edoc in exclusions[:5]:
+                data_notices.append(f"Missing close for {edoc['date']}.")
+    except Exception:
+        pass  # Collection may not exist yet
+
     return {
         "ticker": ticker_full,
         "period": period,
         "start_date": start_date,
         "data_points": len(prices),
         "prices": normalized_prices,
+        "data_notices": data_notices,
         "benchmark": {
             "ticker": SP500TR_TICKER,
             "name": "S&P 500 TR",
