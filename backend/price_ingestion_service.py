@@ -86,6 +86,16 @@ def _normalize_step2_ticker(value: Any) -> Optional[str]:
     return f"{text}.US"
 
 
+def _is_zero_or_missing_close(value: Any) -> bool:
+    """Return True if ``value`` represents a zero, missing, or non-numeric close price."""
+    if value is None:
+        return True
+    try:
+        return float(value) == 0
+    except (ValueError, TypeError):
+        return True
+
+
 async def _read_price_bulk_state(db) -> Optional[Dict[str, Any]]:
     return await db.pipeline_state.find_one({"_id": "price_bulk"})
 
@@ -1047,7 +1057,7 @@ async def run_daily_bulk_catchup(
             # sometimes includes halted / delisted tickers with all-zero
             # prices.  Writing them creates garbage stock_prices rows.
             raw_close = record.get("close")
-            if not raw_close or float(raw_close) == 0:
+            if _is_zero_or_missing_close(raw_close):
                 zero_price_tickers.add(canonical_ticker)
                 continue
 

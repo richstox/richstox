@@ -283,7 +283,10 @@ async def run_proof_mode(
         bulk_close_is_zero = False
         if bulk_row:
             raw_close = bulk_row.get("close")
-            if raw_close is None or float(raw_close) == 0:
+            try:
+                if raw_close is None or float(raw_close) == 0:
+                    bulk_close_is_zero = True
+            except (ValueError, TypeError):
                 bulk_close_is_zero = True
         skip_reasons["bulk_close_is_zero"] = bulk_close_is_zero
 

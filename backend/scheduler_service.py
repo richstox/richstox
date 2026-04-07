@@ -5157,6 +5157,7 @@ async def run_single_ticker_gap_remediation(
         parse_eod_record,
         fetch_bulk_eod_latest,
         _normalize_step2_ticker,
+        _is_zero_or_missing_close,
     )
 
     started_at = datetime.now(timezone.utc)
@@ -5318,8 +5319,7 @@ async def run_single_ticker_gap_remediation(
                     ops = []
                     for record in records:
                         # Reject zero-price records
-                        api_close = record.get("close")
-                        if not api_close or float(api_close) == 0:
+                        if _is_zero_or_missing_close(record.get("close")):
                             report["skip_reason"] = "api_returned_zero_price"
                             continue
                         parsed = parse_eod_record(normalized, record)
@@ -5391,8 +5391,7 @@ async def run_single_ticker_gap_remediation(
                         norm = _normalize_step2_ticker(str(raw_sym))
                         if norm == normalized:
                             # Reject zero-price bulk row
-                            bulk_close = record.get("close")
-                            if not bulk_close or float(bulk_close) == 0:
+                            if _is_zero_or_missing_close(record.get("close")):
                                 report["skip_reason"] = (
                                     "bulk_found_but_close_is_zero"
                                 )
@@ -5529,6 +5528,7 @@ async def remediate_gap_date(
         parse_eod_record,
         fetch_bulk_eod_latest,
         _normalize_step2_ticker,
+        _is_zero_or_missing_close,
     )
     from pymongo import UpdateOne
 
@@ -5676,8 +5676,7 @@ async def remediate_gap_date(
         # prices.  Writing them creates garbage stock_prices rows.
         bulk_close_is_zero = False
         if bulk_record:
-            raw_close = bulk_record.get("close")
-            if not raw_close or float(raw_close) == 0:
+            if _is_zero_or_missing_close(bulk_record.get("close")):
                 bulk_close_is_zero = True
 
         # Try to insert from bulk data first (fastest)
@@ -5720,8 +5719,7 @@ async def remediate_gap_date(
                     ops = []
                     for record in records:
                         # Reject zero-price records from per-ticker API too
-                        api_close = record.get("close")
-                        if not api_close or float(api_close) == 0:
+                        if _is_zero_or_missing_close(record.get("close")):
                             continue
                         parsed = parse_eod_record(ticker, record)
                         if parsed.get("date"):

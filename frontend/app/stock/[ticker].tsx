@@ -3443,6 +3443,7 @@ const styles = StyleSheet.create({
   rangeButtonActive: { backgroundColor: COLORS.primary },
   rangeButtonText: { fontSize: 12, fontWeight: '500', color: COLORS.textMuted },
   rangeButtonTextActive: { color: '#FFF' },
+  // No overflow:'hidden' — Y-axis price badges extend beyond SVG bounds
   chartContainer: { minHeight: 260 },
   chartLoading: { height: 200, justifyContent: 'center', alignItems: 'center' },
   chartLoadingText: { fontSize: 13, color: COLORS.textMuted, marginTop: 8 },
