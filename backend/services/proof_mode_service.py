@@ -70,8 +70,9 @@ async def run_proof_mode(
     bulk_row: Optional[Dict[str, Any]] = None
     bulk_raw_row_count = 0
     bulk_error: Optional[str] = None
+    _bulk_is_override = bulk_data_override is not None
 
-    if bulk_data_override is not None:
+    if _bulk_is_override:
         bulk_data = bulk_data_override
     else:
         try:
@@ -80,6 +81,12 @@ async def run_proof_mode(
             bulk_data, _ = await fetch_bulk_eod_latest(
                 "US", include_meta=True, for_date=date,
             )
+            if not bulk_data:
+                # fetch_bulk_eod_latest swallows errors and returns [].
+                # EODHD bulk for US has 50,000+ rows on any trading
+                # day; an empty result means the fetch failed, NOT that
+                # the ticker is absent.
+                bulk_error = "bulk_fetch_returned_empty_payload"
         except Exception as exc:
             bulk_data = []
             bulk_error = f"{type(exc).__name__}: bulk fetch failed"
@@ -122,6 +129,12 @@ async def run_proof_mode(
                     "volume": record.get("volume"),
                 }
                 break  # found — stop scanning
+
+    # When a live EODHD fetch returned empty (API failure / swallowed
+    # error), we cannot conclude the ticker is absent — mark unknown.
+    # Explicit bulk_data_override=[] (testing) keeps bulk_found=False.
+    if not _bulk_is_override and not bulk_data and bulk_error:
+        bulk_found = None
 
     # ------------------------------------------------------------------
     # 2. stock_prices DB check
@@ -295,7 +308,12 @@ async def run_proof_mode(
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
-    if bulk_found and db_found:
+    if bulk_found is None:
+        summary = (
+            "INCONCLUSIVE: EODHD bulk fetch returned empty "
+            "(possible API failure). Cannot determine ticker presence."
+        )
+    elif bulk_found and db_found:
         summary = "CONSISTENT: Ticker present in both EODHD bulk and stock_prices."
     elif not bulk_found and not db_found:
         summary = "CONSISTENT: Ticker absent from both EODHD bulk and stock_prices."

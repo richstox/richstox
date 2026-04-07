@@ -6314,7 +6314,14 @@ async def admin_proof_mode(
 
 
 @api_router.post("/admin/ticker-gap-remediation")
-async def admin_ticker_gap_remediation():
+async def admin_ticker_gap_remediation(
+    ticker: Optional[str] = Query(
+        None,
+        description="Optional ticker symbol (e.g. AHH.US). "
+        "When provided, remediates ALL missing dates for that single ticker "
+        "with per-date proof reporting.",
+    ),
+):
     """
     Detect per-ticker price gaps (proven tickers missing stock_prices rows
     for dates that passed bulk sanity) and fill them via per-ticker EODHD API.
@@ -6323,11 +6330,18 @@ async def admin_ticker_gap_remediation():
     ingestion — typically because the ticker was temporarily un-seeded when
     the bulk ran.
 
+    When ``ticker`` is supplied, runs single-ticker mode with full per-date
+    proof reporting and no cap.  When omitted, runs batch mode (all tickers,
+    capped at 200 pairs).
+
     Auth: AdminAuthMiddleware.
     """
-    from scheduler_service import run_ticker_gap_remediation
-
-    result = await run_ticker_gap_remediation(db)
+    if ticker:
+        from scheduler_service import run_single_ticker_gap_remediation
+        result = await run_single_ticker_gap_remediation(db, ticker=ticker)
+    else:
+        from scheduler_service import run_ticker_gap_remediation
+        result = await run_ticker_gap_remediation(db)
     return result
 
 

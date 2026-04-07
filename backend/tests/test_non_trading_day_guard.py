@@ -339,6 +339,7 @@ class TestBulkCatchupNonTradingDayGuard:
             price_ingestion_service.run_daily_bulk_catchup(
                 db,
                 seeded_tickers_override={"AAPL.US", "MSFT.US"},
+                latest_trading_day=holiday_date,
             )
         )
 
@@ -376,6 +377,7 @@ class TestBulkCatchupNonTradingDayGuard:
             price_ingestion_service.run_daily_bulk_catchup(
                 db,
                 seeded_tickers_override={"AAPL.US"},
+                latest_trading_day=weekend_date,
             )
         )
 
@@ -410,6 +412,7 @@ class TestBulkCatchupNonTradingDayGuard:
             price_ingestion_service.run_daily_bulk_catchup(
                 db,
                 seeded_tickers_override={"AAPL.US"},
+                latest_trading_day=trading_date,
             )
         )
 
@@ -436,12 +439,47 @@ class TestBulkCatchupNonTradingDayGuard:
             price_ingestion_service.run_daily_bulk_catchup(
                 db,
                 seeded_tickers_override={"AAPL.US"},
+                latest_trading_day=date_str,
             )
         )
 
         # Should NOT skip — fail-open means proceed with write
         assert result["status"] == "success"
         assert result["records_upserted"] > 0
+
+
+class TestBulkDateRequired:
+    """fetch_bulk_eod_latest and run_daily_bulk_catchup MUST receive a date."""
+
+    def test_fetch_bulk_rejects_none_date(self):
+        """fetch_bulk_eod_latest raises ValueError when for_date is missing."""
+        with pytest.raises(ValueError, match="for_date is required"):
+            asyncio.run(price_ingestion_service.fetch_bulk_eod_latest("US", for_date=None))
+
+    def test_fetch_bulk_rejects_empty_date(self):
+        """fetch_bulk_eod_latest raises ValueError when for_date is ''."""
+        with pytest.raises(ValueError, match="for_date is required"):
+            asyncio.run(price_ingestion_service.fetch_bulk_eod_latest("US", for_date=""))
+
+    def test_bulk_catchup_rejects_none_date(self):
+        """run_daily_bulk_catchup raises ValueError when latest_trading_day is None."""
+        db = _FakeDB(seeded_tickers=["AAPL.US"])
+        with pytest.raises(ValueError, match="latest_trading_day is required"):
+            asyncio.run(
+                price_ingestion_service.run_daily_bulk_catchup(
+                    db, latest_trading_day=None,
+                )
+            )
+
+    def test_bulk_catchup_rejects_empty_date(self):
+        """run_daily_bulk_catchup raises ValueError when latest_trading_day is ''."""
+        db = _FakeDB(seeded_tickers=["AAPL.US"])
+        with pytest.raises(ValueError, match="latest_trading_day is required"):
+            asyncio.run(
+                price_ingestion_service.run_daily_bulk_catchup(
+                    db, latest_trading_day="",
+                )
+            )
 
 
 # =============================================================================

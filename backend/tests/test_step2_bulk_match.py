@@ -77,7 +77,7 @@ def test_step2_bulk_match_normalizes_bulk_and_seeded_tickers(monkeypatch):
 
     monkeypatch.setattr(price_ingestion_service, "fetch_bulk_eod_latest", _fake_fetch_bulk)
 
-    result = asyncio.run(price_ingestion_service.run_daily_bulk_catchup(db))
+    result = asyncio.run(price_ingestion_service.run_daily_bulk_catchup(db, latest_trading_day="2026-03-18"))
 
     assert result["matched_price_tickers_raw"] == 2
     assert result["tickers_with_price_data"] == 2
