@@ -83,7 +83,7 @@ async def run_proof_mode(
             )
             if not bulk_data:
                 # fetch_bulk_eod_latest swallows errors and returns [].
-                # EODHD bulk for US has 50 000+ rows on any trading
+                # EODHD bulk for US has 50,000+ rows on any trading
                 # day; an empty result means the fetch failed, NOT that
                 # the ticker is absent.
                 bulk_error = "bulk_fetch_returned_empty_payload"

@@ -5278,7 +5278,7 @@ async def run_single_ticker_gap_remediation(
                     )
                     if not bulk_data:
                         # fetch_bulk_eod_latest swallows errors and
-                        # returns [].  EODHD bulk for US has 50 000+
+                        # returns [].  EODHD bulk for US has 50,000+
                         # rows on any trading day; an empty result
                         # means the fetch failed, NOT that the ticker
                         # is absent.  Mark as unknown.
