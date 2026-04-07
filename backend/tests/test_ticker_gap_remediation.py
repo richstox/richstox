@@ -505,6 +505,77 @@ class TestSingleTickerSkipReasons:
         assert report["db_after"] is True
 
 
+class TestSingleTickerEmptyBulkFetch:
+    """When bulk fetch returns [] (API failure), bulk_found must be None, not False."""
+
+    @pytest.mark.asyncio
+    async def test_empty_bulk_sets_bulk_found_none(self):
+        """Empty bulk → bulk_found=None (unknown), skip_reason=bulk_fetch_returned_empty."""
+        db = _make_db(
+            ops_agg_docs=_make_ops_agg_docs([("2026-04-01", 5000, 5000)]),
+            tracked_tickers_find_one_doc={
+                "ticker": "AHH.US",
+                "history_download_proven_anchor": "2026-03-30",
+            },
+            stock_prices_find_docs=[],
+            market_calendar_docs=[{"date": "2026-04-01", "is_trading_day": True}],
+            find_one_result=None,
+        )
+
+        # fetch_bulk_eod_latest returns empty (simulates API failure)
+        with patch(
+            "price_ingestion_service.fetch_eod_history",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "price_ingestion_service.fetch_bulk_eod_latest",
+            new=AsyncMock(return_value=([], True)),
+        ):
+            from scheduler_service import run_single_ticker_gap_remediation
+            result = await run_single_ticker_gap_remediation(
+                db, "AHH.US", bulk_check=True,
+            )
+
+        report = result["per_date_report"][0]
+        # Must be None (unknown), NOT False (which would mean "ticker not in bulk")
+        assert report["bulk_found"] is None
+        assert report["skip_reason"] == "bulk_fetch_returned_empty"
+
+    @pytest.mark.asyncio
+    async def test_nonempty_bulk_without_ticker_stays_false(self):
+        """Non-empty bulk that genuinely lacks the ticker → bulk_found=False."""
+        db = _make_db(
+            ops_agg_docs=_make_ops_agg_docs([("2026-04-01", 5000, 5000)]),
+            tracked_tickers_find_one_doc={
+                "ticker": "AHH.US",
+                "history_download_proven_anchor": "2026-03-30",
+            },
+            stock_prices_find_docs=[],
+            market_calendar_docs=[{"date": "2026-04-01", "is_trading_day": True}],
+            find_one_result=None,
+        )
+
+        bulk_data = [
+            {"code": "AAPL", "date": "2026-04-01", "close": 200},
+            {"code": "MSFT", "date": "2026-04-01", "close": 400},
+        ]
+
+        with patch(
+            "price_ingestion_service.fetch_eod_history",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "price_ingestion_service.fetch_bulk_eod_latest",
+            new=AsyncMock(return_value=(bulk_data, True)),
+        ):
+            from scheduler_service import run_single_ticker_gap_remediation
+            result = await run_single_ticker_gap_remediation(
+                db, "AHH.US", bulk_check=True,
+            )
+
+        report = result["per_date_report"][0]
+        assert report["bulk_found"] is False
+        assert report["skip_reason"] == "not_in_bulk_data"
+
+
 class TestSingleTickerAlreadyComplete:
     """When ticker has no missing dates, reports empty list."""
 

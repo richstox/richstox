@@ -267,7 +267,7 @@ class TestProofModeGapCheckContext:
 
 
 class TestProofModeEmptyBulk:
-    """Empty bulk payload → bulk_found=False."""
+    """Explicit bulk_data_override=[] → bulk_found=False (intentional test override)."""
 
     @pytest.mark.asyncio
     async def test_empty_bulk(self):
@@ -280,6 +280,48 @@ class TestProofModeEmptyBulk:
 
         assert result["bulk_check"]["found"] is False
         assert result["bulk_check"]["raw_row_count"] == 0
+
+
+class TestProofModeLiveFetchEmpty:
+    """Live EODHD fetch returns [] (API failure) → bulk_found=None, INCONCLUSIVE."""
+
+    @pytest.mark.asyncio
+    async def test_live_fetch_empty_sets_bulk_found_none(self):
+        db = _make_db()
+
+        with patch(
+            "price_ingestion_service.fetch_bulk_eod_latest",
+            new=AsyncMock(return_value=([], True)),
+        ):
+            result = await run_proof_mode(
+                db, ticker="AHH.US", date="2026-03-31",
+            )
+
+        assert result["bulk_check"]["found"] is None
+        assert result["bulk_check"]["raw_row_count"] == 0
+        assert result["bulk_check"]["error"] == "bulk_fetch_returned_empty_payload"
+        assert "INCONCLUSIVE" in result["summary"]
+
+    @pytest.mark.asyncio
+    async def test_live_fetch_nonempty_stays_false(self):
+        """Non-empty live bulk that genuinely lacks ticker → bulk_found=False."""
+        bulk_data = [
+            {"code": "AAPL", "date": "2026-03-31", "close": 200},
+            {"code": "MSFT", "date": "2026-03-31", "close": 400},
+        ]
+        db = _make_db()
+
+        with patch(
+            "price_ingestion_service.fetch_bulk_eod_latest",
+            new=AsyncMock(return_value=(bulk_data, True)),
+        ):
+            result = await run_proof_mode(
+                db, ticker="AHH.US", date="2026-03-31",
+            )
+
+        assert result["bulk_check"]["found"] is False
+        assert result["bulk_check"]["error"] is None
+        assert "CONSISTENT" in result["summary"]
 
 
 class TestProofModeTickerSkippedDuringBulk:

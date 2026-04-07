@@ -5276,17 +5276,31 @@ async def run_single_ticker_gap_remediation(
                     bulk_data, _ = await fetch_bulk_eod_latest(
                         "US", include_meta=True, for_date=target_date,
                     )
-                    found = False
-                    for record in bulk_data:
-                        raw_sym = record.get("code") or record.get("symbol")
-                        if raw_sym is None:
-                            continue
-                        norm = _normalize_step2_ticker(str(raw_sym))
-                        if norm == normalized:
-                            found = True
-                            report["bulk_matched_symbol"] = str(raw_sym)
-                            break
-                    report["bulk_found"] = found
+                    if not bulk_data:
+                        # fetch_bulk_eod_latest swallows errors and
+                        # returns [].  EODHD bulk for US has 50 000+
+                        # rows on any trading day; an empty result
+                        # means the fetch failed, NOT that the ticker
+                        # is absent.  Mark as unknown.
+                        report["bulk_found"] = None
+                        logger.warning(
+                            "[SINGLE TICKER GAP REMEDIATION] bulk fetch "
+                            "returned empty for %s %s — treating as "
+                            "unknown (possible API failure)",
+                            normalized, target_date,
+                        )
+                    else:
+                        found = False
+                        for record in bulk_data:
+                            raw_sym = record.get("code") or record.get("symbol")
+                            if raw_sym is None:
+                                continue
+                            norm = _normalize_step2_ticker(str(raw_sym))
+                            if norm == normalized:
+                                found = True
+                                report["bulk_matched_symbol"] = str(raw_sym)
+                                break
+                        report["bulk_found"] = found
                 except Exception as exc:
                     logger.warning(
                         "[SINGLE TICKER GAP REMEDIATION] bulk check error "
@@ -5332,6 +5346,10 @@ async def run_single_ticker_gap_remediation(
                         report["skip_reason"] = "not_in_per_ticker_api_but_in_bulk"
                     elif report["bulk_found"] is False:
                         report["skip_reason"] = "not_in_bulk_data"
+                    elif bulk_check:
+                        # Bulk was checked but returned unknown (empty
+                        # or errored) — cannot blame the ticker.
+                        report["skip_reason"] = "bulk_fetch_returned_empty"
                     else:
                         report["skip_reason"] = "api_returned_no_records"
                     logger.info(
@@ -5412,6 +5430,8 @@ async def run_single_ticker_gap_remediation(
                     report["skip_reason"] = "bulk_found_but_insert_yielded_zero"
                 elif report["bulk_found"] is False:
                     report["skip_reason"] = "not_in_bulk_data"
+                elif report["bulk_found"] is None and bulk_check:
+                    report["skip_reason"] = "bulk_fetch_returned_empty"
                 else:
                     report["skip_reason"] = "unknown"
 
