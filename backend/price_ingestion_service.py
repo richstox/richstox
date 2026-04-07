@@ -404,8 +404,8 @@ async def sync_daily_prices(db) -> Dict[str, Any]:
         # without an explicit date.
         from services.market_calendar_service import get_last_closing_day
 
-        _lcd = await get_last_closing_day(db, "US")
-        if not _lcd:
+        last_closing_day = await get_last_closing_day(db, "US")
+        if not last_closing_day:
             result["status"] = "failed"
             result["error"] = "Cannot resolve last closing day from market_calendar"
             result["finished_at"] = datetime.now(timezone.utc).isoformat()
@@ -413,7 +413,7 @@ async def sync_daily_prices(db) -> Dict[str, Any]:
             return result
 
         # Fetch bulk data for US exchange with explicit date
-        bulk_data = await fetch_bulk_eod_latest("US", for_date=_lcd)
+        bulk_data = await fetch_bulk_eod_latest("US", for_date=last_closing_day)
         
         if not bulk_data:
             result["status"] = "failed"
