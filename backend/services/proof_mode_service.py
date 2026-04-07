@@ -13,6 +13,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
+from price_ingestion_service import _is_zero_or_missing_close
+
 logger = logging.getLogger("richstox.proof_mode")
 
 
@@ -282,12 +284,9 @@ async def run_proof_mode(
         # 4f. Check for close=0 in the bulk row (halted/delisted ticker)
         bulk_close_is_zero = False
         if bulk_row:
-            raw_close = bulk_row.get("close")
-            try:
-                if raw_close is None or float(raw_close) == 0:
-                    bulk_close_is_zero = True
-            except (ValueError, TypeError):
-                bulk_close_is_zero = True
+            bulk_close_is_zero = _is_zero_or_missing_close(
+                bulk_row.get("close")
+            )
         skip_reasons["bulk_close_is_zero"] = bulk_close_is_zero
 
         # 4g. Determine the primary skip reason

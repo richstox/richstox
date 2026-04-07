@@ -87,7 +87,7 @@ def _normalize_step2_ticker(value: Any) -> Optional[str]:
 
 
 def _is_zero_or_missing_close(value: Any) -> bool:
-    """Return True if ``value`` represents a zero, missing, or non-numeric close price."""
+    """Return True if ``value`` is zero, None, or non-numeric (e.g. malformed API data)."""
     if value is None:
         return True
     try:

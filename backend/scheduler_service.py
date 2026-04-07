@@ -5611,7 +5611,7 @@ async def remediate_gap_date(
 
     # Build normalized bulk lookup
     bulk_ticker_field: Optional[str] = None
-    if bulk_data:  # non-empty guaranteed before indexing
+    if bulk_data:  # truthy = non-empty list, safe to index
         sample = bulk_data[0]
         if isinstance(sample, dict):
             if "code" in sample:
