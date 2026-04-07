@@ -165,34 +165,45 @@ async def fetch_bulk_eod_latest(
     exchange: str = "US",
     include_meta: bool = False,
     *,
-    for_date: Optional[str] = None,
+    for_date: str,
 ) -> Union[List[Dict[str, Any]], Tuple[List[Dict[str, Any]], bool]]:
     """
-    Fetch bulk EOD data for a specific (or latest) trading day.
-    
-    API: https://eodhd.com/api/eod-bulk-last-day/{exchange}?api_token=XXX&fmt=json
+    Fetch bulk EOD data for a **specific** trading day.
+
+    RULE: ``for_date`` is **mandatory**.  We NEVER call the EODHD bulk
+    endpoint without an explicit date because EODHD's "latest" behaviour
+    is non-deterministic and can return data for a date we did not intend.
+    Every caller must resolve the target date from market_calendar first.
+
+    API: https://eodhd.com/api/eod-bulk-last-day/{exchange}?date=YYYY-MM-DD&api_token=XXX&fmt=json
     Cost: 1 credit (covers entire exchange)
 
     Args:
-        for_date: Optional YYYY-MM-DD date string.  When supplied the
-            ``date`` query-param is sent so EODHD returns data for that
-            exact trading day.  When ``None`` EODHD returns whatever it
-            considers the latest available day (legacy behaviour).
-    
+        for_date: **Required** YYYY-MM-DD date string.  The ``date``
+            query-param is always sent so EODHD returns data for that
+            exact trading day.
+
     Returns:
         List of EOD records for all tickers
+
+    Raises:
+        ValueError: if ``for_date`` is empty or None.
     """
+    if not for_date:
+        raise ValueError(
+            "fetch_bulk_eod_latest: for_date is required — "
+            "NEVER call bulk EODHD without an explicit date"
+        )
     if not EODHD_API_KEY:
         logger.error("EODHD_API_KEY not configured")
         return ([], False) if include_meta else []
-    
+
     url = f"{EODHD_BASE_URL}/eod-bulk-last-day/{exchange}"
     params: Dict[str, str] = {
         "api_token": EODHD_API_KEY,
         "fmt": "json",
+        "date": for_date,
     }
-    if for_date is not None:
-        params["date"] = for_date
     response_received = False
     try:
         async with httpx.AsyncClient(timeout=120) as client:
@@ -389,8 +400,20 @@ async def sync_daily_prices(db) -> Dict[str, Any]:
     }
     
     try:
-        # Fetch bulk data for US exchange
-        bulk_data = await fetch_bulk_eod_latest("US")
+        # Resolve the target date from market_calendar — NEVER call bulk
+        # without an explicit date.
+        from services.market_calendar_service import get_last_closing_day
+
+        _lcd = await get_last_closing_day(db, "US")
+        if not _lcd:
+            result["status"] = "failed"
+            result["error"] = "Cannot resolve last closing day from market_calendar"
+            result["finished_at"] = datetime.now(timezone.utc).isoformat()
+            await db.ops_job_runs.insert_one(result)
+            return result
+
+        # Fetch bulk data for US exchange with explicit date
+        bulk_data = await fetch_bulk_eod_latest("US", for_date=_lcd)
         
         if not bulk_data:
             result["status"] = "failed"
@@ -811,11 +834,15 @@ async def run_daily_bulk_catchup(
     progress_cb: Optional[Callable[[int, int, str], Awaitable[None]]] = None,
     seeded_tickers_override: Optional[Set[str]] = None,
     *,
-    latest_trading_day: Optional[str] = None,
+    latest_trading_day: str,
     bulk_data_override: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """
     Fetch the EODHD latest-day bulk file once and upsert into stock_prices.
+
+    RULE: ``latest_trading_day`` is **mandatory**.  We NEVER call the
+    EODHD bulk endpoint without an explicit date.  The caller must resolve
+    the target date from market_calendar before calling this function.
 
     Cancel-flag (cancel_job_{job_name} in ops_config) is checked at two points:
       a) Immediately after the EODHD API call returns.
@@ -825,13 +852,21 @@ async def run_daily_bulk_catchup(
     Optional progress_cb receives (processed_tickers, expected_tickers_count, "2.1 bulk price sync")
     after each bulk_write batch to stream Step 2 progress.
 
-    latest_trading_day: when provided, the bulk URL includes ``?date={latest_trading_day}``
-    so EODHD returns data for that exact date.  ``processed_date`` is set to this value
-    instead of being derived from the payload.
+    latest_trading_day: **Required** YYYY-MM-DD.  The bulk URL always
+    includes ``?date={latest_trading_day}`` so EODHD returns data for
+    that exact date.  ``processed_date`` is set to this value.
 
     bulk_data_override: when provided, skip the EODHD fetch and use this data directly.
     Used by the LCD validation loop to avoid double-fetching the same bulk payload.
+
+    Raises:
+        ValueError: if ``latest_trading_day`` is empty or None.
     """
+    if not latest_trading_day:
+        raise ValueError(
+            "run_daily_bulk_catchup: latest_trading_day is required — "
+            "NEVER call bulk EODHD without an explicit date"
+        )
     from pymongo import UpdateOne
 
     BULK_WRITE_BATCH_SIZE = 1000
@@ -845,18 +880,16 @@ async def run_daily_bulk_catchup(
             return True
         return False
 
-    bulk_url_used = f"{EODHD_BASE_URL}/eod-bulk-last-day/US"
-    if latest_trading_day:
-        bulk_url_used = f"{bulk_url_used}?date={latest_trading_day}"
+    bulk_url_used = f"{EODHD_BASE_URL}/eod-bulk-last-day/US?date={latest_trading_day}"
 
     # Use pre-fetched bulk data when available (LCD validation loop already
     # fetched it); otherwise make a fresh EODHD API call.
     if bulk_data_override is not None:
         bulk_data = bulk_data_override
         bulk_fetch_executed = True
-        logger.info("[BULK CATCHUP] Using pre-fetched bulk data (date=%s, rows=%d)", latest_trading_day or "latest", len(bulk_data))
+        logger.info("[BULK CATCHUP] Using pre-fetched bulk data (date=%s, rows=%d)", latest_trading_day, len(bulk_data))
     else:
-        logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (date=%s)", latest_trading_day or "latest")
+        logger.info("[BULK CATCHUP] Fetching bulk prices from EODHD (date=%s)", latest_trading_day)
         # Single API call — date param ensures EODHD returns data for the exact trading day
         bulk_data, bulk_fetch_executed = await fetch_bulk_eod_latest(
             "US", include_meta=True, for_date=latest_trading_day,
