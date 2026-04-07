@@ -374,40 +374,40 @@ def get_env_info() -> Dict[str, str]:
 JOB_REGISTRY = {
     "universe_seed": {
         "hour": 3, "minute": 0, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/exchange-symbol-list/NYSE + /NASDAQ",
+        "api_endpoint": "https://eodhd.com/api/exchange-symbol-list/NYSE?api_token=YOUR_API_TOKEN&fmt=json + /NASDAQ",
     },
     "price_sync": {
         "hour": 4, "minute": 0, "sunday_only": False, "has_api_calls": True,
         "dependency_on": "universe_seed",
-        "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?period=d&fmt=json"
+        "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?api_token=YOUR_API_TOKEN&period=d&fmt=json"
     },
     "benchmark_update": {
         "hour": 4, "minute": 15, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/eod/{BENCHMARK_SYMBOL}"
+        "api_endpoint": "https://eodhd.com/api/eod/{BENCHMARK_SYMBOL}?api_token=YOUR_API_TOKEN&fmt=json"
     },
     "market_calendar": {
         "hour": 2, "minute": 0, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/exchange-details/US"
+        "api_endpoint": "https://eodhd.com/api/exchange-details/US?api_token=YOUR_API_TOKEN&fmt=json"
     },
     "fundamentals_sync": {
         "hour": 4, "minute": 30, "sunday_only": False, "has_api_calls": True,
         "dependency_on": "price_sync",
-        "api_endpoint": "https://eodhd.com/api/fundamentals/{SYMBOL}.US?fmt=json"
+        "api_endpoint": "https://eodhd.com/api/fundamentals/{SYMBOL}.US?api_token=YOUR_API_TOKEN&fmt=json"
     },
     "backfill_gaps": {
         "hour": 4, "minute": 45, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?from={date}&fmt=json"
+        "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?api_token=YOUR_API_TOKEN&from={date}&fmt=json"
     },
     "backfill_all": {
         "hour": 5, "minute": 0, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?from={date}&fmt=json",
+        "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?api_token=YOUR_API_TOKEN&from={date}&fmt=json",
         "schedule_type": "manual",  # Manual-only - Run Now button in Admin Panel
         "description": "Full price history backfill - use sparingly (API credits)",
     },
     # C1: Manual-only fundamentals backfill
     "backfill_fundamentals_complete": {
         "hour": 0, "minute": 0, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/fundamentals/{SYMBOL}.US?fmt=json",
+        "api_endpoint": "https://eodhd.com/api/fundamentals/{SYMBOL}.US?api_token=YOUR_API_TOKEN&fmt=json",
         "schedule_type": "manual",  # Manual-only - ~60K API credits for full run
         "description": "Full fundamentals backfill - ~60K API credits",
     },
@@ -429,7 +429,7 @@ JOB_REGISTRY = {
     },
     "news_refresh": {
         "hour": 13, "minute": 0, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/news?s={SYMBOL}.US&from={from_date}&to={to_date}&limit=10&offset=0&fmt=json",
+        "api_endpoint": "https://eodhd.com/api/news?s={SYMBOL}.US&api_token=YOUR_API_TOKEN&from={from_date}&to={to_date}&limit=10&offset=0&fmt=json",
         "note": "10 articles per ticker fetched, stored up to 100 per ticker for detail view",
     },
 }

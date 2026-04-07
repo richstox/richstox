@@ -396,7 +396,7 @@ async def _detect_split_candidates_eodhd(db, today_str: str) -> Dict[str, Any]:
     from credit_log_service import log_api_credit
 
     endpoint = "eod-bulk-last-day/US"
-    api_url = f"{EODHD_BASE_URL}/{endpoint}?type=splits&date={today_str}"
+    api_url = f"{EODHD_BASE_URL}/{endpoint}?type=splits&date={today_str}&api_token=YOUR_API_TOKEN&fmt=json"
 
     data, http_status, duration_ms, call_status = await _fetch_eodhd_bulk(
         endpoint, {"type": "splits", "date": today_str}
@@ -503,7 +503,7 @@ async def _detect_dividend_candidates_eodhd(db, today_str: str) -> Dict[str, Any
     from credit_log_service import log_api_credit
 
     endpoint = "eod-bulk-last-day/US"
-    api_url = f"{EODHD_BASE_URL}/{endpoint}?type=dividends&date={today_str}"
+    api_url = f"{EODHD_BASE_URL}/{endpoint}?type=dividends&date={today_str}&api_token=YOUR_API_TOKEN&fmt=json"
 
     data, http_status, duration_ms, call_status = await _fetch_eodhd_bulk(
         endpoint, {"type": "dividends", "date": today_str}
@@ -608,7 +608,7 @@ async def _detect_earnings_candidates_eodhd(db, today_str: str, from_date: Optio
 
     start = from_date or today_str
     endpoint = "calendar/earnings"
-    api_url = f"{EODHD_BASE_URL}/{endpoint}?from={start}&to={today_str}"
+    api_url = f"{EODHD_BASE_URL}/{endpoint}?from={start}&to={today_str}&api_token=YOUR_API_TOKEN&fmt=json"
 
     data, http_status, duration_ms, call_status = await _fetch_eodhd_bulk(
         endpoint, {"from": start, "to": today_str}
@@ -1000,7 +1000,7 @@ async def run_step2_event_detectors(
 
     split = {
         "mock_mode": not bool(EODHD_API_KEY),
-        "api_endpoint": split_endpoints[0] if split_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=splits&date={today_str}",
+        "api_endpoint": split_endpoints[0] if split_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=splits&date={today_str}&api_token=YOUR_API_TOKEN&fmt=json",
         "api_endpoints_all": split_endpoints,
         "dates_checked": processed_dates,
         "raw_count": split_raw_total,
@@ -1010,7 +1010,7 @@ async def run_step2_event_detectors(
     }
     dividend = {
         "mock_mode": not bool(EODHD_API_KEY),
-        "api_endpoint": div_endpoints[0] if div_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=dividends&date={today_str}",
+        "api_endpoint": div_endpoints[0] if div_endpoints else f"{EODHD_BASE_URL}/eod-bulk-last-day/US?type=dividends&date={today_str}&api_token=YOUR_API_TOKEN&fmt=json",
         "api_endpoints_all": div_endpoints,
         "dates_checked": processed_dates,
         "raw_count": div_raw_total,
@@ -1025,6 +1025,7 @@ async def run_step2_event_detectors(
             f"{EODHD_BASE_URL}/calendar/earnings?"
             f"from={audit_endpoint_dates[0]}"
             f"&to={audit_endpoint_dates[-1]}"
+            f"&api_token=YOUR_API_TOKEN&fmt=json"
         ])[0],
         "api_endpoints_all": earnings_all.get("api_endpoints_all") or [],
         "dates_checked": processed_dates,
@@ -1452,7 +1453,7 @@ async def run_daily_price_sync(
             f"(as_of={target_end_date.isoformat()})"
         )
         _bulk_url_display = (
-            f"https://eodhd.com/api/eod-bulk-last-day/US?date={_last_closing_day}"
+            f"https://eodhd.com/api/eod-bulk-last-day/US?date={_last_closing_day}&api_token=YOUR_API_TOKEN&fmt=json"
         )
 
         price_bulk_state = await _read_price_bulk_state(db)

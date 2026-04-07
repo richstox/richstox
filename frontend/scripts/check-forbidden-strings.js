@@ -30,7 +30,7 @@ const FORBIDDEN_PATTERNS = [
   {
     pattern: /api_token\s*[=:]/gi,
     description: 'API token parameter (suggests direct API call)',
-    allowedContexts: [] // Never allowed in frontend
+    allowedContexts: ['pipeline.tsx'] // Admin docs: display-only URL templates with placeholder
   },
   {
     pattern: /X-RapidAPI/gi,
@@ -55,12 +55,12 @@ const FORBIDDEN_PATTERNS = [
   {
     pattern: /\.com\/api\/eod\//gi,
     description: 'EODHD EOD API endpoint',
-    allowedContexts: []
+    allowedContexts: ['pipeline.tsx']  // Admin docs: display-only URL templates
   },
   {
     pattern: /\.com\/api\/fundamentals\//gi,
     description: 'EODHD Fundamentals API endpoint',
-    allowedContexts: []
+    allowedContexts: ['pipeline.tsx']  // Admin docs: display-only URL templates
   },
   {
     pattern: /\.com\/api\/search\//gi,
