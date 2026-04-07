@@ -1926,6 +1926,7 @@ export default function StockDetail() {
 
                 // ===== X-AXIS: Compute date labels at regular intervals =====
                 const xAxisTicks: { x: number; label: string }[] = (() => {
+                  // Need at least 2 points to create meaningful date intervals
                   if (dataCount < 2) return [];
                   const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / MIN_PX_PER_LABEL)));
                   const numLabels = Math.min(maxLabels, dataCount);

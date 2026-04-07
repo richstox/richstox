@@ -5593,7 +5593,7 @@ async def remediate_gap_date(
 
     # Build normalized bulk lookup
     bulk_ticker_field: Optional[str] = None
-    if bulk_data:
+    if bulk_data:  # non-empty guaranteed before indexing
         sample = bulk_data[0]
         if isinstance(sample, dict):
             if "code" in sample:
@@ -5701,7 +5701,7 @@ async def remediate_gap_date(
                             )
                 elif not row["primary_reason"]:
                     if row["bulk_found"] is True:
-                        row["primary_reason"] = "in_bulk_but_parse_failed"
+                        row["primary_reason"] = "in_bulk_but_api_returned_empty"
                     elif row["bulk_found"] is False:
                         row["primary_reason"] = "not_in_bulk_not_in_api"
                     else:
