@@ -4495,51 +4495,6 @@ async def get_ticker_chart_data(
 
         logger.info(f"[CHART] MAX: {ticker_full} has {len(all_prices)} valid records")
 
-        # ── Fallback: if DB has very few records for MAX, fetch full
-        # history from EODHD API and persist for future queries.
-        _MAX_SPARSE_THRESHOLD = 30
-        if len(all_prices) < _MAX_SPARSE_THRESHOLD:
-            try:
-                from price_ingestion_service import fetch_eod_history, parse_eod_record
-                from pymongo import UpdateOne as _UpdateOne
-
-                eod_data = await fetch_eod_history(ticker_full)
-                if eod_data and len(eod_data) > len(all_prices):
-                    ops = []
-                    for record in eod_data:
-                        parsed = parse_eod_record(ticker_full, record)
-                        if parsed.get("date") and parsed.get("close"):
-                            ops.append(
-                                _UpdateOne(
-                                    {"ticker": parsed["ticker"], "date": parsed["date"]},
-                                    {"$set": parsed},
-                                    upsert=True,
-                                )
-                            )
-                    if ops:
-                        wr = await db.stock_prices.bulk_write(ops, ordered=False)
-                        logger.info(
-                            "[CHART] MAX fallback: %s fetched %d records from EODHD, "
-                            "upserted %d",
-                            ticker_full, len(eod_data),
-                            wr.upserted_count + wr.modified_count,
-                        )
-                        # Re-query after persisting
-                        all_prices = await db.stock_prices.find(
-                            {"ticker": ticker_full, "date": {"$gte": start_date}},
-                            {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1, "volume": 1}
-                        ).sort("date", 1).to_list(length=None)
-                        all_prices = [p for p in all_prices if _is_valid_price(p)]
-                        logger.info(
-                            "[CHART] MAX fallback: %s now has %d valid records",
-                            ticker_full, len(all_prices),
-                        )
-            except Exception as exc:
-                logger.warning(
-                    "[CHART] MAX fallback fetch failed for %s: %s",
-                    ticker_full, exc,
-                )
-        
         # Smart downsample: evenly distribute across ENTIRE date range
         # FIXED: Use proper sampling to cover all years
         target_points = 2000
