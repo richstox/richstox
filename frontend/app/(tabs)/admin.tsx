@@ -626,7 +626,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={lastBulkStatus}
           />
           <IntegrityMetric
-            label="Last 10 Days"
+            label="Last 10 Trading Days"
             value={ctdhDisplay}
             status={ctdhStatus}
           />
