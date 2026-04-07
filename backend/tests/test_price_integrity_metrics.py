@@ -667,8 +667,10 @@ def test_safe_defaults_include_gap_free_diagnostic_fields():
     db = _mock_db(visible_tickers=[])
     result = asyncio.run(get_price_integrity_metrics(db))
     assert "non_gap_free_sample" in result
+    assert "gap_excluded_sample" in result
     assert "top_missing_dates" in result
     assert result["non_gap_free_sample"] == []
+    assert result["gap_excluded_sample"] == []
     assert result["top_missing_dates"] == []
 
 

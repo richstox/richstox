@@ -4438,6 +4438,10 @@ async def get_ticker_chart_data(
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     SP500TR_TICKER = "SP500TR.INDX"
+    _DATA_NOTICE_GENERIC = (
+        "Data notice: Some daily closes are unavailable "
+        "(halted/delisted/no trade or provider gap)."
+    )
 
     # Calculate start date based on period
     from datetime import datetime, timezone, timedelta
@@ -4633,11 +4637,7 @@ async def get_ticker_chart_data(
             {"_id": 0, "date": 1, "reason": 1},
         ).sort("date", -1).to_list(length=10)
         if exclusions:
-            # Generic notice
-            data_notices.append(
-                "Data notice: Some daily closes are unavailable "
-                "(halted/delisted/no trade or provider gap)."
-            )
+            data_notices.append(_DATA_NOTICE_GENERIC)
             # Specific missing dates (most recent first, up to 5)
             for edoc in exclusions[:5]:
                 data_notices.append(f"Missing close for {edoc['date']}.")
