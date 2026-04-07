@@ -6345,9 +6345,34 @@ async def admin_ticker_gap_remediation(
     return result
 
 
-# =========================================================================
-# VISIBILITY AUDIT ENDPOINT (DATA SUPREMACY MANIFESTO v1.0)
-# =========================================================================
+@api_router.post("/admin/remediate-gap-date")
+async def admin_remediate_gap_date(
+    date: str = Query(
+        ...,
+        description="Target date in YYYY-MM-DD format (e.g. 2026-04-02). "
+        "Finds all gap tickers for this date and remediates them.",
+    ),
+):
+    """
+    Find all tickers missing a stock_prices row for a completed bulk trading
+    day and remediate them in batch.  Returns a proof table per ticker with:
+    bulk_found, matched_symbol, db_found_before, db_found_after, primary_reason.
+
+    Pre-fetches EODHD bulk data once and reuses it for all tickers to
+    minimise API calls.
+
+    Auth: AdminAuthMiddleware.
+    """
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD format")
+
+    from scheduler_service import remediate_gap_date
+    result = await remediate_gap_date(db, target_date=date)
+    return result
+
+
+
 @api_router.get("/admin/visibility-audit")
 async def get_visibility_audit():
     """

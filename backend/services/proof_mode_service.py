@@ -13,6 +13,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
+from price_ingestion_service import _is_zero_or_missing_close
+
 logger = logging.getLogger("richstox.proof_mode")
 
 
@@ -279,8 +281,18 @@ async def run_proof_mode(
         skip_reasons["filtered_by_non_trading_day"] = non_trading_day
         skip_reasons["holiday_name"] = holiday_name
 
-        # 4f. Determine the primary skip reason
-        if not is_in_seeded:
+        # 4f. Check for close=0 in the bulk row (halted/delisted ticker)
+        bulk_close_is_zero = False
+        if bulk_row:
+            bulk_close_is_zero = _is_zero_or_missing_close(
+                bulk_row.get("close")
+            )
+        skip_reasons["bulk_close_is_zero"] = bulk_close_is_zero
+
+        # 4g. Determine the primary skip reason
+        if bulk_close_is_zero:
+            skip_reasons["primary_reason"] = "bulk_found_but_close_is_zero"
+        elif not is_in_seeded:
             skip_reasons["primary_reason"] = "not_in_seeded"
         elif not is_currently_seeded:
             skip_reasons["primary_reason"] = "temporarily_unseeded"
@@ -319,10 +331,16 @@ async def run_proof_mode(
         summary = "CONSISTENT: Ticker absent from both EODHD bulk and stock_prices."
     elif bulk_found and not db_found:
         primary = skip_reasons.get("primary_reason", "unknown")
-        summary = (
-            f"GAP DETECTED: Ticker present in EODHD bulk but MISSING from stock_prices. "
-            f"Primary skip reason: {primary}"
-        )
+        if primary == "bulk_found_but_close_is_zero":
+            summary = (
+                "EXPECTED GAP: Ticker is in EODHD bulk but close=0 "
+                "(halted/delisted/no trade). Zero-price rows are not written to stock_prices."
+            )
+        else:
+            summary = (
+                f"GAP DETECTED: Ticker present in EODHD bulk but MISSING from stock_prices. "
+                f"Primary skip reason: {primary}"
+            )
     else:
         summary = (
             "UNEXPECTED: Ticker in stock_prices but NOT in EODHD bulk for this date. "

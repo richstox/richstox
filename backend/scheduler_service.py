@@ -5157,6 +5157,7 @@ async def run_single_ticker_gap_remediation(
         parse_eod_record,
         fetch_bulk_eod_latest,
         _normalize_step2_ticker,
+        _is_zero_or_missing_close,
     )
 
     started_at = datetime.now(timezone.utc)
@@ -5317,6 +5318,10 @@ async def run_single_ticker_gap_remediation(
                 if records:
                     ops = []
                     for record in records:
+                        # Reject zero-price records
+                        if _is_zero_or_missing_close(record.get("close")):
+                            report["skip_reason"] = "api_returned_zero_price"
+                            continue
                         parsed = parse_eod_record(normalized, record)
                         if not parsed.get("date"):
                             report["skip_reason"] = "parse_failed_no_date"
@@ -5369,6 +5374,7 @@ async def run_single_ticker_gap_remediation(
             # ── 4c. Bulk-data fallback ───────────────────────────────
             # If per-ticker API returned nothing but bulk has the data,
             # extract the row from bulk and insert it directly.
+            # Skip if bulk close is zero (halted/delisted).
             if (
                 inserted_count == 0
                 and bulk_check
@@ -5384,6 +5390,17 @@ async def run_single_ticker_gap_remediation(
                             continue
                         norm = _normalize_step2_ticker(str(raw_sym))
                         if norm == normalized:
+                            # Reject zero-price bulk row
+                            if _is_zero_or_missing_close(record.get("close")):
+                                report["skip_reason"] = (
+                                    "bulk_found_but_close_is_zero"
+                                )
+                                logger.info(
+                                    "[SINGLE TICKER GAP REMEDIATION] %s %s: "
+                                    "bulk fallback skipped — close=0",
+                                    normalized, target_date,
+                                )
+                                break
                             parsed = parse_eod_record(normalized, record)
                             if parsed.get("date"):
                                 wr = await db.stock_prices.bulk_write(
@@ -5482,3 +5499,321 @@ async def run_single_ticker_gap_remediation(
     )
 
     return result
+
+
+async def remediate_gap_date(
+    db,
+    target_date: str,
+) -> Dict[str, Any]:
+    """
+    Find ALL tickers missing a stock_prices row for ``target_date`` (a
+    completed bulk trading day) and remediate them in batch.
+
+    Steps:
+    1. Verify target_date is in expected_dates (completed bulk day).
+    2. Identify gap tickers: proven + visible, anchor < target_date, no
+       stock_prices row for target_date.
+    3. Pre-fetch EODHD bulk data for target_date ONCE.
+    4. For each gap ticker, attempt insert from bulk data, then per-ticker
+       API fallback.
+    5. Return a proof table with per-ticker results.
+
+    Returns
+    -------
+    dict with: target_date, gap_tickers_count, proof_table[], summary.
+    """
+    from services.admin_overview_service import _get_bulk_processed_dates
+    from price_ingestion_service import (
+        fetch_eod_history,
+        parse_eod_record,
+        fetch_bulk_eod_latest,
+        _normalize_step2_ticker,
+        _is_zero_or_missing_close,
+    )
+    from pymongo import UpdateOne
+
+    started_at = datetime.now(timezone.utc)
+    job_name = "remediate_gap_date"
+
+    # 1) Verify target_date is a completed bulk day
+    expected_dates = await _get_bulk_processed_dates(db)
+    if target_date not in expected_dates:
+        return {
+            "job_name": job_name,
+            "target_date": target_date,
+            "status": "skipped",
+            "reason": "target_date_not_in_expected_dates",
+            "expected_dates_count": len(expected_dates),
+            "expected_dates_sample": expected_dates[:10],
+        }
+
+    # 2) Find gap tickers for this date
+    proven_docs = await db.tracked_tickers.find(
+        {
+            "is_visible": True,
+            "history_download_proven_at": {"$exists": True, "$type": "date"},
+            "history_download_proven_anchor": {"$exists": True, "$ne": None},
+        },
+        {"ticker": 1, "history_download_proven_anchor": 1, "_id": 0},
+    ).to_list(None)
+
+    # Filter to tickers whose anchor is before target_date
+    candidates = {
+        doc["ticker"]: doc["history_download_proven_anchor"]
+        for doc in proven_docs
+        if doc.get("history_download_proven_anchor")
+        and doc["history_download_proven_anchor"] < target_date
+    }
+    if not candidates:
+        return {
+            "job_name": job_name,
+            "target_date": target_date,
+            "status": "success",
+            "gap_tickers_count": 0,
+            "proof_table": [],
+            "summary": "no_candidates",
+        }
+
+    # Find which candidate tickers already have data for target_date
+    existing_cursor = db.stock_prices.find(
+        {"ticker": {"$in": list(candidates.keys())}, "date": target_date},
+        {"ticker": 1, "_id": 0},
+    )
+    existing_tickers: set = set()
+    async for doc in existing_cursor:
+        existing_tickers.add(doc["ticker"])
+
+    gap_tickers = sorted(
+        t for t in candidates if t not in existing_tickers
+    )
+    if not gap_tickers:
+        return {
+            "job_name": job_name,
+            "target_date": target_date,
+            "status": "success",
+            "gap_tickers_count": 0,
+            "proof_table": [],
+            "summary": "all_tickers_already_have_data",
+        }
+
+    # 3) Pre-fetch EODHD bulk data ONCE
+    bulk_data: list = []
+    bulk_error: Optional[str] = None
+    try:
+        bulk_data, _ = await fetch_bulk_eod_latest(
+            "US", include_meta=True, for_date=target_date,
+        )
+        if not bulk_data:
+            bulk_error = "bulk_fetch_returned_empty_payload"
+    except Exception as exc:
+        bulk_error = f"{type(exc).__name__}: bulk fetch failed"
+        logger.warning("[REMEDIATE GAP DATE] Bulk fetch error: %s", exc)
+
+    # Build normalized bulk lookup
+    bulk_ticker_field: Optional[str] = None
+    if bulk_data:  # truthy = non-empty list, safe to index
+        sample = bulk_data[0]
+        if isinstance(sample, dict):
+            if "code" in sample:
+                bulk_ticker_field = "code"
+            elif "symbol" in sample:
+                bulk_ticker_field = "symbol"
+
+    normalized_bulk_map: Dict[str, Dict[str, Any]] = {}
+    if bulk_ticker_field:
+        for record in bulk_data:
+            raw_sym = record.get(bulk_ticker_field)
+            if raw_sym is None:
+                continue
+            norm = _normalize_step2_ticker(str(raw_sym))
+            if norm:
+                normalized_bulk_map[norm] = record
+
+    # 4) Remediate each gap ticker
+    proof_table: List[Dict[str, Any]] = []
+    total_inserted = 0
+
+    for ticker in gap_tickers:
+        row: Dict[str, Any] = {
+            "ticker": ticker,
+            "bulk_found": None,
+            "matched_symbol": None,
+            "bulk_row_snippet": None,
+            "db_found_before": False,
+            "db_found_after": False,
+            "inserted": False,
+            "primary_reason": None,
+        }
+
+        bulk_record: Optional[Dict[str, Any]] = None
+        if bulk_error and not bulk_data:
+            row["bulk_found"] = None
+            row["primary_reason"] = "bulk_fetch_failed"
+        else:
+            # Check bulk
+            bulk_record = normalized_bulk_map.get(ticker)
+            if bulk_record:
+                row["bulk_found"] = True
+                row["matched_symbol"] = str(
+                    bulk_record.get(bulk_ticker_field)
+                )
+                # Always include the raw snippet so the user can verify
+                row["bulk_row_snippet"] = {
+                    "code": bulk_record.get("code"),
+                    "date": bulk_record.get("date"),
+                    "open": bulk_record.get("open"),
+                    "high": bulk_record.get("high"),
+                    "low": bulk_record.get("low"),
+                    "close": bulk_record.get("close"),
+                    "adjusted_close": bulk_record.get("adjusted_close"),
+                    "volume": bulk_record.get("volume"),
+                }
+            else:
+                row["bulk_found"] = False
+
+        # ── Close-price sanity: reject zero/None close ───────────────
+        # EODHD sometimes includes halted/delisted tickers with all-zero
+        # prices.  Writing them creates garbage stock_prices rows.
+        bulk_close_is_zero = False
+        if bulk_record:
+            if _is_zero_or_missing_close(bulk_record.get("close")):
+                bulk_close_is_zero = True
+
+        # Try to insert from bulk data first (fastest)
+        inserted = False
+        if row["bulk_found"] is True and bulk_record and not bulk_close_is_zero:
+            try:
+                parsed = parse_eod_record(ticker, bulk_record)
+                if parsed.get("date"):
+                    wr = await db.stock_prices.bulk_write(
+                        [UpdateOne(
+                            {"ticker": parsed["ticker"],
+                             "date": parsed["date"]},
+                            {"$set": parsed},
+                            upsert=True,
+                        )],
+                        ordered=False,
+                    )
+                    if wr.upserted_count + wr.modified_count > 0:
+                        inserted = True
+                        total_inserted += 1
+                        row["primary_reason"] = "resolved_from_bulk"
+            except Exception as exc:
+                logger.warning(
+                    "[REMEDIATE GAP DATE] Bulk insert error for %s: %s",
+                    ticker, exc,
+                )
+                row["primary_reason"] = (
+                    f"bulk_insert_error: {type(exc).__name__}"
+                )
+        elif row["bulk_found"] is True and bulk_close_is_zero:
+            row["primary_reason"] = "bulk_found_but_close_is_zero"
+
+        # Fallback: per-ticker API
+        if not inserted:
+            try:
+                records = await fetch_eod_history(
+                    ticker, from_date=target_date, to_date=target_date,
+                )
+                if records:
+                    ops = []
+                    for record in records:
+                        # Reject zero-price records from per-ticker API too
+                        if _is_zero_or_missing_close(record.get("close")):
+                            continue
+                        parsed = parse_eod_record(ticker, record)
+                        if parsed.get("date"):
+                            ops.append(
+                                UpdateOne(
+                                    {"ticker": parsed["ticker"],
+                                     "date": parsed["date"]},
+                                    {"$set": parsed},
+                                    upsert=True,
+                                )
+                            )
+                    if ops:
+                        wr = await db.stock_prices.bulk_write(
+                            ops, ordered=False,
+                        )
+                        count = wr.upserted_count + wr.modified_count
+                        if count > 0:
+                            inserted = True
+                            total_inserted += count
+                            row["primary_reason"] = (
+                                "resolved_from_per_ticker_api"
+                            )
+                        elif not row["primary_reason"]:
+                            row["primary_reason"] = (
+                                "api_returned_only_zero_price"
+                            )
+                    elif not row["primary_reason"]:
+                        row["primary_reason"] = (
+                            "api_returned_only_zero_price"
+                        )
+                elif not row["primary_reason"]:
+                    if row["bulk_found"] is True:
+                        row["primary_reason"] = (
+                            "bulk_close_zero_api_returned_empty"
+                            if bulk_close_is_zero
+                            else "in_bulk_but_api_returned_empty"
+                        )
+                    elif row["bulk_found"] is False:
+                        row["primary_reason"] = "not_in_bulk_not_in_api"
+                    else:
+                        row["primary_reason"] = "bulk_unknown_api_empty"
+            except Exception as exc:
+                if not row["primary_reason"]:
+                    row["primary_reason"] = (
+                        f"per_ticker_api_error: {type(exc).__name__}"
+                    )
+                logger.warning(
+                    "[REMEDIATE GAP DATE] Per-ticker API error for %s: %s",
+                    ticker, exc,
+                )
+
+        # DB-after check
+        after_doc = await db.stock_prices.find_one(
+            {"ticker": ticker, "date": target_date}, {"_id": 1},
+        )
+        row["db_found_after"] = after_doc is not None
+        row["inserted"] = inserted
+
+        if inserted and not row["primary_reason"]:
+            row["primary_reason"] = "resolved"
+        elif not inserted and not row["primary_reason"]:
+            row["primary_reason"] = "unknown"
+
+        proof_table.append(row)
+
+    finished_at = datetime.now(timezone.utc)
+
+    # Write ops_job_runs record
+    await db.ops_job_runs.insert_one({
+        "job_name": job_name,
+        "status": "success",
+        "started_at": started_at,
+        "started_at_prague": _to_prague_iso(started_at),
+        "finished_at": finished_at,
+        "finished_at_prague": _to_prague_iso(finished_at),
+        "log_timezone": "Europe/Prague",
+        "source": "scheduler",
+        "details": {
+            "target_date": target_date,
+            "gap_tickers_count": len(gap_tickers),
+            "total_inserted": total_inserted,
+            "proof_table": proof_table,
+        },
+    })
+
+    return {
+        "job_name": job_name,
+        "target_date": target_date,
+        "status": "success",
+        "gap_tickers_count": len(gap_tickers),
+        "total_inserted": total_inserted,
+        "bulk_raw_row_count": len(bulk_data),
+        "bulk_error": bulk_error,
+        "proof_table": proof_table,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+    }
