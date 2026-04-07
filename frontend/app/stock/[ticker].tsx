@@ -1842,8 +1842,11 @@ export default function StockDetail() {
                 
                 const priceToY = (price: number) => paddingTop + graphH - ((price - yMin) / (yMax - yMin)) * graphH;
                 
+                const dataCount = visibleChartData.length;
                 const points = visibleChartData.map((d, i) => {
-                  const x = paddingLeft + (i / (visibleChartData.length - 1)) * graphW;
+                  const x = dataCount === 1
+                    ? paddingLeft + graphW / 2
+                    : paddingLeft + (i / (dataCount - 1)) * graphW;
                   const y = priceToY(d.adjusted_close);
                   return { x, y };
                 });
@@ -1876,8 +1879,12 @@ export default function StockDetail() {
                 const highY = priceToY(dataMax);
                 const lowY = priceToY(dataMin);
                 const currentY = priceToY(currentPrice);
-                const highX = paddingLeft + (highIdx / (visibleChartData.length - 1)) * graphW;
-                const lowX = paddingLeft + (lowIdx / (visibleChartData.length - 1)) * graphW;
+                const highX = dataCount === 1
+                  ? paddingLeft + graphW / 2
+                  : paddingLeft + (highIdx / (dataCount - 1)) * graphW;
+                const lowX = dataCount === 1
+                  ? paddingLeft + graphW / 2
+                  : paddingLeft + (lowIdx / (dataCount - 1)) * graphW;
                 const formatPrice = (p: number) => {
                   if (p >= 1_000_000) return `$${toEU(p / 1_000_000, 1)}M`;
                   if (p >= 1000) return `$${toEU(p / 1000, 1)}k`;
@@ -1919,17 +1926,18 @@ export default function StockDetail() {
 
                 // ===== X-AXIS: Compute date labels at regular intervals =====
                 const xAxisTicks: { x: number; label: string }[] = (() => {
+                  if (dataCount < 2) return [];
                   const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / MIN_PX_PER_LABEL)));
-                  const numLabels = Math.min(maxLabels, visibleChartData.length);
+                  const numLabels = Math.min(maxLabels, dataCount);
                   if (numLabels < 2) return [];
                   const regHalf = REGULAR_LABEL_W / 2;
                   const ticks: { x: number; label: string }[] = [];
                   for (let i = 0; i < numLabels; i++) {
-                    const dataIdx = Math.round(i * (visibleChartData.length - 1) / (numLabels - 1));
+                    const dataIdx = Math.round(i * (dataCount - 1) / (numLabels - 1));
                     const d = new Date(visibleChartData[dataIdx].date + 'T00:00:00Z');
                     const label = `${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear().toString().slice(2)}`;
                     // Clamp so the label stays fully inside the graph area
-                    const rawX = paddingLeft + (dataIdx / (visibleChartData.length - 1)) * graphW;
+                    const rawX = paddingLeft + (dataIdx / (dataCount - 1)) * graphW;
                     const x = Math.max(paddingLeft + regHalf, Math.min(rawX, paddingLeft + graphW - regHalf));
                     // Skip regular tick if it overlaps with HIGH or LOW date label
                     const overlapThreshold = (HL_LABEL_W + REGULAR_LABEL_W) / 2;
@@ -1955,7 +1963,9 @@ export default function StockDetail() {
                   : null;
                 
                 const tooltipX = tooltipPoint 
-                  ? paddingLeft + (chartTooltipIndex! / (visibleChartData.length - 1)) * graphW 
+                  ? (dataCount === 1
+                      ? paddingLeft + graphW / 2
+                      : paddingLeft + (chartTooltipIndex! / (dataCount - 1)) * graphW)
                   : 0;
                 const tooltipY = tooltipPoint 
                   ? priceToY(tooltipPoint.adjusted_close) 
@@ -3432,7 +3442,7 @@ const styles = StyleSheet.create({
   rangeButtonActive: { backgroundColor: COLORS.primary },
   rangeButtonText: { fontSize: 12, fontWeight: '500', color: COLORS.textMuted },
   rangeButtonTextActive: { color: '#FFF' },
-  chartContainer: { minHeight: 260, overflow: 'hidden' },
+  chartContainer: { minHeight: 260 },
   chartLoading: { height: 200, justifyContent: 'center', alignItems: 'center' },
   chartLoadingText: { fontSize: 13, color: COLORS.textMuted, marginTop: 8 },
   chartErrorText: { fontSize: 13, color: '#EF4444' },

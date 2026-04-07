@@ -1156,7 +1156,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       scheduledMinute: 0,
       icon: 'trending-up-outline' as const,
       color: '#10B981',
-      apiUrl: 'https://eodhd.com/api/eod-bulk-last-day/US  (1 credit)',
+      apiUrl: 'https://eodhd.com/api/eod-bulk-last-day/US?date={DATE}  (1 credit)',
       apiUrl2: 'https://eodhd.com/api/eod/{TICKER}.US  (remediation: 1 credit/ticker)',
       inputLabel: 'Seeded tickers',
       inputCount: s1Out,
@@ -1772,6 +1772,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
                     return (
                       <>
+                  {/* 2.1 Bulk catchup (dated) */}
+                  <View style={s.substepBlock}>
+                    <View style={s.substepHeaderRow}>
+                      <Text style={s.substepName}>2.1 Bulk catchup (dated)</Text>
+                    </View>
+                    {substepLastRunLabel && (
+                      <Text style={s.substepLastRun}>{substepLastRunLabel}</Text>
+                    )}
+                    <Text style={s.substepDesc}>Fetches bulk EOD prices for a specific trading day (explicit ?date= parameter). Writes to stock_prices for all seeded NYSE/NASDAQ common stock tickers present in the EODHD bulk response.</Text>
+                    <Text style={s.substepEndpoint} numberOfLines={1}>
+                      {`https://eodhd.com/api/eod-bulk-last-day/US?date=${eventDetectors.today || todayStr}`}
+                    </Text>
+                  </View>
+
                   {/* 2.2 Split Detector */}
                   <View style={s.substepBlock}>
                     <View style={s.substepHeaderRow}>
@@ -2399,7 +2413,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         <View style={{ marginTop: 10 }}>
           <Text style={[s.detailLabel, { marginBottom: 4 }]}>EODHD — PIPELINE (Steps 1-3)</Text>
           <Text style={s.apiText}>· GET https://eodhd.com/api/exchange-symbol-list/{'{NYSE|NASDAQ}'}  (Step 1 · 1 credit/exchange)</Text>
-          <Text style={s.apiText}>· GET https://eodhd.com/api/eod-bulk-last-day/US  (Step 2.1 · 1 credit)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/eod-bulk-last-day/US?date={'{DATE}'}  (Step 2.1 · 1 credit)</Text>
           <Text style={s.apiText}>· GET https://eodhd.com/api/eod-bulk-last-day/US?type=splits&date={'{DATE}'}  (Step 2.2 · 1 credit)</Text>
           <Text style={s.apiText}>· GET https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date={'{DATE}'}  (Step 2.4 · 1 credit)</Text>
           <Text style={s.apiText}>· GET https://eodhd.com/api/calendar/earnings?from={'{DATE}'}&to={'{DATE}'}  (Step 2.6 · 1 credit)</Text>
