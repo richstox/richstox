@@ -4995,7 +4995,6 @@ async def run_ticker_gap_remediation(db) -> Dict[str, Any]:
 
                 # 5) Fill gaps using per-ticker EODHD API
                 batch_ops: List = []
-                skipped_pairs: List[Dict[str, str]] = []
                 for gap in gaps:
                     pairs_attempted += 1
                     ticker = gap["ticker"]
