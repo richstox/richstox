@@ -548,6 +548,7 @@ _SAFE_INTEGRITY = {
     "history_download_completed_count": 0,
     "gap_free_since_history_download_count": 0,
     "non_gap_free_sample": [],
+    "gap_excluded_sample": [],
     "top_missing_dates": [],
     "fundamentals_complete_count": 0,
     "completed_trading_days_health": None,
@@ -965,6 +966,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
         expected_dates = await _get_bulk_processed_dates(db)
         non_gap_free_sample: List[Dict[str, Any]] = []
         top_missing_dates: List[Dict[str, Any]] = []
+        gap_excluded_sample: List[Dict[str, Any]] = []
         if proven_anchors and expected_dates:
             coverage_pipeline = [
                 {"$match": {
@@ -977,29 +979,69 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             async for doc in db.stock_prices.aggregate(coverage_pipeline):
                 dates_by_proven[doc["_id"]] = set(doc["dates"])
 
+            # ── Load gap-free exclusions (NOT-APPLICABLE cases) ──────
+            # Tickers absent from bulk or with close=0 are not true gaps.
+            exclusion_set: set = set()  # (ticker, date) pairs
+            exclusion_reasons: Dict[tuple, str] = {}
+            try:
+                excl_cursor = db.gap_free_exclusions.find(
+                    {"date": {"$in": expected_dates}},
+                    {"_id": 0, "ticker": 1, "date": 1, "reason": 1},
+                )
+                async for edoc in excl_cursor:
+                    key = (edoc["ticker"], edoc["date"])
+                    exclusion_set.add(key)
+                    exclusion_reasons[key] = edoc.get("reason", "not_applicable")
+            except Exception:
+                pass  # Collection may not exist yet
+
             gap_free_count = sum(
                 1 for ticker, anchor in proven_anchors.items()
                 if all(
                     d in dates_by_proven.get(ticker, set())
+                    or (ticker, d) in exclusion_set
                     for d in expected_dates if d > anchor
                 )
             )
 
             # ── Diagnostic: why not gap-free? ──────────────────────────────
             # Identify non-gap-free tickers and aggregate missing-date counts.
+            # Separate true GAPs from NOT-APPLICABLE exclusions.
             missing_dates_counter: Dict[str, int] = {}
             for ticker, anchor in proven_anchors.items():
                 relevant = sorted(d for d in expected_dates if d > anchor)
                 ticker_dates = dates_by_proven.get(ticker, set())
                 missing = [d for d in relevant if d not in ticker_dates]
-                if missing:
-                    for d in missing:
+                if not missing:
+                    continue
+
+                # Separate true gaps from excluded (NOT-APPLICABLE) dates
+                true_gaps = [
+                    d for d in missing
+                    if (ticker, d) not in exclusion_set
+                ]
+                excluded = [
+                    {"date": d, "reason": exclusion_reasons.get((ticker, d), "not_applicable")}
+                    for d in missing
+                    if (ticker, d) in exclusion_set
+                ]
+
+                if true_gaps:
+                    for d in true_gaps:
                         missing_dates_counter[d] = missing_dates_counter.get(d, 0) + 1
                     if len(non_gap_free_sample) < 20:
                         non_gap_free_sample.append({
                             "ticker": ticker,
-                            "missing_dates": missing,
+                            "missing_dates": true_gaps,
+                            "classification": "GAP",
                         })
+                if excluded and len(gap_excluded_sample) < 20:
+                    gap_excluded_sample.append({
+                        "ticker": ticker,
+                        "excluded_dates": excluded,
+                        "classification": "NOT_APPLICABLE",
+                    })
+
             top_missing_dates = sorted(
                 [
                     {"date": d, "missing_ticker_count": c}
@@ -1027,6 +1069,7 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             "history_download_completed_count": history_download_completed_count,
             "gap_free_since_history_download_count": gap_free_count,
             "non_gap_free_sample": non_gap_free_sample,
+            "gap_excluded_sample": gap_excluded_sample,
             "top_missing_dates": top_missing_dates,
             "fundamentals_complete_count": fundamentals_complete_count,
             "completed_trading_days_health": completed_trading_days_health,

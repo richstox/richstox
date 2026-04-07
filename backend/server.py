@@ -4490,6 +4490,51 @@ async def get_ticker_chart_data(
         all_prices = [p for p in all_prices if _is_valid_price(p)]
 
         logger.info(f"[CHART] MAX: {ticker_full} has {len(all_prices)} valid records")
+
+        # ── Fallback: if DB has very few records for MAX, fetch full
+        # history from EODHD API and persist for future queries.
+        _MAX_SPARSE_THRESHOLD = 30
+        if len(all_prices) < _MAX_SPARSE_THRESHOLD:
+            try:
+                from price_ingestion_service import fetch_eod_history, parse_eod_record
+                from pymongo import UpdateOne as _UpdateOne
+
+                eod_data = await fetch_eod_history(ticker_full)
+                if eod_data and len(eod_data) > len(all_prices):
+                    ops = []
+                    for record in eod_data:
+                        parsed = parse_eod_record(ticker_full, record)
+                        if parsed.get("date") and parsed.get("close"):
+                            ops.append(
+                                _UpdateOne(
+                                    {"ticker": parsed["ticker"], "date": parsed["date"]},
+                                    {"$set": parsed},
+                                    upsert=True,
+                                )
+                            )
+                    if ops:
+                        wr = await db.stock_prices.bulk_write(ops, ordered=False)
+                        logger.info(
+                            "[CHART] MAX fallback: %s fetched %d records from EODHD, "
+                            "upserted %d",
+                            ticker_full, len(eod_data),
+                            wr.upserted_count + wr.modified_count,
+                        )
+                        # Re-query after persisting
+                        all_prices = await db.stock_prices.find(
+                            {"ticker": ticker_full, "date": {"$gte": start_date}},
+                            {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1, "volume": 1}
+                        ).sort("date", 1).to_list(length=None)
+                        all_prices = [p for p in all_prices if _is_valid_price(p)]
+                        logger.info(
+                            "[CHART] MAX fallback: %s now has %d valid records",
+                            ticker_full, len(all_prices),
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "[CHART] MAX fallback fetch failed for %s: %s",
+                    ticker_full, exc,
+                )
         
         # Smart downsample: evenly distribute across ENTIRE date range
         # FIXED: Use proper sampling to cover all years
@@ -4580,12 +4625,32 @@ async def get_ticker_chart_data(
                 "volume": p.get("volume")
             })
 
+    # ── Data notices: flag tickers with known missing closes ────────────
+    data_notices = []
+    try:
+        exclusions = await db.gap_free_exclusions.find(
+            {"ticker": ticker_full},
+            {"_id": 0, "date": 1, "reason": 1},
+        ).sort("date", -1).to_list(length=10)
+        if exclusions:
+            # Generic notice
+            data_notices.append(
+                "Data notice: Some daily closes are unavailable "
+                "(halted/delisted/no trade or provider gap)."
+            )
+            # Specific missing dates (most recent first, up to 5)
+            for edoc in exclusions[:5]:
+                data_notices.append(f"Missing close for {edoc['date']}.")
+    except Exception:
+        pass  # Collection may not exist yet
+
     return {
         "ticker": ticker_full,
         "period": period,
         "start_date": start_date,
         "data_points": len(prices),
         "prices": normalized_prices,
+        "data_notices": data_notices,
         "benchmark": {
             "ticker": SP500TR_TICKER,
             "name": "S&P 500 TR",

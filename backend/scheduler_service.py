@@ -5453,6 +5453,36 @@ async def run_single_ticker_gap_remediation(
                 else:
                     report["skip_reason"] = "unknown"
 
+            # ── Persist gap-free exclusion for NOT-APPLICABLE cases ──
+            _NA_SKIP = {
+                "not_in_bulk_data",
+                "bulk_found_but_close_is_zero",
+                "bulk_close_zero_api_returned_empty",
+                "api_returned_only_zero_price",
+            }
+            if (
+                report["inserted_count"] == 0
+                and report.get("skip_reason") in _NA_SKIP
+            ):
+                try:
+                    await db.gap_free_exclusions.update_one(
+                        {"ticker": normalized, "date": target_date},
+                        {"$set": {
+                            "ticker": normalized,
+                            "date": target_date,
+                            "reason": report["skip_reason"],
+                            "bulk_found": report["bulk_found"],
+                            "updated_at": datetime.now(timezone.utc),
+                        }},
+                        upsert=True,
+                    )
+                except Exception as exc_excl:
+                    logger.warning(
+                        "[SINGLE TICKER GAP REMEDIATION] "
+                        "gap_free_exclusions upsert error %s/%s: %s",
+                        normalized, target_date, exc_excl,
+                    )
+
             per_date_report.append(report)
 
     except Exception as exc:
@@ -5783,6 +5813,34 @@ async def remediate_gap_date(
             row["primary_reason"] = "resolved"
         elif not inserted and not row["primary_reason"]:
             row["primary_reason"] = "unknown"
+
+        # ── Persist gap-free exclusion for NOT-APPLICABLE cases ──────
+        # If the ticker is legitimately absent (not in bulk or close=0),
+        # record this so the gap-free metric excludes it.
+        _NOT_APPLICABLE_REASONS = {
+            "not_in_bulk_not_in_api",
+            "bulk_found_but_close_is_zero",
+            "bulk_close_zero_api_returned_empty",
+            "api_returned_only_zero_price",
+        }
+        if not inserted and row["primary_reason"] in _NOT_APPLICABLE_REASONS:
+            try:
+                await db.gap_free_exclusions.update_one(
+                    {"ticker": ticker, "date": target_date},
+                    {"$set": {
+                        "ticker": ticker,
+                        "date": target_date,
+                        "reason": row["primary_reason"],
+                        "bulk_found": row["bulk_found"],
+                        "updated_at": datetime.now(timezone.utc),
+                    }},
+                    upsert=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[REMEDIATE GAP DATE] gap_free_exclusions upsert error "
+                    "for %s/%s: %s", ticker, target_date, exc,
+                )
 
         proof_table.append(row)
 
