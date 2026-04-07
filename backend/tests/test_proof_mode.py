@@ -56,8 +56,9 @@ def _make_db(
 
     # ops_job_runs.aggregate() — used by _get_bulk_processed_dates
     async def _empty_agg(*args, **kwargs):
-        return
-        yield  # make it an async generator that yields nothing
+        # Empty async generator — yields nothing
+        if False:
+            yield
 
     db.ops_job_runs.aggregate = _empty_agg
 

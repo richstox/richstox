@@ -82,7 +82,8 @@ async def run_proof_mode(
             )
         except Exception as exc:
             bulk_data = []
-            bulk_error = str(exc)
+            bulk_error = f"{type(exc).__name__}: bulk fetch failed"
+            logger.warning("Proof mode bulk fetch error: %s", exc)
 
     bulk_raw_row_count = len(bulk_data)
 
