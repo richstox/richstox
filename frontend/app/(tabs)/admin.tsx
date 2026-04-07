@@ -176,6 +176,10 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   // ── Calendar refresh state ──────────────────────────────────────────────
   const [calendarRefreshing, setCalendarRefreshing] = useState(false);
 
+  // ── Collapse toggles for vertical-space savings ────────────────────────
+  const [showTradingDays, setShowTradingDays] = useState(false);
+  const [showBulkDetails, setShowBulkDetails] = useState(false);
+
   // ── News refresh (Morning Refresh) state ────────────────────────────────
   const [newsRefreshTriggered, setNewsRefreshTriggered] = useState(false);
   const newsRefreshPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -454,28 +458,6 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const vcFundCount = vc?.fundamentals_complete_count ?? 0;
   const vcFundPct = vc?.fundamentals_complete_pct ?? 0;
 
-  // Coverage checkpoint helper
-  const renderCheckpoint = (label: string, key: string) => {
-    const c = cp[key];
-    if (!c) return null;
-    const have = c.have_price_count ?? 0;
-    const total = c.today_visible ?? 0;
-    const pct = total > 0 ? Math.round((have / total) * 100) : 0;
-    const isHistorical = c.kind === 'historical';
-    const isCoverageGap = total > 0 && have < total;
-    // Historical checkpoints: use neutral blue for incomplete depth (not amber warning)
-    const dotColor = !isCoverageGap ? '#22C55E' : isHistorical ? '#60A5FA' : '#F59E0B';
-    const textColor = !isCoverageGap ? undefined : isHistorical ? { color: '#60A5FA' } : { color: '#F59E0B' };
-    return (
-      <View key={key} style={d.cpRow}>
-        <View style={[d.cpDot, { backgroundColor: dotColor }]} />
-        <Text style={d.cpLabel}>{label}</Text>
-        <Text style={d.cpDate}>{c.date ?? '—'}</Text>
-        <Text style={[d.cpValue, textColor]}>{have}/{total} ({pct}%)</Text>
-      </View>
-    );
-  };
-
   return (
     <ScrollView
       style={d.container}
@@ -633,18 +615,18 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       </View>
 
       {/* C) Price Integrity / Coverage */}
-      <View style={d.card}>
-        <Text style={d.sectionTitle}>Price Integrity / Coverage</Text>
+      <View style={d.cardCompact}>
+        <Text style={d.sectionTitleSm}>Price Integrity / Coverage</Text>
 
-        {/* Key metrics row */}
-        <View style={d.integrityGrid}>
+        {/* Key metrics row – tighter grid */}
+        <View style={d.integrityGridCompact}>
           <IntegrityMetric
             label="Last Bulk Date"
             value={pi?.last_bulk_trading_date ?? '—'}
             status={lastBulkStatus}
           />
           <IntegrityMetric
-            label="Last 10 Completed Trading Days"
+            label="Last 10 Days"
             value={ctdhDisplay}
             status={ctdhStatus}
           />
@@ -654,55 +636,83 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={needRedlStatus}
           />
           <IntegrityMetric
-            label="Complete Fundamentals"
+            label="Fundamentals"
             value={fundValue}
             status={fundStatus}
           />
           <IntegrityMetric
-            label="SP500TR Benchmark"
+            label="SP500TR"
             value={pi?.benchmark_freshness?.label ?? '—'}
             status={pi?.benchmark_freshness?.status as 'green' | 'yellow' | 'red' | undefined}
           />
         </View>
 
-        {/* Last 10 Completed Trading Days OPS Health */}
+        {/* Collapsed: Last 10 Completed Trading Days – single row + toggle */}
         {ctdhData?.days && ctdhData.days.length > 0 && (
-          <>
-            <Text style={d.subSection}>Last 10 Completed Trading Days</Text>
-            <Text style={d.cpHint}>Price pipeline ingestion status per completed trading day</Text>
-            {ctdhStale && (
-              <Text style={[d.cpHint, { color: '#F59E0B', marginBottom: 4 }]}>
-                ⚠ {ctdhStaleMsg}
+          <View style={{ marginBottom: 4 }}>
+            <TouchableOpacity
+              style={d.compactToggleRow}
+              onPress={() => setShowTradingDays(v => !v)}
+              activeOpacity={0.7}
+            >
+              <Ionicons name={statusIcon(ctdhStatus) as any} size={12} color={statusColor(ctdhStatus)} />
+              <Text style={d.compactToggleText}>
+                Last 10 completed days: {ctdhMissing} missing
+                {ctdhData.days.length > 0 ? ` · last=${ctdhData.days[0].date}` : ''}
               </Text>
-            )}
-            {ctdhData.missing_dates && ctdhData.missing_dates.length > 0 && (
-              <Text style={[d.cpHint, { color: '#EF4444', marginBottom: 4 }]}>
-                Missing: {ctdhData.missing_dates.join(', ')}
-              </Text>
-            )}
-            {ctdhData.days.map((day) => (
-              <View key={day.date} style={d.cpRow}>
-                <View style={[d.cpDot, { backgroundColor: day.ok ? '#22C55E' : '#EF4444' }]} />
-                <Text style={d.cpLabel}>{day.date}</Text>
-                <Text style={[d.cpValue, { color: day.ok ? '#22C55E' : '#EF4444' }]}>
-                  {day.ok ? '✓ OK' : '✗ Missing'}
-                </Text>
+              <Text style={d.compactToggleBtn}>{showTradingDays ? 'Hide' : 'Show'}</Text>
+            </TouchableOpacity>
+            {showTradingDays && (
+              <View style={{ marginTop: 4 }}>
+                {ctdhStale && (
+                  <Text style={[d.cpHint, { color: '#F59E0B', marginBottom: 2 }]}>⚠ {ctdhStaleMsg}</Text>
+                )}
+                {ctdhData.missing_dates && ctdhData.missing_dates.length > 0 && (
+                  <Text style={[d.cpHint, { color: '#EF4444', marginBottom: 2 }]}>
+                    Missing: {ctdhData.missing_dates.join(', ')}
+                  </Text>
+                )}
+                {ctdhData.days.map((day) => (
+                  <View key={day.date} style={d.cpRow}>
+                    <View style={[d.cpDot, { backgroundColor: day.ok ? '#22C55E' : '#EF4444' }]} />
+                    <Text style={d.cpLabel}>{day.date}</Text>
+                    <Text style={[d.cpValue, { color: day.ok ? '#22C55E' : '#EF4444' }]}>
+                      {day.ok ? '✓ OK' : '✗ Missing'}
+                    </Text>
+                  </View>
+                ))}
               </View>
-            ))}
-          </>
+            )}
+          </View>
         )}
 
-        {/* Recent bulk coverage */}
-        <Text style={d.subSection}>
-          Recent Bulk Coverage ({pi?.today_visible ?? 0} visible
-          {pi?.today_visible_source?.chain_run_id ? ` · run ${pi.today_visible_source.chain_run_id.slice(-8)}` : ''})
-        </Text>
-        <Text style={d.cpHint}>Tickers with price data on recently ingested trading dates</Text>
-        {renderCheckpoint('Latest trading day', 'latest_trading_day')}
-        {renderCheckpoint('1 week ago', '1_week_ago')}
+        {/* Recent bulk coverage – single compact line */}
+        {(() => {
+          const cpLatest = cp['latest_trading_day'];
+          const cpWeek = cp['1_week_ago'];
+          const fmtCp = (c?: CoverageCheckpoint) => {
+            if (!c) return null;
+            const have = c.have_price_count ?? 0;
+            const total = c.today_visible ?? 0;
+            const pct = total > 0 ? Math.round((have / total) * 100) : 0;
+            return `${have}/${total} (${pct}%)`;
+          };
+          const latestStr = fmtCp(cpLatest);
+          const weekStr = fmtCp(cpWeek);
+          if (!latestStr && !weekStr) return null;
+          return (
+            <View style={d.compactToggleRow}>
+              <Ionicons name="analytics-outline" size={12} color={COLORS.textMuted} />
+              <Text style={d.compactToggleText} numberOfLines={1}>
+                Bulk coverage: latest={latestStr ?? '—'}
+                {weekStr ? ` · 1w ago=${weekStr}` : ''}
+              </Text>
+            </View>
+          );
+        })()}
 
         {/* Historical / Price Integrity truth */}
-        <Text style={[d.subSection, { marginTop: 12 }]}>Price Completeness (process truth)</Text>
+        <Text style={[d.subSection, { marginTop: 6 }]}>Price Completeness (process truth)</Text>
         <Text style={d.cpHint}>
           Per-ticker proof: full history downloaded + no missing daily bulk dates since that download
         </Text>
@@ -717,8 +727,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           status={gfStatus}
         />
         {gfCount < tvTotal && (pi?.non_gap_free_sample ?? []).length > 0 && (
-          <View style={{ marginTop: 8 }}>
-            <Text style={[d.subSection, { marginTop: 4 }]}>Why not gap-free?</Text>
+          <View style={{ marginTop: 6 }}>
+            <Text style={[d.subSection, { marginTop: 2 }]}>Why not gap-free?</Text>
             <Text style={d.cpHint}>Up to 20 tickers with missing bulk dates after their download anchor</Text>
             {(pi?.non_gap_free_sample ?? []).map((item) => (
               <View key={item.ticker} style={d.cpRow}>
@@ -728,7 +738,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             ))}
             {(pi?.top_missing_dates ?? []).length > 0 && (
               <>
-                <Text style={[d.subSection, { marginTop: 8 }]}>Top missing dates</Text>
+                <Text style={[d.subSection, { marginTop: 6 }]}>Top missing dates</Text>
                 <Text style={d.cpHint}>Dates most commonly absent across all non-gap-free tickers (desc)</Text>
                 {(pi?.top_missing_dates ?? []).map((item) => (
                   <View key={item.date} style={d.cpRow}>
@@ -744,81 +754,89 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         )}
       </View>
 
-      {/* D) Bulk Completeness (since last full backfill) */}
-      <View style={d.card}>
-        <Text style={d.sectionTitle}>Daily Bulk Ingestion</Text>
-        <Text style={d.cpHint}>
-          After the full backfill downloads all individual prices, EODHD daily bulk reports fill in each new trading day.
-          This card shows whether we have a bulk report for every trading day since the backfill.
-        </Text>
-        {!bcHasBaseline ? (
-          <>
-            <Text style={[d.cpHint, { color: '#F59E0B', fontStyle: 'normal', fontSize: 11 }]}>
-              ⚠ No baseline yet
-            </Text>
-            <Text style={d.cpHint}>
-              A successful full backfill must be run first to establish a baseline.
-              Until then, bulk completeness cannot be proven.
-            </Text>
-          </>
-        ) : (
-          <>
-            <View style={d.integrityGrid}>
-              <IntegrityMetric
-                label="Status"
-                value={bcStatusLabel}
-                status={bcStatusColor}
-              />
-              <IntegrityMetric
-                label="Bulk Days (ingested / expected)"
-                value={`${bc?.ingested_days_count ?? '?'} / ${bc?.expected_days_count ?? '?'}`}
-                status={bcMissing === 0 ? 'green' : 'red'}
-              />
-              <IntegrityMetric
-                label="Missing"
-                value={String(bcMissing)}
-                status={bcMissing === 0 ? 'green' : 'red'}
-              />
-            </View>
-            <View style={d.cpRow}>
-              <Text style={d.cpLabel}>Backfill Finished</Text>
-              <Text style={d.cpDate}>
-                {bcBaseline?.completed_at_prague
-                  ? bcBaseline.completed_at_prague.replace('T', ' ').slice(0, 19)
-                  : '—'}
+      {/* D) Daily Bulk Ingestion – default collapsed */}
+      <View style={d.cardCompact}>
+        <TouchableOpacity
+          style={d.compactToggleRow}
+          onPress={() => setShowBulkDetails(v => !v)}
+          activeOpacity={0.7}
+        >
+          <Text style={d.sectionTitleSm}>Daily Bulk Ingestion</Text>
+          {bcHasBaseline && (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, marginLeft: 8 }}>
+              <Ionicons name={statusIcon(bcStatusColor) as any} size={12} color={statusColor(bcStatusColor)} />
+              <Text style={[d.compactToggleText, { flex: 0 }]}>{bcStatusLabel}</Text>
+              <Text style={d.compactToggleText}>
+                {bc?.ingested_days_count ?? '?'}/{bc?.expected_days_count ?? '?'}
               </Text>
-            </View>
-            <View style={d.cpRow}>
-              <Text style={d.cpLabel}>All Prices Downloaded Through</Text>
-              <Text style={d.cpDate}>{bcBaseline?.through_date ?? '—'}</Text>
-            </View>
-            <View style={d.cpRow}>
-              <Text style={d.cpLabel}>Latest Daily Bulk Date</Text>
-              <Text style={d.cpDate}>{bc?.latest_bulk_date_ingested ?? '—'}</Text>
-            </View>
-            {(bc?.ingested_dates ?? []).length > 0 && (
-              <>
-                <Text style={[d.subSection, { marginTop: 8 }]}>Ingested Bulk Dates</Text>
-                {(bc?.ingested_dates ?? []).map((dt) => (
-                  <View key={dt} style={d.cpRow}>
-                    <View style={[d.cpDot, { backgroundColor: '#22C55E' }]} />
-                    <Text style={d.cpLabel}>{dt}</Text>
-                    <Text style={[d.cpValue, { color: '#22C55E' }]}>✓</Text>
-                  </View>
-                ))}
-              </>
-            )}
-            {bcBaseline?.job_run_id && (
-              <View style={d.cpRow}>
-                <Text style={d.cpLabel}>Job Run ID</Text>
-                <Text style={[d.cpDate, { fontSize: 9 }]}>{bcBaseline.job_run_id}</Text>
-              </View>
-            )}
-            {bcMissingDates.length > 0 && (
-              <>
-                <Text style={[d.cpHint, { color: '#EF4444', marginTop: 8 }]}>
-                  Missing dates: {bcMissingDates.join(', ')}
+              {bcMissing > 0 && (
+                <Text style={[d.compactToggleText, { color: '#EF4444' }]}>
+                  {bcMissing} missing
                 </Text>
+              )}
+            </View>
+          )}
+          {!bcHasBaseline && (
+            <Text style={[d.compactToggleText, { color: '#F59E0B', flex: 1, marginLeft: 8 }]}>No baseline</Text>
+          )}
+          <Text style={d.compactToggleBtn}>{showBulkDetails ? 'Hide' : 'Show'}</Text>
+        </TouchableOpacity>
+
+        {showBulkDetails && (
+          <>
+            <Text style={[d.cpHint, { marginTop: 6 }]}>
+              After the full backfill downloads all individual prices, EODHD daily bulk reports fill in each new trading day.
+            </Text>
+            {!bcHasBaseline ? (
+              <>
+                <Text style={[d.cpHint, { color: '#F59E0B', fontStyle: 'normal', fontSize: 11 }]}>
+                  ⚠ No baseline yet
+                </Text>
+                <Text style={d.cpHint}>
+                  A successful full backfill must be run first to establish a baseline.
+                </Text>
+              </>
+            ) : (
+              <>
+                <View style={d.cpRow}>
+                  <Text style={d.cpLabel}>Backfill Finished</Text>
+                  <Text style={d.cpDate}>
+                    {bcBaseline?.completed_at_prague
+                      ? bcBaseline.completed_at_prague.replace('T', ' ').slice(0, 19)
+                      : '—'}
+                  </Text>
+                </View>
+                <View style={d.cpRow}>
+                  <Text style={d.cpLabel}>All Prices Downloaded Through</Text>
+                  <Text style={d.cpDate}>{bcBaseline?.through_date ?? '—'}</Text>
+                </View>
+                <View style={d.cpRow}>
+                  <Text style={d.cpLabel}>Latest Daily Bulk Date</Text>
+                  <Text style={d.cpDate}>{bc?.latest_bulk_date_ingested ?? '—'}</Text>
+                </View>
+                {(bc?.ingested_dates ?? []).length > 0 && (
+                  <>
+                    <Text style={[d.subSection, { marginTop: 6 }]}>Ingested Bulk Dates</Text>
+                    {(bc?.ingested_dates ?? []).map((dt) => (
+                      <View key={dt} style={d.cpRow}>
+                        <View style={[d.cpDot, { backgroundColor: '#22C55E' }]} />
+                        <Text style={d.cpLabel}>{dt}</Text>
+                        <Text style={[d.cpValue, { color: '#22C55E' }]}>✓</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+                {bcBaseline?.job_run_id && (
+                  <View style={d.cpRow}>
+                    <Text style={d.cpLabel}>Job Run ID</Text>
+                    <Text style={[d.cpDate, { fontSize: 9 }]}>{bcBaseline.job_run_id}</Text>
+                  </View>
+                )}
+                {bcMissingDates.length > 0 && (
+                  <Text style={[d.cpHint, { color: '#EF4444', marginTop: 6 }]}>
+                    Missing dates: {bcMissingDates.join(', ')}
+                  </Text>
+                )}
               </>
             )}
           </>
@@ -1163,10 +1181,20 @@ const d = StyleSheet.create({
   opsRunBtnText: { color: '#fff', fontSize: 9, fontWeight: '700' },
 
   // C) Price Integrity
+  integrityGridCompact: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
   integrityGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 12 },
-  intMetric: { width: '47%', backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center' },
-  intValue: { fontSize: 16, fontWeight: '800', color: COLORS.text },
-  intLabel: { fontSize: 9, color: COLORS.textMuted, textAlign: 'center', marginTop: 2 },
+  intMetric: { width: '47%', backgroundColor: COLORS.background, borderRadius: 6, padding: 7, borderWidth: 1, borderColor: COLORS.border, alignItems: 'center' },
+  intValue: { fontSize: 14, fontWeight: '800', color: COLORS.text },
+  intLabel: { fontSize: 8, color: COLORS.textMuted, textAlign: 'center', marginTop: 1 },
+
+  // Compact card & section title
+  cardCompact: { margin: 12, marginBottom: 0, backgroundColor: COLORS.card, borderRadius: 10, padding: 10, borderWidth: 1, borderColor: COLORS.border },
+  sectionTitleSm: { fontSize: 11, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.5, marginBottom: 6, textTransform: 'uppercase' },
+
+  // Compact toggle row
+  compactToggleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 3 },
+  compactToggleText: { fontSize: 10, color: COLORS.text, flex: 1 },
+  compactToggleBtn: { fontSize: 9, fontWeight: '700', color: COLORS.primary, paddingHorizontal: 4 },
 
   subSection: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, marginBottom: 4 },
   cpHint: { fontSize: 9, color: COLORS.textMuted, marginBottom: 8, fontStyle: 'italic' },
