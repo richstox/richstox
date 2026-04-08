@@ -29,8 +29,11 @@ is_visible = is_seeded && has_price_data && has_classification
 
 Where:
 - is_seeded: NYSE/NASDAQ + Common Stock
-- has_price_data: appears in daily bulk prices
+- has_price_data: in latest bulk with close > 0 OR has existing stock_prices (preserved visibility)
 - has_classification: sector AND industry are non-empty
+
+Note: has_price_history is a separate informational flag (any stock_prices exist)
+      and does NOT affect visibility.
 
 All app queries MUST use VISIBLE_UNIVERSE_QUERY, never is_active alone.
 =============================================================================
@@ -2468,7 +2471,8 @@ async def admin_fundamentals_audit(
     is_visible = bool(tracked and tracked.get("is_visible"))
     is_seeded = bool(tracked and tracked.get("exchange") in ("NYSE", "NASDAQ")
                      and tracked.get("asset_type") == "Common Stock")
-    has_price = bool(tracked and tracked.get("has_price_data"))
+    has_bulk_close = bool(tracked and tracked.get("has_price_data"))
+    has_history = bool(tracked and tracked.get("has_price_history"))
     fund_complete = tracked.get("fundamentals_status") == "complete" if tracked else False
 
     # Determine primary funnel reason — exactly one label per ticker
@@ -2478,9 +2482,12 @@ async def admin_fundamentals_audit(
     elif not is_seeded:
         funnel_step = "Step 1 Excluded"
         primary_reason = f"exchange={tracked.get('exchange')}, asset_type={tracked.get('asset_type')}"
-    elif not has_price:
-        funnel_step = "Step 2 No Price"
-        primary_reason = "has_price_data is false or missing"
+    elif not has_bulk_close:
+        funnel_step = "Step 2 No Bulk Close"
+        primary_reason = (
+            "Not in latest bulk (has_latest_bulk_close=false)"
+            + ("; has_price_history=true (historical data exists)" if has_history else "")
+        )
     elif not fund_complete:
         funnel_step = "Step 3 Fundamentals Blocker"
         primary_reason = "fundamentals_status != complete"
@@ -6533,11 +6540,11 @@ async def get_visibility_audit():
             },
             {
                 "step": 3,
-                "name": "Has Price Data (activity filter)",
-                "query": "+ has_price_data == true",
+                "name": "Has Price Data (bulk or historical)",
+                "query": "+ has_price_data == true (bulk or existing stock_prices)",
                 "count": step3_has_price,
                 "lost": step2_common_stock - step3_has_price,
-                "lost_reason": "No price data in daily bulk"
+                "lost_reason": "No price data (not in bulk and no stock_prices history)"
             },
             {
                 "step": 4,
@@ -8888,6 +8895,7 @@ async def admin_visible_universe_stats():
     total_tracked = await db.tracked_tickers.count_documents({})
     seeded = await db.tracked_tickers.count_documents({"is_seeded": True})
     has_price = await db.tracked_tickers.count_documents({"has_price_data": True})
+    has_price_history = await db.tracked_tickers.count_documents({"has_price_history": True})
     has_classification = await db.tracked_tickers.count_documents({"has_classification": True})
     visible = await db.tracked_tickers.count_documents(VISIBLE_UNIVERSE_QUERY)
 
@@ -8905,7 +8913,9 @@ async def admin_visible_universe_stats():
         "stages": {
             "total_tracked": total_tracked,
             "seeded": seeded,
-            "has_price_data": has_price,
+            "has_latest_bulk_close": has_price,
+            "has_price_history": has_price_history,
+            "has_price_data": has_price,  # backward compat alias
             "has_classification": has_classification,
             "visible": visible,
         },

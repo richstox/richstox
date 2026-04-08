@@ -310,6 +310,8 @@ async def backfill_ticker_prices(db, ticker: str) -> Dict[str, Any]:
                 {"ticker": ticker_full},
                 {"$set": {
                     "has_price_data": True,
+                    "has_latest_bulk_close": True,
+                    "has_price_history": True,
                     "is_active": True,  # Visible in app = has price data
                     "last_price_date": max(dates) if dates else None,
                     "updated_at": datetime.now(timezone.utc),
@@ -768,6 +770,8 @@ async def sync_ticker_prices_delta(db, ticker: str) -> Dict[str, Any]:
             {"ticker": ticker_full},
             {"$set": {
                 "has_price_data": True,
+                "has_latest_bulk_close": True,
+                "has_price_history": True,
                 "is_active": True,
                 "last_price_date": max(dates),
                 "updated_at": datetime.now(timezone.utc)

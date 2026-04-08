@@ -100,7 +100,9 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
 
     A ticker is visible (is_visible == True) ONLY when ALL 7 conditions hold:
       1. is_seeded == True       (NYSE/NASDAQ Common Stock seed)
-      2. has_price_data == True  (current price data present)
+      2. has_price_data == True  (in latest bulk with close > 0, OR has
+                                  existing stock_prices from Phase C /
+                                  previous bulk runs — preserved)
       3. sector present          (not null/empty)
       4. industry present        (not null/empty)
       5. shares_outstanding > 0

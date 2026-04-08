@@ -681,6 +681,8 @@ async def sync_ticker_whitelist(
                     "is_whitelisted": True,
                     "is_active": False,
                     "has_price_data": False,
+                    "has_latest_bulk_close": False,
+                    "has_price_history": False,
                     "fundamentals_status": "pending",
                     "status": "pending_fundamentals",
                     "first_seen_date": now,
