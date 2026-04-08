@@ -4306,11 +4306,12 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             # Record failure on the ticker document
                             try:
                                 _ticker_us = ticker if ticker.endswith(".US") else f"{ticker}.US"
+                                _fail_ts = datetime.now(timezone.utc)
                                 await db.tracked_tickers.update_one(
                                     {"ticker": _ticker_us},
                                     {"$set": {
                                         "price_history_status": "error",
-                                        "history_download_failed_at": datetime.now(timezone.utc),
+                                        "history_download_failed_at": _fail_ts,
                                         "history_download_error": f"exception: {ph_err}",
                                     }},
                                 )
