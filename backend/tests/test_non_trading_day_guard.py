@@ -623,20 +623,17 @@ class TestPriceSyncNonTradingDaySkip:
 
 
 # =============================================================================
-# Tests: sync_has_price_data_flags — empty-list safety guard
+# Tests: sync_has_price_data_flags — flag semantics
 # =============================================================================
 
 
 class TestSyncHasPriceDataFlagsGuard:
-    """Tests that sync_has_price_data_flags never wipes all flags to False."""
+    """Tests that sync_has_price_data_flags sets the correct flag semantics."""
 
-    def test_empty_list_falls_back_to_db_query(self, monkeypatch):
-        """When tickers_with_price=[] the function falls back to stock_prices query."""
+    def test_empty_list_skips_flag_reset(self, monkeypatch):
+        """When tickers_with_price=[] (non-trading day), flags are NOT reset."""
 
-        class _FakeStockPricesWithData:
-            async def distinct(self, field, query):
-                # Simulate existing price data in DB from previous trading day
-                return ["AAPL.US", "MSFT.US", "GOOGL.US"]
+        update_calls = []
 
         class _FakeTrackedTickersForFlags:
             def __init__(self, tickers):
@@ -646,12 +643,12 @@ class TestSyncHasPriceDataFlagsGuard:
                 return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
 
             async def update_many(self, filt, update):
+                update_calls.append((filt, update))
                 return SimpleNamespace(modified_count=0)
 
         class _FakeDBForFlags:
             def __init__(self, tickers):
                 self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
-                self.stock_prices = _FakeStockPricesWithData()
 
         seeded = ["AAPL.US", "MSFT.US", "GOOGL.US", "AMZN.US"]
         db = _FakeDBForFlags(seeded)
@@ -660,13 +657,16 @@ class TestSyncHasPriceDataFlagsGuard:
             scheduler_service.sync_has_price_data_flags(
                 db,
                 include_exclusions=False,
-                tickers_with_price=[],  # empty list — should trigger fallback
+                tickers_with_price=[],  # empty list — non-trading day
             )
         )
 
-        # Must NOT wipe all flags — should find prices via DB query
-        assert result["with_price_data"] > 0, (
-            "Empty tickers_with_price should fall back to DB query, not wipe flags"
+        # Must skip flag reset entirely — no update_many calls
+        assert result["skipped_flag_reset"] is True, (
+            "Empty tickers_with_price should skip flag reset"
+        )
+        assert len(update_calls) == 0, (
+            f"Expected 0 update_many calls on empty bulk, got {len(update_calls)}"
         )
 
     def test_nonempty_list_uses_fast_path(self, monkeypatch):
@@ -703,16 +703,17 @@ class TestSyncHasPriceDataFlagsGuard:
         )
 
         assert result["with_price_data"] == 2
+        assert result["with_latest_bulk_close"] == 2
 
-    def test_fast_path_preserves_existing_stock_prices(self, monkeypatch):
-        """Tickers NOT in today's bulk but WITH existing stock_prices keep has_price_data=True."""
+    def test_ticker_not_in_bulk_becomes_invisible(self, monkeypatch):
+        """Ticker NOT in today's bulk gets has_price_data=False even with stock_prices history."""
 
-        # Track which tickers had their has_price_data set to True
-        set_true_tickers = set()
+        # Track which tickers get which flag values
+        flag_writes: dict = {}
 
         class _FakeStockPricesWithExisting:
             async def distinct(self, field, query):
-                # NYC.US has existing stock_prices from Phase C full history download
+                # NYC.US has existing stock_prices from Phase C
                 tickers_queried = query.get("ticker", {}).get("$in", [])
                 return [t for t in tickers_queried if t in ("NYC.US",)]
 
@@ -724,9 +725,12 @@ class TestSyncHasPriceDataFlagsGuard:
                 return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
 
             async def update_many(self, filt, update):
-                if update.get("$set", {}).get("has_price_data") is True:
-                    tickers_in = filt.get("ticker", {}).get("$in", [])
-                    set_true_tickers.update(tickers_in)
+                set_fields = update.get("$set", {})
+                tickers_in = filt.get("ticker", {}).get("$in", [])
+                for t in tickers_in:
+                    if t not in flag_writes:
+                        flag_writes[t] = {}
+                    flag_writes[t].update(set_fields)
                 return SimpleNamespace(modified_count=0)
 
         class _FakeDBForFlags:
@@ -734,8 +738,7 @@ class TestSyncHasPriceDataFlagsGuard:
                 self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
                 self.stock_prices = _FakeStockPricesWithExisting()
 
-        # AAPL.US is in today's bulk, NYC.US is NOT in today's bulk
-        # but NYC.US has existing stock_prices from Phase C
+        # AAPL.US is in today's bulk, NYC.US is NOT
         seeded = ["AAPL.US", "NYC.US"]
         db = _FakeDBForFlags(seeded)
 
@@ -747,17 +750,26 @@ class TestSyncHasPriceDataFlagsGuard:
             )
         )
 
-        # Both tickers should have has_price_data=True:
-        # AAPL.US from bulk, NYC.US from existing stock_prices
-        assert result["with_price_data"] == 2, (
-            f"Expected 2 tickers with price data, got {result['with_price_data']}. "
-            f"NYC.US should be preserved from existing stock_prices."
+        # Only AAPL should have has_price_data=True (visibility gate)
+        assert result["with_latest_bulk_close"] == 1, (
+            f"Expected 1 ticker with bulk close, got {result['with_latest_bulk_close']}"
         )
-        assert result["preserved_from_existing_stock_prices"] == 1, (
-            f"Expected 1 preserved ticker, got {result.get('preserved_from_existing_stock_prices', 0)}"
+        assert result["with_price_data"] == 1, (
+            "has_price_data should equal has_latest_bulk_close (no preservation)"
         )
-        assert "NYC.US" in set_true_tickers, (
-            "NYC.US should have been set to has_price_data=True via preservation"
+
+        # NYC.US should have has_price_history=True but NOT has_price_data
+        assert result["with_price_history_only"] == 1, (
+            f"Expected 1 ticker with history only, got {result['with_price_history_only']}"
+        )
+
+        # Verify flag writes: NYC.US should end with has_price_data=False,
+        # has_price_history=True
+        assert flag_writes.get("NYC.US", {}).get("has_price_data") is False, (
+            "NYC.US must NOT have has_price_data=True (not in bulk)"
+        )
+        assert flag_writes.get("NYC.US", {}).get("has_price_history") is True, (
+            "NYC.US should have has_price_history=True (exists in stock_prices)"
         )
 
 

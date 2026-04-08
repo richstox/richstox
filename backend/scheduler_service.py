@@ -44,7 +44,8 @@ logger = logging.getLogger("richstox.scheduler")
 # Constants
 SCHEDULER_CONFIG_KEY = "scheduler_enabled"
 SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock", "is_seeded": True}
-# Canonical Step 3 universe — tickers that are seeded and have price data.
+# Canonical Step 3 universe — tickers that are seeded and present in the
+# latest bulk with close > 0 (has_price_data == has_latest_bulk_close).
 # This is the exact filter used by universe_counts_service step3_query and
 # is the source of truth for "Tickers with prices" on the Step 3 pipeline card.
 STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
@@ -2174,11 +2175,27 @@ async def run_daily_price_sync(
 
 async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None) -> Dict[str, Any]:
     """
-    Recompute has_price_data for seeded US Common Stock universe.
+    Recompute price-related flags for seeded US Common Stock universe.
 
-    When *tickers_with_price* is provided (from the bulk feed result), only
-    those tickers are marked has_price_data=True — no stock_prices query needed.
-    Fallback: query stock_prices for valid prices (close > 0 OR adjusted_close > 0).
+    Sets THREE fields on each tracked_ticker document:
+
+    - **has_latest_bulk_close** (+ backward-compat alias **has_price_data**):
+      True ONLY if the ticker appeared in the processed bulk for this run
+      with close > 0.  This is the visibility gate — a ticker missing from
+      today's bulk becomes invisible.  NO historical preservation.
+
+    - **has_price_history**: True if the ticker has ANY historical record
+      in ``stock_prices`` with close > 0 (from Phase C, manual backfill,
+      or previous bulk runs).  Informational — NOT used for visibility.
+
+    When *tickers_with_price* is a non-empty list (normal trading day),
+    flags are reset-and-set from that list exclusively.
+
+    When *tickers_with_price* is an empty list (non-trading day / fetch
+    failure), we skip the flag reset entirely so previous-day values persist.
+
+    When *tickers_with_price* is None (legacy / manual call), we fall back
+    to querying ``stock_prices`` — both flags get the same value.
     """
     seeded_docs = await db.tracked_tickers.find(
         SEED_QUERY,
@@ -2192,8 +2209,12 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     }
     seeded_total = len(seeded_tickers)
     if seeded_total == 0:
-        base = {
+        base: Dict[str, Any] = {
             "seeded_total": 0,
+            "with_latest_bulk_close": 0,
+            "with_price_history_only": 0,
+            "without_any_price": 0,
+            # backward compat
             "with_price_data": 0,
             "without_price_data": 0,
             "matched_price_tickers_raw": 0,
@@ -2205,28 +2226,36 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     seeded_set = set(seeded_tickers)
     from price_ingestion_service import _normalize_step2_ticker
 
+    # ── Tracks whether we should write bulk-close flags this run ─────────
+    skip_bulk_flag_reset = False
+    any_price_set: Set[str] = set()  # for exclusion-report "close=0" distinction
+    history_only_count = 0
+
     if tickers_with_price is not None and len(tickers_with_price) > 0:
-        # ── Fast path: use the set returned by the bulk feed ─────────────
-        with_price_set = {
+        # ── Normal trading day: bulk data available ──────────────────────
+        bulk_close_set = {
             _normalize_step2_ticker(t)
             for t in tickers_with_price
             if _normalize_step2_ticker(t)
         } & seeded_set
-        any_price_set = with_price_set  # same set when sourced from bulk feed
-        matched_raw = len(with_price_set)
+        any_price_set = bulk_close_set  # same set when sourced from bulk feed
+        matched_raw = len(bulk_close_set)
+
+    elif tickers_with_price is not None and len(tickers_with_price) == 0:
+        # ── Empty bulk (non-trading day or fetch failure) ────────────────
+        # Do NOT reset flags — preserve previous trading day's values.
+        logger.warning(
+            "[sync_has_price_data_flags] tickers_with_price is empty but "
+            "%d tickers are seeded — skipping flag reset to preserve "
+            "previous trading day values",
+            seeded_total,
+        )
+        bulk_close_set: Set[str] = set()
+        matched_raw = 0
+        skip_bulk_flag_reset = True
+
     else:
-        # ── Safety guard: never wipe all flags with an empty list ────────
-        # When the bulk feed returns an empty list (e.g. non-trading day),
-        # fall back to querying stock_prices so existing price data is
-        # preserved.  Stale data is always better than an empty app.
-        if tickers_with_price is not None and len(tickers_with_price) == 0 and seeded_total > 0:
-            logger.warning(
-                "[sync_has_price_data_flags] tickers_with_price is empty but "
-                "%d tickers are seeded — falling back to stock_prices query "
-                "to preserve existing price flags",
-                seeded_total,
-            )
-        # ── Legacy fallback: query stock_prices collection ───────────────
+        # ── Legacy fallback (tickers_with_price is None): query stock_prices
         seeded_codes = [t[:-3] if t.endswith(".US") else t for t in seeded_tickers]
         ticker_candidates = list(set(seeded_tickers) | set(seeded_codes))
         valid_price_query = {
@@ -2252,77 +2281,88 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             for t in raw_any_price_tickers
             if _normalize_step2_ticker(t)
         }
-        with_price_set = normalized_price_tickers & seeded_set
+        bulk_close_set = normalized_price_tickers & seeded_set
         any_price_set = normalized_any_price_tickers & seeded_set
-        matched_raw = len(with_price_set)
+        matched_raw = len(bulk_close_set)
 
-    # Reset all seeded tickers to false, then enable only those with prices.
-    await db.tracked_tickers.update_many(
-        {"ticker": {"$in": seeded_tickers}},
-        {"$set": {"has_price_data": False, "updated_at": datetime.now(timezone.utc)}},
-    )
-    if with_price_set:
+    # ── Reset & set has_latest_bulk_close + has_price_data (visibility gate) ──
+    if not skip_bulk_flag_reset:
+        now_ts = datetime.now(timezone.utc)
+        # Reset ALL seeded tickers — both bulk-close and history flags
         await db.tracked_tickers.update_many(
-            {"ticker": {"$in": list(with_price_set)}},
-            {"$set": {"has_price_data": True, "updated_at": datetime.now(timezone.utc)}},
+            {"ticker": {"$in": seeded_tickers}},
+            {"$set": {
+                "has_latest_bulk_close": False,
+                "has_price_data": False,   # backward compat alias
+                "has_price_history": False,
+                "updated_at": now_ts,
+            }},
         )
+        # Set True for tickers present in this bulk with close > 0
+        if bulk_close_set:
+            await db.tracked_tickers.update_many(
+                {"ticker": {"$in": list(bulk_close_set)}},
+                {"$set": {
+                    "has_latest_bulk_close": True,
+                    "has_price_data": True,  # backward compat alias
+                    "has_price_history": True,  # bulk tickers have at least today's price
+                    "updated_at": now_ts,
+                }},
+            )
 
-    # ── Preserve has_price_data for tickers NOT in today's bulk but WITH
-    # existing stock_prices records (from Phase C full history download,
-    # manual backfill, or previous bulk runs).
-    #
-    # The fast path above only considers today's bulk; without this guard,
-    # low-volume tickers that miss one bulk day (no trades) lose their
-    # has_price_data flag and fall out of STEP3_QUERY / visibility / Phase C.
-    # This is the root cause of new tickers never getting full history:
-    # they appear in one bulk, get seeded+priced, but if missing from the
-    # next bulk, has_price_data resets to False before Phase C can run.
-    not_in_bulk = list(seeded_set - with_price_set)
-    preserved_count = 0
-    if not_in_bulk:
-        _existing_raw = await db.stock_prices.distinct(
-            "ticker",
-            {
-                "ticker": {"$in": not_in_bulk},
-                "$or": [
-                    {"close": {"$gt": 0}},
-                    {"adjusted_close": {"$gt": 0}},
-                ],
-            },
-        )
-        if _existing_raw:
-            _existing_normalized = {
-                n for t in _existing_raw
-                if (n := _normalize_step2_ticker(t))
-            } & seeded_set
-            if _existing_normalized:
-                await db.tracked_tickers.update_many(
-                    {"ticker": {"$in": list(_existing_normalized)}},
-                    {"$set": {"has_price_data": True, "updated_at": datetime.now(timezone.utc)}},
-                )
-                with_price_set |= _existing_normalized
-                preserved_count = len(_existing_normalized)
-                logger.info(
-                    "[sync_has_price_data_flags] Preserved has_price_data for "
-                    "%d tickers not in today's bulk but with existing stock_prices",
-                    preserved_count,
-                )
+        # ── Compute has_price_history for tickers NOT in today's bulk ────
+        # These tickers may have historical stock_prices from Phase C,
+        # manual backfill, or previous bulk runs.  has_price_history is
+        # informational only — it does NOT affect visibility.
+        not_in_bulk = list(seeded_set - bulk_close_set)
+        if not_in_bulk:
+            _existing_raw = await db.stock_prices.distinct(
+                "ticker",
+                {
+                    "ticker": {"$in": not_in_bulk},
+                    "$or": [
+                        {"close": {"$gt": 0}},
+                        {"adjusted_close": {"$gt": 0}},
+                    ],
+                },
+            )
+            if _existing_raw:
+                _existing_normalized = {
+                    n for t in _existing_raw
+                    if (n := _normalize_step2_ticker(t))
+                } & seeded_set
+                if _existing_normalized:
+                    await db.tracked_tickers.update_many(
+                        {"ticker": {"$in": list(_existing_normalized)}},
+                        {"$set": {"has_price_history": True, "updated_at": now_ts}},
+                    )
+                    history_only_count = len(_existing_normalized)
+                    logger.info(
+                        "[sync_has_price_data_flags] %d tickers not in today's "
+                        "bulk but with existing stock_prices → "
+                        "has_price_history=true (NOT visible)",
+                        history_only_count,
+                    )
 
-    with_price_data = len(with_price_set)
-    summary = {
+    with_bulk_close = len(bulk_close_set)
+    summary: Dict[str, Any] = {
         "seeded_total": seeded_total,
-        "with_price_data": with_price_data,
-        "without_price_data": max(seeded_total - with_price_data, 0),
+        "with_latest_bulk_close": with_bulk_close,
+        "with_price_history_only": history_only_count,
+        "without_any_price": max(seeded_total - with_bulk_close - history_only_count, 0),
         "matched_price_tickers_raw": matched_raw,
-        "preserved_from_existing_stock_prices": preserved_count,
+        "skipped_flag_reset": skip_bulk_flag_reset,
+        # backward compat keys — same values as has_latest_bulk_close
+        "with_price_data": with_bulk_close,
+        "without_price_data": max(seeded_total - with_bulk_close, 0),
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []
-        for ticker in sorted(seeded_set - with_price_set):
+        for ticker in sorted(seeded_set - bulk_close_set):
             reason = (
                 "Close/adjusted_close missing or zero"
                 if ticker in any_price_set
-                else "Ticker not present in price data"
+                else "Ticker not present in bulk data"
             )
             exclusions.append({
                 "ticker": ticker.replace(".US", ""),
