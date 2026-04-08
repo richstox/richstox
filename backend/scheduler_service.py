@@ -2246,6 +2246,8 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     # ── Tracks whether we should write bulk-close flags this run ─────────
     skip_bulk_flag_reset = False
     any_price_set: Set[str] = set()  # for exclusion-report "close=0" distinction
+    returning_tickers: Set[str] = set()  # tickers absent yesterday, back today
+    _excl_written = 0
 
     if tickers_with_price is not None and len(tickers_with_price) > 0:
         # ── Normal trading day: bulk data available ──────────────────────
@@ -2302,7 +2304,6 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         matched_raw = len(bulk_close_set)
 
     # ── Reset & set has_latest_bulk_close + has_price_data (visibility gate) ──
-    returning_tickers: Set[str] = set()  # tickers absent yesterday, back today
     if not skip_bulk_flag_reset:
         now_ts = datetime.now(timezone.utc)
 
@@ -2372,6 +2373,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         # Write exclusion entries so the gap-free metric ignores them and
         # the chart endpoint can show data_notices to customers.
         not_in_bulk = seeded_set - bulk_close_set
+        _excl_written = 0
         if not_in_bulk and bulk_date:
             from pymongo import UpdateOne as _ExclUpdateOne
             _excl_ops = [
@@ -2390,10 +2392,11 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             ]
             try:
                 await db.gap_free_exclusions.bulk_write(_excl_ops, ordered=False)
+                _excl_written = len(_excl_ops)
                 logger.info(
                     "[sync_has_price_data_flags] wrote %d gap_free_exclusions "
                     "for tickers not in bulk (date=%s)",
-                    len(_excl_ops), bulk_date,
+                    _excl_written, bulk_date,
                 )
             except Exception as _excl_err:
                 logger.warning(
@@ -2412,7 +2415,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         "with_price_data": with_bulk_close,
         "without_price_data": max(seeded_total - with_bulk_close, 0),
         "returning_tickers_flagged_for_redownload": len(returning_tickers),
-        "gap_free_exclusions_written": len(seeded_set - bulk_close_set) if bulk_date and not skip_bulk_flag_reset else 0,
+        "gap_free_exclusions_written": _excl_written,
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []

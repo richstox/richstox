@@ -829,6 +829,14 @@ class TestSyncHasPriceDataFlagsGuard:
         assert len(db.gap_free_exclusions.ops) == 2, (
             "Expected 2 bulk_write ops for gap_free_exclusions"
         )
+        # Validate exclusion content: each op is an UpdateOne with correct fields
+        for op in db.gap_free_exclusions.ops:
+            # pymongo UpdateOne stores filter in _filter and doc in _doc
+            doc = op._doc.get("$set", {})
+            assert doc["date"] == "2026-04-02", f"Expected date=2026-04-02, got {doc.get('date')}"
+            assert doc["reason"] == "not_in_bulk_data", f"Expected reason=not_in_bulk_data"
+            assert doc["bulk_found"] is False, "Expected bulk_found=False"
+            assert doc["ticker"] in ("NYC.US", "BYC.US"), f"Unexpected ticker: {doc.get('ticker')}"
 
     def test_no_exclusions_without_bulk_date(self, monkeypatch):
         """No gap_free_exclusions written when bulk_date is not provided."""
@@ -928,6 +936,10 @@ class TestSyncHasPriceDataFlagsGuard:
         )
         assert flag_writes.get("NYC.US", {}).get("price_history_complete") is False, (
             "NYC.US must have price_history_complete=False for Phase C re-download"
+        )
+        # AAPL.US should NOT be flagged for redownload (was continuously in bulk)
+        assert flag_writes.get("AAPL.US", {}).get("needs_price_redownload") is not True, (
+            "AAPL.US must NOT have needs_price_redownload=True (not a returning ticker)"
         )
 
 
