@@ -2183,14 +2183,15 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
       processed bulk for this run with close > 0.  Informational — tracks
       whether the ticker is "active" in today's EODHD bulk feed.
 
-    - **has_price_data** (visibility gate): True if the ticker appeared
-      in today's bulk **OR** has ANY existing ``stock_prices`` record with
-      close > 0.  Tickers absent from today's bulk but with historical
-      data remain visible so their chart keeps working.
+    - **has_price_data** (visibility gate): True ONLY if the ticker
+      appeared in today's bulk with close > 0.  Identical to
+      has_latest_bulk_close.  A ticker NOT in the latest EODHD bulk
+      report is NOT visible — period.
 
     - **has_price_history**: True if the ticker has ANY historical record
       in ``stock_prices`` with close > 0 (from Phase C, manual backfill,
-      or previous bulk runs).  Same as has_price_data for non-bulk tickers.
+      or previous bulk runs).  Informational only — does NOT gate
+      visibility.
 
     When *tickers_with_price* is a non-empty list (normal trading day),
     flags are reset-and-set from that list exclusively.
@@ -2216,9 +2217,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         base: Dict[str, Any] = {
             "seeded_total": 0,
             "with_latest_bulk_close": 0,
-            "with_price_history_only": 0,
             "without_any_price": 0,
-            # backward compat
             "with_price_data": 0,
             "without_price_data": 0,
             "matched_price_tickers_raw": 0,
@@ -2233,7 +2232,6 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     # ── Tracks whether we should write bulk-close flags this run ─────────
     skip_bulk_flag_reset = False
     any_price_set: Set[str] = set()  # for exclusion-report "close=0" distinction
-    history_only_count = 0
 
     if tickers_with_price is not None and len(tickers_with_price) > 0:
         # ── Normal trading day: bulk data available ──────────────────────
@@ -2314,61 +2312,19 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
                 }},
             )
 
-        # ── Preserve visibility for tickers NOT in today's bulk ──────────
-        # Tickers absent from today's EODHD bulk but with existing
-        # stock_prices records (from Phase C, manual backfill, or previous
-        # bulk runs) must keep has_price_data=True so they remain visible
-        # and their chart keeps working.  Missing from today's bulk is
-        # NOT a gap — it means the ticker wasn't listed in the EODHD feed
-        # for that day.
-        not_in_bulk = list(seeded_set - bulk_close_set)
-        if not_in_bulk:
-            _existing_raw = await db.stock_prices.distinct(
-                "ticker",
-                {
-                    "ticker": {"$in": not_in_bulk},
-                    "$or": [
-                        {"close": {"$gt": 0}},
-                        {"adjusted_close": {"$gt": 0}},
-                    ],
-                },
-            )
-            if _existing_raw:
-                _existing_normalized = {
-                    n for t in _existing_raw
-                    if (n := _normalize_step2_ticker(t))
-                } & seeded_set
-                if _existing_normalized:
-                    await db.tracked_tickers.update_many(
-                        {"ticker": {"$in": list(_existing_normalized)}},
-                        {"$set": {
-                            "has_price_data": True,
-                            "has_price_history": True,
-                            "updated_at": now_ts,
-                        }},
-                    )
-                    history_only_count = len(_existing_normalized)
-                    logger.info(
-                        "[sync_has_price_data_flags] %d tickers not in today's "
-                        "bulk but with existing stock_prices → "
-                        "has_price_data=true, has_price_history=true "
-                        "(preserved visibility)",
-                        history_only_count,
-                    )
+        # No preservation: tickers NOT in today's bulk get has_price_data=False.
+        # Visibility requires presence in the latest EODHD bulk with close > 0.
 
     with_bulk_close = len(bulk_close_set)
-    preserved_from_existing = history_only_count  # tickers with stock_prices but not in bulk
     summary: Dict[str, Any] = {
         "seeded_total": seeded_total,
         "with_latest_bulk_close": with_bulk_close,
-        "preserved_from_existing_stock_prices": preserved_from_existing,
-        "with_price_history_only": history_only_count,
-        "without_any_price": max(seeded_total - with_bulk_close - history_only_count, 0),
+        "without_any_price": max(seeded_total - with_bulk_close, 0),
         "matched_price_tickers_raw": matched_raw,
         "skipped_flag_reset": skip_bulk_flag_reset,
-        # has_price_data = bulk tickers + preserved tickers
-        "with_price_data": with_bulk_close + preserved_from_existing,
-        "without_price_data": max(seeded_total - with_bulk_close - preserved_from_existing, 0),
+        # has_price_data = bulk tickers ONLY (no preservation)
+        "with_price_data": with_bulk_close,
+        "without_price_data": max(seeded_total - with_bulk_close, 0),
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []
@@ -4210,10 +4166,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         if result["status"] == "completed":
             _phase_update("C", status="running", processed=0, total=None, message="Preparing price history queue", activate=True)
             await _write_step3_telemetry(force=True)
+            # Use Phase C eligible query (gates 1-7, excludes gate 8 / price_history_complete)
+            # to avoid chicken-and-egg: Phase C SETS price_history_complete, so we can't
+            # require it as a precondition.
+            from visibility_rules import get_phase_c_eligible_query
             _phase_c_cursor = db.tracked_tickers.find(
                 {
-                    **STEP3_QUERY,
-                    "is_visible": True,
+                    **get_phase_c_eligible_query(),
                     "$or": [
                         {"price_history_complete": {"$ne": True}},
                         {"needs_price_redownload": True},
@@ -4347,6 +4306,20 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             }
                         except Exception as ph_err:
                             logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
+                            # Record failure on the ticker document
+                            try:
+                                _ticker_us = ticker if ticker.endswith(".US") else f"{ticker}.US"
+                                _fail_ts = datetime.now(timezone.utc)
+                                await db.tracked_tickers.update_one(
+                                    {"ticker": _ticker_us},
+                                    {"$set": {
+                                        "price_history_status": "error",
+                                        "history_download_failed_at": _fail_ts,
+                                        "history_download_error": f"exception: {ph_err}",
+                                    }},
+                                )
+                            except Exception:
+                                pass  # Best-effort — don't mask the original error
                             return {
                                 "ticker": ticker,
                                 "success": False,

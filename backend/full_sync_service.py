@@ -160,6 +160,20 @@ async def _process_price_ticker(
     )
 
     if not ok or not isinstance(data, list) or not data:
+        # ── Record failure on the ticker so it's discoverable via DB query ──
+        _fail_reason = "rate_limited" if http_status == 429 else "api_error"
+        if ok and (not isinstance(data, list) or not data):
+            _fail_reason = "api_returned_empty"
+        _fail_ts = datetime.now(timezone.utc)
+        await db.tracked_tickers.update_one(
+            {"ticker": ticker_us},
+            {"$set": {
+                "price_history_status": "error",
+                "history_download_failed_at": _fail_ts,
+                "history_download_error": _fail_reason,
+                "history_download_http_status": http_status,
+            }},
+        )
         return {"ticker": ticker_us, "success": False, "records": 0, "rate_limited": http_status == 429}
 
     # Bulk upsert
