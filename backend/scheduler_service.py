@@ -2292,9 +2292,8 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         )
         if _existing_raw:
             _existing_normalized = {
-                _normalize_step2_ticker(t)
-                for t in _existing_raw
-                if _normalize_step2_ticker(t)
+                n for t in _existing_raw
+                if (n := _normalize_step2_ticker(t))
             } & seeded_set
             if _existing_normalized:
                 await db.tracked_tickers.update_many(
