@@ -6544,7 +6544,7 @@ async def get_visibility_audit():
                 "query": "+ has_price_data == true (= has_latest_bulk_close)",
                 "count": step3_has_price,
                 "lost": step2_common_stock - step3_has_price,
-                "lost_reason": "No price data in daily bulk"
+                "lost_reason": "Not in latest bulk (has_latest_bulk_close=false)"
             },
             {
                 "step": 4,
