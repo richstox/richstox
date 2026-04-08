@@ -4606,6 +4606,13 @@ async def get_ticker_chart_data(
     except Exception:
         pass  # Collection may not exist yet
 
+    # Fallback: if no prices at all but ticker exists, notify the customer
+    if not normalized_prices and not data_notices:
+        data_notices.append(
+            "Price history for this stock is currently being downloaded. "
+            "Please check back shortly."
+        )
+
     return {
         "ticker": ticker_full,
         "period": period,

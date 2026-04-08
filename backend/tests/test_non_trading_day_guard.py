@@ -251,7 +251,7 @@ class _FakeDB:
 # ── Helper ───────────────────────────────────────────────────────────────────
 
 def _patch_non_gapfill_dependencies(monkeypatch):
-    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
+    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None, bulk_date=None):
         return {
             "seeded_total": 2,
             "with_price_data": 2,
@@ -735,10 +735,18 @@ class TestSyncHasPriceDataFlagsGuard:
                     flag_writes[t].update(set_fields)
                 return SimpleNamespace(modified_count=0)
 
+        class _FakeGapFreeExclusions:
+            def __init__(self):
+                self.written = []
+            async def bulk_write(self, ops, ordered=False):
+                self.written.extend(ops)
+                return SimpleNamespace(upserted_count=len(ops))
+
         class _FakeDBForFlags:
             def __init__(self, tickers):
                 self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
                 self.stock_prices = _FakeStockPricesWithExisting()
+                self.gap_free_exclusions = _FakeGapFreeExclusions()
 
         # AAPL.US is in today's bulk, NYC.US is NOT
         seeded = ["AAPL.US", "NYC.US"]
@@ -768,6 +776,158 @@ class TestSyncHasPriceDataFlagsGuard:
         )
         assert flag_writes.get("NYC.US", {}).get("has_latest_bulk_close") is False, (
             "NYC.US must NOT have has_latest_bulk_close=True (not in today's bulk)"
+        )
+
+    def test_not_in_bulk_writes_gap_free_exclusions(self, monkeypatch):
+        """Tickers NOT in today's bulk get gap_free_exclusions entries
+        when bulk_date is provided."""
+
+        flag_writes: dict = {}
+
+        class _FakeTrackedTickers:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+            def find(self, query, projection=None):
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+            async def update_many(self, filt, update):
+                set_fields = update.get("$set", {})
+                tickers_in = filt.get("ticker", {}).get("$in", [])
+                for t in tickers_in:
+                    if t not in flag_writes:
+                        flag_writes[t] = {}
+                    flag_writes[t].update(set_fields)
+                return SimpleNamespace(modified_count=0)
+
+        class _FakeGapFreeExclusions:
+            def __init__(self):
+                self.ops = []
+            async def bulk_write(self, ops, ordered=False):
+                self.ops.extend(ops)
+                return SimpleNamespace(upserted_count=len(ops))
+
+        class _FakeDB:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickers(tickers)
+                self.gap_free_exclusions = _FakeGapFreeExclusions()
+
+        seeded = ["AAPL.US", "NYC.US", "BYC.US"]
+        db = _FakeDB(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US"],
+                bulk_date="2026-04-02",
+            )
+        )
+
+        # Should have written exclusions for NYC.US and BYC.US (not in bulk)
+        assert result["gap_free_exclusions_written"] == 2, (
+            f"Expected 2 exclusions, got {result['gap_free_exclusions_written']}"
+        )
+        assert len(db.gap_free_exclusions.ops) == 2, (
+            "Expected 2 bulk_write ops for gap_free_exclusions"
+        )
+
+    def test_no_exclusions_without_bulk_date(self, monkeypatch):
+        """No gap_free_exclusions written when bulk_date is not provided."""
+
+        class _FakeTrackedTickers:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+            def find(self, query, projection=None):
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+            async def update_many(self, filt, update):
+                return SimpleNamespace(modified_count=0)
+
+        class _FakeGapFreeExclusions:
+            def __init__(self):
+                self.ops = []
+            async def bulk_write(self, ops, ordered=False):
+                self.ops.extend(ops)
+                return SimpleNamespace(upserted_count=len(ops))
+
+        class _FakeDB:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickers(tickers)
+                self.gap_free_exclusions = _FakeGapFreeExclusions()
+
+        seeded = ["AAPL.US", "NYC.US"]
+        db = _FakeDB(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US"],
+                # bulk_date NOT provided
+            )
+        )
+
+        assert result["gap_free_exclusions_written"] == 0
+        assert len(db.gap_free_exclusions.ops) == 0, (
+            "No exclusions should be written without bulk_date"
+        )
+
+    def test_returning_ticker_flagged_for_redownload(self, monkeypatch):
+        """Ticker absent from yesterday's bulk but back in today's bulk
+        with price_history_complete=True gets needs_price_redownload=True."""
+
+        flag_writes: dict = {}
+        find_queries: list = []
+
+        class _FakeTrackedTickers:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+            def find(self, query, projection=None):
+                find_queries.append(query)
+                # For the returning-tickers detection query
+                if "has_latest_bulk_close" in query:
+                    # NYC.US was absent yesterday (has_latest_bulk_close=False)
+                    # and has price_history_complete=True
+                    return _FakeCursor([{"ticker": "NYC.US"}])
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+            async def update_many(self, filt, update):
+                set_fields = update.get("$set", {})
+                tickers_in = filt.get("ticker", {}).get("$in", [])
+                for t in tickers_in:
+                    if t not in flag_writes:
+                        flag_writes[t] = {}
+                    flag_writes[t].update(set_fields)
+                return SimpleNamespace(modified_count=1)
+
+        class _FakeGapFreeExclusions:
+            async def bulk_write(self, ops, ordered=False):
+                return SimpleNamespace(upserted_count=len(ops))
+
+        class _FakeDB:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickers(tickers)
+                self.gap_free_exclusions = _FakeGapFreeExclusions()
+
+        # Both in today's bulk; NYC.US was absent yesterday
+        seeded = ["AAPL.US", "NYC.US"]
+        db = _FakeDB(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US", "NYC.US"],
+                bulk_date="2026-04-02",
+            )
+        )
+
+        assert result["returning_tickers_flagged_for_redownload"] == 1, (
+            f"Expected 1 returning ticker, got {result['returning_tickers_flagged_for_redownload']}"
+        )
+        # NYC.US should have needs_price_redownload=True
+        assert flag_writes.get("NYC.US", {}).get("needs_price_redownload") is True, (
+            "NYC.US must have needs_price_redownload=True after returning to bulk"
+        )
+        assert flag_writes.get("NYC.US", {}).get("price_history_complete") is False, (
+            "NYC.US must have price_history_complete=False for Phase C re-download"
         )
 
 
