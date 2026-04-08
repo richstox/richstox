@@ -74,7 +74,7 @@ class VisibilityFailedReason(str, Enum):
 
     Precedence order (checked top-to-bottom in compute_visibility):
       NOT_SEEDED → NO_PRICE_DATA → MISSING_SECTOR → MISSING_INDUSTRY
-      → MISSING_SHARES → MISSING_CURRENCY → DELISTED
+      → MISSING_SHARES → MISSING_CURRENCY → DELISTED → INCOMPLETE_HISTORY
     """
     NOT_SEEDED = "NOT_SEEDED"
     NO_PRICE_DATA = "NO_PRICE_DATA"
@@ -83,6 +83,7 @@ class VisibilityFailedReason(str, Enum):
     MISSING_SHARES = "MISSING_SHARES"
     MISSING_CURRENCY = "MISSING_CURRENCY"
     DELISTED = "DELISTED"
+    INCOMPLETE_HISTORY = "INCOMPLETE_HISTORY"
 
     # Legacy aliases kept for backward compatibility with stored DB values.
     INVALID_EXCHANGE = "INVALID_EXCHANGE"
@@ -98,7 +99,7 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
     """
     Canonical visibility sieve — hard gates, fixed precedence.
 
-    A ticker is visible (is_visible == True) ONLY when ALL 7 conditions hold:
+    A ticker is visible (is_visible == True) ONLY when ALL 8 conditions hold:
       1. is_seeded == True       (NYSE/NASDAQ Common Stock seed)
       2. has_price_data == True  (in latest EODHD bulk with close > 0;
                                   tickers NOT in today's bulk are NOT visible)
@@ -107,6 +108,9 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
       5. shares_outstanding > 0
       6. financial_currency present (not null/empty; any currency accepted)
       7. not delisted            (status != 'delisted' AND is_delisted != True)
+      8. price_history_complete == True (Phase C successfully downloaded
+                                  full price history; prevents showing tickers
+                                  with only bulk-day data and no chart history)
 
     Returns (is_visible: bool, failed_reason: str | None).
     """
@@ -143,6 +147,10 @@ def compute_visibility(ticker_doc: dict) -> Tuple[bool, Optional[str]]:
     if ticker_doc.get("is_delisted", False) or status == "delisted":
         return False, VisibilityFailedReason.DELISTED.value
 
+    # Gate 8: complete price history (Phase C must have succeeded)
+    if not ticker_doc.get("price_history_complete", False):
+        return False, VisibilityFailedReason.INCOMPLETE_HISTORY.value
+
     return True, None
 
 def compute_visibility_failed_reason(ticker_doc: dict) -> Optional[str]:
@@ -169,7 +177,7 @@ def compute_visibility_step4_only(ticker_doc: dict) -> Tuple[bool, Optional[str]
 
 def get_canonical_sieve_query() -> dict:
     """
-    MongoDB query equivalent of compute_visibility — all 7 hard gates.
+    MongoDB query equivalent of compute_visibility — all 8 hard gates.
 
     Used for:
     - count verification (universe_counts_service)
@@ -187,6 +195,30 @@ def get_canonical_sieve_query() -> dict:
         "is_delisted": {"$ne": True},
         # Case-insensitive match: compute_visibility normalises status to lower-case
         # before comparing, so "Delisted", "DELISTED", etc. are all excluded.
+        "status": {"$not": {"$regex": "^delisted$", "$options": "i"}},
+        "price_history_complete": True,
+    }
+
+
+def get_phase_c_eligible_query() -> dict:
+    """
+    MongoDB query for Phase C history download candidates.
+
+    Includes gates 1-7 (all gates EXCEPT gate 8 / price_history_complete)
+    so that newly-seeded tickers whose history hasn't been downloaded yet
+    are still eligible for Phase C processing.
+
+    Phase C is what SETS price_history_complete=True, so requiring it
+    as a precondition would create a chicken-and-egg deadlock.
+    """
+    return {
+        "is_seeded": True,
+        "has_price_data": True,
+        "sector": {"$nin": [None, ""]},
+        "industry": {"$nin": [None, ""]},
+        "shares_outstanding": {"$gt": 0},
+        "financial_currency": {"$nin": [None, ""]},
+        "is_delisted": {"$ne": True},
         "status": {"$not": {"$regex": "^delisted$", "$options": "i"}},
     }
 

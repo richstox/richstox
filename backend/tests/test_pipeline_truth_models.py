@@ -2,9 +2,9 @@
 Pipeline Truth Models Tests
 ============================
 Tests for:
-1. compute_visibility() — all 7 hard gates, fixed precedence
+1. compute_visibility() — all 8 hard gates, fixed precedence
 2. compute_visibility_failed_reason() — deterministic reason codes
-3. get_canonical_sieve_query() — matches the same 7 gates as compute_visibility
+3. get_canonical_sieve_query() — matches the same 8 gates as compute_visibility
 
 Run: cd /app/backend && python -m pytest tests/test_pipeline_truth_models.py -v
 """
@@ -18,6 +18,7 @@ from visibility_rules import (
     compute_visibility_failed_reason,
     compute_visibility_step4_only,
     get_canonical_sieve_query,
+    get_phase_c_eligible_query,
     VisibilityFailedReason,
 )
 
@@ -27,7 +28,7 @@ from visibility_rules import (
 # ---------------------------------------------------------------------------
 
 def _full_ticker(**overrides) -> dict:
-    """Return a ticker doc that passes all 7 visibility gates."""
+    """Return a ticker doc that passes all 8 visibility gates."""
     base = {
         "ticker": "TEST.US",
         "is_seeded": True,
@@ -38,6 +39,7 @@ def _full_ticker(**overrides) -> dict:
         "financial_currency": "USD",
         "is_delisted": False,
         "status": "active",
+        "price_history_complete": True,
     }
     base.update(overrides)
     return base
@@ -146,6 +148,19 @@ class TestComputeVisibilityGates:
             assert is_visible is False, f"Expected invisible for status={val!r}"
             assert reason == VisibilityFailedReason.DELISTED.value, f"status={val!r}"
 
+    def test_incomplete_history_returns_incomplete_history(self):
+        doc = _full_ticker(price_history_complete=False)
+        is_visible, reason = compute_visibility(doc)
+        assert is_visible is False
+        assert reason == VisibilityFailedReason.INCOMPLETE_HISTORY.value
+
+    def test_missing_price_history_complete_field_returns_incomplete_history(self):
+        doc = _full_ticker()
+        del doc["price_history_complete"]
+        is_visible, reason = compute_visibility(doc)
+        assert is_visible is False
+        assert reason == VisibilityFailedReason.INCOMPLETE_HISTORY.value
+
 
 # ---------------------------------------------------------------------------
 # Deterministic precedence order
@@ -155,7 +170,7 @@ class TestComputeVisibilityPrecedence:
     """
     Fixed gate order:
       NOT_SEEDED > NO_PRICE_DATA > MISSING_SECTOR > MISSING_INDUSTRY
-      > MISSING_SHARES > MISSING_CURRENCY > DELISTED
+      > MISSING_SHARES > MISSING_CURRENCY > DELISTED > INCOMPLETE_HISTORY
     """
 
     def test_not_seeded_beats_all_others(self):
@@ -193,6 +208,11 @@ class TestComputeVisibilityPrecedence:
         _, reason = compute_visibility(doc)
         assert reason == VisibilityFailedReason.MISSING_CURRENCY.value
 
+    def test_delisted_beats_incomplete_history(self):
+        doc = _full_ticker(is_delisted=True, price_history_complete=False)
+        _, reason = compute_visibility(doc)
+        assert reason == VisibilityFailedReason.DELISTED.value
+
 
 # ---------------------------------------------------------------------------
 # compute_visibility_failed_reason convenience helper
@@ -217,6 +237,7 @@ class TestComputeVisibilityFailedReason:
             _full_ticker(shares_outstanding=0),
             _full_ticker(financial_currency=None),
             _full_ticker(is_delisted=True),
+            _full_ticker(price_history_complete=False),
         ]:
             _, expected = compute_visibility(failing_doc)
             actual = compute_visibility_failed_reason(failing_doc)
@@ -323,8 +344,46 @@ class TestGetCanonicalSieveQuery:
             f"regex must be case-insensitive ($options: 'i'), got: {regex_part}"
         )
 
-    def test_sieve_all_7_gates_present(self):
+    def test_sieve_requires_price_history_complete(self):
         q = get_canonical_sieve_query()
+        assert q.get("price_history_complete") is True, "Sieve must require price_history_complete == True"
+
+    def test_sieve_all_8_gates_present(self):
+        q = get_canonical_sieve_query()
+        required_keys = {
+            "is_seeded",
+            "has_price_data",
+            "sector",
+            "industry",
+            "shares_outstanding",
+            "financial_currency",
+            "is_delisted",
+            "price_history_complete",
+        }
+        missing = required_keys - set(q.keys())
+        assert not missing, f"Sieve query is missing gates: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# get_phase_c_eligible_query — gates 1-7 (no price_history_complete)
+# ---------------------------------------------------------------------------
+
+class TestGetPhaseCEligibleQuery:
+    """Phase C eligible query must include gates 1-7 but NOT gate 8."""
+
+    def test_returns_dict(self):
+        q = get_phase_c_eligible_query()
+        assert isinstance(q, dict)
+
+    def test_does_not_require_price_history_complete(self):
+        q = get_phase_c_eligible_query()
+        assert "price_history_complete" not in q, (
+            "Phase C query must NOT require price_history_complete "
+            "(Phase C is what sets it)"
+        )
+
+    def test_includes_gates_1_through_7(self):
+        q = get_phase_c_eligible_query()
         required_keys = {
             "is_seeded",
             "has_price_data",
@@ -335,4 +394,12 @@ class TestGetCanonicalSieveQuery:
             "is_delisted",
         }
         missing = required_keys - set(q.keys())
-        assert not missing, f"Sieve query is missing gates: {missing}"
+        assert not missing, f"Phase C query is missing gates: {missing}"
+
+    def test_matches_canonical_sieve_minus_history(self):
+        """Phase C query should be identical to canonical sieve minus gate 8."""
+        canonical = get_canonical_sieve_query()
+        phase_c = get_phase_c_eligible_query()
+        # Remove gate 8 from canonical
+        canonical_without_history = {k: v for k, v in canonical.items() if k != "price_history_complete"}
+        assert phase_c == canonical_without_history

@@ -4166,10 +4166,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         if result["status"] == "completed":
             _phase_update("C", status="running", processed=0, total=None, message="Preparing price history queue", activate=True)
             await _write_step3_telemetry(force=True)
+            # Use Phase C eligible query (gates 1-7, excludes gate 8 / price_history_complete)
+            # to avoid chicken-and-egg: Phase C SETS price_history_complete, so we can't
+            # require it as a precondition.
+            from visibility_rules import get_phase_c_eligible_query
             _phase_c_cursor = db.tracked_tickers.find(
                 {
-                    **STEP3_QUERY,
-                    "is_visible": True,
+                    **get_phase_c_eligible_query(),
                     "$or": [
                         {"price_history_complete": {"$ne": True}},
                         {"needs_price_redownload": True},
