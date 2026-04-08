@@ -158,6 +158,9 @@ class _FakeStockPrices:
         _ = ordered
         return SimpleNamespace(upserted_count=len(batch), modified_count=0)
 
+    async def distinct(self, field, query=None):
+        return []
+
 
 class _FakeOpsLocks:
     """Fake ops_locks collection supporting single-flight lock operations."""

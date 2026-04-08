@@ -2267,12 +2267,55 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             {"$set": {"has_price_data": True, "updated_at": datetime.now(timezone.utc)}},
         )
 
+    # ── Preserve has_price_data for tickers NOT in today's bulk but WITH
+    # existing stock_prices records (from Phase C full history download,
+    # manual backfill, or previous bulk runs).
+    #
+    # The fast path above only considers today's bulk; without this guard,
+    # low-volume tickers that miss one bulk day (no trades) lose their
+    # has_price_data flag and fall out of STEP3_QUERY / visibility / Phase C.
+    # This is the root cause of new tickers never getting full history:
+    # they appear in one bulk, get seeded+priced, but if missing from the
+    # next bulk, has_price_data resets to False before Phase C can run.
+    not_in_bulk = list(seeded_set - with_price_set)
+    preserved_count = 0
+    if not_in_bulk:
+        _existing_raw = await db.stock_prices.distinct(
+            "ticker",
+            {
+                "ticker": {"$in": not_in_bulk},
+                "$or": [
+                    {"close": {"$gt": 0}},
+                    {"adjusted_close": {"$gt": 0}},
+                ],
+            },
+        )
+        if _existing_raw:
+            _existing_normalized = {
+                _normalize_step2_ticker(t)
+                for t in _existing_raw
+                if _normalize_step2_ticker(t)
+            } & seeded_set
+            if _existing_normalized:
+                await db.tracked_tickers.update_many(
+                    {"ticker": {"$in": list(_existing_normalized)}},
+                    {"$set": {"has_price_data": True, "updated_at": datetime.now(timezone.utc)}},
+                )
+                with_price_set |= _existing_normalized
+                preserved_count = len(_existing_normalized)
+                logger.info(
+                    "[sync_has_price_data_flags] Preserved has_price_data for "
+                    "%d tickers not in today's bulk but with existing stock_prices",
+                    preserved_count,
+                )
+
     with_price_data = len(with_price_set)
     summary = {
         "seeded_total": seeded_total,
         "with_price_data": with_price_data,
         "without_price_data": max(seeded_total - with_price_data, 0),
         "matched_price_tickers_raw": matched_raw,
+        "preserved_from_existing_stock_prices": preserved_count,
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []

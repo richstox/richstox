@@ -672,6 +672,10 @@ class TestSyncHasPriceDataFlagsGuard:
     def test_nonempty_list_uses_fast_path(self, monkeypatch):
         """When tickers_with_price has entries, fast path is used."""
 
+        class _FakeStockPricesEmpty:
+            async def distinct(self, field, query):
+                return []
+
         class _FakeTrackedTickersForFlags:
             def __init__(self, tickers):
                 self._tickers = list(tickers)
@@ -685,6 +689,7 @@ class TestSyncHasPriceDataFlagsGuard:
         class _FakeDBForFlags:
             def __init__(self, tickers):
                 self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
+                self.stock_prices = _FakeStockPricesEmpty()
 
         seeded = ["AAPL.US", "MSFT.US"]
         db = _FakeDBForFlags(seeded)
@@ -698,6 +703,62 @@ class TestSyncHasPriceDataFlagsGuard:
         )
 
         assert result["with_price_data"] == 2
+
+    def test_fast_path_preserves_existing_stock_prices(self, monkeypatch):
+        """Tickers NOT in today's bulk but WITH existing stock_prices keep has_price_data=True."""
+
+        # Track which tickers had their has_price_data set to True
+        set_true_tickers = set()
+
+        class _FakeStockPricesWithExisting:
+            async def distinct(self, field, query):
+                # NYC.US has existing stock_prices from Phase C full history download
+                tickers_queried = query.get("ticker", {}).get("$in", [])
+                return [t for t in tickers_queried if t in ("NYC.US",)]
+
+        class _FakeTrackedTickersForFlags:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+
+            def find(self, query, projection=None):
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+
+            async def update_many(self, filt, update):
+                if update.get("$set", {}).get("has_price_data") is True:
+                    tickers_in = filt.get("ticker", {}).get("$in", [])
+                    set_true_tickers.update(tickers_in)
+                return SimpleNamespace(modified_count=0)
+
+        class _FakeDBForFlags:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickersForFlags(tickers)
+                self.stock_prices = _FakeStockPricesWithExisting()
+
+        # AAPL.US is in today's bulk, NYC.US is NOT in today's bulk
+        # but NYC.US has existing stock_prices from Phase C
+        seeded = ["AAPL.US", "NYC.US"]
+        db = _FakeDBForFlags(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US"],  # NYC.US NOT in today's bulk
+            )
+        )
+
+        # Both tickers should have has_price_data=True:
+        # AAPL.US from bulk, NYC.US from existing stock_prices
+        assert result["with_price_data"] == 2, (
+            f"Expected 2 tickers with price data, got {result['with_price_data']}. "
+            f"NYC.US should be preserved from existing stock_prices."
+        )
+        assert result["preserved_from_existing_stock_prices"] == 1, (
+            f"Expected 1 preserved ticker, got {result.get('preserved_from_existing_stock_prices', 0)}"
+        )
+        assert "NYC.US" in set_true_tickers, (
+            "NYC.US should have been set to has_price_data=True via preservation"
+        )
 
 
 # =============================================================================
