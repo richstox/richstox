@@ -44,8 +44,8 @@ logger = logging.getLogger("richstox.scheduler")
 # Constants
 SCHEDULER_CONFIG_KEY = "scheduler_enabled"
 SEED_QUERY = {"exchange": {"$in": ["NYSE", "NASDAQ"]}, "asset_type": "Common Stock", "is_seeded": True}
-# Canonical Step 3 universe — tickers that are seeded and present in the
-# latest bulk with close > 0 (has_price_data == has_latest_bulk_close).
+# Canonical Step 3 universe — tickers that are seeded and have price data.
+# has_price_data is True for tickers in today's bulk OR with existing stock_prices.
 # This is the exact filter used by universe_counts_service step3_query and
 # is the source of truth for "Tickers with prices" on the Step 3 pipeline card.
 STEP3_QUERY = {**SEED_QUERY, "has_price_data": True}
@@ -2179,14 +2179,18 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
 
     Sets THREE fields on each tracked_ticker document:
 
-    - **has_latest_bulk_close** (+ backward-compat alias **has_price_data**):
-      True ONLY if the ticker appeared in the processed bulk for this run
-      with close > 0.  This is the visibility gate — a ticker missing from
-      today's bulk becomes invisible.  NO historical preservation.
+    - **has_latest_bulk_close**: True ONLY if the ticker appeared in the
+      processed bulk for this run with close > 0.  Informational — tracks
+      whether the ticker is "active" in today's EODHD bulk feed.
+
+    - **has_price_data** (visibility gate): True if the ticker appeared
+      in today's bulk **OR** has ANY existing ``stock_prices`` record with
+      close > 0.  Tickers absent from today's bulk but with historical
+      data remain visible so their chart keeps working.
 
     - **has_price_history**: True if the ticker has ANY historical record
       in ``stock_prices`` with close > 0 (from Phase C, manual backfill,
-      or previous bulk runs).  Informational — NOT used for visibility.
+      or previous bulk runs).  Same as has_price_data for non-bulk tickers.
 
     When *tickers_with_price* is a non-empty list (normal trading day),
     flags are reset-and-set from that list exclusively.
@@ -2293,7 +2297,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             {"ticker": {"$in": seeded_tickers}},
             {"$set": {
                 "has_latest_bulk_close": False,
-                "has_price_data": False,   # backward compat alias
+                "has_price_data": False,
                 "has_price_history": False,
                 "updated_at": now_ts,
             }},
@@ -2304,16 +2308,19 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
                 {"ticker": {"$in": list(bulk_close_set)}},
                 {"$set": {
                     "has_latest_bulk_close": True,
-                    "has_price_data": True,  # backward compat alias
+                    "has_price_data": True,
                     "has_price_history": True,  # bulk tickers have at least today's price
                     "updated_at": now_ts,
                 }},
             )
 
-        # ── Compute has_price_history for tickers NOT in today's bulk ────
-        # These tickers may have historical stock_prices from Phase C,
-        # manual backfill, or previous bulk runs.  has_price_history is
-        # informational only — it does NOT affect visibility.
+        # ── Preserve visibility for tickers NOT in today's bulk ──────────
+        # Tickers absent from today's EODHD bulk but with existing
+        # stock_prices records (from Phase C, manual backfill, or previous
+        # bulk runs) must keep has_price_data=True so they remain visible
+        # and their chart keeps working.  Missing from today's bulk is
+        # NOT a gap — it means the ticker wasn't listed in the EODHD feed
+        # for that day.
         not_in_bulk = list(seeded_set - bulk_close_set)
         if not_in_bulk:
             _existing_raw = await db.stock_prices.distinct(
@@ -2334,27 +2341,34 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
                 if _existing_normalized:
                     await db.tracked_tickers.update_many(
                         {"ticker": {"$in": list(_existing_normalized)}},
-                        {"$set": {"has_price_history": True, "updated_at": now_ts}},
+                        {"$set": {
+                            "has_price_data": True,
+                            "has_price_history": True,
+                            "updated_at": now_ts,
+                        }},
                     )
                     history_only_count = len(_existing_normalized)
                     logger.info(
                         "[sync_has_price_data_flags] %d tickers not in today's "
                         "bulk but with existing stock_prices → "
-                        "has_price_history=true (NOT visible)",
+                        "has_price_data=true, has_price_history=true "
+                        "(preserved visibility)",
                         history_only_count,
                     )
 
     with_bulk_close = len(bulk_close_set)
+    preserved_from_existing = history_only_count  # tickers with stock_prices but not in bulk
     summary: Dict[str, Any] = {
         "seeded_total": seeded_total,
         "with_latest_bulk_close": with_bulk_close,
+        "preserved_from_existing_stock_prices": preserved_from_existing,
         "with_price_history_only": history_only_count,
         "without_any_price": max(seeded_total - with_bulk_close - history_only_count, 0),
         "matched_price_tickers_raw": matched_raw,
         "skipped_flag_reset": skip_bulk_flag_reset,
-        # backward compat keys — same values as has_latest_bulk_close
-        "with_price_data": with_bulk_close,
-        "without_price_data": max(seeded_total - with_bulk_close, 0),
+        # has_price_data = bulk tickers + preserved tickers
+        "with_price_data": with_bulk_close + preserved_from_existing,
+        "without_price_data": max(seeded_total - with_bulk_close - preserved_from_existing, 0),
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []

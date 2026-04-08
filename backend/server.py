@@ -29,7 +29,7 @@ is_visible = is_seeded && has_price_data && has_classification
 
 Where:
 - is_seeded: NYSE/NASDAQ + Common Stock
-- has_price_data: present in latest bulk with close > 0 (= has_latest_bulk_close; NO historical preservation)
+- has_price_data: in latest bulk with close > 0 OR has existing stock_prices (preserved visibility)
 - has_classification: sector AND industry are non-empty
 
 Note: has_price_history is a separate informational flag (any stock_prices exist)
@@ -6540,11 +6540,11 @@ async def get_visibility_audit():
             },
             {
                 "step": 3,
-                "name": "In Latest Bulk (has_latest_bulk_close)",
-                "query": "+ has_price_data == true (= has_latest_bulk_close)",
+                "name": "Has Price Data (bulk or historical)",
+                "query": "+ has_price_data == true (bulk or existing stock_prices)",
                 "count": step3_has_price,
                 "lost": step2_common_stock - step3_has_price,
-                "lost_reason": "Not in latest bulk (has_latest_bulk_close=false)"
+                "lost_reason": "No price data (not in bulk and no stock_prices history)"
             },
             {
                 "step": 4,
