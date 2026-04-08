@@ -705,15 +705,17 @@ class TestSyncHasPriceDataFlagsGuard:
         assert result["with_price_data"] == 2
         assert result["with_latest_bulk_close"] == 2
 
-    def test_ticker_not_in_bulk_preserves_visibility(self, monkeypatch):
-        """Ticker NOT in today's bulk but WITH stock_prices keeps has_price_data=True."""
+    def test_ticker_not_in_bulk_becomes_invisible(self, monkeypatch):
+        """Ticker NOT in today's bulk gets has_price_data=False (invisible),
+        even if it has existing stock_prices records."""
 
         # Track which tickers get which flag values
         flag_writes: dict = {}
 
         class _FakeStockPricesWithExisting:
             async def distinct(self, field, query):
-                # NYC.US has existing stock_prices from Phase C
+                # NYC.US has existing stock_prices from Phase C —
+                # but that must NOT preserve visibility.
                 tickers_queried = query.get("ticker", {}).get("$in", [])
                 return [t for t in tickers_queried if t in ("NYC.US",)]
 
@@ -755,21 +757,14 @@ class TestSyncHasPriceDataFlagsGuard:
             f"Expected 1 ticker with bulk close, got {result['with_latest_bulk_close']}"
         )
 
-        # has_price_data should include BOTH bulk tickers AND preserved tickers
-        assert result["with_price_data"] == 2, (
-            "has_price_data should include bulk (AAPL) + preserved (NYC)"
-        )
-        assert result["preserved_from_existing_stock_prices"] == 1, (
-            "Expected 1 preserved ticker (NYC.US)"
+        # has_price_data = bulk tickers ONLY (no preservation)
+        assert result["with_price_data"] == 1, (
+            "has_price_data should include ONLY bulk tickers (AAPL), not preserved"
         )
 
-        # NYC.US should have has_price_data=True (preserved from stock_prices),
-        # has_price_history=True, but has_latest_bulk_close=False
-        assert flag_writes.get("NYC.US", {}).get("has_price_data") is True, (
-            "NYC.US must have has_price_data=True (preserved from stock_prices)"
-        )
-        assert flag_writes.get("NYC.US", {}).get("has_price_history") is True, (
-            "NYC.US should have has_price_history=True (exists in stock_prices)"
+        # NYC.US must have has_price_data=False — NOT in today's bulk
+        assert flag_writes.get("NYC.US", {}).get("has_price_data") is False, (
+            "NYC.US must have has_price_data=False (not in today's bulk)"
         )
         assert flag_writes.get("NYC.US", {}).get("has_latest_bulk_close") is False, (
             "NYC.US must NOT have has_latest_bulk_close=True (not in today's bulk)"
