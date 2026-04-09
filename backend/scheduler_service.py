@@ -2318,8 +2318,6 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         #      trading-day gap; not just a single-day flicker).
         #   2. 7-day cooldown: full_history_downloaded_at must be > 7 days ago
         #      (or absent) — prevents unnecessary re-download churn.
-        _returning_cooldown_skipped = 0
-        _returning_no_gap_skipped = 0
         if bulk_close_set:
             _returning_cursor = await db.tracked_tickers.find(
                 {
@@ -2409,7 +2407,6 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         # Write exclusion entries so the gap-free metric ignores them and
         # the chart endpoint can show data_notices to customers.
         not_in_bulk = seeded_set - bulk_close_set
-        _excl_written = 0
         if not_in_bulk and bulk_date:
             from pymongo import UpdateOne as _ExclUpdateOne
             _excl_ops = [
