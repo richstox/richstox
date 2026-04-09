@@ -97,6 +97,8 @@ STEP2_SANITY_THRESHOLD_USED = (
     f"matched_seeded_tickers_count >= {MIN_BULK_MATCHED_SEEDED_SANITY_CHECK}"
 )
 MAX_BULK_GAPFILL_DAYS_HISTORY = 60
+# Max 1 full-history redownload per ticker per this many days.
+_REDOWNLOAD_COOLDOWN_DAYS = 7
 
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
@@ -1867,6 +1869,7 @@ async def run_daily_price_sync(
         price_flag_summary = await sync_has_price_data_flags(
             db, include_exclusions=True,
             tickers_with_price=_bulk_tickers_with_price,
+            bulk_date=_last_closing_day,
         )
         seeded_total = price_flag_summary["seeded_total"]
         with_price = price_flag_summary["with_price_data"]
@@ -2173,7 +2176,7 @@ async def run_daily_price_sync(
         await _release_price_sync_resources()
 
 
-async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None) -> Dict[str, Any]:
+async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None, bulk_date: Optional[str] = None) -> Dict[str, Any]:
     """
     Recompute price-related flags for seeded US Common Stock universe.
 
@@ -2192,6 +2195,19 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
       in ``stock_prices`` with close > 0 (from Phase C, manual backfill,
       or previous bulk runs).  Informational only — does NOT gate
       visibility.
+
+    Side-effects:
+
+    - **gap_free_exclusions**: When *bulk_date* is provided and tickers
+      are NOT in today's bulk, writes ``gap_free_exclusions`` entries
+      (date=bulk_date, reason="not_in_bulk_data") so they are excluded
+      from the gap-free metric and shown as data_notices in the chart.
+
+    - **Re-download trigger**: Tickers that were absent from yesterday's
+      bulk (has_latest_bulk_close=False) but appear in today's bulk AND
+      had ``price_history_complete=True`` are flagged with
+      ``needs_price_redownload=True`` so Phase C re-downloads their full
+      price history on the next run.
 
     When *tickers_with_price* is a non-empty list (normal trading day),
     flags are reset-and-set from that list exclusively.
@@ -2232,6 +2248,10 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     # ── Tracks whether we should write bulk-close flags this run ─────────
     skip_bulk_flag_reset = False
     any_price_set: Set[str] = set()  # for exclusion-report "close=0" distinction
+    returning_tickers: Set[str] = set()  # tickers absent yesterday, back today
+    _excl_written = 0
+    _returning_cooldown_skipped = 0
+    _returning_no_gap_skipped = 0
 
     if tickers_with_price is not None and len(tickers_with_price) > 0:
         # ── Normal trading day: bulk data available ──────────────────────
@@ -2290,6 +2310,45 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     # ── Reset & set has_latest_bulk_close + has_price_data (visibility gate) ──
     if not skip_bulk_flag_reset:
         now_ts = datetime.now(timezone.utc)
+
+        # ── Detect "returning" tickers: absent from yesterday's bulk but
+        # present in today's AND had completed history before.
+        # Guards:
+        #   1. Proven gap window: last_seen_in_bulk_date < bulk_date (actual
+        #      trading-day gap; not just a single-day flicker).
+        #   2. 7-day cooldown: full_history_downloaded_at must be > 7 days ago
+        #      (or absent) — prevents unnecessary re-download churn.
+        if bulk_close_set:
+            _returning_cursor = await db.tracked_tickers.find(
+                {
+                    "ticker": {"$in": list(bulk_close_set)},
+                    "has_latest_bulk_close": {"$ne": True},
+                    "price_history_complete": True,
+                },
+                {"_id": 0, "ticker": 1,
+                 "last_seen_in_bulk_date": 1,
+                 "full_history_downloaded_at": 1},
+            ).to_list(None)
+
+            _cooldown_cutoff = now_ts - timedelta(days=_REDOWNLOAD_COOLDOWN_DAYS)
+            for _rdoc in _returning_cursor:
+                _rticker = _rdoc["ticker"]
+                _last_seen = _rdoc.get("last_seen_in_bulk_date")
+                _last_dl = _rdoc.get("full_history_downloaded_at")
+
+                # Guard 1: proven gap window — last_seen_in_bulk_date must
+                # exist and be strictly before today's bulk_date.
+                if bulk_date and _last_seen and _last_seen >= bulk_date:
+                    _returning_no_gap_skipped += 1
+                    continue
+
+                # Guard 2: 7-day cooldown on full-history re-downloads.
+                if _last_dl and isinstance(_last_dl, datetime) and _last_dl > _cooldown_cutoff:
+                    _returning_cooldown_skipped += 1
+                    continue
+
+                returning_tickers.add(_rticker)
+
         # Reset ALL seeded tickers — both bulk-close and history flags
         await db.tracked_tickers.update_many(
             {"ticker": {"$in": seeded_tickers}},
@@ -2302,18 +2361,81 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         )
         # Set True for tickers present in this bulk with close > 0
         if bulk_close_set:
+            _bulk_set_fields: Dict[str, Any] = {
+                "has_latest_bulk_close": True,
+                "has_price_data": True,
+                "has_price_history": True,  # bulk tickers have at least today's price
+                "updated_at": now_ts,
+            }
+            if bulk_date:
+                _bulk_set_fields["last_seen_in_bulk_date"] = bulk_date
             await db.tracked_tickers.update_many(
                 {"ticker": {"$in": list(bulk_close_set)}},
+                {"$set": _bulk_set_fields},
+            )
+
+        # ── Flag returning tickers for Phase C re-download ───────────────
+        # Only tickers that passed both guards (gap window + cooldown) are
+        # flagged.  Their historical data may be stale, so Phase C must
+        # re-download the complete price history (one API call per ticker).
+        if returning_tickers:
+            await db.tracked_tickers.update_many(
+                {"ticker": {"$in": list(returning_tickers)}},
                 {"$set": {
-                    "has_latest_bulk_close": True,
-                    "has_price_data": True,
-                    "has_price_history": True,  # bulk tickers have at least today's price
+                    "needs_price_redownload": True,
+                    "price_history_complete": False,
+                    "price_history_status": "pending_redownload_returning",
                     "updated_at": now_ts,
                 }},
+            )
+            logger.info(
+                "[sync_has_price_data_flags] %d tickers returning to bulk "
+                "after absence → needs_price_redownload=True "
+                "(Phase C will re-download full history) "
+                "[cooldown_skipped=%d, no_gap_window_skipped=%d]",
+                len(returning_tickers),
+                _returning_cooldown_skipped,
+                _returning_no_gap_skipped,
             )
 
         # No preservation: tickers NOT in today's bulk get has_price_data=False.
         # Visibility requires presence in the latest EODHD bulk with close > 0.
+
+        # ── Auto-populate gap_free_exclusions for not-in-bulk tickers ────
+        # A ticker absent from EODHD bulk is NOT a gap — it simply wasn't
+        # in the feed (halted, delisted, no trade, provider omission).
+        # Write exclusion entries so the gap-free metric ignores them and
+        # the chart endpoint can show data_notices to customers.
+        not_in_bulk = seeded_set - bulk_close_set
+        if not_in_bulk and bulk_date:
+            from pymongo import UpdateOne as _ExclUpdateOne
+            _excl_ops = [
+                _ExclUpdateOne(
+                    {"ticker": t, "date": bulk_date},
+                    {"$set": {
+                        "ticker": t,
+                        "date": bulk_date,
+                        "reason": "not_in_bulk_data",
+                        "bulk_found": False,
+                        "updated_at": now_ts,
+                    }},
+                    upsert=True,
+                )
+                for t in not_in_bulk
+            ]
+            try:
+                await db.gap_free_exclusions.bulk_write(_excl_ops, ordered=False)
+                _excl_written = len(_excl_ops)
+                logger.info(
+                    "[sync_has_price_data_flags] wrote %d gap_free_exclusions "
+                    "for tickers not in bulk (date=%s)",
+                    _excl_written, bulk_date,
+                )
+            except Exception as _excl_err:
+                logger.warning(
+                    "[sync_has_price_data_flags] failed to write gap_free_exclusions: %s",
+                    _excl_err,
+                )
 
     with_bulk_close = len(bulk_close_set)
     summary: Dict[str, Any] = {
@@ -2325,6 +2447,10 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         # has_price_data = bulk tickers ONLY (no preservation)
         "with_price_data": with_bulk_close,
         "without_price_data": max(seeded_total - with_bulk_close, 0),
+        "returning_tickers_flagged_for_redownload": len(returning_tickers),
+        "returning_tickers_cooldown_skipped": _returning_cooldown_skipped,
+        "returning_tickers_no_gap_window_skipped": _returning_no_gap_skipped,
+        "gap_free_exclusions_written": _excl_written,
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []
