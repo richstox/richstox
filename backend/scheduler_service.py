@@ -100,6 +100,16 @@ MAX_BULK_GAPFILL_DAYS_HISTORY = 60
 # Max 1 full-history redownload per ticker per this many days.
 _REDOWNLOAD_COOLDOWN_DAYS = 7
 
+# Gap remediation: reasons that indicate the gap is NOT-APPLICABLE
+# (ticker absent or close=0 — not a true data gap).
+# Shared between remediate_gap_date and run_bulk_gapfill_remediation.
+_NOT_APPLICABLE_REASONS = frozenset({
+    "not_in_bulk_not_in_api",
+    "bulk_found_but_close_is_zero",
+    "bulk_close_zero_api_returned_empty",
+    "api_returned_only_zero_price",
+})
+
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
@@ -5003,12 +5013,8 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
                     )
                     day_entry["exclusions_written"] = len([
                         r for r in gap_result.get("proof_table", [])
-                        if not r.get("inserted") and r.get("primary_reason") in {
-                            "not_in_bulk_not_in_api",
-                            "bulk_found_but_close_is_zero",
-                            "bulk_close_zero_api_returned_empty",
-                            "api_returned_only_zero_price",
-                        }
+                        if not r.get("inserted")
+                        and r.get("primary_reason") in _NOT_APPLICABLE_REASONS
                     ])
 
                     if gap_status == "error":
@@ -6004,12 +6010,6 @@ async def remediate_gap_date(
         # ── Persist gap-free exclusion for NOT-APPLICABLE cases ──────
         # If the ticker is legitimately absent (not in bulk or close=0),
         # record this so the gap-free metric excludes it.
-        _NOT_APPLICABLE_REASONS = {
-            "not_in_bulk_not_in_api",
-            "bulk_found_but_close_is_zero",
-            "bulk_close_zero_api_returned_empty",
-            "api_returned_only_zero_price",
-        }
         if not inserted and row["primary_reason"] in _NOT_APPLICABLE_REASONS:
             try:
                 await db.gap_free_exclusions.update_one(

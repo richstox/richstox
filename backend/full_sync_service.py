@@ -242,7 +242,7 @@ async def _process_price_ticker(
                 "price_history_status": "suspect_incomplete",
                 "price_history_complete_as_of": complete_as_of,
                 "history_download_records": len(ops),
-                "history_download_failed_at": datetime.now(timezone.utc),
+                "history_download_suspect_at": datetime.now(timezone.utc),
                 "history_download_error": (
                     f"only_{len(ops)}_records_returned"
                 ),
