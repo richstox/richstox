@@ -880,7 +880,8 @@ class TestSyncHasPriceDataFlagsGuard:
 
     def test_returning_ticker_flagged_for_redownload(self, monkeypatch):
         """Ticker absent from yesterday's bulk but back in today's bulk
-        with price_history_complete=True gets needs_price_redownload=True."""
+        with price_history_complete=True AND proven gap window AND no
+        recent full-history download → gets needs_price_redownload=True."""
 
         flag_writes: dict = {}
         find_queries: list = []
@@ -894,7 +895,12 @@ class TestSyncHasPriceDataFlagsGuard:
                 if "has_latest_bulk_close" in query:
                     # NYC.US was absent yesterday (has_latest_bulk_close=False)
                     # and has price_history_complete=True
-                    return _FakeCursor([{"ticker": "NYC.US"}])
+                    # last_seen was 3 days ago (proven gap), no recent download
+                    return _FakeCursor([{
+                        "ticker": "NYC.US",
+                        "last_seen_in_bulk_date": "2026-03-30",
+                        "full_history_downloaded_at": None,
+                    }])
                 return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
             async def update_many(self, filt, update):
                 set_fields = update.get("$set", {})
@@ -930,6 +936,8 @@ class TestSyncHasPriceDataFlagsGuard:
         assert result["returning_tickers_flagged_for_redownload"] == 1, (
             f"Expected 1 returning ticker, got {result['returning_tickers_flagged_for_redownload']}"
         )
+        assert result["returning_tickers_cooldown_skipped"] == 0
+        assert result["returning_tickers_no_gap_window_skipped"] == 0
         # NYC.US should have needs_price_redownload=True
         assert flag_writes.get("NYC.US", {}).get("needs_price_redownload") is True, (
             "NYC.US must have needs_price_redownload=True after returning to bulk"
@@ -940,6 +948,126 @@ class TestSyncHasPriceDataFlagsGuard:
         # AAPL.US should NOT be flagged for redownload (was continuously in bulk)
         assert flag_writes.get("AAPL.US", {}).get("needs_price_redownload") is not True, (
             "AAPL.US must NOT have needs_price_redownload=True (not a returning ticker)"
+        )
+
+    def test_returning_ticker_cooldown_skipped(self, monkeypatch):
+        """Returning ticker with full_history_downloaded_at within 7 days
+        is NOT flagged for redownload (cooldown guard)."""
+
+        from datetime import datetime, timezone, timedelta
+        flag_writes: dict = {}
+
+        _recent_download = datetime.now(timezone.utc) - timedelta(days=2)
+
+        class _FakeTrackedTickers:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+            def find(self, query, projection=None):
+                if "has_latest_bulk_close" in query:
+                    # NYC.US was absent but downloaded 2 days ago — cooldown
+                    return _FakeCursor([{
+                        "ticker": "NYC.US",
+                        "last_seen_in_bulk_date": "2026-03-30",
+                        "full_history_downloaded_at": _recent_download,
+                    }])
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+            async def update_many(self, filt, update):
+                set_fields = update.get("$set", {})
+                tickers_in = filt.get("ticker", {}).get("$in", [])
+                for t in tickers_in:
+                    if t not in flag_writes:
+                        flag_writes[t] = {}
+                    flag_writes[t].update(set_fields)
+                return SimpleNamespace(modified_count=1)
+
+        class _FakeGapFreeExclusions:
+            async def bulk_write(self, ops, ordered=False):
+                return SimpleNamespace(upserted_count=len(ops))
+
+        class _FakeDB:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickers(tickers)
+                self.gap_free_exclusions = _FakeGapFreeExclusions()
+
+        seeded = ["AAPL.US", "NYC.US"]
+        db = _FakeDB(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US", "NYC.US"],
+                bulk_date="2026-04-02",
+            )
+        )
+
+        assert result["returning_tickers_flagged_for_redownload"] == 0, (
+            "Should be 0 — cooldown guard should prevent redownload"
+        )
+        assert result["returning_tickers_cooldown_skipped"] == 1, (
+            "NYC.US should be cooldown-skipped"
+        )
+        # NYC.US should NOT have needs_price_redownload=True
+        assert flag_writes.get("NYC.US", {}).get("needs_price_redownload") is not True, (
+            "NYC.US must NOT be flagged for redownload during cooldown"
+        )
+
+    def test_returning_ticker_no_gap_window_skipped(self, monkeypatch):
+        """Returning ticker whose last_seen_in_bulk_date == bulk_date
+        is NOT flagged (no proven gap window)."""
+
+        flag_writes: dict = {}
+
+        class _FakeTrackedTickers:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+            def find(self, query, projection=None):
+                if "has_latest_bulk_close" in query:
+                    # NYC.US last_seen equals today's bulk_date → no gap
+                    return _FakeCursor([{
+                        "ticker": "NYC.US",
+                        "last_seen_in_bulk_date": "2026-04-02",
+                        "full_history_downloaded_at": None,
+                    }])
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+            async def update_many(self, filt, update):
+                set_fields = update.get("$set", {})
+                tickers_in = filt.get("ticker", {}).get("$in", [])
+                for t in tickers_in:
+                    if t not in flag_writes:
+                        flag_writes[t] = {}
+                    flag_writes[t].update(set_fields)
+                return SimpleNamespace(modified_count=1)
+
+        class _FakeGapFreeExclusions:
+            async def bulk_write(self, ops, ordered=False):
+                return SimpleNamespace(upserted_count=len(ops))
+
+        class _FakeDB:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickers(tickers)
+                self.gap_free_exclusions = _FakeGapFreeExclusions()
+
+        seeded = ["AAPL.US", "NYC.US"]
+        db = _FakeDB(seeded)
+
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US", "NYC.US"],
+                bulk_date="2026-04-02",
+            )
+        )
+
+        assert result["returning_tickers_flagged_for_redownload"] == 0, (
+            "Should be 0 — no gap window"
+        )
+        assert result["returning_tickers_no_gap_window_skipped"] == 1, (
+            "NYC.US should be no-gap-window-skipped"
+        )
+        assert flag_writes.get("NYC.US", {}).get("needs_price_redownload") is not True, (
+            "NYC.US must NOT be flagged for redownload (no proven gap)"
         )
 
 

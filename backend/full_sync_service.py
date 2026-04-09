@@ -226,6 +226,11 @@ async def _process_price_ticker(
             # Strict proof marker — canonical source for history_download_completed
             "history_download_proven_at": datetime.now(timezone.utc),
             "history_download_proven_anchor": complete_as_of,
+            # Full-history download provenance — used by returning-ticker
+            # cooldown guard to prevent unnecessary re-download churn.
+            "full_history_downloaded_at": datetime.now(timezone.utc),
+            "full_history_source": "eodhd_eod_api",
+            "full_history_version": 1,
             # Computed fields — kept in sync so dashboard facet reads work
             # without requiring a separate backfill run.
             "history_download_completed": True,

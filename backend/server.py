@@ -4446,8 +4446,7 @@ async def get_ticker_chart_data(
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     SP500TR_TICKER = "SP500TR.INDX"
     _DATA_NOTICE_GENERIC = (
-        "Data notice: Some daily closes are unavailable "
-        "(halted/delisted/no trade or provider gap)."
+        "Notification: This stock is not traded every day."
     )
 
     # Calculate start date based on period
