@@ -4915,8 +4915,14 @@ async def _get_remediation_processed_dates_set(db) -> set:
 async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
     """
     Detect missing dates among the last 10 completed trading days and
-    remediate up to MAX_REMEDIATION_DAYS_PER_RUN using per-ticker
-    fetch_eod_history fallback.
+    remediate up to MAX_REMEDIATION_DAYS_PER_RUN by delegating each date
+    to ``remediate_gap_date``.
+
+    Each delegation:
+    - Pre-fetches EODHD bulk data once per date (1 API call, not N)
+    - Processes only gap tickers (proven + visible, missing DB row)
+    - Writes ``gap_free_exclusions`` for NOT-APPLICABLE cases so the
+      gap-free metric and chart data_notices stay accurate
 
     Writes audit proof to ops_job_runs under job_name="bulk_gapfill_remediation"
     using the same details.price_bulk_gapfill.days[] structure the dashboard
@@ -4925,7 +4931,6 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
     Does NOT advance the global watermark (pipeline_state._id="price_bulk").
     """
     from services.market_calendar_service import last_n_completed_trading_days
-    from price_ingestion_service import fetch_eod_history, parse_eod_record
 
     started_at = datetime.now(timezone.utc)
     job_name = "bulk_gapfill_remediation"
@@ -4972,13 +4977,6 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
         if not dates_to_fix:
             logger.info("[GAPFILL REMEDIATION] No missing dates to remediate")
         else:
-            # Load seeded ticker set
-            seeded_docs = await db.tracked_tickers.find(
-                SEED_QUERY, {"_id": 0, "ticker": 1}
-            ).to_list(None)
-            seeded_tickers = sorted({d["ticker"] for d in seeded_docs if d.get("ticker")})
-            logger.info(f"[GAPFILL REMEDIATION] {len(seeded_tickers)} seeded tickers loaded")
-
             for target_date in dates_to_fix:
                 day_entry: Dict[str, Any] = {
                     "processed_date": target_date,
@@ -4986,48 +4984,42 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
                     "rows_written": 0,
                     "advanced_watermark": False,
                     "error": None,
-                    "source": "per_ticker_fallback",
+                    "source": "remediate_gap_date",
                 }
 
                 try:
-                    rows_written = 0
-                    batch_ops = []
-
-                    for ticker in seeded_tickers:
-                        try:
-                            records = await fetch_eod_history(
-                                ticker, from_date=target_date, to_date=target_date
-                            )
-                            for record in records:
-                                parsed = parse_eod_record(ticker, record)
-                                if not parsed.get("date"):
-                                    continue
-                                batch_ops.append(
-                                    UpdateOne(
-                                        {"ticker": parsed["ticker"], "date": parsed["date"]},
-                                        {"$set": parsed},
-                                        upsert=True,
-                                    )
-                                )
-                        except Exception as ticker_err:
-                            logger.warning(
-                                f"[GAPFILL REMEDIATION] Ticker {ticker} date {target_date} "
-                                f"error: {ticker_err}"
-                            )
-
-                    # Bulk-write collected operations
-                    if batch_ops:
-                        write_result = await db.stock_prices.bulk_write(
-                            batch_ops, ordered=False
-                        )
-                        rows_written = (
-                            write_result.upserted_count + write_result.modified_count
-                        )
+                    # Delegate to remediate_gap_date which:
+                    # - pre-fetches bulk data once (1 API call vs N)
+                    # - only processes gap tickers (not all seeded)
+                    # - writes gap_free_exclusions for NOT-APPLICABLE cases
+                    gap_result = await remediate_gap_date(db, target_date)
+                    gap_status = gap_result.get("status", "error")
+                    rows_written = gap_result.get("total_inserted", 0)
 
                     day_entry["rows_written"] = rows_written
-                    day_entry["status"] = "success"
+                    day_entry["status"] = gap_status
+                    day_entry["gap_tickers_count"] = gap_result.get(
+                        "gap_tickers_count", 0
+                    )
+                    day_entry["exclusions_written"] = len([
+                        r for r in gap_result.get("proof_table", [])
+                        if not r.get("inserted") and r.get("primary_reason") in {
+                            "not_in_bulk_not_in_api",
+                            "bulk_found_but_close_is_zero",
+                            "bulk_close_zero_api_returned_empty",
+                            "api_returned_only_zero_price",
+                        }
+                    ])
+
+                    if gap_status == "error":
+                        overall_status = "error"
+
                     logger.info(
-                        f"[GAPFILL REMEDIATION] {target_date}: {rows_written} rows written"
+                        "[GAPFILL REMEDIATION] %s: %d rows written, "
+                        "%d gap tickers, %d exclusions via remediate_gap_date",
+                        target_date, rows_written,
+                        day_entry["gap_tickers_count"],
+                        day_entry["exclusions_written"],
                     )
 
                 except Exception as day_err:

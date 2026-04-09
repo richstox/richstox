@@ -24,6 +24,13 @@ EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
 BULK_CHUNK = 10000
 
+# Minimum expected records for a full EOD history download.
+# A legitimate US stock typically has 250+ trading days per year.
+# Fewer than this threshold suggests truncated / incomplete data from the
+# EODHD API — we still store what we got but do NOT mark the download as
+# "complete" so Phase C retries on the next run.
+_MIN_HISTORY_RECORDS = 10
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -215,6 +222,40 @@ async def _process_price_ticker(
 
     if await _should_cancel():
         return await _cancel_result(records=processed_ops)
+
+    # ── Suspicious download guard ────────────────────────────────────
+    # A real full-history download should return hundreds/thousands of
+    # records.  If the API returned fewer than _MIN_HISTORY_RECORDS, the
+    # data is likely truncated (EODHD hiccup, new listing, etc.).
+    # We still persist the records we got but do NOT mark the ticker as
+    # "complete" — Phase C will retry on the next run.
+    if len(ops) < _MIN_HISTORY_RECORDS:
+        logger.warning(
+            "[Phase C] %s: only %d records returned — suspiciously low. "
+            "Data written but NOT marking price_history_complete=True so "
+            "Phase C retries on the next run.",
+            ticker_us, len(ops),
+        )
+        await db.tracked_tickers.update_one(
+            {"ticker": ticker_us},
+            {"$set": {
+                "price_history_status": "suspect_incomplete",
+                "price_history_complete_as_of": complete_as_of,
+                "history_download_records": len(ops),
+                "history_download_failed_at": datetime.now(timezone.utc),
+                "history_download_error": (
+                    f"only_{len(ops)}_records_returned"
+                ),
+                "needs_price_redownload": False,
+            }},
+        )
+        return {
+            "ticker": ticker_us,
+            "success": False,
+            "records": len(ops),
+            "rate_limited": False,
+            "suspect_incomplete": True,
+        }
 
     await db.tracked_tickers.update_one(
         {"ticker": ticker_us},
