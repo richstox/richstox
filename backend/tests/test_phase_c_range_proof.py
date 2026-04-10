@@ -124,11 +124,29 @@ class TestCheckRangeProof:
 
     def test_db_within_tolerance_passes(self):
         from full_sync_service import _check_range_proof, _RANGE_PROOF_TOLERANCE_DAYS
-        # DB first date is tolerance_days after provider first → still OK
+        # DB first date 3 days after provider first, DB last 2 days before provider last
         assert _check_range_proof(
             "2020-01-01", "2026-04-08",
             "2020-01-04", "2026-04-06",
         ) is True
+
+    def test_db_exactly_at_tolerance_boundary_passes(self):
+        from full_sync_service import _check_range_proof, _RANGE_PROOF_TOLERANCE_DAYS
+        # DB first date is EXACTLY tolerance_days after provider first → edge, still OK
+        assert _RANGE_PROOF_TOLERANCE_DAYS == 5, "Test assumes tolerance=5"
+        assert _check_range_proof(
+            "2020-01-01", "2026-04-08",
+            "2020-01-06", "2026-04-03",  # +5d first, -5d last
+        ) is True
+
+    def test_db_one_day_past_tolerance_fails(self):
+        from full_sync_service import _check_range_proof, _RANGE_PROOF_TOLERANCE_DAYS
+        # DB first date is tolerance_days+1 after provider first → FAIL
+        assert _RANGE_PROOF_TOLERANCE_DAYS == 5, "Test assumes tolerance=5"
+        assert _check_range_proof(
+            "2020-01-01", "2026-04-08",
+            "2020-01-07", "2026-04-08",  # +6d first → too late
+        ) is False
 
     def test_db_first_too_late_fails(self):
         from full_sync_service import _check_range_proof
