@@ -8080,16 +8080,17 @@ async def admin_run_full_pipeline_now(background_tasks: BackgroundTasks):
                     }},
                 )
             except Exception as _s2_exc:
-                # Only mark as failed if not a cancellation (cancel already sets status in DB)
+                # Only mark as error if not a cancellation (cancel already sets status in DB)
                 if chain_status != "cancelled":
                     _s2_fail_at = datetime.now(timezone.utc)
                     await db.ops_job_runs.update_one(
                         {"_id": _s2_run_doc_id},
                         {"$set": {
-                            "status": "failed",
+                            "status": "error",
                             "finished_at": _s2_fail_at,
                             "finished_at_prague": _sched_to_prague_iso(_s2_fail_at),
                             "error": str(_s2_exc),
+                            "error_message": str(_s2_exc),
                         }},
                     )
                     chain_failed_step = 2
