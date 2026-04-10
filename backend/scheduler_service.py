@@ -100,6 +100,16 @@ MAX_BULK_GAPFILL_DAYS_HISTORY = 60
 # Max 1 full-history redownload per ticker per this many days.
 _REDOWNLOAD_COOLDOWN_DAYS = 7
 
+# Gap remediation: reasons that indicate the gap is NOT-APPLICABLE
+# (ticker absent or close=0 — not a true data gap).
+# Shared between remediate_gap_date and run_bulk_gapfill_remediation.
+_NOT_APPLICABLE_REASONS = frozenset({
+    "not_in_bulk_not_in_api",
+    "bulk_found_but_close_is_zero",
+    "bulk_close_zero_api_returned_empty",
+    "api_returned_only_zero_price",
+})
+
 
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
@@ -4292,6 +4302,56 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         if result["status"] == "completed":
             _phase_update("C", status="running", processed=0, total=None, message="Preparing price history queue", activate=True)
             await _write_step3_telemetry(force=True)
+
+            # ── Phase C pre-flight: unseal falsely-complete tickers ───────
+            # Tickers sealed with price_history_complete=True but whose stored
+            # range_proof fields show a mismatch (or are absent) were stamped
+            # before range-proof validation existed.  Clear the flag so
+            # Phase C re-downloads their full history on this run.
+            from full_sync_service import _RANGE_PROOF_TOLERANCE_DAYS, _check_range_proof
+            _preflight_sealed = await db.tracked_tickers.find(
+                {"price_history_complete": True},
+                {"_id": 0, "ticker": 1, "range_proof": 1},
+            ).to_list(None)
+            _preflight_unsealed: list[str] = []
+            if _preflight_sealed:
+                for doc in _preflight_sealed:
+                    rp = doc.get("range_proof") or {}
+                    # Unseal if range_proof is missing entirely or fails validation
+                    if not rp or not rp.get("pass"):
+                        _preflight_unsealed.append(doc["ticker"])
+                        continue
+                    # Re-verify stored proof in case tolerance changed
+                    if not _check_range_proof(
+                        rp.get("provider_first_date"),
+                        rp.get("provider_last_date"),
+                        rp.get("db_first_date"),
+                        rp.get("db_last_date"),
+                    ):
+                        _preflight_unsealed.append(doc["ticker"])
+                _preflight_unsealed.sort()
+                if _preflight_unsealed:
+                    _unseal_ts = datetime.now(timezone.utc)
+                    await db.tracked_tickers.update_many(
+                        {"ticker": {"$in": _preflight_unsealed}},
+                        {"$set": {
+                            "price_history_complete": False,
+                            "price_history_status": "unsealed_by_preflight_audit",
+                            "needs_price_redownload": True,
+                            "preflight_unsealed_at": _unseal_ts,
+                            "updated_at": _unseal_ts,
+                        }},
+                    )
+                    logger.info(
+                        "[Phase C preflight] Unsealed %d tickers with "
+                        "price_history_complete=True but missing/failed "
+                        "range_proof — Phase C will re-download. samples=%s",
+                        len(_preflight_unsealed),
+                        _preflight_unsealed[:10],
+                    )
+            step3_telemetry["phases"]["C"]["preflight_unsealed"] = len(_preflight_unsealed)
+            step3_telemetry["phases"]["C"]["preflight_unsealed_sample"] = _preflight_unsealed[:20]
+
             # Use Phase C eligible query (gates 1-7, excludes gate 8 / price_history_complete)
             # to avoid chicken-and-egg: Phase C SETS price_history_complete, so we can't
             # require it as a precondition.
@@ -4915,8 +4975,14 @@ async def _get_remediation_processed_dates_set(db) -> set:
 async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
     """
     Detect missing dates among the last 10 completed trading days and
-    remediate up to MAX_REMEDIATION_DAYS_PER_RUN using per-ticker
-    fetch_eod_history fallback.
+    remediate up to MAX_REMEDIATION_DAYS_PER_RUN by delegating each date
+    to ``remediate_gap_date``.
+
+    Each delegation:
+    - Pre-fetches EODHD bulk data once per date (1 API call, not N)
+    - Processes only gap tickers (proven + visible, missing DB row)
+    - Writes ``gap_free_exclusions`` for NOT-APPLICABLE cases so the
+      gap-free metric and chart data_notices stay accurate
 
     Writes audit proof to ops_job_runs under job_name="bulk_gapfill_remediation"
     using the same details.price_bulk_gapfill.days[] structure the dashboard
@@ -4925,7 +4991,6 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
     Does NOT advance the global watermark (pipeline_state._id="price_bulk").
     """
     from services.market_calendar_service import last_n_completed_trading_days
-    from price_ingestion_service import fetch_eod_history, parse_eod_record
 
     started_at = datetime.now(timezone.utc)
     job_name = "bulk_gapfill_remediation"
@@ -4972,13 +5037,6 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
         if not dates_to_fix:
             logger.info("[GAPFILL REMEDIATION] No missing dates to remediate")
         else:
-            # Load seeded ticker set
-            seeded_docs = await db.tracked_tickers.find(
-                SEED_QUERY, {"_id": 0, "ticker": 1}
-            ).to_list(None)
-            seeded_tickers = sorted({d["ticker"] for d in seeded_docs if d.get("ticker")})
-            logger.info(f"[GAPFILL REMEDIATION] {len(seeded_tickers)} seeded tickers loaded")
-
             for target_date in dates_to_fix:
                 day_entry: Dict[str, Any] = {
                     "processed_date": target_date,
@@ -4986,48 +5044,38 @@ async def run_bulk_gapfill_remediation(db) -> Dict[str, Any]:
                     "rows_written": 0,
                     "advanced_watermark": False,
                     "error": None,
-                    "source": "per_ticker_fallback",
+                    "source": "remediate_gap_date",
                 }
 
                 try:
-                    rows_written = 0
-                    batch_ops = []
-
-                    for ticker in seeded_tickers:
-                        try:
-                            records = await fetch_eod_history(
-                                ticker, from_date=target_date, to_date=target_date
-                            )
-                            for record in records:
-                                parsed = parse_eod_record(ticker, record)
-                                if not parsed.get("date"):
-                                    continue
-                                batch_ops.append(
-                                    UpdateOne(
-                                        {"ticker": parsed["ticker"], "date": parsed["date"]},
-                                        {"$set": parsed},
-                                        upsert=True,
-                                    )
-                                )
-                        except Exception as ticker_err:
-                            logger.warning(
-                                f"[GAPFILL REMEDIATION] Ticker {ticker} date {target_date} "
-                                f"error: {ticker_err}"
-                            )
-
-                    # Bulk-write collected operations
-                    if batch_ops:
-                        write_result = await db.stock_prices.bulk_write(
-                            batch_ops, ordered=False
-                        )
-                        rows_written = (
-                            write_result.upserted_count + write_result.modified_count
-                        )
+                    # Delegate to remediate_gap_date which:
+                    # - pre-fetches bulk data once (1 API call vs N)
+                    # - only processes gap tickers (not all seeded)
+                    # - writes gap_free_exclusions for NOT-APPLICABLE cases
+                    gap_result = await remediate_gap_date(db, target_date)
+                    gap_status = gap_result.get("status", "error")
+                    rows_written = gap_result.get("total_inserted", 0)
 
                     day_entry["rows_written"] = rows_written
-                    day_entry["status"] = "success"
+                    day_entry["status"] = gap_status
+                    day_entry["gap_tickers_count"] = gap_result.get(
+                        "gap_tickers_count", 0
+                    )
+                    day_entry["exclusions_written"] = len([
+                        r for r in gap_result.get("proof_table", [])
+                        if not r.get("inserted")
+                        and r.get("primary_reason") in _NOT_APPLICABLE_REASONS
+                    ])
+
+                    if gap_status == "error":
+                        overall_status = "error"
+
                     logger.info(
-                        f"[GAPFILL REMEDIATION] {target_date}: {rows_written} rows written"
+                        "[GAPFILL REMEDIATION] %s: %d rows written, "
+                        "%d gap tickers, %d exclusions via remediate_gap_date",
+                        target_date, rows_written,
+                        day_entry["gap_tickers_count"],
+                        day_entry["exclusions_written"],
                     )
 
                 except Exception as day_err:
@@ -6012,12 +6060,6 @@ async def remediate_gap_date(
         # ── Persist gap-free exclusion for NOT-APPLICABLE cases ──────
         # If the ticker is legitimately absent (not in bulk or close=0),
         # record this so the gap-free metric excludes it.
-        _NOT_APPLICABLE_REASONS = {
-            "not_in_bulk_not_in_api",
-            "bulk_found_but_close_is_zero",
-            "bulk_close_zero_api_returned_empty",
-            "api_returned_only_zero_price",
-        }
         if not inserted and row["primary_reason"] in _NOT_APPLICABLE_REASONS:
             try:
                 await db.gap_free_exclusions.update_one(

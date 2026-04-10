@@ -6749,6 +6749,75 @@ async def admin_health_report():
     }
 
 
+@api_router.get("/admin/audit/suspect-incomplete-history")
+async def admin_audit_suspect_incomplete_history(
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Audit: Find tickers where price_history_complete=True but the stored
+    range_proof is missing or fails validation.  These tickers were falsely
+    sealed before range-proof validation existed and need Phase C re-download.
+
+    Returns:
+    - total_affected: count of suspect tickers
+    - sample: up to `limit` tickers with range_proof details,
+      full_history_downloaded_at
+    """
+    from full_sync_service import _RANGE_PROOF_TOLERANCE_DAYS, _check_range_proof
+
+    sealed_docs = await db.tracked_tickers.find(
+        {"price_history_complete": True},
+        {"_id": 0, "ticker": 1, "full_history_downloaded_at": 1,
+         "price_history_complete_as_of": 1, "price_history_status": 1,
+         "range_proof": 1},
+    ).to_list(None)
+
+    if not sealed_docs:
+        return {"total_affected": 0, "sample": [], "tolerance_days": _RANGE_PROOF_TOLERANCE_DAYS}
+
+    # Find suspect tickers: sealed + (missing range_proof OR range_proof.pass!=True)
+    suspect = []
+    for doc in sealed_docs:
+        rp = doc.get("range_proof") or {}
+        failed = False
+        reason = None
+        if not rp:
+            failed = True
+            reason = "range_proof_missing"
+        elif not rp.get("pass"):
+            failed = True
+            reason = "range_proof_stored_as_failed"
+        else:
+            # Re-verify with current tolerance
+            if not _check_range_proof(
+                rp.get("provider_first_date"),
+                rp.get("provider_last_date"),
+                rp.get("db_first_date"),
+                rp.get("db_last_date"),
+            ):
+                failed = True
+                reason = "range_proof_reverification_failed"
+
+        if failed:
+            suspect.append({
+                "ticker": doc["ticker"],
+                "reason": reason,
+                "range_proof": rp if rp else None,
+                "full_history_downloaded_at": str(doc.get("full_history_downloaded_at", ""))[:19] if doc.get("full_history_downloaded_at") else None,
+                "price_history_status": doc.get("price_history_status"),
+            })
+
+    # Sort by ticker for stable output
+    suspect.sort(key=lambda x: x["ticker"])
+
+    return {
+        "total_affected": len(suspect),
+        "tolerance_days": _RANGE_PROOF_TOLERANCE_DAYS,
+        "sealed_total": len(sealed_docs),
+        "sample": suspect[:limit],
+    }
+
+
 @api_router.get("/admin/audit/missing-sector")
 async def admin_audit_missing_sector(
     limit: int = Query(20, ge=1, le=100),

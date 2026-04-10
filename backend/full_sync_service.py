@@ -24,6 +24,13 @@ EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 
 BULK_CHUNK = 10000
 
+# ── Range-proof tolerance (days) ────────────────────────────────────
+# After Phase C writes EODHD history to stock_prices, we compare
+# db_first_date / db_last_date against the provider payload's first/last
+# dates.  Because some records may have close=0 and be legitimately
+# skipped, we allow a small tolerance when checking coverage.
+_RANGE_PROOF_TOLERANCE_DAYS = 5
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -205,27 +212,97 @@ async def _process_price_ticker(
         await db.stock_prices.bulk_write(chunk, ordered=False)
         processed_ops += len(chunk)
 
-    # Compute max date actually in DB for this ticker
-    latest = await db.stock_prices.find_one(
-        {"ticker": ticker_us},
-        {"date": 1, "_id": 0},
-        sort=[("date", -1)],
-    )
-    complete_as_of = latest["date"] if latest else None
-
     if await _should_cancel():
         return await _cancel_result(records=processed_ops)
+
+    # ── Range-proof: extract provider date range from payload ────────
+    payload_dates = sorted(rec["date"] for rec in data if rec.get("date"))
+    provider_first_date = payload_dates[0] if payload_dates else None
+    provider_last_date = payload_dates[-1] if payload_dates else None
+
+    # Query actual DB state after write
+    _agg_pipeline = [
+        {"$match": {"ticker": ticker_us}},
+        {"$group": {
+            "_id": None,
+            "db_first_date": {"$min": "$date"},
+            "db_last_date": {"$max": "$date"},
+            "db_row_count": {"$sum": 1},
+        }},
+    ]
+    _agg_result = await db.stock_prices.aggregate(_agg_pipeline).to_list(1)
+    if _agg_result:
+        db_first_date = _agg_result[0]["db_first_date"]
+        db_last_date = _agg_result[0]["db_last_date"]
+        db_row_count = _agg_result[0]["db_row_count"]
+    else:
+        db_first_date = None
+        db_last_date = None
+        db_row_count = 0
+
+    # ── Range-proof validation ───────────────────────────────────────
+    # Mark complete ONLY if the DB date range covers the provider's
+    # date range within tolerance.  This replaces the old arbitrary
+    # row-count threshold with a deterministic date-range proof.
+    range_proof_pass = _check_range_proof(
+        provider_first_date, provider_last_date,
+        db_first_date, db_last_date,
+    )
+
+    # Common proof fields persisted on every download (pass or fail)
+    _proof_fields = {
+        "price_history_complete_as_of": db_last_date,
+        "needs_price_redownload": False,
+        "history_download_records": len(ops),
+        # Range proof evidence — persisted so audits can verify later
+        "range_proof": {
+            "provider_first_date": provider_first_date,
+            "provider_last_date": provider_last_date,
+            "db_first_date": db_first_date,
+            "db_last_date": db_last_date,
+            "db_row_count": db_row_count,
+            "tolerance_days": _RANGE_PROOF_TOLERANCE_DAYS,
+            "pass": range_proof_pass,
+            "checked_at": datetime.now(timezone.utc),
+        },
+    }
+
+    if not range_proof_pass:
+        logger.warning(
+            "[Phase C] %s: range-proof FAILED — provider=[%s..%s], "
+            "db=[%s..%s] (%d rows). Data written but NOT marking "
+            "price_history_complete=True — Phase C will retry.",
+            ticker_us, provider_first_date, provider_last_date,
+            db_first_date, db_last_date, db_row_count,
+        )
+        await db.tracked_tickers.update_one(
+            {"ticker": ticker_us},
+            {"$set": {
+                **_proof_fields,
+                "price_history_status": "range_proof_failed",
+                "history_download_error": (
+                    f"range_proof_failed:provider=[{provider_first_date}..{provider_last_date}],"
+                    f"db=[{db_first_date}..{db_last_date}]"
+                ),
+            }},
+        )
+        return {
+            "ticker": ticker_us,
+            "success": False,
+            "records": len(ops),
+            "rate_limited": False,
+            "range_proof_failed": True,
+        }
 
     await db.tracked_tickers.update_one(
         {"ticker": ticker_us},
         {"$set": {
+            **_proof_fields,
             "price_history_complete": True,
-            "price_history_complete_as_of": complete_as_of,
             "price_history_status": "complete",
-            "needs_price_redownload": False,
             # Strict proof marker — canonical source for history_download_completed
             "history_download_proven_at": datetime.now(timezone.utc),
-            "history_download_proven_anchor": complete_as_of,
+            "history_download_proven_anchor": db_last_date,
             # Full-history download provenance — used by returning-ticker
             # cooldown guard to prevent unnecessary re-download churn.
             "full_history_downloaded_at": datetime.now(timezone.utc),
@@ -239,3 +316,38 @@ async def _process_price_ticker(
     )
 
     return {"ticker": ticker_us, "success": True, "records": len(ops), "rate_limited": False}
+
+
+def _check_range_proof(
+    provider_first: Optional[str],
+    provider_last: Optional[str],
+    db_first: Optional[str],
+    db_last: Optional[str],
+) -> bool:
+    """Return True if DB date range covers the provider's range within tolerance.
+
+    Uses _RANGE_PROOF_TOLERANCE_DAYS to allow for close=0 records that are
+    legitimately skipped on ingest.  Dates are YYYY-MM-DD strings.
+    """
+    if not all([provider_first, provider_last, db_first, db_last]):
+        return False
+
+    from datetime import timedelta
+    try:
+        _pf = datetime.strptime(provider_first, "%Y-%m-%d")
+        _pl = datetime.strptime(provider_last, "%Y-%m-%d")
+        _df = datetime.strptime(db_first, "%Y-%m-%d")
+        _dl = datetime.strptime(db_last, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return False
+
+    tolerance = timedelta(days=_RANGE_PROOF_TOLERANCE_DAYS)
+
+    # DB first date must be at or before provider_first + tolerance
+    if _df > _pf + tolerance:
+        return False
+    # DB last date must be at or after provider_last - tolerance
+    if _dl < _pl - tolerance:
+        return False
+
+    return True
