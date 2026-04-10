@@ -1070,6 +1070,96 @@ class TestSyncHasPriceDataFlagsGuard:
             "NYC.US must NOT be flagged for redownload (no proven gap)"
         )
 
+    def test_naive_full_history_downloaded_at_no_crash(self, monkeypatch):
+        """Regression: full_history_downloaded_at stored as NAIVE datetime
+        must not crash when compared against aware cooldown cutoff.
+
+        Before the fix, this raised:
+            TypeError: can't compare offset-naive and offset-aware datetimes
+        """
+        from datetime import datetime, timezone, timedelta
+
+        # Simulate a naive datetime (no tzinfo) as stored in Mongo
+        _naive_download = datetime(2026, 4, 5, 12, 0, 0)  # no tzinfo!
+        assert _naive_download.tzinfo is None, "precondition: must be naive"
+
+        flag_writes: dict = {}
+
+        class _FakeTrackedTickers:
+            def __init__(self, tickers):
+                self._tickers = list(tickers)
+            def find(self, query, projection=None):
+                if "has_latest_bulk_close" in query:
+                    return _FakeCursor([{
+                        "ticker": "NYC.US",
+                        "last_seen_in_bulk_date": "2026-03-30",
+                        "full_history_downloaded_at": _naive_download,
+                    }])
+                return _FakeCursor([{"ticker": t, "name": t} for t in self._tickers])
+            async def update_many(self, filt, update):
+                set_fields = update.get("$set", {})
+                tickers_in = filt.get("ticker", {}).get("$in", [])
+                for t in tickers_in:
+                    if t not in flag_writes:
+                        flag_writes[t] = {}
+                    flag_writes[t].update(set_fields)
+                return SimpleNamespace(modified_count=1)
+
+        class _FakeGapFreeExclusions:
+            async def bulk_write(self, ops, ordered=False):
+                return SimpleNamespace(upserted_count=len(ops))
+
+        class _FakeDB:
+            def __init__(self, tickers):
+                self.tracked_tickers = _FakeTrackedTickers(tickers)
+                self.gap_free_exclusions = _FakeGapFreeExclusions()
+
+        seeded = ["AAPL.US", "NYC.US"]
+        db = _FakeDB(seeded)
+
+        # Must not raise TypeError
+        result = asyncio.run(
+            scheduler_service.sync_has_price_data_flags(
+                db,
+                include_exclusions=False,
+                tickers_with_price=["AAPL.US", "NYC.US"],
+                bulk_date="2026-04-09",
+            )
+        )
+
+        # Naive dt was 2026-04-05 — within 7-day cooldown of now (2026-04-09+)
+        assert result["returning_tickers_cooldown_skipped"] == 1, (
+            "Naive datetime should be normalised to UTC and trigger cooldown skip"
+        )
+
+
+# =============================================================================
+# Tests: _ensure_utc helper
+# =============================================================================
+
+
+class TestEnsureUtc:
+    """Tests for the _ensure_utc normalisation helper."""
+
+    def test_naive_becomes_utc(self):
+        from datetime import datetime, timezone
+        naive = datetime(2026, 4, 5, 12, 0, 0)
+        result = scheduler_service._ensure_utc(naive)
+        assert result.tzinfo is not None
+        assert result.tzinfo == timezone.utc
+
+    def test_aware_unchanged(self):
+        from datetime import datetime, timezone
+        aware = datetime(2026, 4, 5, 12, 0, 0, tzinfo=timezone.utc)
+        result = scheduler_service._ensure_utc(aware)
+        assert result is aware
+
+    def test_none_returns_none(self):
+        assert scheduler_service._ensure_utc(None) is None
+
+    def test_non_datetime_returns_none(self):
+        assert scheduler_service._ensure_utc("2026-04-05") is None
+
 
 # =============================================================================
 # Tests: _reconcile_logo_completeness — stale-complete logo detection

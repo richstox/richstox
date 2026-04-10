@@ -111,6 +111,17 @@ _NOT_APPLICABLE_REASONS = frozenset({
 })
 
 
+def _ensure_utc(dt: Optional[datetime]) -> Optional[datetime]:
+    """Normalize a datetime read from Mongo: attach UTC if naive, convert otherwise."""
+    if dt is None:
+        return None
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _to_prague_iso(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
         return None
@@ -2344,7 +2355,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             for _rdoc in _returning_cursor:
                 _rticker = _rdoc["ticker"]
                 _last_seen = _rdoc.get("last_seen_in_bulk_date")
-                _last_dl = _rdoc.get("full_history_downloaded_at")
+                _last_dl = _ensure_utc(_rdoc.get("full_history_downloaded_at"))
 
                 # Guard 1: proven gap window — last_seen_in_bulk_date must
                 # exist and be strictly before today's bulk_date.
@@ -2353,7 +2364,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
                     continue
 
                 # Guard 2: 7-day cooldown on full-history re-downloads.
-                if _last_dl and isinstance(_last_dl, datetime) and _last_dl > _cooldown_cutoff:
+                if _last_dl and _last_dl > _cooldown_cutoff:
                     _returning_cooldown_skipped += 1
                     continue
 
