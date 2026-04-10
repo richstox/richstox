@@ -2141,16 +2141,17 @@ async def run_daily_price_sync(
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"{job_name} failed: {error_msg}")
+        logger.error(f"{job_name} error: {error_msg}")
 
         _fail_finished_at = datetime.now(timezone.utc)
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
             {"$set": {
-                "status": "failed",
+                "status": "error",
                 "finished_at": _fail_finished_at,
                 "finished_at_prague": _to_prague_iso(_fail_finished_at),
                 "error": error_msg,
+                "error_message": error_msg,
                 "details.parent_run_id": parent_run_id,
                 "details.chain_run_id": chain_run_id,
             }},
@@ -2158,7 +2159,7 @@ async def run_daily_price_sync(
 
         return {
             "job_name": job_name,
-            "status": "failed",
+            "status": "error",
             "error": error_msg,
             "exclusion_report_run_id": None,
             "records_upserted": 0,
@@ -4678,7 +4679,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
 
     except Exception as e:
         error_msg = str(e)
-        logger.error(f"{job_name} failed: {error_msg}")
+        logger.error(f"{job_name} error: {error_msg}")
 
         finished_ts = datetime.now(timezone.utc)
         progress_done = done_count
@@ -4697,12 +4698,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         await db.ops_job_runs.update_one(
             {"_id": _running_doc_id},
             {"$set": {
-                "status": "failed",
+                "status": "error",
                 "finished_at": finished_ts,
                 "started_at_prague": _to_prague_iso(started_at),
                 "finished_at_prague": _to_prague_iso(finished_ts),
                 "log_timezone": "Europe/Prague",
                 "error": error_msg,
+                "error_message": error_msg,
                 "details": {"error": error_msg, "step3_telemetry": step3_telemetry},
                 "progress_processed": progress_done,
                 "progress_total": progress_total,
@@ -4714,7 +4716,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         await _release_single_flight_resources()
         return {
             "job_name": job_name,
-            "status": "failed",
+            "status": "error",
             "error": error_msg,
             "started_at": started_at.isoformat(),
         }
