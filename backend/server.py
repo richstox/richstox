@@ -6749,6 +6749,80 @@ async def admin_health_report():
     }
 
 
+@api_router.get("/admin/audit/suspect-incomplete-history")
+async def admin_audit_suspect_incomplete_history(
+    limit: int = Query(50, ge=1, le=200),
+):
+    """
+    Audit: Find tickers where price_history_complete=True but stock_prices
+    has fewer than 10 rows.  These tickers were falsely sealed before the
+    suspect-incomplete guard existed and need Phase C re-download.
+
+    Returns:
+    - total_affected: count of suspect tickers
+    - sample: up to `limit` tickers with row_count, earliest/latest date,
+      full_history_downloaded_at
+    """
+    from full_sync_service import _MIN_HISTORY_RECORDS
+
+    sealed_docs = await db.tracked_tickers.find(
+        {"price_history_complete": True},
+        {"_id": 0, "ticker": 1, "full_history_downloaded_at": 1,
+         "price_history_complete_as_of": 1, "price_history_status": 1},
+    ).to_list(None)
+
+    if not sealed_docs:
+        return {"total_affected": 0, "sample": [], "threshold": _MIN_HISTORY_RECORDS}
+
+    sealed_tickers = [d["ticker"] for d in sealed_docs]
+    meta_by_ticker = {d["ticker"]: d for d in sealed_docs}
+
+    # Aggregate row counts + date range for all sealed tickers
+    pipeline = [
+        {"$match": {"ticker": {"$in": sealed_tickers}}},
+        {"$group": {
+            "_id": "$ticker",
+            "row_count": {"$sum": 1},
+            "earliest_date": {"$min": "$date"},
+            "latest_date": {"$max": "$date"},
+        }},
+    ]
+    stats_cursor = db.stock_prices.aggregate(pipeline)
+    stats_by_ticker = {}
+    async for doc in stats_cursor:
+        stats_by_ticker[doc["_id"]] = {
+            "row_count": doc["row_count"],
+            "earliest_date": doc["earliest_date"],
+            "latest_date": doc["latest_date"],
+        }
+
+    # Find suspect tickers: sealed + (< threshold rows OR zero rows)
+    suspect = []
+    for ticker in sealed_tickers:
+        stats = stats_by_ticker.get(ticker)
+        row_count = stats["row_count"] if stats else 0
+        if row_count < _MIN_HISTORY_RECORDS:
+            meta = meta_by_ticker.get(ticker, {})
+            suspect.append({
+                "ticker": ticker,
+                "row_count": row_count,
+                "earliest_date": stats["earliest_date"] if stats else None,
+                "latest_date": stats["latest_date"] if stats else None,
+                "full_history_downloaded_at": str(meta.get("full_history_downloaded_at", ""))[:19] if meta.get("full_history_downloaded_at") else None,
+                "price_history_status": meta.get("price_history_status"),
+            })
+
+    # Sort by row_count ascending (worst first)
+    suspect.sort(key=lambda x: x["row_count"])
+
+    return {
+        "total_affected": len(suspect),
+        "threshold": _MIN_HISTORY_RECORDS,
+        "sealed_total": len(sealed_tickers),
+        "sample": suspect[:limit],
+    }
+
+
 @api_router.get("/admin/audit/missing-sector")
 async def admin_audit_missing_sector(
     limit: int = Query(20, ge=1, le=100),
