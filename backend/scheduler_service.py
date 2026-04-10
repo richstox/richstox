@@ -4308,7 +4308,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             # _MIN_HISTORY_RECORDS rows in stock_prices were stamped before
             # the suspect-incomplete guard existed.  Clear the flag so Phase C
             # re-downloads their full history on this run.
-            from full_sync_service import _MIN_HISTORY_RECORDS as _MIN_HIST
+            from full_sync_service import _MIN_HISTORY_RECORDS
             _preflight_sealed = await db.tracked_tickers.find(
                 {"price_history_complete": True},
                 {"_id": 0, "ticker": 1},
@@ -4320,7 +4320,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                 _row_counts_cursor = db.stock_prices.aggregate([
                     {"$match": {"ticker": {"$in": _sealed_tickers}}},
                     {"$group": {"_id": "$ticker", "cnt": {"$sum": 1}}},
-                    {"$match": {"cnt": {"$lt": _MIN_HIST}}},
+                    {"$match": {"cnt": {"$lt": _MIN_HISTORY_RECORDS}}},
                 ])
                 _low_count_tickers = [
                     doc["_id"] async for doc in _row_counts_cursor
@@ -4357,7 +4357,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         "price_history_complete=True but < %d DB rows — "
                         "Phase C will re-download. samples=%s",
                         len(_preflight_unsealed),
-                        _MIN_HIST,
+                        _MIN_HISTORY_RECORDS,
                         _preflight_unsealed[:10],
                     )
             step3_telemetry["phases"]["C"]["preflight_unsealed"] = len(_preflight_unsealed)

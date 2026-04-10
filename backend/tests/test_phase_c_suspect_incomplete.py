@@ -325,5 +325,9 @@ class TestPreflightUnsealing:
         assert hasattr(scheduler_service, "_NOT_APPLICABLE_REASONS")
         reasons = scheduler_service._NOT_APPLICABLE_REASONS
         assert isinstance(reasons, frozenset)
+        # All four expected reasons must be present
         assert "not_in_bulk_not_in_api" in reasons
         assert "bulk_found_but_close_is_zero" in reasons
+        assert "bulk_close_zero_api_returned_empty" in reasons
+        assert "api_returned_only_zero_price" in reasons
+        assert len(reasons) == 4
