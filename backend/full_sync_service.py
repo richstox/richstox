@@ -223,18 +223,19 @@ async def _process_price_ticker(
     if await _should_cancel():
         return await _cancel_result(records=processed_ops)
 
-    # ── Suspicious download guard ────────────────────────────────────
-    # A real full-history download should return hundreds/thousands of
-    # records.  If the API returned fewer than _MIN_HISTORY_RECORDS, the
-    # data is likely truncated (EODHD hiccup, new listing, etc.).
-    # We still persist the records we got but do NOT mark the ticker as
-    # "complete" — Phase C will retry on the next run.
+    # ── Suspect-incomplete guard ─────────────────────────────────────
+    # A real full-history download returns hundreds/thousands of records.
+    # If the API returned fewer than _MIN_HISTORY_RECORDS, the data is
+    # likely truncated.  We still persist the records but do NOT mark the
+    # ticker as "complete" so Phase C retries on the next run.
+    # Without this guard, Phase C permanently seals the ticker out of all
+    # retry paths (the broken link the debug report identified).
     if len(ops) < _MIN_HISTORY_RECORDS:
         logger.warning(
-            "[Phase C] %s: only %d records returned — suspiciously low. "
-            "Data written but NOT marking price_history_complete=True so "
-            "Phase C retries on the next run.",
-            ticker_us, len(ops),
+            "[Phase C] %s: only %d records returned (need >= %d). "
+            "Data written but NOT marking price_history_complete=True — "
+            "Phase C will retry on the next run.",
+            ticker_us, len(ops), _MIN_HISTORY_RECORDS,
         )
         await db.tracked_tickers.update_one(
             {"ticker": ticker_us},

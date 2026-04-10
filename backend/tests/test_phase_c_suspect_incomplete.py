@@ -1,211 +1,253 @@
-"""
-Test: Phase C (_process_price_ticker) suspicious-download guard.
+"""Tests for the Phase C suspect-incomplete guard in full_sync_service.
 
-When the EODHD API returns fewer than _MIN_HISTORY_RECORDS records, the
-data IS written to stock_prices but the ticker must NOT be marked as
-price_history_complete=True.  Instead, price_history_status should be
-"suspect_incomplete" so Phase C retries on the next run.
+The guard prevents _process_price_ticker from marking
+price_history_complete=True when the EODHD API returns fewer than
+_MIN_HISTORY_RECORDS records.  Without this guard, a ticker with
+truncated data is permanently sealed out of all Phase C retry paths
+(the "broken link" in the returning-to-bulk redownload pipeline).
 """
 
 import asyncio
-import os
 import sys
-from datetime import datetime, timezone
+import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-import full_sync_service
-
-
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# Ensure the backend directory is in the Python path.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-class _FakeBulkWriteResult:
-    def __init__(self, upserted=0, modified=0):
-        self.upserted_count = upserted
-        self.modified_count = modified
-
+# ---------------------------------------------------------------------------
+# Fake DB collections used by _process_price_ticker
+# ---------------------------------------------------------------------------
 
 class _FakeStockPrices:
-    """Minimal mock for db.stock_prices."""
-
     def __init__(self):
-        self.ops = []
+        self.deleted = []
+        self.written = []
+        self._records = []  # Simulated existing records
 
-    async def delete_many(self, _filter):
-        return SimpleNamespace(deleted_count=0)
+    async def delete_many(self, filt):
+        self.deleted.append(filt)
+        return SimpleNamespace(deleted_count=len(self._records))
 
     async def bulk_write(self, ops, ordered=False):
-        self.ops.extend(ops)
-        return _FakeBulkWriteResult(upserted=len(ops))
+        self.written.extend(ops)
+        return SimpleNamespace(upserted_count=len(ops), modified_count=0)
 
-    async def find_one(self, _filter, _projection=None, sort=None):
-        """Return a fake latest-date doc."""
-        return {"date": "2026-04-08"}
+    async def find_one(self, filt, projection=None, sort=None):
+        # Return the "latest" record
+        return {"date": "2026-04-08"} if self.written else None
 
 
 class _FakeTrackedTickers:
-    """Minimal mock for db.tracked_tickers capturing $set updates."""
-
     def __init__(self):
-        self.last_update_set: dict = {}
+        self.updates = []
 
-    async def update_one(self, _filter, update):
-        self.last_update_set = update.get("$set", {})
-        return SimpleNamespace(matched_count=1)
+    async def update_one(self, filt, update):
+        self.updates.append({"filter": filt, "update": update})
+        return SimpleNamespace(modified_count=1)
 
 
-class _FakeCreditLog:
-    """Minimal mock for db.credit_log."""
-
+class _FakeApiCreditsLog:
     async def insert_one(self, doc):
-        return SimpleNamespace(inserted_id=1)
+        return SimpleNamespace(inserted_id="fake_id")
 
 
-def _build_db():
-    db = SimpleNamespace()
-    db.stock_prices = _FakeStockPrices()
-    db.tracked_tickers = _FakeTrackedTickers()
-    db.credit_log = _FakeCreditLog()
-    return db
+class _FakeDB:
+    def __init__(self):
+        self.stock_prices = _FakeStockPrices()
+        self.tracked_tickers = _FakeTrackedTickers()
+        self.api_credits_log = _FakeApiCreditsLog()
 
 
-# ── Tests ────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Helper: build a fake EODHD response with N records
+# ---------------------------------------------------------------------------
 
+def _make_eod_records(n: int):
+    """Return a list of N fake EOD records."""
+    return [
+        {
+            "date": f"2026-01-{str(i + 1).zfill(2)}",
+            "open": 100.0 + i,
+            "high": 105.0 + i,
+            "low": 95.0 + i,
+            "close": 102.0 + i,
+            "adjusted_close": 102.0 + i,
+            "volume": 1000000,
+        }
+        for i in range(n)
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 
 class TestSuspectIncompleteGuard:
-    """Phase C should NOT mark a download as complete when record count is suspiciously low."""
+    """Verify the _MIN_HISTORY_RECORDS guard in _process_price_ticker."""
 
-    @pytest.mark.asyncio
-    async def test_few_records_returns_suspect_incomplete(self):
-        """With only 2 records, the function returns success=False and suspect_incomplete=True."""
-        db = _build_db()
+    def test_normal_download_marks_complete(self):
+        """Download with >= _MIN_HISTORY_RECORDS → price_history_complete=True."""
+        from full_sync_service import _process_price_ticker, _MIN_HISTORY_RECORDS
 
-        # EODHD returns only 2 records
-        fake_data = [
-            {"date": "2026-04-07", "open": 8, "high": 8.5, "low": 7.5, "close": 8, "adjusted_close": 8, "volume": 100},
-            {"date": "2026-04-08", "open": 8, "high": 8.2, "low": 7.8, "close": 8.06, "adjusted_close": 8.06, "volume": 200},
-        ]
+        db = _FakeDB()
+        records = _make_eod_records(_MIN_HISTORY_RECORDS + 5)
 
-        with patch.object(
-            full_sync_service, "_fetch_one",
-            new_callable=AsyncMock,
-            return_value=(fake_data, 200, 100, True),
-        ), patch.object(
-            full_sync_service, "_log_credit",
-            new_callable=AsyncMock,
-        ):
-            result = await full_sync_service._process_price_ticker(
-                db, "NYC.US", job_name="test", needs_redownload=False,
-            )
+        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = (records, 200, 50, True)
 
-        # Data WAS written to stock_prices
-        assert len(db.stock_prices.ops) == 2
-
-        # But download is NOT marked complete
-        assert result["success"] is False
-        assert result["suspect_incomplete"] is True
-        assert result["records"] == 2
-
-        # Tracked ticker updated with suspect status, NOT price_history_complete
-        assert db.tracked_tickers.last_update_set["price_history_status"] == "suspect_incomplete"
-        assert "price_history_complete" not in db.tracked_tickers.last_update_set
-
-    @pytest.mark.asyncio
-    async def test_enough_records_marks_complete(self):
-        """With >= _MIN_HISTORY_RECORDS records, the download IS marked complete."""
-        db = _build_db()
-
-        fake_data = [
-            {
-                "date": f"2026-01-{i:02d}",
-                "open": 10, "high": 11, "low": 9, "close": 10.5,
-                "adjusted_close": 10.5, "volume": 1000,
-            }
-            for i in range(1, full_sync_service._MIN_HISTORY_RECORDS + 5)
-        ]
-
-        with patch.object(
-            full_sync_service, "_fetch_one",
-            new_callable=AsyncMock,
-            return_value=(fake_data, 200, 100, True),
-        ), patch.object(
-            full_sync_service, "_log_credit",
-            new_callable=AsyncMock,
-        ):
-            result = await full_sync_service._process_price_ticker(
-                db, "AAPL.US", job_name="test", needs_redownload=False,
+            result = asyncio.run(
+                _process_price_ticker(db, "AAPL.US", job_name="test", needs_redownload=False)
             )
 
         assert result["success"] is True
-        assert result["records"] == len(fake_data)
-        assert db.tracked_tickers.last_update_set["price_history_complete"] is True
-        assert db.tracked_tickers.last_update_set["price_history_status"] == "complete"
+        assert result["records"] == len(records)
 
-    @pytest.mark.asyncio
-    async def test_exactly_min_records_marks_complete(self):
-        """With exactly _MIN_HISTORY_RECORDS records, the download IS marked complete."""
-        db = _build_db()
+        # The final tracked_tickers update should set price_history_complete=True
+        last_update = db.tracked_tickers.updates[-1]
+        set_fields = last_update["update"]["$set"]
+        assert set_fields["price_history_complete"] is True
+        assert set_fields["price_history_status"] == "complete"
+        assert set_fields["needs_price_redownload"] is False
 
-        fake_data = [
-            {
-                "date": f"2026-01-{i:02d}",
-                "open": 10, "high": 11, "low": 9, "close": 10.5,
-                "adjusted_close": 10.5, "volume": 1000,
-            }
-            for i in range(1, full_sync_service._MIN_HISTORY_RECORDS + 1)
-        ]
+    def test_suspect_download_does_not_mark_complete(self):
+        """Download with < _MIN_HISTORY_RECORDS → price_history_complete NOT set to True."""
+        from full_sync_service import _process_price_ticker, _MIN_HISTORY_RECORDS
 
-        with patch.object(
-            full_sync_service, "_fetch_one",
-            new_callable=AsyncMock,
-            return_value=(fake_data, 200, 100, True),
-        ), patch.object(
-            full_sync_service, "_log_credit",
-            new_callable=AsyncMock,
-        ):
-            result = await full_sync_service._process_price_ticker(
-                db, "AAPL.US", job_name="test", needs_redownload=False,
+        db = _FakeDB()
+        records = _make_eod_records(3)  # Well below threshold
+
+        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = (records, 200, 50, True)
+
+            result = asyncio.run(
+                _process_price_ticker(db, "NYC.US", job_name="test", needs_redownload=False)
+            )
+
+        assert result["success"] is False, "Suspect download should return success=False"
+        assert result.get("suspect_incomplete") is True
+        assert result["records"] == 3
+
+        # The tracked_tickers update should NOT set price_history_complete=True
+        last_update = db.tracked_tickers.updates[-1]
+        set_fields = last_update["update"]["$set"]
+        assert "price_history_complete" not in set_fields, (
+            "Suspect download must NOT set price_history_complete=True"
+        )
+        assert set_fields["price_history_status"] == "suspect_incomplete"
+        assert set_fields["needs_price_redownload"] is False
+
+    def test_suspect_download_still_writes_records(self):
+        """Even with < _MIN_HISTORY_RECORDS, records ARE written to stock_prices."""
+        from full_sync_service import _process_price_ticker
+
+        db = _FakeDB()
+        records = _make_eod_records(3)
+
+        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = (records, 200, 50, True)
+
+            result = asyncio.run(
+                _process_price_ticker(db, "NYC.US", job_name="test", needs_redownload=False)
+            )
+
+        # Records should have been written
+        assert len(db.stock_prices.written) == 3
+        assert result["records"] == 3
+
+    def test_redownload_with_suspect_data_clears_flag(self):
+        """needs_redownload=True + suspect result → needs_price_redownload=False.
+
+        The ticker will still be retried on the next Phase C run because
+        price_history_complete is not set to True.
+        """
+        from full_sync_service import _process_price_ticker
+
+        db = _FakeDB()
+        records = _make_eod_records(2)
+
+        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = (records, 200, 50, True)
+
+            result = asyncio.run(
+                _process_price_ticker(db, "NYC.US", job_name="test", needs_redownload=True)
+            )
+
+        # Old data should have been deleted (redownload path)
+        assert len(db.stock_prices.deleted) == 1
+
+        # needs_price_redownload should be cleared
+        last_update = db.tracked_tickers.updates[-1]
+        set_fields = last_update["update"]["$set"]
+        assert set_fields["needs_price_redownload"] is False
+
+        # But price_history_complete should NOT be True
+        assert "price_history_complete" not in set_fields
+
+    def test_exactly_threshold_marks_complete(self):
+        """Download with exactly _MIN_HISTORY_RECORDS → marks complete."""
+        from full_sync_service import _process_price_ticker, _MIN_HISTORY_RECORDS
+
+        db = _FakeDB()
+        records = _make_eod_records(_MIN_HISTORY_RECORDS)
+
+        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = (records, 200, 50, True)
+
+            result = asyncio.run(
+                _process_price_ticker(db, "AAPL.US", job_name="test", needs_redownload=False)
             )
 
         assert result["success"] is True
-        assert db.tracked_tickers.last_update_set["price_history_complete"] is True
+        last_update = db.tracked_tickers.updates[-1]
+        set_fields = last_update["update"]["$set"]
+        assert set_fields["price_history_complete"] is True
 
-    @pytest.mark.asyncio
-    async def test_redownload_still_deletes_old_data(self):
-        """When needs_redownload=True and data is suspect, old data is still deleted first."""
-        db = _build_db()
+    def test_phase_c_retries_suspect_ticker(self):
+        """A suspect ticker matches Phase C's {price_history_complete: {$ne: True}}.
 
-        delete_called = False
-        original_delete = db.stock_prices.delete_many
+        After a suspect download, the ticker has:
+        - price_history_status: "suspect_incomplete"
+        - price_history_complete: NOT True (either False or absent)
+        - needs_price_redownload: False
 
-        async def _tracking_delete(_filter):
-            nonlocal delete_called
-            delete_called = True
-            return await original_delete(_filter)
+        Phase C query uses: {"price_history_complete": {"$ne": True}}
+        This should match, so the ticker is retried on the next run.
+        """
+        # This is a logical test — verify that the suspect path leaves
+        # the ticker in a state that matches Phase C's selection query.
+        from full_sync_service import _process_price_ticker
 
-        db.stock_prices.delete_many = _tracking_delete
+        db = _FakeDB()
+        records = _make_eod_records(3)
 
-        fake_data = [
-            {"date": "2026-04-08", "open": 8, "high": 8.2, "low": 7.8, "close": 8, "adjusted_close": 8, "volume": 100},
-        ]
+        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = (records, 200, 50, True)
 
-        with patch.object(
-            full_sync_service, "_fetch_one",
-            new_callable=AsyncMock,
-            return_value=(fake_data, 200, 100, True),
-        ), patch.object(
-            full_sync_service, "_log_credit",
-            new_callable=AsyncMock,
-        ):
-            result = await full_sync_service._process_price_ticker(
-                db, "NYC.US", job_name="test", needs_redownload=True,
+            asyncio.run(
+                _process_price_ticker(db, "NYC.US", job_name="test", needs_redownload=False)
             )
 
-        assert delete_called
-        assert result["success"] is False
-        assert result["suspect_incomplete"] is True
+        # Simulate the ticker state after the suspect update
+        last_update = db.tracked_tickers.updates[-1]
+        set_fields = last_update["update"]["$set"]
+
+        # Verify Phase C would pick this up
+        ticker_state = {
+            "ticker": "NYC.US",
+            "is_seeded": True,
+            "has_price_data": True,
+            "price_history_complete": set_fields.get("price_history_complete"),
+            "needs_price_redownload": set_fields.get("needs_price_redownload", False),
+            "history_download_proven_at": set_fields.get("history_download_proven_at"),
+        }
+
+        # Phase C $or branch 1: price_history_complete != True
+        assert ticker_state["price_history_complete"] is not True, (
+            "Suspect ticker must match Phase C's {price_history_complete: {$ne: True}}"
+        )
