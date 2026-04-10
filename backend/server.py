@@ -6754,71 +6754,66 @@ async def admin_audit_suspect_incomplete_history(
     limit: int = Query(50, ge=1, le=200),
 ):
     """
-    Audit: Find tickers where price_history_complete=True but stock_prices
-    has fewer than 10 rows.  These tickers were falsely sealed before the
-    suspect-incomplete guard existed and need Phase C re-download.
+    Audit: Find tickers where price_history_complete=True but the stored
+    range_proof is missing or fails validation.  These tickers were falsely
+    sealed before range-proof validation existed and need Phase C re-download.
 
     Returns:
     - total_affected: count of suspect tickers
-    - sample: up to `limit` tickers with row_count, earliest/latest date,
+    - sample: up to `limit` tickers with range_proof details,
       full_history_downloaded_at
     """
-    from full_sync_service import _MIN_HISTORY_RECORDS
+    from full_sync_service import _RANGE_PROOF_TOLERANCE_DAYS, _check_range_proof
 
     sealed_docs = await db.tracked_tickers.find(
         {"price_history_complete": True},
         {"_id": 0, "ticker": 1, "full_history_downloaded_at": 1,
-         "price_history_complete_as_of": 1, "price_history_status": 1},
+         "price_history_complete_as_of": 1, "price_history_status": 1,
+         "range_proof": 1},
     ).to_list(None)
 
     if not sealed_docs:
-        return {"total_affected": 0, "sample": [], "threshold": _MIN_HISTORY_RECORDS}
+        return {"total_affected": 0, "sample": [], "tolerance_days": _RANGE_PROOF_TOLERANCE_DAYS}
 
-    sealed_tickers = [d["ticker"] for d in sealed_docs]
-    meta_by_ticker = {d["ticker"]: d for d in sealed_docs}
-
-    # Aggregate row counts + date range for all sealed tickers
-    pipeline = [
-        {"$match": {"ticker": {"$in": sealed_tickers}}},
-        {"$group": {
-            "_id": "$ticker",
-            "row_count": {"$sum": 1},
-            "earliest_date": {"$min": "$date"},
-            "latest_date": {"$max": "$date"},
-        }},
-    ]
-    stats_cursor = db.stock_prices.aggregate(pipeline)
-    stats_by_ticker = {}
-    async for doc in stats_cursor:
-        stats_by_ticker[doc["_id"]] = {
-            "row_count": doc["row_count"],
-            "earliest_date": doc["earliest_date"],
-            "latest_date": doc["latest_date"],
-        }
-
-    # Find suspect tickers: sealed + (< threshold rows OR zero rows)
+    # Find suspect tickers: sealed + (missing range_proof OR range_proof.pass!=True)
     suspect = []
-    for ticker in sealed_tickers:
-        stats = stats_by_ticker.get(ticker)
-        row_count = stats["row_count"] if stats else 0
-        if row_count < _MIN_HISTORY_RECORDS:
-            meta = meta_by_ticker.get(ticker, {})
+    for doc in sealed_docs:
+        rp = doc.get("range_proof") or {}
+        failed = False
+        reason = None
+        if not rp:
+            failed = True
+            reason = "range_proof_missing"
+        elif not rp.get("pass"):
+            failed = True
+            reason = "range_proof_stored_as_failed"
+        else:
+            # Re-verify with current tolerance
+            if not _check_range_proof(
+                rp.get("provider_first_date"),
+                rp.get("provider_last_date"),
+                rp.get("db_first_date"),
+                rp.get("db_last_date"),
+            ):
+                failed = True
+                reason = "range_proof_reverification_failed"
+
+        if failed:
             suspect.append({
-                "ticker": ticker,
-                "row_count": row_count,
-                "earliest_date": stats["earliest_date"] if stats else None,
-                "latest_date": stats["latest_date"] if stats else None,
-                "full_history_downloaded_at": str(meta.get("full_history_downloaded_at", ""))[:19] if meta.get("full_history_downloaded_at") else None,
-                "price_history_status": meta.get("price_history_status"),
+                "ticker": doc["ticker"],
+                "reason": reason,
+                "range_proof": rp if rp else None,
+                "full_history_downloaded_at": str(doc.get("full_history_downloaded_at", ""))[:19] if doc.get("full_history_downloaded_at") else None,
+                "price_history_status": doc.get("price_history_status"),
             })
 
-    # Sort by row_count ascending (worst first)
-    suspect.sort(key=lambda x: x["row_count"])
+    # Sort by ticker for stable output
+    suspect.sort(key=lambda x: x["ticker"])
 
     return {
         "total_affected": len(suspect),
-        "threshold": _MIN_HISTORY_RECORDS,
-        "sealed_total": len(sealed_tickers),
+        "tolerance_days": _RANGE_PROOF_TOLERANCE_DAYS,
+        "sealed_total": len(sealed_docs),
         "sample": suspect[:limit],
     }
 

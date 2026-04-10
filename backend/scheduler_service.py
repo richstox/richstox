@@ -4304,42 +4304,32 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
             await _write_step3_telemetry(force=True)
 
             # ── Phase C pre-flight: unseal falsely-complete tickers ───────
-            # Tickers sealed with price_history_complete=True but fewer than
-            # _MIN_HISTORY_RECORDS rows in stock_prices were stamped before
-            # the suspect-incomplete guard existed.  Clear the flag so Phase C
-            # re-downloads their full history on this run.
-            from full_sync_service import _MIN_HISTORY_RECORDS
+            # Tickers sealed with price_history_complete=True but whose stored
+            # range_proof fields show a mismatch (or are absent) were stamped
+            # before range-proof validation existed.  Clear the flag so
+            # Phase C re-downloads their full history on this run.
+            from full_sync_service import _RANGE_PROOF_TOLERANCE_DAYS, _check_range_proof
             _preflight_sealed = await db.tracked_tickers.find(
                 {"price_history_complete": True},
-                {"_id": 0, "ticker": 1},
+                {"_id": 0, "ticker": 1, "range_proof": 1},
             ).to_list(None)
             _preflight_unsealed: list[str] = []
             if _preflight_sealed:
-                _sealed_tickers = [d["ticker"] for d in _preflight_sealed]
-                # Aggregate row counts per ticker for all sealed tickers
-                _row_counts_cursor = db.stock_prices.aggregate([
-                    {"$match": {"ticker": {"$in": _sealed_tickers}}},
-                    {"$group": {"_id": "$ticker", "cnt": {"$sum": 1}}},
-                    {"$match": {"cnt": {"$lt": _MIN_HISTORY_RECORDS}}},
-                ])
-                _low_count_tickers = [
-                    doc["_id"] async for doc in _row_counts_cursor
-                ]
-                # Also catch sealed tickers with ZERO rows in stock_prices
-                _tickers_with_any_rows = set()
-                _any_rows_cursor = db.stock_prices.aggregate([
-                    {"$match": {"ticker": {"$in": _sealed_tickers}}},
-                    {"$group": {"_id": "$ticker"}},
-                ])
-                async for doc in _any_rows_cursor:
-                    _tickers_with_any_rows.add(doc["_id"])
-                _zero_row_tickers = [
-                    t for t in _sealed_tickers
-                    if t not in _tickers_with_any_rows
-                ]
-                _preflight_unsealed = sorted(
-                    set(_low_count_tickers) | set(_zero_row_tickers)
-                )
+                for doc in _preflight_sealed:
+                    rp = doc.get("range_proof") or {}
+                    # Unseal if range_proof is missing entirely or fails validation
+                    if not rp or not rp.get("pass"):
+                        _preflight_unsealed.append(doc["ticker"])
+                        continue
+                    # Re-verify stored proof in case tolerance changed
+                    if not _check_range_proof(
+                        rp.get("provider_first_date"),
+                        rp.get("provider_last_date"),
+                        rp.get("db_first_date"),
+                        rp.get("db_last_date"),
+                    ):
+                        _preflight_unsealed.append(doc["ticker"])
+                _preflight_unsealed.sort()
                 if _preflight_unsealed:
                     _unseal_ts = datetime.now(timezone.utc)
                     await db.tracked_tickers.update_many(
@@ -4354,10 +4344,9 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                     )
                     logger.info(
                         "[Phase C preflight] Unsealed %d tickers with "
-                        "price_history_complete=True but < %d DB rows — "
-                        "Phase C will re-download. samples=%s",
+                        "price_history_complete=True but missing/failed "
+                        "range_proof — Phase C will re-download. samples=%s",
                         len(_preflight_unsealed),
-                        _MIN_HISTORY_RECORDS,
                         _preflight_unsealed[:10],
                     )
             step3_telemetry["phases"]["C"]["preflight_unsealed"] = len(_preflight_unsealed)
