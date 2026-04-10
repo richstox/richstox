@@ -346,8 +346,12 @@ function extractErrorText(run: any): string | null {
   if (!run) return null;
   if (run.error_message) return run.error_message;
   if (run.result?.error) return run.result.error;
+  if (run.details?.error_message) return run.details.error_message;
   const days = run.details?.price_bulk_gapfill?.days;
-  if (Array.isArray(days) && days.length > 0 && days[0]?.error) return days[0].error;
+  if (Array.isArray(days) && days.length > 0) {
+    if (days[0]?.error_message) return days[0].error_message;
+    if (days[0]?.error) return days[0].error;
+  }
   return run.error || null;
 }
 
