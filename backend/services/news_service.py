@@ -557,28 +557,39 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     referenced by any ticker.  This function finds and deletes those orphans so
     the collection doesn't grow unboundedly.
 
+    Uses a server-side $lookup to avoid transferring large ID lists to the client.
+
     Returns {"orphans_deleted": N}
     """
-    # Collect all article_ids still referenced by at least one mapping.
-    referenced_ids: set = set()
-    cursor = db.article_ticker_mapping.find({}, {"_id": 0, "article_id": 1})
-    async for doc in cursor:
-        referenced_ids.add(doc["article_id"])
-
-    if not referenced_ids:
-        # No mappings at all — nothing safe to prune (could be empty DB).
+    # Guard: if mapping table is completely empty, skip cleanup to avoid
+    # wiping all articles in an uninitialised or freshly-reset DB.
+    if await db.article_ticker_mapping.count_documents({}, limit=1) == 0:
         return {"orphans_deleted": 0}
 
-    # Delete articles whose article_id is NOT in the referenced set.
-    result = await db.news_articles.delete_many(
-        {"article_id": {"$nin": list(referenced_ids)}}
-    )
-    deleted = result.deleted_count
+    # Server-side $lookup: find news_articles with zero matching mappings.
+    _AGG_TIMEOUT_MS = 60_000
+    pipeline = [
+        {"$lookup": {
+            "from": "article_ticker_mapping",
+            "localField": "article_id",
+            "foreignField": "article_id",
+            "as": "_mappings",
+        }},
+        {"$match": {"_mappings": {"$size": 0}}},
+        {"$project": {"_id": 1}},
+    ]
 
-    if deleted:
-        logger.info(f"Orphan cleanup: deleted {deleted} unreferenced news_articles")
-    else:
+    orphan_ids = []
+    async for doc in db.news_articles.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS):
+        orphan_ids.append(doc["_id"])
+
+    if not orphan_ids:
         logger.debug("Orphan cleanup: no orphans found")
+        return {"orphans_deleted": 0}
+
+    result = await db.news_articles.delete_many({"_id": {"$in": orphan_ids}})
+    deleted = result.deleted_count
+    logger.info(f"Orphan cleanup: deleted {deleted} unreferenced news_articles")
 
     return {"orphans_deleted": deleted}
 
