@@ -156,12 +156,6 @@ async def fetch_news_batch_from_eodhd(
                 articles = response.json()
                 
                 if isinstance(articles, list):
-                    # Tag each article with the searched symbol so
-                    # store_articles_with_mapping can guarantee a mapping
-                    # for the ticker the user actually follows.
-                    bare = symbol.replace(".US", "").replace(".CC", "").upper()
-                    for art in articles:
-                        art.setdefault("_searched_symbol", bare)
                     all_articles.extend(articles)
                 _done += 1
                     
@@ -217,25 +211,7 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
         
         # P53: Get all tickers from EODHD symbols
         eodhd_symbols_raw = article.get("symbols", [])
-
-        # Build deduplicated set of tickers to map.
-        # Always include the ticker the article was fetched for (_searched_symbol)
-        # so the user's followed ticker is guaranteed a mapping even when the
-        # EODHD symbols field omits it or is empty.
-        tickers_to_map: dict[str, None] = {}  # ordered set via dict keys
-        searched = article.get("_searched_symbol", "")
-        if searched and len(searched) <= 5 and "-USD" not in searched:
-            tickers_to_map[searched] = None
-
-        for sym in eodhd_symbols_raw:
-            if not isinstance(sym, str):
-                continue
-            clean_sym = sym.replace(".US", "").replace(".CC", "").upper()
-            # Skip crypto and non-standard tickers
-            if "-USD" in clean_sym or len(clean_sym) > 5 or not clean_sym:
-                continue
-            tickers_to_map[clean_sym] = None
-
+        
         # Prepare article document
         doc = {
             "article_id": article_id,
@@ -260,9 +236,15 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
         if result.upserted_id:
             new_articles += 1
         
-        # P53: Create mappings for EACH ticker (searched + eodhd symbols)
+        # P53: Create mappings for EACH ticker in eodhd_symbols_raw
         # FIFO rotation: keep up to TICKER_DETAIL_LIMIT newest mappings per ticker
-        for clean_sym in tickers_to_map:
+        for sym in eodhd_symbols_raw:
+            clean_sym = sym.replace(".US", "").replace(".CC", "").upper()
+            
+            # Skip crypto and non-standard tickers
+            if "-USD" in clean_sym or len(clean_sym) > 5:
+                continue
+            
             # Create mapping
             mapping_result = await db.article_ticker_mapping.update_one(
                 {"article_id": article_id, "ticker": clean_sym},
@@ -396,22 +378,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         }
     
     logger.info(f"Processing {len(hot_symbols)} hot symbols")
-
-    # Self-healing: detect corrupted state where mappings exist but articles
-    # were wiped (e.g. by a prior orphan-cleanup bug).  Reset sync state so
-    # the next fetch covers the full 7-day window instead of a narrow delta.
-    has_mappings = await db.article_ticker_mapping.find_one({}, {"_id": 1})
-    has_articles = await db.news_articles.find_one({}, {"_id": 1})
-    if has_mappings and not has_articles:
-        logger.warning(
-            "Self-healing: article_ticker_mapping has data but news_articles is empty — "
-            "resetting sync state to force full re-fetch"
-        )
-        await db.news_sync_state.delete_one({"_id": "global"})
-        # Remove dangling mappings that point to deleted articles
-        await db.article_ticker_mapping.delete_many({})
-        await db.news_ticker_sync.delete_many({})
-
+    
     # Step 2: Group tickers by last_synced_at for delta sync
     # For simplicity, use global sync date (7 days ago for initial, yesterday for delta)
     global_sync = await db.news_sync_state.find_one({"_id": "global"})
@@ -438,7 +405,6 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     total_new_articles = 0
     total_new_mappings = 0
     total_orphans_deleted = 0
-    total_legacy_migrated = 0
     api_calls = len(formatted_symbols)  # One call per ticker
     errors = 0
 
@@ -523,18 +489,6 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         )
         await update_ticker_last_synced(db, hot_symbols, today)
 
-        # Migrate legacy news_article_symbols → article_ticker_mapping
-        # so old articles remain visible and aren't orphaned.
-        await _write_news_telemetry(
-            db, _run_id, phase="legacy_migration",
-            message="Migrating legacy article mappings…",
-            tickers_total=tickers_total, tickers_done=_done,
-            tickers_failed=_failed, api_calls=_done + _failed,
-            last_ticker=_last_ticker, last_error=_last_error,
-        )
-        migration_result = await migrate_legacy_mappings(db)
-        total_legacy_migrated = migration_result["migrated"]
-
         # Orphan cleanup: remove articles with zero remaining mappings
         await _write_news_telemetry(
             db, _run_id, phase="orphan_cleanup",
@@ -583,7 +537,6 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         "new_articles_stored": total_new_articles,
         "new_ticker_mappings": total_new_mappings,
         "orphans_deleted": total_orphans_deleted,
-        "legacy_mappings_migrated": total_legacy_migrated,
         "errors": errors,
         "from_date": from_date,
         "to_date": today,
@@ -596,79 +549,6 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     }
 
 
-async def migrate_legacy_mappings(db) -> Dict[str, int]:
-    """
-    One-shot migration: copy news_article_symbols → article_ticker_mapping.
-
-    The legacy table stores (article_id, symbol) pairs.  We normalise the
-    symbol to an upper-case bare ticker and insert into the new mapping table,
-    skipping duplicates.  This preserves all previously-stored articles so they
-    remain visible and are not treated as orphans by cleanup_orphaned_articles.
-
-    Safe to call repeatedly (upsert / skip-on-duplicate).
-
-    Returns {"migrated": N, "skipped": N}
-    """
-    # Check if legacy table exists and has data
-    if await db.news_article_symbols.count_documents({}, limit=1) == 0:
-        return {"migrated": 0, "skipped": 0}
-
-    migrated = 0
-    skipped = 0
-
-    cursor = db.news_article_symbols.find(
-        {},
-        {"_id": 0, "article_id": 1, "symbol": 1, "published_at": 1}
-    )
-
-    async for doc in cursor:
-        article_id = doc.get("article_id")
-        raw_sym = doc.get("symbol", "")
-        if not article_id or not raw_sym:
-            skipped += 1
-            continue
-
-        clean_sym = raw_sym.replace(".US", "").replace(".CC", "").upper()
-        if "-USD" in clean_sym or len(clean_sym) > 5:
-            skipped += 1
-            continue
-
-        # Look up published_at from the article if not on the mapping
-        published_at = doc.get("published_at")
-        if not published_at:
-            art = await db.news_articles.find_one(
-                {"article_id": article_id},
-                {"_id": 0, "published_at": 1}
-            )
-            published_at = art.get("published_at") if art else None
-
-        try:
-            result = await db.article_ticker_mapping.update_one(
-                {"article_id": article_id, "ticker": clean_sym},
-                {"$setOnInsert": {
-                    "article_id": article_id,
-                    "ticker": clean_sym,
-                    "published_at": published_at or datetime.now(timezone.utc),
-                    "created_at": datetime.now(timezone.utc),
-                }},
-                upsert=True,
-            )
-            if result.upserted_id:
-                migrated += 1
-            else:
-                skipped += 1
-        except Exception:
-            logger.debug(f"Legacy migration: failed to migrate article_id={article_id}, ticker={clean_sym}", exc_info=True)
-            skipped += 1
-
-    if migrated:
-        logger.info(f"Legacy migration: migrated {migrated} mappings, skipped {skipped}")
-    else:
-        logger.debug(f"Legacy migration: nothing new to migrate ({skipped} already present)")
-
-    return {"migrated": migrated, "skipped": skipped}
-
-
 async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     """
     Remove news_articles documents that have zero references in BOTH
@@ -678,9 +558,8 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     referenced by any ticker.  This function finds and deletes those orphans so
     the collection doesn't grow unboundedly.
 
-    Uses server-side $lookup to avoid transferring large ID lists to the client.
-    Checks both the new and legacy mapping tables so that articles referenced
-    by either are preserved during the migration period.
+    Uses a server-side $lookup to avoid transferring large ID lists to the client.
+    Checks both mapping tables so articles referenced by either are preserved.
 
     Returns {"orphans_deleted": N}
     """
@@ -689,17 +568,12 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     new_has_data = await db.article_ticker_mapping.count_documents({}, limit=1) > 0
     legacy_has_data = await db.news_article_symbols.count_documents({}, limit=1) > 0
     if not new_has_data and not legacy_has_data:
-        return {"orphans_deleted": 0, "dangling_mappings_deleted": 0}
+        return {"orphans_deleted": 0}
 
     # Server-side $lookup: find news_articles with zero matching mappings
     # in BOTH the new and legacy tables.
-    # Recency guard: never delete articles created in the last 24 h — they
-    # may not yet have mappings fully propagated or may be referenced in the
-    # current refresh cycle.
     _AGG_TIMEOUT_MS = 60_000
-    _ORPHAN_GRACE_PERIOD = datetime.now(timezone.utc) - timedelta(hours=24)
     pipeline = [
-        {"$match": {"created_at": {"$lt": _ORPHAN_GRACE_PERIOD}}},
         {"$lookup": {
             "from": "article_ticker_mapping",
             "localField": "article_id",
@@ -712,7 +586,6 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
             "foreignField": "article_id",
             "as": "_legacy_mappings",
         }},
-        # Only orphans have zero refs in BOTH tables
         {"$match": {
             "_new_mappings": {"$size": 0},
             "_legacy_mappings": {"$size": 0},
@@ -726,49 +599,13 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
 
     if not orphan_ids:
         logger.debug("Orphan cleanup: no orphans found")
-        # Still run dangling-mapping cleanup even when no article orphans exist
-        dangling_deleted = await _cleanup_dangling_mappings(db)
-        return {"orphans_deleted": 0, "dangling_mappings_deleted": dangling_deleted}
+        return {"orphans_deleted": 0}
 
     result = await db.news_articles.delete_many({"_id": {"$in": orphan_ids}})
     deleted = result.deleted_count
     logger.info(f"Orphan cleanup: deleted {deleted} unreferenced news_articles")
 
-    # Reverse cleanup: remove dangling mappings that point to articles no
-    # longer present in news_articles (e.g. after a prior accidental wipe).
-    dangling_deleted = await _cleanup_dangling_mappings(db)
-
-    return {"orphans_deleted": deleted, "dangling_mappings_deleted": dangling_deleted}
-
-
-async def _cleanup_dangling_mappings(db) -> int:
-    """Remove article_ticker_mapping rows whose article_id has no news_articles document.
-
-    This is the inverse of orphan-article cleanup: it catches mappings left
-    behind when articles are deleted (e.g. by a prior cleanup bug).
-    """
-    _AGG_TIMEOUT_MS = 60_000
-    pipeline = [
-        {"$lookup": {
-            "from": "news_articles",
-            "localField": "article_id",
-            "foreignField": "article_id",
-            "as": "_article",
-        }},
-        {"$match": {"_article": {"$size": 0}}},
-        {"$project": {"_id": 1}},
-    ]
-
-    dangling_ids = []
-    async for doc in db.article_ticker_mapping.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS):
-        dangling_ids.append(doc["_id"])
-
-    if not dangling_ids:
-        return 0
-
-    result = await db.article_ticker_mapping.delete_many({"_id": {"$in": dangling_ids}})
-    logger.info(f"Dangling mapping cleanup: deleted {result.deleted_count} mappings pointing to missing articles")
-    return result.deleted_count
+    return {"orphans_deleted": deleted}
 
 
 async def create_news_indexes(db):
