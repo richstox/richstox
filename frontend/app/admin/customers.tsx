@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
+import BrandedLoading from '../../components/BrandedLoading';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
@@ -144,44 +145,7 @@ export default function CustomersTab({ sessionToken }: CustomersProps) {
   };
 
   if (loading) return (
-    <View style={s.container}>
-      {/* Skeleton: Stats row */}
-      <View style={s.statsRow}>
-        {[0, 1, 2, 3].map(i => (
-          <View key={i} style={s.statCard}>
-            <View style={{ width: 32, height: 18, borderRadius: 4, backgroundColor: COLORS.border }} />
-            <View style={{ width: 40, height: 10, borderRadius: 4, backgroundColor: COLORS.border, marginTop: 4 }} />
-          </View>
-        ))}
-      </View>
-      {/* Skeleton: Search bar */}
-      <View style={[s.searchWrap, { minHeight: 34 }]}>
-        <View style={{ width: '100%', height: 13, borderRadius: 4, backgroundColor: COLORS.border }} />
-      </View>
-      {/* Skeleton: Filter tabs */}
-      <View style={s.filterRow}>
-        {[0, 1, 2].map(i => (
-          <View key={i} style={[s.filterTab, { alignItems: 'center' }]}>
-            <View style={{ width: 48, height: 11, borderRadius: 4, backgroundColor: COLORS.border }} />
-          </View>
-        ))}
-      </View>
-      {/* Skeleton: User cards */}
-      {[0, 1, 2, 3, 4].map(i => (
-        <View key={i} style={s.userCard}>
-          <View style={[s.userAvatar, { backgroundColor: COLORS.border }]} />
-          <View style={s.userInfo}>
-            <View style={{ width: 100, height: 13, borderRadius: 4, backgroundColor: COLORS.border, marginBottom: 4 }} />
-            <View style={{ width: 140, height: 11, borderRadius: 4, backgroundColor: COLORS.border, marginBottom: 4 }} />
-            <View style={{ width: 180, height: 10, borderRadius: 4, backgroundColor: COLORS.border }} />
-          </View>
-          <View style={s.userActions}>
-            <View style={{ width: 22, height: 22, borderRadius: 4, backgroundColor: COLORS.border }} />
-            <View style={{ width: 22, height: 22, borderRadius: 4, backgroundColor: COLORS.border }} />
-          </View>
-        </View>
-      ))}
-    </View>
+    <BrandedLoading message="Loading Customers..." subtitle="Fetching user data." />
   );
 
   return (
