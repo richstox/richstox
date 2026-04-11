@@ -1679,7 +1679,7 @@ async def get_admin_overview(db) -> Dict[str, Any]:
 
     result = await _compute_admin_overview(db)
     _overview_cache["data"] = result
-    _overview_cache["expires_at"] = time.monotonic() + _OVERVIEW_CACHE_TTL_SECONDS
+    _overview_cache["expires_at"] = now_mono + _OVERVIEW_CACHE_TTL_SECONDS
     return result
 
 

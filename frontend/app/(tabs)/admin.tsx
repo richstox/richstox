@@ -1303,17 +1303,17 @@ export default function AdminScreen() {
 
       {/* Tab Content — lazy-mount on first visit, keep mounted to preserve state */}
       {visitedTabs.has('dashboard') && (
-        <View style={{ display: activeTab === 'dashboard' ? 'flex' : 'none', flex: activeTab === 'dashboard' ? 1 : undefined }}>
+        <View style={activeTab === 'dashboard' ? a.tabContentVisible : a.tabContentHidden}>
           <DashboardTab sessionToken={sessionToken} />
         </View>
       )}
       {visitedTabs.has('pipeline') && (
-        <View style={{ display: activeTab === 'pipeline' ? 'flex' : 'none', flex: activeTab === 'pipeline' ? 1 : undefined }}>
+        <View style={activeTab === 'pipeline' ? a.tabContentVisible : a.tabContentHidden}>
           <PipelineTab sessionToken={sessionToken} />
         </View>
       )}
       {visitedTabs.has('customers') && (
-        <View style={{ display: activeTab === 'customers' ? 'flex' : 'none', flex: activeTab === 'customers' ? 1 : undefined }}>
+        <View style={activeTab === 'customers' ? a.tabContentVisible : a.tabContentHidden}>
           <CustomersTab sessionToken={sessionToken} />
         </View>
       )}
@@ -1324,6 +1324,9 @@ export default function AdminScreen() {
 const a = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+
+  tabContentVisible: { display: 'flex' as any, flex: 1 },
+  tabContentHidden: { display: 'none' as any },
 
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
