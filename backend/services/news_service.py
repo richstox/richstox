@@ -247,10 +247,12 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
         # P53: Create mappings for EACH ticker in eodhd_symbols_raw
         # FIFO rotation: keep up to TICKER_DETAIL_LIMIT newest mappings per ticker
         for sym in eodhd_symbols_raw:
+            if not isinstance(sym, str):
+                continue
             clean_sym = sym.replace(".US", "").replace(".CC", "").upper()
             
             # Skip crypto and non-standard tickers
-            if "-USD" in clean_sym or len(clean_sym) > 5:
+            if "-USD" in clean_sym or len(clean_sym) > 5 or not clean_sym:
                 continue
             
             # Create mapping
