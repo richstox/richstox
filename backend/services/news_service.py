@@ -16,7 +16,7 @@ P53 BINDING RULES:
 2. DELTA SYNC: Use last_synced_at per ticker, fetch only &from={last_synced_at}
 3. PAGINATION: limit=1000, offset=0 per batch (no pagination needed)
 4. DEDUP: One article stored once, mapped to multiple tickers via article_ticker_mapping
-5. LIMIT: Max 3 articles per ticker in mapping
+5. LIMIT: FIFO rotation keeps newest TICKER_DETAIL_LIMIT (100) mappings per ticker
 
 Tables:
 - news_articles: article_id, link, title, published_at, eodhd_symbols_raw
@@ -237,21 +237,12 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
             new_articles += 1
         
         # P53: Create mappings for EACH ticker in eodhd_symbols_raw
-        # No limit here - we store all mappings, limit is applied at query time
+        # FIFO rotation: keep up to TICKER_DETAIL_LIMIT newest mappings per ticker
         for sym in eodhd_symbols_raw:
             clean_sym = sym.replace(".US", "").replace(".CC", "").upper()
             
             # Skip crypto and non-standard tickers
             if "-USD" in clean_sym or len(clean_sym) > 5:
-                continue
-            
-            # Get current rank for ordering
-            existing_count = await db.article_ticker_mapping.count_documents({
-                "ticker": clean_sym
-            })
-            
-            # P53: Store up to TICKER_DETAIL_LIMIT (100) mappings per ticker
-            if existing_count >= TICKER_DETAIL_LIMIT:
                 continue
             
             # Create mapping
@@ -260,7 +251,6 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
                 {"$setOnInsert": {
                     "article_id": article_id,
                     "ticker": clean_sym,
-                    "rank": existing_count + 1,
                     "published_at": published_at,
                     "created_at": datetime.now(timezone.utc),
                 }},
@@ -269,6 +259,21 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
             
             if mapping_result.upserted_id:
                 new_mappings += 1
+                
+                # FIFO: evict oldest mapping(s) when over the limit
+                existing_count = await db.article_ticker_mapping.count_documents({
+                    "ticker": clean_sym
+                })
+                if existing_count > TICKER_DETAIL_LIMIT:
+                    overflow = existing_count - TICKER_DETAIL_LIMIT
+                    oldest = await db.article_ticker_mapping.find(
+                        {"ticker": clean_sym},
+                        {"_id": 1}
+                    ).sort("published_at", 1).limit(overflow).to_list(length=overflow)
+                    if oldest:
+                        await db.article_ticker_mapping.delete_many(
+                            {"_id": {"$in": [doc["_id"] for doc in oldest]}}
+                        )
     
     logger.info(f"Stored {new_articles} new articles, {new_mappings} new ticker mappings")
     return {"new_articles": new_articles, "new_mappings": new_mappings}

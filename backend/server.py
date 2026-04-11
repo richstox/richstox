@@ -4769,8 +4769,8 @@ async def get_news(
     # Get article_ids mapped to our followed tickers
     article_mappings = await db.article_ticker_mapping.find(
         {"ticker": {"$in": ticker_list}},
-        {"_id": 0, "article_id": 1, "ticker": 1, "rank": 1}
-    ).sort([("ticker", 1), ("rank", 1)]).to_list(length=None)
+        {"_id": 0, "article_id": 1, "ticker": 1}
+    ).sort([("ticker", 1), ("published_at", -1)]).to_list(length=None)
 
     # Fallback to old table if new one is empty (migration period)
     if not article_mappings:
@@ -5121,7 +5121,7 @@ async def get_ticker_news(
     # Get mappings for this ticker (sorted by published_at desc)
     mappings = await db.article_ticker_mapping.find(
         {"ticker": ticker},
-        {"_id": 0, "article_id": 1, "rank": 1}
+        {"_id": 0, "article_id": 1}
     ).sort("published_at", -1).skip(offset).limit(effective_limit).to_list(length=effective_limit)
 
     total_count = await db.article_ticker_mapping.count_documents({"ticker": ticker})
