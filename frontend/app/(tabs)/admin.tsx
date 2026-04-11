@@ -7,8 +7,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, SafeAreaView, Alert, TextInput,
+  RefreshControl, ActivityIndicator, Alert, TextInput,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
 import { COLORS } from '../_layout';
@@ -1238,6 +1239,17 @@ const sk = StyleSheet.create({
 export default function AdminScreen() {
   const { isAdmin, sessionToken, isLoading } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  // Track which tabs have been visited so we lazy-mount them on first visit
+  // but keep them mounted (retain state / avoid re-fetch) on subsequent switches.
+  const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(new Set(['dashboard']));
+
+  const handleTabPress = useCallback((tab: Tab) => {
+    setActiveTab(tab);
+    setVisitedTabs(prev => {
+      if (prev.has(tab)) return prev;
+      return new Set([...prev, tab]);
+    });
+  }, []);
 
   if (isLoading) {
     return (
@@ -1266,7 +1278,7 @@ export default function AdminScreen() {
   ];
 
   return (
-    <SafeAreaView style={a.container}>
+    <SafeAreaView style={a.container} edges={['top']}>
       <AppHeader title="Admin Panel" />
 
       {/* Tabs */}
@@ -1275,7 +1287,7 @@ export default function AdminScreen() {
           <TouchableOpacity
             key={tab.id}
             style={[a.tabBtn, activeTab === tab.id && a.tabBtnActive]}
-            onPress={() => setActiveTab(tab.id)}
+            onPress={() => handleTabPress(tab.id)}
           >
             <Ionicons
               name={tab.icon as any}
@@ -1289,10 +1301,22 @@ export default function AdminScreen() {
         ))}
       </View>
 
-      {/* Tab Content */}
-      {activeTab === 'dashboard' && <DashboardTab sessionToken={sessionToken} />}
-      {activeTab === 'pipeline' && <PipelineTab sessionToken={sessionToken} />}
-      {activeTab === 'customers' && <CustomersTab sessionToken={sessionToken} />}
+      {/* Tab Content — lazy-mount on first visit, keep mounted to preserve state */}
+      {visitedTabs.has('dashboard') && (
+        <View style={activeTab === 'dashboard' ? a.tabContentVisible : a.tabContentHidden}>
+          <DashboardTab sessionToken={sessionToken} />
+        </View>
+      )}
+      {visitedTabs.has('pipeline') && (
+        <View style={activeTab === 'pipeline' ? a.tabContentVisible : a.tabContentHidden}>
+          <PipelineTab sessionToken={sessionToken} />
+        </View>
+      )}
+      {visitedTabs.has('customers') && (
+        <View style={activeTab === 'customers' ? a.tabContentVisible : a.tabContentHidden}>
+          <CustomersTab sessionToken={sessionToken} />
+        </View>
+      )}
     </SafeAreaView>
   );
 }
@@ -1300,6 +1324,9 @@ export default function AdminScreen() {
 const a = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8 },
+
+  tabContentVisible: { display: 'flex' as any, flex: 1 },
+  tabContentHidden: { display: 'none' as any },
 
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },

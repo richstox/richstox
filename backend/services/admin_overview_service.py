@@ -1299,6 +1299,11 @@ async def backfill_full_price_history(db) -> Dict[str, Any]:
     }
 
 
+# ── Short-lived cache for EODHD API usage (external HTTP call) ──────────────
+_eodhd_cache: Dict[str, Any] = {"data": None, "expires_at": 0.0}
+_EODHD_CACHE_TTL_SECONDS = 60  # cache for 60 seconds
+
+
 async def get_eodhd_api_usage() -> Dict[str, Any]:
     """
     Fetch today's API call count from the EODHD provider account endpoint.
@@ -1307,9 +1312,16 @@ async def get_eodhd_api_usage() -> Dict[str, Any]:
 
     This is a read-only call; no write/update behaviour.
     If the key is missing or the call fails, returns None for the count.
+
+    Results are cached for 60 seconds to avoid blocking admin panel loads
+    with external HTTP latency on repeated page views / tab switches.
     """
     if not EODHD_API_KEY:
         return {"eodhd_api_calls_today": None, "eodhd_daily_limit": EODHD_DAILY_LIMIT}
+
+    now = time.monotonic()
+    if _eodhd_cache["data"] is not None and now < _eodhd_cache["expires_at"]:
+        return _eodhd_cache["data"]
 
     try:
         async with httpx.AsyncClient(timeout=10) as client:
@@ -1319,10 +1331,13 @@ async def get_eodhd_api_usage() -> Dict[str, Any]:
             )
         if resp.status_code == 200:
             data = resp.json()
-            return {
+            result = {
                 "eodhd_api_calls_today": data.get("apiRequests"),
                 "eodhd_daily_limit": data.get("dailyRateLimit", EODHD_DAILY_LIMIT),
             }
+            _eodhd_cache["data"] = result
+            _eodhd_cache["expires_at"] = now + _EODHD_CACHE_TTL_SECONDS
+            return result
         logger.warning("EODHD user endpoint returned %s", resp.status_code)
         return {"eodhd_api_calls_today": None, "eodhd_daily_limit": EODHD_DAILY_LIMIT}
     except Exception as exc:
@@ -1645,11 +1660,31 @@ async def get_visible_coverage(db) -> Dict[str, Any]:
         }
 
 
+# ── Short-lived cache for the full admin overview response ──────────────────
+_overview_cache: Dict[str, Any] = {"data": None, "expires_at": 0.0}
+_OVERVIEW_CACHE_TTL_SECONDS = 15  # cache for 15 seconds
+
+
 async def get_admin_overview(db) -> Dict[str, Any]:
     """
     Single aggregated response for Admin Panel.
     P48: Single source of truth, Talk-aligned funnel.
+
+    Results are cached for 15 seconds to avoid redundant heavy DB queries
+    when both Dashboard and Pipeline tabs fetch this endpoint independently.
     """
+    now_mono = time.monotonic()
+    if _overview_cache["data"] is not None and now_mono < _overview_cache["expires_at"]:
+        return _overview_cache["data"]
+
+    result = await _compute_admin_overview(db)
+    _overview_cache["data"] = result
+    _overview_cache["expires_at"] = now_mono + _OVERVIEW_CACHE_TTL_SECONDS
+    return result
+
+
+async def _compute_admin_overview(db) -> Dict[str, Any]:
+    """Inner implementation of admin overview (uncached)."""
     start_time = time.perf_counter()
     
     now_utc = datetime.now(timezone.utc)
