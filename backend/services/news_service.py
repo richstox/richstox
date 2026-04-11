@@ -404,6 +404,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     total_articles_fetched = 0
     total_new_articles = 0
     total_new_mappings = 0
+    total_orphans_deleted = 0
     api_calls = len(formatted_symbols)  # One call per ticker
     errors = 0
 
@@ -488,6 +489,17 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         )
         await update_ticker_last_synced(db, hot_symbols, today)
 
+        # Orphan cleanup: remove articles with zero remaining mappings
+        await _write_news_telemetry(
+            db, _run_id, phase="orphan_cleanup",
+            message="Cleaning up orphaned articles…",
+            tickers_total=tickers_total, tickers_done=_done,
+            tickers_failed=_failed, api_calls=_done + _failed,
+            last_ticker=_last_ticker, last_error=_last_error,
+        )
+        orphan_result = await cleanup_orphaned_articles(db)
+        total_orphans_deleted = orphan_result["orphans_deleted"]
+
     except Exception as e:
         logger.error(f"Error processing news fetch: {e}")
         errors = 1
@@ -510,7 +522,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     if not errors:
         await _write_news_telemetry(
             db, _run_id, phase="finalize",
-            message=f"Completed: {total_new_articles} articles, {total_new_mappings} mappings",
+            message=f"Completed: {total_new_articles} articles, {total_new_mappings} mappings, {total_orphans_deleted} orphans cleaned",
             tickers_total=tickers_total, tickers_done=_done,
             tickers_failed=_failed, api_calls=_done + _failed,
             last_ticker=_last_ticker, last_error=_last_error,
@@ -524,6 +536,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         "total_articles_fetched": total_articles_fetched,
         "new_articles_stored": total_new_articles,
         "new_ticker_mappings": total_new_mappings,
+        "orphans_deleted": total_orphans_deleted,
         "errors": errors,
         "from_date": from_date,
         "to_date": today,
@@ -534,6 +547,40 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         "api_endpoint_template": f"https://eodhd.com/api/news?s={{SYMBOL}}.US&from={{from_date}}&to={{to_date}}&limit={EODHD_FETCH_LIMIT}&offset=0&fmt=json",
         "sample_tickers": hot_symbols[:5],
     }
+
+
+async def cleanup_orphaned_articles(db) -> Dict[str, int]:
+    """
+    Remove news_articles documents that have zero references in article_ticker_mapping.
+
+    After FIFO eviction trims old mappings, the parent article may no longer be
+    referenced by any ticker.  This function finds and deletes those orphans so
+    the collection doesn't grow unboundedly.
+
+    Returns {"orphans_deleted": N}
+    """
+    # Collect all article_ids still referenced by at least one mapping.
+    referenced_ids: set = set()
+    cursor = db.article_ticker_mapping.find({}, {"_id": 0, "article_id": 1})
+    async for doc in cursor:
+        referenced_ids.add(doc["article_id"])
+
+    if not referenced_ids:
+        # No mappings at all — nothing safe to prune (could be empty DB).
+        return {"orphans_deleted": 0}
+
+    # Delete articles whose article_id is NOT in the referenced set.
+    result = await db.news_articles.delete_many(
+        {"article_id": {"$nin": list(referenced_ids)}}
+    )
+    deleted = result.deleted_count
+
+    if deleted:
+        logger.info(f"Orphan cleanup: deleted {deleted} unreferenced news_articles")
+    else:
+        logger.debug("Orphan cleanup: no orphans found")
+
+    return {"orphans_deleted": deleted}
 
 
 async def create_news_indexes(db):
