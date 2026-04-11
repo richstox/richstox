@@ -226,6 +226,37 @@ function extractDayProgress(message: string | undefined): string | null {
 
 const CHAIN_STATUS_POLL_MS = 5000;
 
+// ── Collapsible step accordion helpers ──────────────────────────────────────
+const ALL_PIPELINE_STEPS = [1, 2, 3, 4];
+const JOB_NAME_BY_STEP: Record<number, string> = {
+  1: 'universe_seed', 2: 'price_sync', 3: 'fundamentals_sync', 4: 'peer_medians',
+};
+
+function readCollapsedFromStorage(): Set<number> {
+  const s = new Set<number>();
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return s;
+  for (const n of ALL_PIPELINE_STEPS) {
+    try {
+      if (window.localStorage.getItem(`pipeline_step_${n}_collapsed`) === 'true') s.add(n);
+    } catch { /* ignore */ }
+  }
+  return s;
+}
+
+function hasStoredCollapsedPrefs(): boolean {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return false;
+  return ALL_PIPELINE_STEPS.some(n => {
+    try { return window.localStorage.getItem(`pipeline_step_${n}_collapsed`) !== null; } catch { return false; }
+  });
+}
+
+function persistCollapsedToStorage(collapsed: Set<number>): void {
+  if (Platform.OS !== 'web' || typeof window === 'undefined') return;
+  for (const n of ALL_PIPELINE_STEPS) {
+    try { window.localStorage.setItem(`pipeline_step_${n}_collapsed`, String(collapsed.has(n))); } catch { /* ignore */ }
+  }
+}
+
 // ── Step 3 phase telemetry constants ────────────────────────────────────────
 const S3_PHASE_LABELS: Record<string, string> = { A: 'Phase A — Fundamentals', B: 'Phase B — Visibility', C: 'Phase C — Price History' };
 const S3_PHASE_COLORS: Record<string, string> = { A: '#6366F1', B: '#F59E0B', C: '#10B981' };
@@ -364,6 +395,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [liveLastRuns, setLiveLastRuns] = useState<Record<string, any>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
+  // ── Collapsible step accordion ──────────────────────────────────────────
+  const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(readCollapsedFromStorage);
+  const collapsedDefaultsApplied = useRef(hasStoredCollapsedPrefs());
+  const userManualCollapseRef = useRef<Set<number>>(new Set());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); // chain run elapsed timer
 
@@ -1064,6 +1099,71 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   }, [jobRuns]);
   useEffect(() => () => stopChainTimer(), [stopChainTimer]);
 
+  // ── Collapsible step defaults + persistence ─────────────────────────────
+  // Set default collapsed state based on step statuses when data first loads
+  // (only if no stored localStorage preference exists)
+  useEffect(() => {
+    if (collapsedDefaultsApplied.current || !data) return;
+    collapsedDefaultsApplied.current = true;
+    let expandStep: number | null = null;
+    for (const n of ALL_PIPELINE_STEPS) {
+      const run = jobRuns[JOB_NAME_BY_STEP[n]];
+      const st = run?.status;
+      if (st === 'running' || st === 'error' || st === 'failed') {
+        expandStep = n;
+        break;
+      }
+    }
+    const collapsed = new Set(ALL_PIPELINE_STEPS);
+    if (expandStep !== null) collapsed.delete(expandStep);
+    setCollapsedSteps(collapsed);
+    persistCollapsedToStorage(collapsed);
+  }, [data, jobRuns]);
+
+  // Persist collapsed state to localStorage whenever it changes
+  useEffect(() => {
+    persistCollapsedToStorage(collapsedSteps);
+  }, [collapsedSteps]);
+
+  // Auto-expand running steps (unless user manually collapsed them)
+  useEffect(() => {
+    if (!data) return;
+    setCollapsedSteps(prev => {
+      const next = new Set(prev);
+      let changed = false;
+      for (const n of ALL_PIPELINE_STEPS) {
+        const run = jobRuns[JOB_NAME_BY_STEP[n]];
+        const isRunning = run?.status === 'running' && !run?.finished_at;
+        if (isRunning && next.has(n) && !userManualCollapseRef.current.has(n)) {
+          next.delete(n);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [data, jobRuns]);
+
+  const toggleStepCollapsed = useCallback((stepNum: number) => {
+    userManualCollapseRef.current.add(stepNum);
+    setCollapsedSteps(prev => {
+      const next = new Set(prev);
+      if (next.has(stepNum)) {
+        next.delete(stepNum);
+      } else {
+        next.add(stepNum);
+      }
+      return next;
+    });
+  }, []);
+
+  const expandAllSteps = useCallback(() => {
+    setCollapsedSteps(new Set());
+  }, []);
+
+  const collapseAllSteps = useCallback(() => {
+    setCollapsedSteps(new Set(ALL_PIPELINE_STEPS));
+  }, []);
+
   const counts = data?.universe_funnel?.counts || {};
   const fundamentalsSyncDetails = data?.fundamentals_sync?.details || {};
   const syncStatus = data?.pipeline_sync_status || {};
@@ -1409,6 +1509,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         </View>
       </View>
 
+      {/* Expand / Collapse all controls */}
+      <View style={s.collapseControlRow}>
+        <TouchableOpacity style={s.collapseControlBtn} onPress={expandAllSteps}>
+          <Ionicons name="expand-outline" size={13} color={COLORS.textMuted} />
+          <Text style={s.collapseControlText}>Expand all</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.collapseControlBtn} onPress={collapseAllSteps}>
+          <Ionicons name="contract-outline" size={13} color={COLORS.textMuted} />
+          <Text style={s.collapseControlText}>Collapse all</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* Pipeline Steps */}
       {steps.map((step, idx) => {
         const run = jobRuns[step.job_name];
@@ -1462,11 +1574,48 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           ? 'Processed events/tickers:'
           : 'Processed:';
 
+        // ── Pre-compute run info for header / body split ──────────────────────
+        const isStepCollapsed = collapsedSteps.has(step.step);
+        let runStatusText = '—';
+        let runDurationText = '';
+        let isLiveRun = false;
+        const showRunError = !!run && (run.status === 'error' || run.status === 'failed' || (run.status === 'running' && !!run.finished_at));
+        const runErrorText = showRunError ? extractErrorText(run) : null;
+
+        if (run) {
+          const runStart = run.started_at_prague || run.start_time || run.started_at;
+          const runEnd = run.finished_at_prague || run.end_time || run.finished_at;
+          const lastDuration = run.duration_seconds ?? (
+            runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
+          );
+          isLiveRun = run.status === 'running' && !run.finished_at && !chainStepDone;
+          const prevCompleted = run.previous_completed_run;
+          const prevEnd = prevCompleted?.finished_at_prague || prevCompleted?.finished_at;
+          runStatusText = isLiveRun
+            ? (prevEnd
+              ? formatTime(prevEnd)
+              : `Started ${formatTime(runStart)}`)
+            : (runEnd || runStart)
+              ? formatTime(runEnd || runStart)
+              : '—';
+          const prevDuration = prevCompleted?.duration_seconds;
+          runDurationText = isLiveRun
+            ? (prevEnd && prevDuration !== undefined && prevDuration !== null
+              ? ` (${formatDuration(prevDuration)})`
+              : '')
+            : run.status === 'cancelled'
+              ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
+              : lastDuration !== undefined
+                ? ` (${formatDuration(lastDuration)})`
+                : '';
+        }
+
       return (
         <View key={step.job_name}>
           <View style={s.stepCard}>
 
-            {/* Step Header */}
+            {/* ── Clickable Step Header ── */}
+            <TouchableOpacity activeOpacity={0.7} onPress={() => toggleStepCollapsed(step.step)}>
             <View style={s.stepHeader}>
                 <View style={[s.stepBadge, { backgroundColor: step.color + '22' }]}>
                   <Ionicons name={step.icon} size={16} color={step.color} />
@@ -1491,8 +1640,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>
                   <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
-
+                <Ionicons
+                  name={isStepCollapsed ? 'chevron-down' : 'chevron-up'}
+                  size={16}
+                  color={COLORS.textMuted}
+                  style={{ marginLeft: 4 }}
+                />
             </View>
+            </TouchableOpacity>
 
               {/* ── Integrated Funnel Row ── */}
               {/* Steps 2+: waiting state if previous step has 0 output */}
@@ -1551,48 +1706,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               )}
 
-              {/* Last Run Info */}
-              {run ? (() => {
-                const runStart = run.started_at_prague || run.start_time || run.started_at;
-                const runEnd = run.finished_at_prague || run.end_time || run.finished_at;
-                const lastDuration = run.duration_seconds ?? (
-                  runStart && runEnd ? Math.max(0, Math.round((Date.parse(runEnd) - Date.parse(runStart)) / 1000)) : undefined
-                );
-                const isLiveRun = run.status === 'running' && !run.finished_at && !chainStepDone;
-                const prevCompleted = run.previous_completed_run;
-                const prevEnd = prevCompleted?.finished_at_prague || prevCompleted?.finished_at;
-                const statusText = isLiveRun
-                  ? (prevEnd
-                    ? formatTime(prevEnd)
-                    : `Started ${formatTime(runStart)}`)
-                  : (runEnd || runStart)
-                    ? formatTime(runEnd || runStart)
-                    : '—';
-                const prevDuration = prevCompleted?.duration_seconds;
-                const durationText = isLiveRun
-                  ? (prevEnd && prevDuration !== undefined && prevDuration !== null
-                    ? ` (${formatDuration(prevDuration)})`
-                    : '')
-                  : run.status === 'cancelled'
-                    ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
-                    : lastDuration !== undefined
-                      ? ` (${formatDuration(lastDuration)})`
-                      : '';
-
-                return (
+              {/* ── Always-visible: Last run compact + cancel + error ── */}
+              {run ? (
                 <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Last run:</Text>
                     <Text style={[s.runValue, { color: getStatusColor(run.status) }]}>
-                      {statusText}{durationText}
+                      {runStatusText}{runDurationText}
                     </Text>
                   </View>
-                  {run.triggered_by && (
-                    <View style={s.runInfoRow}>
-                      <Text style={s.runLabel}>Triggered by:</Text>
-                      <Text style={s.runValue}>{run.triggered_by}</Text>
-                    </View>
-                  )}
                   {processedCount !== undefined && processedCount > 0 && (
                     <View style={s.runInfoRow}>
                       <Text style={s.runLabel}>{processedLabel}</Text>
@@ -1602,12 +1724,6 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       </Text>
                     </View>
                   )}
-                  {step.job_name !== 'price_sync' && (
-                  <View style={s.runInfoRow}>
-                    <Text style={s.runLabel}>Next run:</Text>
-                    <Text style={s.runValue}>{nextRunLabel}</Text>
-                  </View>
-                  )}
                   {(step.job_name === 'price_sync' || step.job_name === 'fundamentals_sync') && run.status === 'running' && !run.finished_at && (
                     <TouchableOpacity
                       style={s.cancelRunningBtn}
@@ -1616,14 +1732,26 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.cancelRunningBtnText}>Cancel running</Text>
                     </TouchableOpacity>
                   )}
-                  {(() => {
-                    const showError = run.status === 'error' || run.status === 'failed' || (run.status === 'running' && !!run.finished_at);
-                    const errorText = showError ? extractErrorText(run) : null;
-                    return errorText ? <Text style={s.errorText}>⚠️ {errorText}</Text> : null;
-                  })()}
+                  {runErrorText ? <Text style={s.errorText}>⚠️ {runErrorText}</Text> : null}
+                  {/* Collapsible: extra run details */}
+                  {!isStepCollapsed && (
+                    <>
+                      {run.triggered_by && (
+                        <View style={s.runInfoRow}>
+                          <Text style={s.runLabel}>Triggered by:</Text>
+                          <Text style={s.runValue}>{run.triggered_by}</Text>
+                        </View>
+                      )}
+                      {step.job_name !== 'price_sync' && (
+                        <View style={s.runInfoRow}>
+                          <Text style={s.runLabel}>Next run:</Text>
+                          <Text style={s.runValue}>{nextRunLabel}</Text>
+                        </View>
+                      )}
+                    </>
+                  )}
                 </View>
-                );
-              })() : step.job_name !== 'price_sync' ? (
+              ) : step.job_name !== 'price_sync' ? (
                 <View style={s.runInfo}>
                   <View style={s.runInfoRow}>
                     <Text style={s.runLabel}>Next run:</Text>
@@ -1632,6 +1760,39 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 </View>
               ) : null}
 
+              {/* ── Running progress summary (visible even when collapsed) ── */}
+              {isLiveRun && isStepCollapsed && step.job_name === 'price_sync' && step2Progress !== null && (
+                <View style={s.headerProgressRow}>
+                  <View style={[s.headerProgressBar, { backgroundColor: COLORS.border }]}>
+                    <View style={[s.headerProgressBarFill, {
+                      width: `${Math.min(step2Progress.pct, 100)}%` as any,
+                      backgroundColor: '#10B981',
+                    }]} />
+                  </View>
+                  <Text style={s.headerProgressText}>
+                    {step2Progress.phase === '2.1_bulk_catchup' ? '2.1 Bulk' : step2Progress.phase?.replace('_', ' ') ?? 'Syncing'}
+                    {' · '}{step2Progress.pct}%
+                    {step2Progress.total > 0 ? ` · ${fmt(step2Progress.processed)}/${fmt(step2Progress.total)}` : ''}
+                  </Text>
+                </View>
+              )}
+              {isLiveRun && isStepCollapsed && step.job_name === 'universe_seed' && step1Progress !== null && (
+                <View style={s.headerProgressRow}>
+                  <View style={[s.headerProgressBar, { backgroundColor: COLORS.border }]}>
+                    <View style={[s.headerProgressBarFill, {
+                      width: `${Math.min(step1Progress.pct, 100)}%` as any,
+                      backgroundColor: '#6366F1',
+                    }]} />
+                  </View>
+                  <Text style={s.headerProgressText}>
+                    Seeding · {step1Progress.pct}% · {fmt(step1Progress.processed)}/{fmt(step1Progress.total)}
+                  </Text>
+                </View>
+              )}
+
+              {/* ── Collapsible Body ── */}
+              {!isStepCollapsed && (
+                <>
               {step.job_name === 'universe_seed' && (s1In !== undefined || rawPerExchange) && (
                 <View style={s.substepsCard}>
                   <Text style={s.substepsTitle}>Step 1 raw breakdown</Text>
@@ -2257,6 +2418,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   ))}
                 </View>
               )}
+                </>
+              )}
             </View>
 
             {/* Arrow between steps */}
@@ -2605,6 +2768,14 @@ const s = StyleSheet.create({
 
   expandBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start' },
   expandText: { fontSize: 11, color: COLORS.textMuted },
+  // ── Collapse controls ───────────────────────────────────────────────────
+  collapseControlRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginHorizontal: 12, marginTop: 12, marginBottom: 2 },
+  collapseControlBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  collapseControlText: { fontSize: 11, color: COLORS.textMuted },
+  headerProgressRow: { marginTop: 6, gap: 3 },
+  headerProgressBar: { height: 4, borderRadius: 2, overflow: 'hidden' },
+  headerProgressBarFill: { height: 4, borderRadius: 2 },
+  headerProgressText: { fontSize: 10, color: COLORS.textMuted },
   exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#6366F111', borderWidth: 1, borderColor: '#6366F144', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   exportBtnText: { fontSize: 11, color: '#6366F1', fontWeight: '600' },
 
