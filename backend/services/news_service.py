@@ -156,6 +156,14 @@ async def fetch_news_batch_from_eodhd(
                 articles = response.json()
                 
                 if isinstance(articles, list):
+                    # EODHD sometimes omits the searched ticker from the
+                    # article's symbols list.  Ensure it's present so the
+                    # existing mapping loop creates a row for this ticker.
+                    for art in articles:
+                        syms = art.get("symbols") or []
+                        if symbol not in syms:
+                            syms.append(symbol)
+                            art["symbols"] = syms
                     all_articles.extend(articles)
                 _done += 1
                     
