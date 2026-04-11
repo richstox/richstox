@@ -1146,23 +1146,30 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   }, [data, jobRuns]);
 
   const toggleStepCollapsed = useCallback((stepNum: number) => {
-    userManualCollapseRef.current.add(stepNum);
     setCollapsedSteps(prev => {
       const next = new Set(prev);
       if (next.has(stepNum)) {
+        // Expanding — clear manual-collapse flag so auto-expand can work again
         next.delete(stepNum);
+        userManualCollapseRef.current.delete(stepNum);
       } else {
+        // Collapsing — mark as manual so auto-expand won't override
         next.add(stepNum);
+        userManualCollapseRef.current.add(stepNum);
       }
       return next;
     });
   }, []);
 
   const expandAllSteps = useCallback(() => {
+    // Clear all manual-collapse flags so auto-expand can resume
+    userManualCollapseRef.current.clear();
     setCollapsedSteps(new Set());
   }, []);
 
   const collapseAllSteps = useCallback(() => {
+    // Mark all as manually collapsed so auto-expand won't override
+    ALL_PIPELINE_STEPS.forEach(n => userManualCollapseRef.current.add(n));
     setCollapsedSteps(new Set(ALL_PIPELINE_STEPS));
   }, []);
 
