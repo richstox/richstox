@@ -1779,7 +1779,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     }]} />
                   </View>
                   <Text style={s.headerProgressText}>
-                    {step2Progress.phase === '2.1_bulk_catchup' ? '2.1 Bulk' : step2Progress.phase?.replace('_', ' ') ?? 'Syncing'}
+                    {step2Progress.phase === '2.1_bulk_catchup' ? '2.1 Bulk' : step2Progress.phase?.replaceAll('_', ' ') ?? 'Syncing'}
                     {' · '}{step2Progress.pct}%
                     {step2Progress.total > 0 ? ` · ${fmt(step2Progress.processed)}/${fmt(step2Progress.total)}` : ''}
                   </Text>
