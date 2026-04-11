@@ -172,7 +172,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     next_trading_day?: string | null;
     calendar_fresh?: boolean;
   } | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [initialLoad, setInitialLoad] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
   // ── Calendar refresh state ──────────────────────────────────────────────
@@ -191,22 +191,29 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const authHeaders: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
 
   const fetchAll = useCallback(async () => {
-    try {
-      const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
-      const [ovRes, statsRes, calRes] = await Promise.allSettled([
-        fetch(`${API_URL}/api/admin/overview`, { headers: requestHeaders }),
-        fetch(`${API_URL}/api/admin/stats`, { headers: requestHeaders }),
-        fetch(`${API_URL}/api/admin/market-calendar-summary`, { headers: requestHeaders }),
-      ]);
-      if (ovRes.status === 'fulfilled' && ovRes.value.ok) setOverview(await ovRes.value.json());
-      if (statsRes.status === 'fulfilled' && statsRes.value.ok) setStats(await statsRes.value.json());
-      if (calRes.status === 'fulfilled' && calRes.value.ok) setCalendarSummary(await calRes.value.json());
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+    const requestHeaders = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+
+    // Fire all requests in parallel but process each response as soon as it arrives
+    // so the UI can render progressively instead of blocking on the slowest call.
+    const settle = async <T,>(
+      promise: Promise<Response>,
+      setter: React.Dispatch<React.SetStateAction<T | null>>,
+    ) => {
+      try {
+        const res = await promise;
+        if (res.ok) setter(await res.json());
+      } catch (e) { console.error('Dashboard fetch error', e); }
+    };
+
+    const promises = [
+      settle(fetch(`${API_URL}/api/admin/overview`, { headers: requestHeaders }), setOverview),
+      settle(fetch(`${API_URL}/api/admin/stats`, { headers: requestHeaders }), setStats),
+      settle(fetch(`${API_URL}/api/admin/market-calendar-summary`, { headers: requestHeaders }), setCalendarSummary),
+    ];
+
+    await Promise.allSettled(promises);
+    setInitialLoad(false);
+    setRefreshing(false);
   }, [sessionToken]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
@@ -310,46 +317,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     }
   };
 
-  if (loading) return (
-    <ScrollView style={d.container} contentContainerStyle={{ paddingBottom: 40 }}>
-      {/* Skeleton: Business card */}
-      <View style={d.card}>
-        <View style={sk.titleBar} />
-        <View style={d.bizRow}>
-          {[0, 1, 2].map(i => (
-            <View key={i} style={d.bizStat}>
-              <View style={[sk.circle, { width: 16, height: 16 }]} />
-              <View style={[sk.bar, { width: 32, height: 18 }]} />
-              <View style={[sk.bar, { width: 48, height: 10 }]} />
-            </View>
-          ))}
-        </View>
-      </View>
-      {/* Skeleton: Ops Health card */}
-      <View style={d.card}>
-        <View style={sk.titleBar} />
-        <View style={d.opsGrid}>
-          {[0, 1, 2, 3].map(i => (
-            <View key={i} style={[d.opsItem, { minHeight: 36 }]}>
-              <View style={[sk.circle, { width: 14, height: 14 }]} />
-              <View style={[sk.bar, { flex: 1, height: 11 }]} />
-            </View>
-          ))}
-        </View>
-      </View>
-      {/* Skeleton: Price Integrity card */}
-      <View style={d.card}>
-        <View style={sk.titleBar} />
-        <View style={d.integrityGrid}>
-          {[0, 1, 2, 3].map(i => (
-            <View key={i} style={[d.intMetric, { alignItems: 'center', minHeight: 44 }]}>
-              <View style={[sk.bar, { width: 40, height: 16, marginBottom: 4 }]} />
-              <View style={[sk.bar, { width: 64, height: 9 }]} />
-            </View>
-          ))}
-        </View>
-      </View>
-    </ScrollView>
+  // Show branded loading only on first load when nothing has arrived yet
+  if (initialLoad && !overview && !stats && !calendarSummary) return (
+    <BrandedLoading message="Loading Dashboard..." subtitle="Crunching the numbers." />
   );
 
   const health = overview?.health;
@@ -480,16 +450,29 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       {/* A) Business (compact) */}
       <View style={d.card}>
         <Text style={d.sectionTitle}>Business</Text>
-        <View style={d.bizRow}>
-          <BizStat label="Users" value={String(stats?.users ?? 0)} icon="people" />
-          <BizStat label="Portfolios" value={String(stats?.portfolios ?? 0)} icon="briefcase" />
-          <BizStat label="Positions" value={String(stats?.positions ?? 0)} icon="layers" />
-        </View>
+        {stats ? (
+          <View style={d.bizRow}>
+            <BizStat label="Users" value={String(stats.users ?? 0)} icon="people" />
+            <BizStat label="Portfolios" value={String(stats.portfolios ?? 0)} icon="briefcase" />
+            <BizStat label="Positions" value={String(stats.positions ?? 0)} icon="layers" />
+          </View>
+        ) : (
+          <View style={d.bizRow}>
+            {[0, 1, 2].map(i => (
+              <View key={i} style={d.bizStat}>
+                <View style={[sk.circle, { width: 16, height: 16 }]} />
+                <View style={[sk.bar, { width: 32, height: 18 }]} />
+                <View style={[sk.bar, { width: 48, height: 10 }]} />
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* B) Ops Health (compact) */}
       <View style={d.card}>
         <Text style={d.sectionTitle}>Ops Health</Text>
+        {overview ? (
         <View style={d.opsGrid}>
           <OpsItem
             label="Pipeline (1–3)"
@@ -552,6 +535,16 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={eodhCallsToday != null ? 'green' : undefined}
           />
         </View>
+        ) : (
+          <View style={d.opsGrid}>
+            {[0, 1, 2, 3].map(i => (
+              <View key={i} style={[d.opsItem, { minHeight: 36 }]}>
+                <View style={[sk.circle, { width: 14, height: 14 }]} />
+                <View style={[sk.bar, { flex: 1, height: 11 }]} />
+              </View>
+            ))}
+          </View>
+        )}
       </View>
 
       {/* US Market Calendar Widget */}
