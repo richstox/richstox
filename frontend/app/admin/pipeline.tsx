@@ -398,7 +398,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // ── Collapsible step accordion ──────────────────────────────────────────
   const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(readCollapsedFromStorage);
   const collapsedDefaultsApplied = useRef(hasStoredCollapsedPrefs());
-  const userManualCollapseRef = useRef<Set<number>>(new Set());
+  // Seed from localStorage: any step the user previously collapsed is treated as
+  // a manual collapse so auto-expand won't override it on refresh.
+  const userManualCollapseRef = useRef<Set<number>>(readCollapsedFromStorage());
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); // chain run elapsed timer
 
@@ -2634,9 +2636,9 @@ const s = StyleSheet.create({
   stepHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   stepBadge: { width: 32, height: 32, borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
   stepMeta: { flex: 1 },
-  stepTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  stepTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 4, flexWrap: 'wrap' },
   stepNum: { fontSize: 9, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.5 },
-  stepTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text },
+  stepTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text, flexShrink: 1 },
   stepSchedule: { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
 
   jobBtnGroup: { flexDirection: 'row', gap: 6 },
