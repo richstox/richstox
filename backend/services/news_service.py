@@ -156,6 +156,12 @@ async def fetch_news_batch_from_eodhd(
                 articles = response.json()
                 
                 if isinstance(articles, list):
+                    # Tag each article with the searched symbol so
+                    # store_articles_with_mapping can guarantee a mapping
+                    # for the ticker the user actually follows.
+                    bare = symbol.replace(".US", "").replace(".CC", "").upper()
+                    for art in articles:
+                        art.setdefault("_searched_symbol", bare)
                     all_articles.extend(articles)
                 _done += 1
                     
@@ -211,7 +217,25 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
         
         # P53: Get all tickers from EODHD symbols
         eodhd_symbols_raw = article.get("symbols", [])
-        
+
+        # Build deduplicated set of tickers to map.
+        # Always include the ticker the article was fetched for (_searched_symbol)
+        # so the user's followed ticker is guaranteed a mapping even when the
+        # EODHD symbols field omits it or is empty.
+        tickers_to_map: dict[str, None] = {}  # ordered set via dict keys
+        searched = article.get("_searched_symbol", "")
+        if searched and len(searched) <= 5 and "-USD" not in searched:
+            tickers_to_map[searched] = None
+
+        for sym in eodhd_symbols_raw:
+            if not isinstance(sym, str):
+                continue
+            clean_sym = sym.replace(".US", "").replace(".CC", "").upper()
+            # Skip crypto and non-standard tickers
+            if "-USD" in clean_sym or len(clean_sym) > 5 or not clean_sym:
+                continue
+            tickers_to_map[clean_sym] = None
+
         # Prepare article document
         doc = {
             "article_id": article_id,
@@ -236,15 +260,9 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
         if result.upserted_id:
             new_articles += 1
         
-        # P53: Create mappings for EACH ticker in eodhd_symbols_raw
+        # P53: Create mappings for EACH ticker (searched + eodhd symbols)
         # FIFO rotation: keep up to TICKER_DETAIL_LIMIT newest mappings per ticker
-        for sym in eodhd_symbols_raw:
-            clean_sym = sym.replace(".US", "").replace(".CC", "").upper()
-            
-            # Skip crypto and non-standard tickers
-            if "-USD" in clean_sym or len(clean_sym) > 5:
-                continue
-            
+        for clean_sym in tickers_to_map:
             # Create mapping
             mapping_result = await db.article_ticker_mapping.update_one(
                 {"article_id": article_id, "ticker": clean_sym},
@@ -675,8 +693,13 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
 
     # Server-side $lookup: find news_articles with zero matching mappings
     # in BOTH the new and legacy tables.
+    # Recency guard: never delete articles created in the last 24 h — they
+    # may not yet have mappings fully propagated or may be referenced in the
+    # current refresh cycle.
     _AGG_TIMEOUT_MS = 60_000
+    _ORPHAN_GRACE_PERIOD = datetime.now(timezone.utc) - timedelta(hours=24)
     pipeline = [
+        {"$match": {"created_at": {"$lt": _ORPHAN_GRACE_PERIOD}}},
         {"$lookup": {
             "from": "article_ticker_mapping",
             "localField": "article_id",
