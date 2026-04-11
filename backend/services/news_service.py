@@ -405,6 +405,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     total_new_articles = 0
     total_new_mappings = 0
     total_orphans_deleted = 0
+    total_legacy_migrated = 0
     api_calls = len(formatted_symbols)  # One call per ticker
     errors = 0
 
@@ -489,6 +490,18 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         )
         await update_ticker_last_synced(db, hot_symbols, today)
 
+        # Migrate legacy news_article_symbols → article_ticker_mapping
+        # so old articles remain visible and aren't orphaned.
+        await _write_news_telemetry(
+            db, _run_id, phase="legacy_migration",
+            message="Migrating legacy article mappings…",
+            tickers_total=tickers_total, tickers_done=_done,
+            tickers_failed=_failed, api_calls=_done + _failed,
+            last_ticker=_last_ticker, last_error=_last_error,
+        )
+        migration_result = await migrate_legacy_mappings(db)
+        total_legacy_migrated = migration_result["migrated"]
+
         # Orphan cleanup: remove articles with zero remaining mappings
         await _write_news_telemetry(
             db, _run_id, phase="orphan_cleanup",
@@ -537,6 +550,7 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         "new_articles_stored": total_new_articles,
         "new_ticker_mappings": total_new_mappings,
         "orphans_deleted": total_orphans_deleted,
+        "legacy_mappings_migrated": total_legacy_migrated,
         "errors": errors,
         "from_date": from_date,
         "to_date": today,
@@ -549,33 +563,122 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     }
 
 
+async def migrate_legacy_mappings(db) -> Dict[str, int]:
+    """
+    One-shot migration: copy news_article_symbols → article_ticker_mapping.
+
+    The legacy table stores (article_id, symbol) pairs.  We normalise the
+    symbol to an upper-case bare ticker and insert into the new mapping table,
+    skipping duplicates.  This preserves all previously-stored articles so they
+    remain visible and are not treated as orphans by cleanup_orphaned_articles.
+
+    Safe to call repeatedly (upsert / skip-on-duplicate).
+
+    Returns {"migrated": N, "skipped": N}
+    """
+    # Check if legacy table exists and has data
+    if await db.news_article_symbols.count_documents({}, limit=1) == 0:
+        return {"migrated": 0, "skipped": 0}
+
+    migrated = 0
+    skipped = 0
+
+    cursor = db.news_article_symbols.find(
+        {},
+        {"_id": 0, "article_id": 1, "symbol": 1, "published_at": 1}
+    )
+
+    async for doc in cursor:
+        article_id = doc.get("article_id")
+        raw_sym = doc.get("symbol", "")
+        if not article_id or not raw_sym:
+            skipped += 1
+            continue
+
+        clean_sym = raw_sym.replace(".US", "").replace(".CC", "").upper()
+        if "-USD" in clean_sym or len(clean_sym) > 5:
+            skipped += 1
+            continue
+
+        # Look up published_at from the article if not on the mapping
+        published_at = doc.get("published_at")
+        if not published_at:
+            art = await db.news_articles.find_one(
+                {"article_id": article_id},
+                {"_id": 0, "published_at": 1}
+            )
+            published_at = art.get("published_at") if art else None
+
+        try:
+            result = await db.article_ticker_mapping.update_one(
+                {"article_id": article_id, "ticker": clean_sym},
+                {"$setOnInsert": {
+                    "article_id": article_id,
+                    "ticker": clean_sym,
+                    "published_at": published_at or datetime.now(timezone.utc),
+                    "created_at": datetime.now(timezone.utc),
+                }},
+                upsert=True,
+            )
+            if result.upserted_id:
+                migrated += 1
+            else:
+                skipped += 1
+        except Exception:
+            logger.debug(f"Legacy migration: failed to migrate article_id={article_id}, ticker={clean_sym}", exc_info=True)
+            skipped += 1
+
+    if migrated:
+        logger.info(f"Legacy migration: migrated {migrated} mappings, skipped {skipped}")
+    else:
+        logger.debug(f"Legacy migration: nothing new to migrate ({skipped} already present)")
+
+    return {"migrated": migrated, "skipped": skipped}
+
+
 async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     """
-    Remove news_articles documents that have zero references in article_ticker_mapping.
+    Remove news_articles documents that have zero references in BOTH
+    article_ticker_mapping AND the legacy news_article_symbols table.
 
     After FIFO eviction trims old mappings, the parent article may no longer be
     referenced by any ticker.  This function finds and deletes those orphans so
     the collection doesn't grow unboundedly.
 
-    Uses a server-side $lookup to avoid transferring large ID lists to the client.
+    Uses server-side $lookup to avoid transferring large ID lists to the client.
+    Checks both the new and legacy mapping tables so that articles referenced
+    by either are preserved during the migration period.
 
     Returns {"orphans_deleted": N}
     """
-    # Guard: if mapping table is completely empty, skip cleanup to avoid
-    # wiping all articles in an uninitialised or freshly-reset DB.
-    if await db.article_ticker_mapping.count_documents({}, limit=1) == 0:
+    # Guard: if BOTH mapping tables are completely empty, skip cleanup to
+    # avoid wiping all articles in an uninitialised or freshly-reset DB.
+    new_has_data = await db.article_ticker_mapping.count_documents({}, limit=1) > 0
+    legacy_has_data = await db.news_article_symbols.count_documents({}, limit=1) > 0
+    if not new_has_data and not legacy_has_data:
         return {"orphans_deleted": 0}
 
-    # Server-side $lookup: find news_articles with zero matching mappings.
+    # Server-side $lookup: find news_articles with zero matching mappings
+    # in BOTH the new and legacy tables.
     _AGG_TIMEOUT_MS = 60_000
     pipeline = [
         {"$lookup": {
             "from": "article_ticker_mapping",
             "localField": "article_id",
             "foreignField": "article_id",
-            "as": "_mappings",
+            "as": "_new_mappings",
         }},
-        {"$match": {"_mappings": {"$size": 0}}},
+        {"$lookup": {
+            "from": "news_article_symbols",
+            "localField": "article_id",
+            "foreignField": "article_id",
+            "as": "_legacy_mappings",
+        }},
+        # Only orphans have zero refs in BOTH tables
+        {"$match": {
+            "_new_mappings": {"$size": 0},
+            "_legacy_mappings": {"$size": 0},
+        }},
         {"$project": {"_id": 1}},
     ]
 
