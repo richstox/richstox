@@ -4841,17 +4841,25 @@ async def get_news(
         if len(articles_by_ticker[primary_ticker]) < PER_TICKER_CAP:
             articles_by_ticker[primary_ticker].append(article)
 
-    # P38.4: Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
+    # P38.4: Collect capped articles then sort globally by published_at DESC
+    # so the newest articles always appear first regardless of ticker.
     final_articles = []
-    ticker_indices = {t: 0 for t in articles_by_ticker}
-    max_rounds = max(len(arts) for arts in articles_by_ticker.values()) if articles_by_ticker else 0
+    for ticker_arts in articles_by_ticker.values():
+        final_articles.extend(ticker_arts)
 
-    for round_num in range(max_rounds):
-        for ticker in sorted(articles_by_ticker.keys()):  # Alphabetical for consistency
-            idx = ticker_indices[ticker]
-            if idx < len(articles_by_ticker[ticker]):
-                final_articles.append(articles_by_ticker[ticker][idx])
-                ticker_indices[ticker] += 1
+    # Sort by published_at descending (newest first)
+    def _pub_sort_key(art):
+        pub = art.get("published_at") or art.get("date")
+        if isinstance(pub, str):
+            try:
+                return datetime.fromisoformat(pub.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return datetime.min
+        if isinstance(pub, datetime):
+            return pub
+        return datetime.min
+
+    final_articles.sort(key=_pub_sort_key, reverse=True)
 
     # Apply pagination
     total_count = len(final_articles)
