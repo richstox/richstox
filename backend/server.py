@@ -4769,8 +4769,8 @@ async def get_news(
     # Get article_ids mapped to our followed tickers
     article_mappings = await db.article_ticker_mapping.find(
         {"ticker": {"$in": ticker_list}},
-        {"_id": 0, "article_id": 1, "ticker": 1, "rank": 1}
-    ).sort([("ticker", 1), ("rank", 1)]).to_list(length=None)
+        {"_id": 0, "article_id": 1, "ticker": 1}
+    ).sort([("ticker", 1), ("published_at", -1)]).to_list(length=None)
 
     # Fallback to old table if new one is empty (migration period)
     if not article_mappings:
@@ -4841,17 +4841,25 @@ async def get_news(
         if len(articles_by_ticker[primary_ticker]) < PER_TICKER_CAP:
             articles_by_ticker[primary_ticker].append(article)
 
-    # P38.4: Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
+    # P38.4: Collect capped articles then sort globally by published_at DESC
+    # so the newest articles always appear first regardless of ticker.
     final_articles = []
-    ticker_indices = {t: 0 for t in articles_by_ticker}
-    max_rounds = max(len(arts) for arts in articles_by_ticker.values()) if articles_by_ticker else 0
+    for ticker_arts in articles_by_ticker.values():
+        final_articles.extend(ticker_arts)
 
-    for round_num in range(max_rounds):
-        for ticker in sorted(articles_by_ticker.keys()):  # Alphabetical for consistency
-            idx = ticker_indices[ticker]
-            if idx < len(articles_by_ticker[ticker]):
-                final_articles.append(articles_by_ticker[ticker][idx])
-                ticker_indices[ticker] += 1
+    # Sort by published_at descending (newest first)
+    def _pub_sort_key(art):
+        pub = art.get("published_at") or art.get("date")
+        if isinstance(pub, str):
+            try:
+                return datetime.fromisoformat(pub.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return datetime.min
+        if isinstance(pub, datetime):
+            return pub
+        return datetime.min
+
+    final_articles.sort(key=_pub_sort_key, reverse=True)
 
     # Apply pagination
     total_count = len(final_articles)
@@ -5113,7 +5121,7 @@ async def get_ticker_news(
     # Get mappings for this ticker (sorted by published_at desc)
     mappings = await db.article_ticker_mapping.find(
         {"ticker": ticker},
-        {"_id": 0, "article_id": 1, "rank": 1}
+        {"_id": 0, "article_id": 1}
     ).sort("published_at", -1).skip(offset).limit(effective_limit).to_list(length=effective_limit)
 
     total_count = await db.article_ticker_mapping.count_documents({"ticker": ticker})
