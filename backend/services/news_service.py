@@ -378,7 +378,22 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
         }
     
     logger.info(f"Processing {len(hot_symbols)} hot symbols")
-    
+
+    # Self-healing: detect corrupted state where mappings exist but articles
+    # were wiped (e.g. by a prior orphan-cleanup bug).  Reset sync state so
+    # the next fetch covers the full 7-day window instead of a narrow delta.
+    has_mappings = await db.article_ticker_mapping.find_one({}, {"_id": 1})
+    has_articles = await db.news_articles.find_one({}, {"_id": 1})
+    if has_mappings and not has_articles:
+        logger.warning(
+            "Self-healing: article_ticker_mapping has data but news_articles is empty — "
+            "resetting sync state to force full re-fetch"
+        )
+        await db.news_sync_state.delete_one({"_id": "global"})
+        # Remove dangling mappings that point to deleted articles
+        await db.article_ticker_mapping.delete_many({})
+        await db.news_ticker_sync.delete_many({})
+
     # Step 2: Group tickers by last_synced_at for delta sync
     # For simplicity, use global sync date (7 days ago for initial, yesterday for delta)
     global_sync = await db.news_sync_state.find_one({"_id": "global"})
@@ -656,7 +671,7 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     new_has_data = await db.article_ticker_mapping.count_documents({}, limit=1) > 0
     legacy_has_data = await db.news_article_symbols.count_documents({}, limit=1) > 0
     if not new_has_data and not legacy_has_data:
-        return {"orphans_deleted": 0}
+        return {"orphans_deleted": 0, "dangling_mappings_deleted": 0}
 
     # Server-side $lookup: find news_articles with zero matching mappings
     # in BOTH the new and legacy tables.
@@ -688,13 +703,49 @@ async def cleanup_orphaned_articles(db) -> Dict[str, int]:
 
     if not orphan_ids:
         logger.debug("Orphan cleanup: no orphans found")
-        return {"orphans_deleted": 0}
+        # Still run dangling-mapping cleanup even when no article orphans exist
+        dangling_deleted = await _cleanup_dangling_mappings(db)
+        return {"orphans_deleted": 0, "dangling_mappings_deleted": dangling_deleted}
 
     result = await db.news_articles.delete_many({"_id": {"$in": orphan_ids}})
     deleted = result.deleted_count
     logger.info(f"Orphan cleanup: deleted {deleted} unreferenced news_articles")
 
-    return {"orphans_deleted": deleted}
+    # Reverse cleanup: remove dangling mappings that point to articles no
+    # longer present in news_articles (e.g. after a prior accidental wipe).
+    dangling_deleted = await _cleanup_dangling_mappings(db)
+
+    return {"orphans_deleted": deleted, "dangling_mappings_deleted": dangling_deleted}
+
+
+async def _cleanup_dangling_mappings(db) -> int:
+    """Remove article_ticker_mapping rows whose article_id has no news_articles document.
+
+    This is the inverse of orphan-article cleanup: it catches mappings left
+    behind when articles are deleted (e.g. by a prior cleanup bug).
+    """
+    _AGG_TIMEOUT_MS = 60_000
+    pipeline = [
+        {"$lookup": {
+            "from": "news_articles",
+            "localField": "article_id",
+            "foreignField": "article_id",
+            "as": "_article",
+        }},
+        {"$match": {"_article": {"$size": 0}}},
+        {"$project": {"_id": 1}},
+    ]
+
+    dangling_ids = []
+    async for doc in db.article_ticker_mapping.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS):
+        dangling_ids.append(doc["_id"])
+
+    if not dangling_ids:
+        return 0
+
+    result = await db.article_ticker_mapping.delete_many({"_id": {"$in": dangling_ids}})
+    logger.info(f"Dangling mapping cleanup: deleted {result.deleted_count} mappings pointing to missing articles")
+    return result.deleted_count
 
 
 async def create_news_indexes(db):
