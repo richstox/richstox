@@ -202,7 +202,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       try {
         const res = await promise;
         if (res.ok) setter(await res.json());
-      } catch { /* non-fatal */ }
+      } catch (e) { console.error('Dashboard fetch error', e); }
     };
 
     const promises = [
@@ -452,9 +452,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         <Text style={d.sectionTitle}>Business</Text>
         {stats ? (
           <View style={d.bizRow}>
-            <BizStat label="Users" value={String(stats?.users ?? 0)} icon="people" />
-            <BizStat label="Portfolios" value={String(stats?.portfolios ?? 0)} icon="briefcase" />
-            <BizStat label="Positions" value={String(stats?.positions ?? 0)} icon="layers" />
+            <BizStat label="Users" value={String(stats.users ?? 0)} icon="people" />
+            <BizStat label="Portfolios" value={String(stats.portfolios ?? 0)} icon="briefcase" />
+            <BizStat label="Positions" value={String(stats.positions ?? 0)} icon="layers" />
           </View>
         ) : (
           <View style={d.bizRow}>
