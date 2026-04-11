@@ -382,9 +382,9 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     # Self-healing: detect corrupted state where mappings exist but articles
     # were wiped (e.g. by a prior orphan-cleanup bug).  Reset sync state so
     # the next fetch covers the full 7-day window instead of a narrow delta.
-    mapping_count = await db.article_ticker_mapping.count_documents({}, limit=1)
-    article_count = await db.news_articles.estimated_document_count()
-    if mapping_count > 0 and article_count == 0:
+    has_mappings = await db.article_ticker_mapping.find_one({}, {"_id": 1})
+    has_articles = await db.news_articles.find_one({}, {"_id": 1})
+    if has_mappings and not has_articles:
         logger.warning(
             "Self-healing: article_ticker_mapping has data but news_articles is empty — "
             "resetting sync state to force full re-fetch"
