@@ -625,6 +625,7 @@ async def migrate_legacy_mappings(db) -> Dict[str, int]:
             else:
                 skipped += 1
         except Exception:
+            logger.debug(f"Legacy migration: failed to migrate article_id={article_id}, ticker={clean_sym}", exc_info=True)
             skipped += 1
 
     if migrated:

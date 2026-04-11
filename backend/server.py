@@ -4782,7 +4782,10 @@ async def get_news(
     # Normalize legacy field name and merge, deduplicating by (article_id, ticker)
     seen_pairs = set()
     for m in article_mappings:
-        seen_pairs.add((m.get("article_id"), m.get("ticker")))
+        aid = m.get("article_id")
+        ticker = m.get("ticker")
+        if aid and ticker:
+            seen_pairs.add((aid, ticker))
 
     for m in legacy_mappings:
         aid = m.get("article_id")
@@ -5138,7 +5141,7 @@ async def get_ticker_news(
         {"_id": 0, "article_id": 1}
     ).to_list(length=None)
 
-    seen_ids = {m.get("article_id") for m in mappings}
+    seen_ids = {m.get("article_id") for m in mappings if m.get("article_id")}
     for m in legacy_mappings:
         aid = m.get("article_id")
         if aid and aid not in seen_ids:
