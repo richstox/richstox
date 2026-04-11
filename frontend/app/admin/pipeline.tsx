@@ -364,6 +364,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [schedulerUpdating, setSchedulerUpdating] = useState(false);
   const [liveLastRuns, setLiveLastRuns] = useState<Record<string, any>>({});
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
+  // ── Collapsible step cards ───────────────────────────────────────────────
+  const [collapsedSteps, setCollapsedSteps] = useState<Set<number>>(new Set([1, 2, 3, 4]));
+  const collapseDefaultsApplied = useRef(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null); // chain run elapsed timer
 
@@ -954,6 +957,17 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     });
   };
 
+  // ── Collapsible step card helpers ────────────────────────────────────────
+  const toggleCollapsed = useCallback((stepNum: number) => {
+    setCollapsedSteps(prev => {
+      const next = new Set(prev);
+      if (next.has(stepNum)) next.delete(stepNum); else next.add(stepNum);
+      return next;
+    });
+  }, []);
+  const expandAllSteps = useCallback(() => setCollapsedSteps(new Set()), []);
+  const collapseAllSteps = useCallback(() => setCollapsedSteps(new Set([1, 2, 3, 4])), []);
+
   const jobRunsRaw = data?.job_last_runs || {};
   const jobRuns = useMemo(() => {
     const merged: Record<string, any> = { ...jobRunsRaw };
@@ -962,6 +976,19 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     Object.entries(merged).forEach(([k, v]) => { normalized[k] = normaliseRun(v); });
     return normalized;
   }, [jobRunsRaw, liveLastRuns]);
+
+  // On first data load: expand any step that is currently running
+  useEffect(() => {
+    if (collapseDefaultsApplied.current || !data) return;
+    collapseDefaultsApplied.current = true;
+    const JOB_BY_STEP: Record<number, string> = { 1: 'universe_seed', 2: 'price_sync', 3: 'fundamentals_sync', 4: 'peer_medians' };
+    const running = new Set(collapsedSteps);
+    for (const [n, job] of Object.entries(JOB_BY_STEP)) {
+      const r = jobRuns[job];
+      if (r?.status === 'running' && !r?.finished_at) running.delete(Number(n));
+    }
+    setCollapsedSteps(running);
+  }, [data, jobRuns]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Derive benchmark running state from real backend status
   // "running" only when status=="running" AND finished_at is null
@@ -1409,6 +1436,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         </View>
       </View>
 
+      {/* Expand / Collapse all */}
+      <View style={s.collapseControlRow}>
+        <TouchableOpacity style={s.collapseControlBtn} onPress={expandAllSteps}>
+          <Ionicons name="expand-outline" size={13} color={COLORS.textMuted} />
+          <Text style={s.collapseControlText}>Expand all</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.collapseControlBtn} onPress={collapseAllSteps}>
+          <Ionicons name="contract-outline" size={13} color={COLORS.textMuted} />
+          <Text style={s.collapseControlText}>Collapse all</Text>
+        </TouchableOpacity>
+      </View>
+
       {/* Pipeline Steps */}
       {steps.map((step, idx) => {
         const run = jobRuns[step.job_name];
@@ -1416,6 +1455,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         // Treat status="running" with finished_at present as an error (stale/stuck run).
         const status = (rawStatus === 'running' && !!run?.finished_at) ? 'error' : rawStatus;
         const isExpanded = expandedSteps.has(step.step);
+        const isCollapsed = collapsedSteps.has(step.step);
 
         // Chain icon override: when a chain run is active, derive icon state from chain progress.
         const chainStepNum = CHAIN_STEP_FOR_JOB[step.job_name];
@@ -1466,7 +1506,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         <View key={step.job_name}>
           <View style={s.stepCard}>
 
-            {/* Step Header */}
+            {/* Step Header — clickable to collapse/expand */}
+            <TouchableOpacity activeOpacity={0.7} onPress={() => toggleCollapsed(step.step)}>
             <View style={s.stepHeader}>
                 <View style={[s.stepBadge, { backgroundColor: step.color + '22' }]}>
                   <Ionicons name={step.icon} size={16} color={step.color} />
@@ -1491,8 +1532,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </View>
                   <Text style={s.stepSchedule}>{step.schedule}</Text>
                 </View>
-
+                <Ionicons
+                  name={isCollapsed ? 'chevron-down' : 'chevron-up'}
+                  size={16}
+                  color={COLORS.textMuted}
+                />
             </View>
+            </TouchableOpacity>
 
               {/* ── Integrated Funnel Row ── */}
               {/* Steps 2+: waiting state if previous step has 0 output */}
@@ -1550,6 +1596,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   }]} />
                 </View>
               )}
+
+              {/* ── Collapsible body ── */}
+              {!isCollapsed && (<>
 
               {/* Last Run Info */}
               {run ? (() => {
@@ -2257,6 +2306,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   ))}
                 </View>
               )}
+
+              </>)}
             </View>
 
             {/* Arrow between steps */}
@@ -2605,6 +2656,9 @@ const s = StyleSheet.create({
 
   expandBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start' },
   expandText: { fontSize: 11, color: COLORS.textMuted },
+  collapseControlRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 12, marginHorizontal: 12, marginTop: 12, marginBottom: 2 },
+  collapseControlBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  collapseControlText: { fontSize: 11, color: COLORS.textMuted },
   exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 8, alignSelf: 'flex-start', backgroundColor: '#6366F111', borderWidth: 1, borderColor: '#6366F144', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4 },
   exportBtnText: { fontSize: 11, color: '#6366F1', fontWeight: '600' },
 
