@@ -220,13 +220,14 @@ def compute_key_metrics(shares_outstanding, current_price, quarterly_rows,
         if len(ebitdas) >= 4:
             ttm_ebitda = sum(ebitdas[:4])
 
-        # FCF
-        fcfs = []
-        for q in top4:
-            ocf = _sf(q.get("operating_cash_flow")) or 0
-            capex = abs(_sf(q.get("capital_expenditures")) or 0)
-            fcfs.append(ocf - capex)
-        if any(_sf(q.get("operating_cash_flow")) is not None for q in top4):
+        # FCF — require all 4 OCF values to be non-null
+        ocfs = [_sf(q.get("operating_cash_flow")) for q in top4 if _sf(q.get("operating_cash_flow")) is not None]
+        if len(ocfs) >= 4:
+            fcfs = []
+            for q in top4:
+                ocf = _sf(q.get("operating_cash_flow"))
+                capex = abs(_sf(q.get("capital_expenditures")) or 0)
+                fcfs.append(ocf - capex)
             ttm_fcf = sum(fcfs)
 
     if quarterly_rows:
@@ -443,6 +444,39 @@ class TestMissingCashFlow:
             quarterly_rows=NOCF_QUARTERLY,
             annual_rows=[],
         )
+        assert r["net_debt_ebitda"] is not None
+
+    def test_fcf_none_with_partial_ocf(self):
+        """FCF TTM should be None when only some quarters have OCF (not all 4).
+
+        Previously, null OCF was coerced to 0 via `or 0`, which could silently
+        distort FCF when mixed with real values.  Now requires all 4 non-null.
+        """
+        rows = _make_quarterly_rows("PARTIAL.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 1.2e9, "capital_expenditures": -2e8,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},  # OCF missing
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},  # OCF missing
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},  # OCF missing
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10,
+            current_price=100.0,
+            quarterly_rows=rows,
+            annual_rows=[],
+        )
+        # Only 1 of 4 quarters has OCF → TTM FCF must be None, not distorted
+        assert r["ttm_fcf"] is None
+        assert r["fcf_yield"] is None
+        # Other metrics should still compute
+        assert r["net_margin_ttm"] is not None
         assert r["net_debt_ebitda"] is not None
 
 

@@ -169,16 +169,22 @@ def compute_proof(
     fcf_per_q: List[Optional[float]] = []
 
     if len(_top4) >= 4:
-        for q in _top4:
-            raw_ocf = _sf(q.get("operating_cash_flow"))
-            raw_capex = _sf(q.get("capital_expenditures"))
-            ocf = raw_ocf or 0
-            capex = abs(raw_capex or 0)
-            ocf_per_q.append(raw_ocf)
-            capex_per_q.append(raw_capex)
-            fcf_per_q.append(ocf - capex)
-        if any(_sf(q.get("operating_cash_flow")) is not None for q in _top4):
+        ocfs_valid = [_sf(q.get("operating_cash_flow")) for q in _top4 if _sf(q.get("operating_cash_flow")) is not None]
+        if len(ocfs_valid) >= 4:
+            for q in _top4:
+                raw_ocf = _sf(q.get("operating_cash_flow"))
+                raw_capex = _sf(q.get("capital_expenditures"))
+                ocf = raw_ocf
+                capex = abs(raw_capex or 0)
+                ocf_per_q.append(raw_ocf)
+                capex_per_q.append(raw_capex)
+                fcf_per_q.append(ocf - capex)
             ttm_fcf = sum(fcf_per_q)
+        else:
+            # Partial OCF data — expose raw values but don't compute TTM
+            for q in _top4:
+                ocf_per_q.append(_sf(q.get("operating_cash_flow")))
+                capex_per_q.append(_sf(q.get("capital_expenditures")))
 
     fcf_yield: Optional[float] = None
     fcf_na = "missing_data"
