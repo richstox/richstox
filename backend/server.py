@@ -4772,16 +4772,36 @@ async def get_news(
         {"_id": 0, "article_id": 1, "ticker": 1}
     ).sort([("ticker", 1), ("published_at", -1)]).to_list(length=None)
 
-    # Fallback to old table if new one is empty (migration period)
-    if not article_mappings:
-        article_mappings = await db.news_article_symbols.find(
-            {"symbol": {"$in": ticker_list}},
-            {"_id": 0, "article_id": 1, "symbol": 1}
-        ).to_list(length=None)
-        # Normalize field name
-        for m in article_mappings:
-            if "symbol" in m and "ticker" not in m:
-                m["ticker"] = m["symbol"]
+    # Also check legacy table and merge any articles not yet in the new table.
+    # This ensures old articles remain visible during the migration period.
+    # Legacy symbols may be stored with exchange suffix ("AAPL.US"), so search both
+    # bare and suffixed variants.
+    legacy_variants = ticker_list + [f"{t}.US" for t in ticker_list]
+    legacy_mappings = await db.news_article_symbols.find(
+        {"symbol": {"$in": legacy_variants}},
+        {"_id": 0, "article_id": 1, "symbol": 1}
+    ).to_list(length=None)
+
+    # Normalize legacy field name and merge, deduplicating by (article_id, ticker)
+    seen_pairs = set()
+    for m in article_mappings:
+        aid = m.get("article_id")
+        ticker = m.get("ticker")
+        if aid and ticker:
+            seen_pairs.add((aid, ticker))
+
+    for m in legacy_mappings:
+        aid = m.get("article_id")
+        raw_sym = m.get("symbol", "").upper().strip()
+        # Strip exchange suffix to get bare ticker
+        bare = raw_sym
+        for _sfx in (".US", ".CC"):
+            if bare.endswith(_sfx):
+                bare = bare[: -len(_sfx)]
+                break
+        if aid and bare and (aid, bare) not in seen_pairs:
+            article_mappings.append({"article_id": aid, "ticker": bare})
+            seen_pairs.add((aid, bare))
 
     # Build article_id -> tickers map (article can have multiple tickers)
     article_to_tickers = {}
@@ -5088,7 +5108,13 @@ async def get_ticker_news(
     - Free users: only first 10 (then "Upgrade to PRO")
     """
     db = request.app.state.db
-    ticker = ticker.upper()
+    # Normalise to bare ticker (e.g. "AAPL.US" → "AAPL") so it matches
+    # article_ticker_mapping which stores bare tickers.
+    ticker = ticker.upper().strip()
+    for _sfx in (".US", ".CC"):
+        if ticker.endswith(_sfx):
+            ticker = ticker[: -len(_sfx)]
+            break
 
     # Get user subscription tier
     user = None
@@ -5122,11 +5148,28 @@ async def get_ticker_news(
     mappings = await db.article_ticker_mapping.find(
         {"ticker": ticker},
         {"_id": 0, "article_id": 1}
-    ).sort("published_at", -1).skip(offset).limit(effective_limit).to_list(length=effective_limit)
+    ).sort("published_at", -1).to_list(length=None)
 
-    total_count = await db.article_ticker_mapping.count_documents({"ticker": ticker})
+    # Also merge from legacy table so old articles remain visible.
+    # Legacy symbols may carry exchange suffix ("AAPL.US"), query both.
+    legacy_mappings = await db.news_article_symbols.find(
+        {"symbol": {"$in": [ticker, f"{ticker}.US"]}},
+        {"_id": 0, "article_id": 1}
+    ).to_list(length=None)
 
-    if not mappings:
+    seen_ids = {m.get("article_id") for m in mappings if m.get("article_id")}
+    for m in legacy_mappings:
+        aid = m.get("article_id")
+        if aid and aid not in seen_ids:
+            mappings.append({"article_id": aid})
+            seen_ids.add(aid)
+
+    total_count = len(mappings)
+
+    # Apply pagination
+    paginated_mappings = mappings[offset:offset + effective_limit]
+
+    if not paginated_mappings:
         return {
             "ticker": ticker,
             "articles": [],
@@ -5138,7 +5181,7 @@ async def get_ticker_news(
         }
 
     # Fetch articles
-    article_ids = [m["article_id"] for m in mappings]
+    article_ids = [m["article_id"] for m in paginated_mappings]
     articles = await db.news_articles.find(
         {"article_id": {"$in": article_ids}},
         {"_id": 0}
@@ -5149,7 +5192,7 @@ async def get_ticker_news(
 
     # Build response with articles in order
     result_articles = []
-    for m in mappings:
+    for m in paginated_mappings:
         article = articles_by_id.get(m["article_id"])
         if article:
             result_articles.append({
