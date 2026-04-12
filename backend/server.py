@@ -4868,16 +4868,18 @@ async def get_news(
         final_articles.extend(ticker_arts)
 
     # Sort by published_at descending (newest first)
+    _DT_MIN = datetime.min.replace(tzinfo=timezone.utc)
+
     def _pub_sort_key(art):
         pub = art.get("published_at") or art.get("date")
         if isinstance(pub, str):
             try:
                 return datetime.fromisoformat(pub.replace("Z", "+00:00"))
             except (ValueError, TypeError):
-                return datetime.min
+                return _DT_MIN
         if isinstance(pub, datetime):
-            return pub
-        return datetime.min
+            return pub if pub.tzinfo else pub.replace(tzinfo=timezone.utc)
+        return _DT_MIN
 
     final_articles.sort(key=_pub_sort_key, reverse=True)
 
@@ -4906,7 +4908,6 @@ async def get_news(
         published_at = article.get("date") or article.get("published_at")
         time_ago = "Unknown"
         if published_at:
-            from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
             if isinstance(published_at, str):
                 try:
