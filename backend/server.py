@@ -4774,8 +4774,11 @@ async def get_news(
 
     # Also check legacy table and merge any articles not yet in the new table.
     # This ensures old articles remain visible during the migration period.
+    # Legacy symbols may be stored with exchange suffix ("AAPL.US"), so search both
+    # bare and suffixed variants.
+    legacy_variants = ticker_list + [f"{t}.US" for t in ticker_list]
     legacy_mappings = await db.news_article_symbols.find(
-        {"symbol": {"$in": ticker_list}},
+        {"symbol": {"$in": legacy_variants}},
         {"_id": 0, "article_id": 1, "symbol": 1}
     ).to_list(length=None)
 
@@ -4789,10 +4792,11 @@ async def get_news(
 
     for m in legacy_mappings:
         aid = m.get("article_id")
-        ticker = m.get("symbol", "")
-        if aid and ticker and (aid, ticker) not in seen_pairs:
-            article_mappings.append({"article_id": aid, "ticker": ticker})
-            seen_pairs.add((aid, ticker))
+        raw_sym = m.get("symbol", "")
+        bare = raw_sym.replace(".US", "").replace(".CC", "").upper().strip()
+        if aid and bare and (aid, bare) not in seen_pairs:
+            article_mappings.append({"article_id": aid, "ticker": bare})
+            seen_pairs.add((aid, bare))
 
     # Build article_id -> tickers map (article can have multiple tickers)
     article_to_tickers = {}
@@ -5099,7 +5103,7 @@ async def get_ticker_news(
     - Free users: only first 10 (then "Upgrade to PRO")
     """
     db = request.app.state.db
-    ticker = ticker.upper()
+    ticker = ticker.upper().replace(".US", "").replace(".CC", "").strip()
 
     # Get user subscription tier
     user = None
@@ -5135,9 +5139,10 @@ async def get_ticker_news(
         {"_id": 0, "article_id": 1}
     ).sort("published_at", -1).to_list(length=None)
 
-    # Also merge from legacy table so old articles remain visible
+    # Also merge from legacy table so old articles remain visible.
+    # Legacy symbols may carry exchange suffix ("AAPL.US"), query both.
     legacy_mappings = await db.news_article_symbols.find(
-        {"symbol": ticker},
+        {"symbol": {"$in": [ticker, f"{ticker}.US"]}},
         {"_id": 0, "article_id": 1}
     ).to_list(length=None)
 

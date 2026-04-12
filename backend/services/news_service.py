@@ -46,6 +46,17 @@ EODHD_FETCH_LIMIT = 10  # Articles to fetch per ticker from EODHD (balance cost 
 _PRAGUE = ZoneInfo("Europe/Prague")
 
 
+def _bare_ticker(t: str) -> str:
+    """Canonical bare ticker: strip exchange suffixes (.US, .CC, etc.) and uppercase.
+
+    >>> _bare_ticker("AAPL.US")
+    'AAPL'
+    >>> _bare_ticker("aapl")
+    'AAPL'
+    """
+    return t.upper().strip().replace(".US", "").replace(".CC", "")
+
+
 async def _write_news_telemetry(
     db,
     audit_id: Optional[str],
@@ -303,10 +314,14 @@ async def get_hot_symbols(db, n: int = 50) -> List[str]:
     follows = await db.user_watchlist.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS).to_list(100)
     holdings = await db.positions.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS).to_list(100)
     
-    # Merge and dedupe
-    all_symbols = {}
+    # Merge and dedupe — normalise to bare tickers so "AAPL.US" isn't
+    # filtered out by the len<=5 check and gets merged with "AAPL".
+    all_symbols: Dict[str, int] = {}
     for item in follows + holdings:
-        ticker = item.get("_id", "")
+        raw = item.get("_id", "")
+        if not raw:
+            continue
+        ticker = _bare_ticker(raw)
         if ticker and len(ticker) <= 5:
             all_symbols[ticker] = all_symbols.get(ticker, 0) + item.get("count", 0)
     
@@ -395,6 +410,11 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     dangling_removed = await _cleanup_dangling_mappings(db)
     if dangling_removed:
         logger.info(f"Self-healing: removed {dangling_removed} dangling mappings")
+
+    # Backfill: normalise any article_ticker_mapping.ticker values that still
+    # carry an exchange suffix (e.g. "AAPL.US" → "AAPL").  Idempotent / no-op
+    # once all rows are clean.
+    await _backfill_normalize_mappings(db)
 
     # After cleaning dangling mappings, check whether the hot symbols still
     # have at least one valid mapping.  If not, the data is corrupt — widen the
@@ -673,6 +693,50 @@ async def _cleanup_dangling_mappings(db) -> int:
     result = await db.article_ticker_mapping.delete_many({"_id": {"$in": dangling_ids}})
     logger.info(f"Dangling mapping cleanup: deleted {result.deleted_count} mappings pointing to missing articles")
     return result.deleted_count
+
+
+async def _backfill_normalize_mappings(db) -> int:
+    """One-shot backfill: rename article_ticker_mapping entries that still carry
+    an exchange suffix (e.g. ``AAPL.US``) to bare canonical form (``AAPL``).
+
+    For each suffixed ticker it either merges into an existing bare row (by
+    deleting the suffixed one) or renames in place via ``$set``.
+
+    Returns the number of documents fixed.
+    """
+    _AGG_TIMEOUT_MS = 60_000
+    # Find all mappings whose ticker still has ".US" or ".CC"
+    regex_filter = {"ticker": {"$regex": r"\.(US|CC)$"}}
+    suffixed_count = await db.article_ticker_mapping.count_documents(regex_filter)
+    if suffixed_count == 0:
+        return 0
+
+    logger.info(f"Backfill: normalizing {suffixed_count} article_ticker_mapping rows with exchange suffix")
+
+    fixed = 0
+    async for doc in db.article_ticker_mapping.find(regex_filter).batch_size(500):
+        bare = _bare_ticker(doc["ticker"])
+        if bare == doc["ticker"]:
+            continue  # already canonical
+
+        # Check whether a bare-ticker mapping already exists for this article
+        existing = await db.article_ticker_mapping.find_one(
+            {"article_id": doc["article_id"], "ticker": bare}
+        )
+        if existing:
+            # Duplicate — delete the suffixed row
+            await db.article_ticker_mapping.delete_one({"_id": doc["_id"]})
+        else:
+            # Rename in place
+            await db.article_ticker_mapping.update_one(
+                {"_id": doc["_id"]},
+                {"$set": {"ticker": bare}},
+            )
+        fixed += 1
+
+    if fixed:
+        logger.info(f"Backfill: normalized {fixed} article_ticker_mapping rows to bare tickers")
+    return fixed
 
 
 async def create_news_indexes(db):
