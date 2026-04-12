@@ -131,13 +131,18 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
     [enqueue],
   );
 
+  // Value returned when the user dismisses without pressing OK.
+  const dismissValue = dialog
+    ? dialog.type === 'alert' ? true : dialog.type === 'confirm' ? false : null
+    : null;
+
   return (
     <AppDialogContext.Provider value={api}>
       {children}
 
       {dialog && (
-        <Modal transparent visible animationType="fade" onRequestClose={() => dismiss(dialog.type === 'alert' ? true : dialog.type === 'confirm' ? false : null)}>
-          <Pressable style={s.overlay} onPress={() => dismiss(dialog.type === 'alert' ? true : dialog.type === 'confirm' ? false : null)}>
+        <Modal transparent visible animationType="fade" onRequestClose={() => dismiss(dismissValue)}>
+          <Pressable style={s.overlay} onPress={() => dismiss(dismissValue)}>
             <Pressable style={s.card} onPress={(e) => e.stopPropagation()}>
               {/* Title */}
               <Text style={s.title}>{dialog.title}</Text>
@@ -163,7 +168,7 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
                 {dialog.type !== 'alert' && (
                   <TouchableOpacity
                     style={[s.btn, s.btnCancel]}
-                    onPress={() => dismiss(dialog.type === 'confirm' ? false : null)}
+                    onPress={() => dismiss(dismissValue)}
                   >
                     <Text style={s.btnCancelText}>Cancel</Text>
                   </TouchableOpacity>
@@ -175,7 +180,6 @@ export function AppDialogProvider({ children }: { children: React.ReactNode }) {
                     s.btn,
                     s.btnOk,
                     dialog.confirmStyle === 'destructive' && s.btnDestructive,
-                    dialog.type === 'alert' && s.btnFull,
                   ]}
                   onPress={() =>
                     dismiss(dialog.type === 'prompt' ? promptValue : true)
@@ -253,9 +257,6 @@ const s = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 10,
     alignItems: 'center',
-  },
-  btnFull: {
-    flex: 1,
   },
   btnCancel: {
     backgroundColor: '#F3F4F6',
