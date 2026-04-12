@@ -26,6 +26,18 @@ export default function Root({ children }: PropsWithChildren) {
               [role="heading"], [role="heading"] * { overflow: visible !important; }
               /* Global Layout Standard: rail background + no horizontal scroll */
               html, body { overflow-x: hidden; }
+              /*
+               * Constrain RNW Modal portals to the app shell width (430px).
+               * React Native Web's <Modal> renders via createPortal into document.body
+               * with position:fixed inset:0, causing overlays to span the full viewport.
+               * This rule caps the dialog surface and centres it, matching the app shell.
+               * On mobile viewports (≤430px) max-width has no effect → no regression.
+               */
+              [aria-modal="true"] {
+                max-width: 430px !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+              }
             `,
           }}
         />
