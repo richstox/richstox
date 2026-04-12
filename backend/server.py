@@ -4002,15 +4002,21 @@ async def get_ticker_detail_mobile(
             ttm_ebitda = sum(ebitdas[:4])
 
     # Calculate TTM FCF from quarterly cash flow fields
+    # Requires all 4 quarters to have BOTH operating_cash_flow AND capital_expenditures non-null.
+    # Null values are never coerced to zero — a missing value makes that quarter non-computable.
     ttm_fcf = None
     if len(_quarterly_rows) >= 4:
         _top4 = _quarterly_rows[:4]
-        fcfs = []
-        for q in _top4:
-            ocf = _sf(q.get("operating_cash_flow")) or 0
-            capex = abs(_sf(q.get("capital_expenditures")) or 0)
-            fcfs.append(ocf - capex)
-        if any(_sf(q.get("operating_cash_flow")) is not None for q in _top4):
+        all_computable = all(
+            _sf(q.get("operating_cash_flow")) is not None and _sf(q.get("capital_expenditures")) is not None
+            for q in _top4
+        )
+        if all_computable:
+            fcfs = []
+            for q in _top4:
+                ocf = _sf(q.get("operating_cash_flow"))
+                capex = abs(_sf(q.get("capital_expenditures")))
+                fcfs.append(ocf - capex)
             ttm_fcf = sum(fcfs)
 
     # Get Cash and Debt from latest quarterly balance sheet row
@@ -4043,21 +4049,31 @@ async def get_ticker_detail_mobile(
         net_debt = ttm_debt - ttm_cash
         net_debt_ebitda = net_debt / ebitda_ttm
 
-    # Get Dividend Yield from company_fundamentals_cache (canonical)
-    # NOTE: cache_doc may already be loaded earlier when building company info;
-    # only fetch it again if it was not loaded above.
+    # Dividend Yield (TTM) — computed from trailing quarterly dividends_paid
+    # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
     dividend_yield_ttm = None
-    if cache_doc is None:
-        cache_doc = await db.company_fundamentals_cache.find_one(
-            {"ticker": ticker_full}, {"_id": 0, "logo_data": 0, "logo_content_type": 0}
-        )
-    if cache_doc:
-        _fdy = cache_doc.get("forward_dividend_yield")
-        if _fdy is not None:
-            try:
-                dividend_yield_ttm = float(_fdy) * 100  # Convert to percentage
-            except (ValueError, TypeError):
+    dividend_yield_na = None
+    _div_window = _quarterly_rows[:4]  # latest 4 quarterly reporting periods
+    if len(_div_window) >= 4:
+        _div_vals = [_sf(q.get("dividends_paid")) for q in _div_window]
+        if all(v is None for v in _div_vals):
+            # All included quarters have null dividends_paid
+            dividend_yield_ttm = None
+            dividend_yield_na = "not_reported"
+        else:
+            dividends_ttm = sum(abs(v) for v in _div_vals if v is not None)
+            if dividends_ttm == 0.0:
+                dividend_yield_ttm = 0.0
+                dividend_yield_na = "no_dividend"
+            elif market_cap and market_cap > 0:
+                dividend_yield_ttm = (dividends_ttm / market_cap) * 100
+            else:
                 dividend_yield_ttm = None
+                dividend_yield_na = "missing_inputs"
+    else:
+        # Fewer than 4 quarterly rows — TTM window not fully covered
+        dividend_yield_ttm = None
+        dividend_yield_na = "not_reported"
 
     # FIX-2: Read PRECOMPUTED dividend data from peer_benchmarks
     # All fallback logic is already computed by compute_peer_benchmarks_v3
@@ -4134,7 +4150,7 @@ async def get_ticker_detail_mobile(
             "name": "Dividend Yield",
             "value": dividend_yield_ttm,
             "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
-            "na_reason": None if dividend_yield_ttm is not None else "no_dividend",
+            "na_reason": dividend_yield_na,
             # BACKWARD COMPAT (keep existing fields for frontend):
             "industry_dividend_yield_median": industry_dividend_data.get("dividend_yield_median_all"),
             "industry_dividend_peer_count": industry_dividend_data.get("dividend_peer_count", 0),

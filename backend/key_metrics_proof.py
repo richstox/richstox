@@ -63,7 +63,6 @@ def compute_proof(
     price_date: Optional[str],
     quarterly_rows: List[Dict[str, Any]],
     annual_rows: List[Dict[str, Any]],
-    forward_dividend_yield: Any,
     valuation_cache: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Return a deterministic proof dict for every Key Metric.
@@ -169,25 +168,32 @@ def compute_proof(
     capex_per_q: List[Optional[float]] = []
     fcf_per_q: List[Optional[float]] = []
 
+    quarter_computable: List[bool] = []
+
     if len(_top4) >= 4:
         for q in _top4:
             raw_ocf = _sf(q.get("operating_cash_flow"))
             raw_capex = _sf(q.get("capital_expenditures"))
-            ocf = raw_ocf or 0
-            capex = abs(raw_capex or 0)
             ocf_per_q.append(raw_ocf)
             capex_per_q.append(raw_capex)
-            fcf_per_q.append(ocf - capex)
-        if any(_sf(q.get("operating_cash_flow")) is not None for q in _top4):
+            computable = raw_ocf is not None and raw_capex is not None
+            quarter_computable.append(computable)
+            if computable:
+                fcf_per_q.append(raw_ocf - abs(raw_capex))
+            else:
+                fcf_per_q.append(None)
+        if all(quarter_computable):
             ttm_fcf = sum(fcf_per_q)
 
     fcf_yield: Optional[float] = None
-    fcf_na = "missing_data"
-    if ttm_fcf is not None and market_cap and market_cap > 0:
+    fcf_na = "not_reported"
+    if len(_top4) < 4:
+        fcf_na = "not_reported"
+    elif not all(quarter_computable):
+        fcf_na = "not_reported"
+    elif ttm_fcf is not None and market_cap and market_cap > 0:
         fcf_yield = (ttm_fcf / market_cap) * 100
         fcf_na = None
-    elif ttm_fcf is not None and ttm_fcf < 0:
-        fcf_na = "negative_fcf"
 
     proof["fcf_yield"] = {
         "value": fcf_yield,
@@ -196,10 +202,11 @@ def compute_proof(
         "quarter_dates_used": quarter_dates_used,
         "operating_cash_flow_per_quarter": ocf_per_q,
         "capital_expenditures_per_quarter": capex_per_q,
+        "quarter_computable": quarter_computable,
         "fcf_per_quarter": fcf_per_q,
         "ttm_fcf": ttm_fcf,
         "market_cap_used": market_cap,
-        "formula": "(ttm_fcf / market_cap) * 100  where fcf_q = ocf - abs(capex)",
+        "formula": "(ttm_fcf / market_cap) * 100  where fcf_q = ocf - abs(capex); requires both non-null per quarter",
         "source": "company_financials (quarterly, last 4)",
     }
 
@@ -296,34 +303,55 @@ def compute_proof(
     }
 
     # ------------------------------------------------------------------
-    # 7. Dividend Yield (TTM) — currently from forward_dividend_yield
+    # 7. Dividend Yield (TTM) — from quarterly dividends_paid / market_cap
+    #    Requires 4 quarterly reporting periods; does NOT assume payment
+    #    frequency. Annual, semiannual, and irregular payers are handled.
     # ------------------------------------------------------------------
     dividend_yield_ttm: Optional[float] = None
-    div_na = "no_dividend"
-    if forward_dividend_yield is not None:
-        try:
-            dividend_yield_ttm = float(forward_dividend_yield) * 100
-            div_na = None
-        except (ValueError, TypeError):
-            pass
+    div_na: Optional[str] = None
 
-    # Also gather the quarterly dividends_paid data for transparency
+    # Latest 4 quarterly reporting periods (required for TTM coverage)
+    _div_window = quarterly_rows[:4]
+    div_quarter_dates = [q.get("period_date") for q in _div_window]
+
+    # Gather per-quarter dividends_paid values
     dividends_paid_per_q: List[Optional[float]] = []
-    for q in _top4:
+    for q in _div_window:
         dividends_paid_per_q.append(_sf(q.get("dividends_paid")))
+
+    dividends_ttm: Optional[float] = None
+
+    if len(_div_window) >= 4:
+        if all(v is None for v in dividends_paid_per_q):
+            # All included quarters have null dividends_paid
+            dividend_yield_ttm = None
+            div_na = "not_reported"
+        else:
+            dividends_ttm = sum(abs(v) for v in dividends_paid_per_q if v is not None)
+            if dividends_ttm == 0.0:
+                dividend_yield_ttm = 0.0
+                div_na = "no_dividend"
+            elif market_cap and market_cap > 0:
+                dividend_yield_ttm = (dividends_ttm / market_cap) * 100
+            else:
+                dividend_yield_ttm = None
+                div_na = "missing_inputs"
+    else:
+        # Fewer than 4 quarterly rows — TTM window not fully covered
+        dividend_yield_ttm = None
+        div_na = "not_reported"
 
     proof["dividend_yield_ttm"] = {
         "value": dividend_yield_ttm,
         "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
         "na_reason": div_na,
-        "current_source": "company_fundamentals_cache.forward_dividend_yield",
-        "forward_dividend_yield_raw": forward_dividend_yield,
-        "note": (
-            "Currently uses provider-supplied forward_dividend_yield (decimal) * 100. "
-            "Quarterly dividends_paid values shown below for reference only."
-        ),
+        "source": "company_financials (quarterly, last 4 by period_date desc)",
         "quarterly_dividends_paid": dividends_paid_per_q,
-        "quarter_dates_used": quarter_dates_used,
+        "dividends_ttm": dividends_ttm,
+        "market_cap_used": market_cap,
+        "quarter_dates_used": div_quarter_dates,
+        "formula": "Dividend Yield (TTM) (%) = (dividends_ttm / market_cap) * 100",
+        "note": "TTM requires 4 quarterly reporting periods covering the last 12 months; dividend payment frequency is not assumed within that window.",
     }
 
     return proof
@@ -355,16 +383,12 @@ async def generate_key_metrics_proof(db, ticker: str) -> Dict[str, Any]:
     latest_price_task = db.stock_prices.find_one(
         {"ticker": ticker_full}, {"_id": 0}, sort=[("date", -1)]
     )
-    cache_task = db.company_fundamentals_cache.find_one(
-        {"ticker": ticker_full},
-        {"_id": 0, "forward_dividend_yield": 1},
-    )
     valuation_task = db.ticker_valuations_cache.find_one(
         {"ticker": ticker_full}, {"_id": 0}
     )
 
-    tracked, latest_price, cache_doc, valuation_cache_raw = await asyncio.gather(
-        tracked_task, latest_price_task, cache_task, valuation_task,
+    tracked, latest_price, valuation_cache_raw = await asyncio.gather(
+        tracked_task, latest_price_task, valuation_task,
     )
 
     shares_outstanding = tracked.get("shares_outstanding") if tracked else None
@@ -373,8 +397,6 @@ async def generate_key_metrics_proof(db, ticker: str) -> Dict[str, Any]:
     if latest_price:
         current_price = latest_price.get("close") or latest_price.get("adjusted_close")
         price_date = latest_price.get("date")
-
-    forward_dividend_yield = cache_doc.get("forward_dividend_yield") if cache_doc else None
 
     # --- Quarterly rows (same query as server.py:3974-3977) ----------------
     quarterly_rows = await db.company_financials.find(
@@ -395,7 +417,6 @@ async def generate_key_metrics_proof(db, ticker: str) -> Dict[str, Any]:
         price_date=price_date,
         quarterly_rows=quarterly_rows,
         annual_rows=annual_rows,
-        forward_dividend_yield=forward_dividend_yield,
         valuation_cache=valuation_cache_raw,
     )
 
@@ -403,7 +424,6 @@ async def generate_key_metrics_proof(db, ticker: str) -> Dict[str, Any]:
     proof["data_availability"] = {
         "tracked_tickers_found": tracked is not None,
         "stock_prices_found": latest_price is not None,
-        "company_fundamentals_cache_found": cache_doc is not None,
         "quarterly_rows_count": len(quarterly_rows),
         "annual_rows_count": len(annual_rows),
     }
