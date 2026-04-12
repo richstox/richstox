@@ -1008,7 +1008,8 @@ class TestFCFYieldNullHandling:
         import inspect
 
         # Check server.py FCF block
-        src_server = open("/home/runner/work/richstox/richstox/backend/server.py").read()
+        with open("/home/runner/work/richstox/richstox/backend/server.py") as f:
+            src_server = f.read()
         fcf_start = src_server.find("# Calculate TTM FCF from quarterly cash flow fields")
         fcf_end = src_server.find("# Get Cash and Debt from latest quarterly balance sheet row")
         assert fcf_start != -1 and fcf_end != -1
@@ -1016,7 +1017,8 @@ class TestFCFYieldNullHandling:
         assert "or 0" not in fcf_block, f"Found 'or 0' in server.py FCF block"
 
         # Check key_metrics_proof.py FCF block
-        src_proof = open("/home/runner/work/richstox/richstox/backend/key_metrics_proof.py").read()
+        with open("/home/runner/work/richstox/richstox/backend/key_metrics_proof.py") as f:
+            src_proof = f.read()
         fcf_start_p = src_proof.find("# 4. FCF Yield")
         fcf_end_p = src_proof.find("# 5. Net Debt / EBITDA")
         assert fcf_start_p != -1 and fcf_end_p != -1
