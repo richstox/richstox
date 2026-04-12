@@ -397,7 +397,7 @@ class TestCompleteFinancialsACME:
         assert abs(r["revenue_growth_3y"] - round(expected_cagr, 1)) < 0.01
 
     def test_dividend_yield(self):
-        """Dividend yield is None when dividends_paid is null (ACME has no dividends_paid)."""
+        """Dividend yield is None when dividends_paid is null (ACME_QUARTERLY has all dividends_paid values set to None)."""
         r = compute_key_metrics(
             shares_outstanding=1e10,
             current_price=150.0,
