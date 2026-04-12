@@ -4043,21 +4043,30 @@ async def get_ticker_detail_mobile(
         net_debt = ttm_debt - ttm_cash
         net_debt_ebitda = net_debt / ebitda_ttm
 
-    # Get Dividend Yield from company_fundamentals_cache (canonical)
-    # NOTE: cache_doc may already be loaded earlier when building company info;
-    # only fetch it again if it was not loaded above.
+    # Dividend Yield (TTM) — computed from last 4 quarterly dividends_paid
     dividend_yield_ttm = None
-    if cache_doc is None:
-        cache_doc = await db.company_fundamentals_cache.find_one(
-            {"ticker": ticker_full}, {"_id": 0, "logo_data": 0, "logo_content_type": 0}
-        )
-    if cache_doc:
-        _fdy = cache_doc.get("forward_dividend_yield")
-        if _fdy is not None:
-            try:
-                dividend_yield_ttm = float(_fdy) * 100  # Convert to percentage
-            except (ValueError, TypeError):
+    dividend_yield_na = None
+    if len(_quarterly_rows) >= 4:
+        _div_top4 = _quarterly_rows[:4]
+        _div_vals = [_sf(q.get("dividends_paid")) for q in _div_top4]
+        if all(v is None for v in _div_vals):
+            # All 4 quarters have null dividends_paid
+            dividend_yield_ttm = None
+            dividend_yield_na = "not_reported"
+        else:
+            dividends_ttm = sum(abs(v) if v is not None else 0.0 for v in _div_vals)
+            if dividends_ttm == 0.0:
+                dividend_yield_ttm = 0.0
+                dividend_yield_na = "no_dividend"
+            elif market_cap and market_cap > 0:
+                dividend_yield_ttm = (dividends_ttm / market_cap) * 100
+            else:
                 dividend_yield_ttm = None
+                dividend_yield_na = "missing_inputs"
+    else:
+        # Fewer than 4 quarterly rows
+        dividend_yield_ttm = None
+        dividend_yield_na = "not_reported"
 
     # FIX-2: Read PRECOMPUTED dividend data from peer_benchmarks
     # All fallback logic is already computed by compute_peer_benchmarks_v3
@@ -4134,7 +4143,7 @@ async def get_ticker_detail_mobile(
             "name": "Dividend Yield",
             "value": dividend_yield_ttm,
             "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
-            "na_reason": None if dividend_yield_ttm is not None else "no_dividend",
+            "na_reason": dividend_yield_na,
             # BACKWARD COMPAT (keep existing fields for frontend):
             "industry_dividend_yield_median": industry_dividend_data.get("dividend_yield_median_all"),
             "industry_dividend_peer_count": industry_dividend_data.get("dividend_peer_count", 0),

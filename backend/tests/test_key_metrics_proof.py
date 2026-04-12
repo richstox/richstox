@@ -98,7 +98,6 @@ class TestProofStructure:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0.005,
         )
         for key in self.REQUIRED_KEYS:
             assert key in proof, f"Missing key: {key}"
@@ -110,7 +109,6 @@ class TestProofStructure:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0.005,
         )
         for metric_key in ["market_cap", "shares_outstanding", "net_margin_ttm",
                            "fcf_yield", "net_debt_ebitda", "revenue_growth_3y",
@@ -130,7 +128,6 @@ class TestMarketCapProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         assert proof["market_cap"]["value"] == 1e10 * 150.0
         assert proof["market_cap"]["na_reason"] is None
@@ -142,7 +139,6 @@ class TestMarketCapProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         inputs = proof["market_cap"]["inputs"]
         assert inputs["shares_outstanding"] == 1e10
@@ -156,7 +152,6 @@ class TestMarketCapProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         assert proof["market_cap"]["value"] is None
         assert proof["market_cap"]["na_reason"] == "missing_data"
@@ -172,7 +167,6 @@ class TestNetMarginTTMProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         expected_rev = 5e9 + 4.8e9 + 4.5e9 + 4.6e9   # 18.9B
         expected_ni = 1e9 + 0.9e9 + 0.8e9 + 0.85e9    # 3.55B
@@ -190,7 +184,6 @@ class TestNetMarginTTMProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         result = proof["net_margin_ttm"]
         assert result["quarter_dates_used"] == [
@@ -206,7 +199,6 @@ class TestNetMarginTTMProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         result = proof["net_margin_ttm"]
         assert result["revenue_per_quarter"] == [5e9, 4.8e9, 4.5e9, 4.6e9]
@@ -220,7 +212,6 @@ class TestNetMarginTTMProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY[:3],
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         result = proof["net_margin_ttm"]
         assert result["value"] is None
@@ -239,7 +230,6 @@ class TestFCFYieldProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         fcf_q = [
             1.2e9 - 2e8,
@@ -261,7 +251,6 @@ class TestFCFYieldProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         result = proof["fcf_yield"]
         assert len(result["operating_cash_flow_per_quarter"]) == 4
@@ -281,7 +270,6 @@ class TestNetDebtEbitdaProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         expected_ebitda = 1.5e9 + 1.4e9 + 1.3e9 + 1.35e9
         expected_nd = (2e9 - 3e9) / expected_ebitda
@@ -297,7 +285,6 @@ class TestNetDebtEbitdaProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         result = proof["net_debt_ebitda"]
         assert result["total_debt"] == 2e9
@@ -316,7 +303,6 @@ class TestRevenueGrowth3YProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         expected = ((19e9 / 12e9) ** (1 / 3) - 1) * 100
         result = proof["revenue_growth_3y"]
@@ -330,7 +316,6 @@ class TestRevenueGrowth3YProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         result = proof["revenue_growth_3y"]
         assert result["end_revenue"] == 19e9
@@ -344,7 +329,6 @@ class TestRevenueGrowth3YProof:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL[:3],
-            forward_dividend_yield=None,
         )
         result = proof["revenue_growth_3y"]
         assert result["value"] is None
@@ -352,74 +336,113 @@ class TestRevenueGrowth3YProof:
 
 
 class TestDividendYieldProof:
-    """Dividend yield currently uses forward_dividend_yield * 100."""
+    """Dividend Yield (TTM) = (sum(abs(dividends_paid)) over last 4 Q / market_cap) * 100."""
 
     def test_correct_value(self):
+        """ACME_QUARTERLY has dividends_paid: -1e8, -9e7, -8e7, -7e7."""
+        shares = 1e10
+        price = 150.0
         proof = compute_proof(
-            shares_outstanding=1e10,
-            current_price=150.0,
+            shares_outstanding=shares,
+            current_price=price,
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0.025,
         )
+        dividends_ttm = abs(-1e8) + abs(-9e7) + abs(-8e7) + abs(-7e7)  # 3.4e8
+        market_cap = shares * price  # 1.5e12
+        expected = (dividends_ttm / market_cap) * 100
         result = proof["dividend_yield_ttm"]
         assert result["value"] is not None
-        assert abs(result["value"] - 2.5) < 0.001
+        assert abs(result["value"] - expected) < 0.0001
+        assert result["na_reason"] is None
 
     def test_source_transparency(self):
-        """Proof must expose the current source (forward_dividend_yield)."""
+        """Proof must expose quarterly dividends_paid and formula."""
         proof = compute_proof(
             shares_outstanding=1e10,
             current_price=150.0,
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0.025,
         )
         result = proof["dividend_yield_ttm"]
-        assert result["current_source"] == "company_fundamentals_cache.forward_dividend_yield"
-        assert result["forward_dividend_yield_raw"] == 0.025
-        assert "note" in result
+        assert result["source"] == "company_financials (quarterly, last 4 by period_date desc)"
+        assert "formula" in result
+        assert "forward_dividend_yield" not in str(result.get("source", ""))
 
     def test_quarterly_dividends_paid_exposed(self):
-        """Even though not currently used for yield, quarterly dividends_paid
-        must be exposed for audit transparency."""
+        """quarterly dividends_paid must be exposed for audit transparency."""
         proof = compute_proof(
             shares_outstanding=1e10,
             current_price=150.0,
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0.025,
         )
         result = proof["dividend_yield_ttm"]
         assert result["quarterly_dividends_paid"] == [-1e8, -9e7, -8e7, -7e7]
+        assert result["dividends_ttm"] == abs(-1e8) + abs(-9e7) + abs(-8e7) + abs(-7e7)
+        assert result["market_cap_used"] == 1e10 * 150.0
 
     def test_none_when_not_reported(self):
+        """When all dividends_paid are null → not_reported."""
+        # Create rows with no dividends_paid
+        rows = [dict(q) for q in ACME_QUARTERLY[:4]]
+        for r in rows:
+            r["dividends_paid"] = None
         proof = compute_proof(
             shares_outstanding=1e10,
             current_price=150.0,
             price_date="2025-10-01",
-            quarterly_rows=ACME_QUARTERLY,
+            quarterly_rows=rows,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         result = proof["dividend_yield_ttm"]
         assert result["value"] is None
-        assert result["na_reason"] == "no_dividend"
+        assert result["na_reason"] == "not_reported"
 
     def test_zero_when_explicit_zero(self):
+        """When all dividends_paid are 0 → value=0, na_reason=no_dividend."""
+        rows = [dict(q) for q in ACME_QUARTERLY[:4]]
+        for r in rows:
+            r["dividends_paid"] = 0
         proof = compute_proof(
             shares_outstanding=1e10,
             current_price=150.0,
             price_date="2025-10-01",
-            quarterly_rows=ACME_QUARTERLY,
+            quarterly_rows=rows,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0,
         )
         result = proof["dividend_yield_ttm"]
         assert result["value"] == 0.0
+        assert result["na_reason"] == "no_dividend"
+
+    def test_missing_market_cap(self):
+        """When dividends exist but market_cap is None → missing_inputs."""
+        proof = compute_proof(
+            shares_outstanding=None,
+            current_price=150.0,
+            price_date="2025-10-01",
+            quarterly_rows=ACME_QUARTERLY,
+            annual_rows=ACME_ANNUAL,
+        )
+        result = proof["dividend_yield_ttm"]
+        assert result["value"] is None
+        assert result["na_reason"] == "missing_inputs"
+
+    def test_fewer_than_4_quarters(self):
+        """Fewer than 4 quarterly rows → not_reported."""
+        proof = compute_proof(
+            shares_outstanding=1e10,
+            current_price=150.0,
+            price_date="2025-10-01",
+            quarterly_rows=ACME_QUARTERLY[:3],
+            annual_rows=ACME_ANNUAL,
+        )
+        result = proof["dividend_yield_ttm"]
+        assert result["value"] is None
+        assert result["na_reason"] == "not_reported"
 
 
 class TestProofMatchesServerLogic:
@@ -434,14 +457,12 @@ class TestProofMatchesServerLogic:
         # Same inputs
         shares = 1e10
         price = 150.0
-        fwd_div = 0.005
 
         canonical = compute_key_metrics(
             shares_outstanding=shares,
             current_price=price,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=fwd_div,
         )
 
         proof = compute_proof(
@@ -450,7 +471,6 @@ class TestProofMatchesServerLogic:
             price_date="2025-10-01",
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=fwd_div,
         )
 
         # Market Cap
@@ -497,7 +517,6 @@ class TestMissingQuarterlyData:
             price_date="2025-10-01",
             quarterly_rows=[],
             annual_rows=[],
-            forward_dividend_yield=None,
         )
         assert proof["net_margin_ttm"]["value"] is None
         assert proof["fcf_yield"]["value"] is None
@@ -513,6 +532,5 @@ class TestMissingQuarterlyData:
             price_date="2025-10-01",
             quarterly_rows=[],
             annual_rows=[],
-            forward_dividend_yield=None,
         )
         assert proof["market_cap"]["value"] == 1e10 * 150.0

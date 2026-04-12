@@ -190,7 +190,7 @@ def _sf(val):
 
 
 def compute_key_metrics(shares_outstanding, current_price, quarterly_rows,
-                        annual_rows, forward_dividend_yield, valuation_cache=None):
+                        annual_rows, valuation_cache=None):
     """
     Pure-function reimplementation of the Key Metrics computation from server.py.
     Returns (key_metrics_dict, financials_dict).
@@ -270,13 +270,28 @@ def compute_key_metrics(shares_outstanding, current_price, quarterly_rows,
         if start_rev and start_rev > 0 and end_rev and end_rev > 0:
             revenue_growth_3y = round(((end_rev / start_rev) ** (1 / 3) - 1) * 100, 1)
 
-    # Dividend
+    # Dividend Yield (TTM) — from quarterly dividends_paid / market_cap
     dividend_yield_ttm = None
-    if forward_dividend_yield is not None:
-        try:
-            dividend_yield_ttm = float(forward_dividend_yield) * 100
-        except (ValueError, TypeError):
-            pass
+    dividend_yield_na = None
+    if len(quarterly_rows) >= 4:
+        top4 = quarterly_rows[:4]
+        div_vals = [_sf(q.get("dividends_paid")) for q in top4]
+        if all(v is None for v in div_vals):
+            dividend_yield_ttm = None
+            dividend_yield_na = "not_reported"
+        else:
+            dividends_ttm = sum(abs(v) if v is not None else 0.0 for v in div_vals)
+            if dividends_ttm == 0.0:
+                dividend_yield_ttm = 0.0
+                dividend_yield_na = "no_dividend"
+            elif market_cap and market_cap > 0:
+                dividend_yield_ttm = (dividends_ttm / market_cap) * 100
+            else:
+                dividend_yield_ttm = None
+                dividend_yield_na = "missing_inputs"
+    else:
+        dividend_yield_ttm = None
+        dividend_yield_na = "not_reported"
 
     return {
         "market_cap": market_cap,
@@ -286,6 +301,7 @@ def compute_key_metrics(shares_outstanding, current_price, quarterly_rows,
         "net_debt_ebitda": net_debt_ebitda,
         "revenue_growth_3y": revenue_growth_3y,
         "dividend_yield_ttm": dividend_yield_ttm,
+        "dividend_yield_na": dividend_yield_na,
         "ttm_fcf": ttm_fcf,
         "ttm_net_income": ttm_net_income,
         "ebitda_ttm": ebitda_ttm,
@@ -304,7 +320,6 @@ class TestCompleteFinancialsACME:
             current_price=150.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0.005,
         )
         assert r["market_cap"] == 1e10 * 150.0
 
@@ -314,7 +329,6 @@ class TestCompleteFinancialsACME:
             current_price=100.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         assert r["shares_outstanding"] == 1.5e10
 
@@ -325,7 +339,6 @@ class TestCompleteFinancialsACME:
             current_price=150.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         expected_revenue = 5e9 + 4.8e9 + 4.5e9 + 4.6e9   # 18.9B
         expected_ni = 1e9 + 0.9e9 + 0.8e9 + 0.85e9        # 3.55B
@@ -342,7 +355,6 @@ class TestCompleteFinancialsACME:
             current_price=price,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         # FCF per quarter = OCF - |capex|
         fcf_q = [
@@ -363,7 +375,6 @@ class TestCompleteFinancialsACME:
             current_price=150.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         # Latest quarter: debt=2B, cash=3B → net_debt = -1B
         # TTM EBITDA = 1.5 + 1.4 + 1.3 + 1.35 = 5.55B
@@ -379,7 +390,6 @@ class TestCompleteFinancialsACME:
             current_price=150.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         # end=19B, start=12B
         expected_cagr = ((19e9 / 12e9) ** (1 / 3) - 1) * 100
@@ -387,16 +397,16 @@ class TestCompleteFinancialsACME:
         assert abs(r["revenue_growth_3y"] - round(expected_cagr, 1)) < 0.01
 
     def test_dividend_yield(self):
-        """Forward dividend yield is converted from decimal to %."""
+        """Dividend yield is None when dividends_paid is null (ACME has no dividends_paid)."""
         r = compute_key_metrics(
             shares_outstanding=1e10,
             current_price=150.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0.025,
         )
-        assert r["dividend_yield_ttm"] is not None
-        assert abs(r["dividend_yield_ttm"] - 2.5) < 0.001
+        # ACME_QUARTERLY has dividends_paid=None for all rows
+        assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "not_reported"
 
 
 class TestMissingCashFlow:
@@ -409,7 +419,6 @@ class TestMissingCashFlow:
             current_price=50.0,
             quarterly_rows=NOCF_QUARTERLY,
             annual_rows=[],
-            forward_dividend_yield=None,
         )
         # operating_cash_flow is None for all NOCF_QUARTERLY rows
         assert r["ttm_fcf"] is None
@@ -422,7 +431,6 @@ class TestMissingCashFlow:
             current_price=50.0,
             quarterly_rows=NOCF_QUARTERLY,
             annual_rows=[],
-            forward_dividend_yield=None,
         )
         assert r["net_margin_ttm"] is not None
 
@@ -433,7 +441,6 @@ class TestMissingCashFlow:
             current_price=50.0,
             quarterly_rows=NOCF_QUARTERLY,
             annual_rows=[],
-            forward_dividend_yield=None,
         )
         assert r["net_debt_ebitda"] is not None
 
@@ -447,7 +454,6 @@ class TestMissingSharesOutstanding:
             current_price=100.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         assert r["market_cap"] is None
         assert r["shares_outstanding"] is None
@@ -458,7 +464,6 @@ class TestMissingSharesOutstanding:
             current_price=100.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         assert r["fcf_yield"] is None
 
@@ -472,7 +477,6 @@ class TestInsufficientHistory:
             current_price=100.0,
             quarterly_rows=ACME_QUARTERLY[:3],
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         assert r["net_margin_ttm"] is None
 
@@ -482,31 +486,148 @@ class TestInsufficientHistory:
             current_price=100.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL[:3],
-            forward_dividend_yield=None,
         )
         assert r["revenue_growth_3y"] is None
 
 
-class TestNoDividend:
-    """When forward_dividend_yield is None, dividend_yield_ttm is None."""
+class TestDividendYieldTTM:
+    """Regression tests for Dividend Yield (TTM) computed from quarterly dividends_paid."""
 
-    def test_dividend_none_when_not_reported(self):
+    def test_positive_dividends(self):
+        """Case 1: Seed 4 quarterly rows with dividends_paid → correct TTM yield."""
+        # Build quarterly rows with known dividends_paid (negative = cash outflow)
+        rows = _make_quarterly_rows("DIV.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 1.2e9, "capital_expenditures": -2e8,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "operating_cash_flow": 1.1e9, "capital_expenditures": -1.8e8,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "operating_cash_flow": 1.0e9, "capital_expenditures": -1.5e8,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "operating_cash_flow": 1.05e9, "capital_expenditures": -1.7e8,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        # Inject dividends_paid (negative = cash outflow)
+        rows[0]["dividends_paid"] = -1e8    # Q4
+        rows[1]["dividends_paid"] = -9e7    # Q3
+        rows[2]["dividends_paid"] = -8e7    # Q2
+        rows[3]["dividends_paid"] = -7e7    # Q1
+
+        shares = 1e10
+        price = 150.0
+        r = compute_key_metrics(
+            shares_outstanding=shares,
+            current_price=price,
+            quarterly_rows=rows,
+            annual_rows=ACME_ANNUAL,
+        )
+        dividends_ttm = abs(-1e8) + abs(-9e7) + abs(-8e7) + abs(-7e7)  # 3.4e8
+        market_cap = shares * price  # 1.5e12
+        expected = (dividends_ttm / market_cap) * 100
+        assert r["dividend_yield_ttm"] is not None
+        assert abs(r["dividend_yield_ttm"] - expected) < 0.0001
+        assert r["dividend_yield_na"] is None
+
+    def test_missing_dividends_all_null(self):
+        """Case 2a: 4 quarterly rows but dividends_paid all null → not_reported."""
         r = compute_key_metrics(
             shares_outstanding=1e10,
             current_price=100.0,
-            quarterly_rows=ACME_QUARTERLY,
+            quarterly_rows=ACME_QUARTERLY,  # dividends_paid=None
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=None,
         )
         assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "not_reported"
 
-    def test_dividend_zero_when_explicit_zero(self):
-        """Explicit 0 from provider should result in 0% not None."""
+    def test_missing_dividends_fewer_than_4_rows(self):
+        """Case 2b: Fewer than 4 quarterly rows → not_reported."""
+        r = compute_key_metrics(
+            shares_outstanding=1e10,
+            current_price=100.0,
+            quarterly_rows=ACME_QUARTERLY[:3],
+            annual_rows=ACME_ANNUAL,
+        )
+        assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "not_reported"
+
+    def test_zero_dividends(self):
+        """Case 3: 4 quarterly rows with dividends_paid = 0 → value=0, na_reason=no_dividend."""
+        rows = _make_quarterly_rows("ZERODIV.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 1.2e9, "capital_expenditures": -2e8,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "operating_cash_flow": 1.1e9, "capital_expenditures": -1.8e8,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "operating_cash_flow": 1.0e9, "capital_expenditures": -1.5e8,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "operating_cash_flow": 1.05e9, "capital_expenditures": -1.7e8,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        rows[0]["dividends_paid"] = 0
+        rows[1]["dividends_paid"] = 0
+        rows[2]["dividends_paid"] = 0
+        rows[3]["dividends_paid"] = 0
+
+        r = compute_key_metrics(
+            shares_outstanding=1e10,
+            current_price=100.0,
+            quarterly_rows=rows,
+            annual_rows=ACME_ANNUAL,
+        )
+        assert r["dividend_yield_ttm"] == 0.0
+        assert r["dividend_yield_na"] == "no_dividend"
+
+    def test_forward_field_not_used(self):
+        """Case 4: forward_dividend_yield in fundamentals_cache must NOT affect TTM yield.
+        Even if forward_dividend_yield were available, the result must come from
+        quarterly dividends_paid only."""
+        # ACME_QUARTERLY has dividends_paid=None → should be not_reported
+        # regardless of any hypothetical forward_dividend_yield value
         r = compute_key_metrics(
             shares_outstanding=1e10,
             current_price=100.0,
             quarterly_rows=ACME_QUARTERLY,
             annual_rows=ACME_ANNUAL,
-            forward_dividend_yield=0,
         )
-        assert r["dividend_yield_ttm"] == 0.0
+        assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "not_reported"
+        # compute_key_metrics no longer accepts forward_dividend_yield parameter
+        import inspect
+        sig = inspect.signature(compute_key_metrics)
+        assert "forward_dividend_yield" not in sig.parameters
+
+    def test_missing_market_cap_with_dividends(self):
+        """When dividends exist but market_cap cannot be computed → missing_inputs."""
+        rows = _make_quarterly_rows("NODENOM.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 1.2e9, "capital_expenditures": -2e8,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "operating_cash_flow": 1.1e9, "capital_expenditures": -1.8e8,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "operating_cash_flow": 1.0e9, "capital_expenditures": -1.5e8,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "operating_cash_flow": 1.05e9, "capital_expenditures": -1.7e8,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        rows[0]["dividends_paid"] = -1e8
+        rows[1]["dividends_paid"] = -9e7
+        rows[2]["dividends_paid"] = -8e7
+        rows[3]["dividends_paid"] = -7e7
+
+        r = compute_key_metrics(
+            shares_outstanding=None,
+            current_price=100.0,
+            quarterly_rows=rows,
+            annual_rows=[],
+        )
+        assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "missing_inputs"
