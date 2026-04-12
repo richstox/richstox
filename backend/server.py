@@ -4792,8 +4792,13 @@ async def get_news(
 
     for m in legacy_mappings:
         aid = m.get("article_id")
-        raw_sym = m.get("symbol", "")
-        bare = raw_sym.replace(".US", "").replace(".CC", "").upper().strip()
+        raw_sym = m.get("symbol", "").upper().strip()
+        # Strip exchange suffix to get bare ticker
+        bare = raw_sym
+        for _sfx in (".US", ".CC"):
+            if bare.endswith(_sfx):
+                bare = bare[: -len(_sfx)]
+                break
         if aid and bare and (aid, bare) not in seen_pairs:
             article_mappings.append({"article_id": aid, "ticker": bare})
             seen_pairs.add((aid, bare))
@@ -5103,7 +5108,13 @@ async def get_ticker_news(
     - Free users: only first 10 (then "Upgrade to PRO")
     """
     db = request.app.state.db
-    ticker = ticker.upper().replace(".US", "").replace(".CC", "").strip()
+    # Normalise to bare ticker (e.g. "AAPL.US" → "AAPL") so it matches
+    # article_ticker_mapping which stores bare tickers.
+    ticker = ticker.upper().strip()
+    for _sfx in (".US", ".CC"):
+        if ticker.endswith(_sfx):
+            ticker = ticker[: -len(_sfx)]
+            break
 
     # Get user subscription tier
     user = None

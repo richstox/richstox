@@ -47,14 +47,22 @@ _PRAGUE = ZoneInfo("Europe/Prague")
 
 
 def _bare_ticker(t: str) -> str:
-    """Canonical bare ticker: strip exchange suffixes (.US, .CC, etc.) and uppercase.
+    """Canonical bare ticker: strip exchange suffixes (.US, .CC) and uppercase.
+
+    Uses ``removesuffix`` so only a trailing suffix is removed — avoids
+    accidentally stripping characters from tickers that happen to contain
+    "US" or "CC" elsewhere.
 
     >>> _bare_ticker("AAPL.US")
     'AAPL'
     >>> _bare_ticker("aapl")
     'AAPL'
     """
-    return t.upper().strip().replace(".US", "").replace(".CC", "")
+    s = t.upper().strip()
+    for sfx in (".US", ".CC"):
+        if s.endswith(sfx):
+            return s[: -len(sfx)]
+    return s
 
 
 async def _write_news_telemetry(
