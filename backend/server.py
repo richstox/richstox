@@ -3939,11 +3939,12 @@ async def get_ticker_detail_mobile(
 
     # ==========================================================================
     # P0 BLOCKER FIX: Hybrid 7 Key Metrics - Full implementation with all fields
+    # Read from CANONICAL DB collections (company_financials, tracked_tickers,
+    # company_fundamentals_cache) instead of embedded tracked_tickers.fundamentals.
     # ==========================================================================
 
-    # Get shares from embedded fundamentals
-    shares_stats = embedded_fundamentals.get("SharesStats", {})
-    shares_outstanding = shares_stats.get("SharesOutstanding")
+    # Get shares from tracked_tickers (canonical field maintained by sync)
+    shares_outstanding = tracked.get("shares_outstanding")
 
     # Get current price for market cap calculation
     current_price_val = None
@@ -3969,59 +3970,58 @@ async def get_ticker_detail_mobile(
         if val >= 1e6: return f"{val/1e6:.1f}M"
         return f"{val:,.0f}"
 
-    # Extract embedded Financials for TTM calculations
-    embedded_financials_data = embedded_fundamentals.get("Financials", {})
+    # ---- Read quarterly financials from canonical company_financials collection ----
+    _quarterly_rows = await db.company_financials.find(
+        {"ticker": ticker_full, "period_type": "quarterly"},
+        {"_id": 0}
+    ).sort("period_date", -1).limit(12).to_list(length=12)
 
-    # Get TTM data from Income Statement (need to calculate from quarterly)
-    income_stmt = embedded_financials_data.get("Income_Statement", {})
-    quarterly_income = income_stmt.get("quarterly", {})
+    # Helper: safely coerce to float
+    def _sf(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
 
-    # Calculate TTM Revenue and Net Income from last 4 quarters
+    # Calculate TTM Revenue, Net Income, EBITDA from last 4 quarters
     ttm_revenue = None
     ttm_net_income = None
-    ttm_ebitda = None  # P0 FIX: Calculate EBITDA TTM from quarterly data
-    if quarterly_income:
-        # Sort quarters by date descending
-        sorted_quarters = sorted(quarterly_income.items(), key=lambda x: x[0], reverse=True)[:4]
-        if len(sorted_quarters) >= 4:
-            revenues = [q[1].get("totalRevenue") for q in sorted_quarters if q[1].get("totalRevenue")]
-            net_incomes = [q[1].get("netIncome") for q in sorted_quarters if q[1].get("netIncome") is not None]
-            ebitdas = [q[1].get("ebitda") for q in sorted_quarters if q[1].get("ebitda") is not None]
-            if len(revenues) >= 4:
-                ttm_revenue = sum(float(r) for r in revenues[:4])
-            if len(net_incomes) >= 4:
-                ttm_net_income = sum(float(ni) for ni in net_incomes[:4])
-            if len(ebitdas) >= 4:
-                ttm_ebitda = sum(float(e) for e in ebitdas[:4])
+    ttm_ebitda = None
+    if len(_quarterly_rows) >= 4:
+        _top4 = _quarterly_rows[:4]
+        revenues = [_sf(q.get("revenue")) for q in _top4 if _sf(q.get("revenue")) is not None]
+        net_incomes = [_sf(q.get("net_income")) for q in _top4 if _sf(q.get("net_income")) is not None]
+        ebitdas = [_sf(q.get("ebitda")) for q in _top4 if _sf(q.get("ebitda")) is not None]
+        if len(revenues) >= 4:
+            ttm_revenue = sum(revenues[:4])
+        if len(net_incomes) >= 4:
+            ttm_net_income = sum(net_incomes[:4])
+        if len(ebitdas) >= 4:
+            ttm_ebitda = sum(ebitdas[:4])
 
-    # Get TTM FCF from Cash Flow Statement
+    # Calculate TTM FCF from quarterly cash flow fields
     ttm_fcf = None
-    cash_flow = embedded_financials_data.get("Cash_Flow", {})
-    quarterly_cf = cash_flow.get("quarterly", {})
-    if quarterly_cf:
-        sorted_cf = sorted(quarterly_cf.items(), key=lambda x: x[0], reverse=True)[:4]
-        if len(sorted_cf) >= 4:
-            fcfs = []
-            for q in sorted_cf[:4]:
-                ocf = float(q[1].get("totalCashFromOperatingActivities") or q[1].get("operatingCashflow") or 0)
-                capex = abs(float(q[1].get("capitalExpenditures") or 0))
-                fcfs.append(ocf - capex)
-            if fcfs:
-                ttm_fcf = sum(fcfs)
+    if len(_quarterly_rows) >= 4:
+        _top4 = _quarterly_rows[:4]
+        fcfs = []
+        for q in _top4:
+            ocf = _sf(q.get("operating_cash_flow")) or 0
+            capex = abs(_sf(q.get("capital_expenditures")) or 0)
+            fcfs.append(ocf - capex)
+        if any(_sf(q.get("operating_cash_flow")) is not None for q in _top4):
+            ttm_fcf = sum(fcfs)
 
-    # Get Cash and Debt from latest Balance Sheet
+    # Get Cash and Debt from latest quarterly balance sheet row
     ttm_cash = None
     ttm_debt = None
-    balance_sheet = embedded_financials_data.get("Balance_Sheet", {})
-    quarterly_bs = balance_sheet.get("quarterly", {})
-    if quarterly_bs:
-        sorted_bs = sorted(quarterly_bs.items(), key=lambda x: x[0], reverse=True)
-        if sorted_bs:
-            latest_bs = sorted_bs[0][1]
-            ttm_cash = float(latest_bs.get("cash") or latest_bs.get("cashAndCashEquivalentsAtCarryingValue") or 0)
-            short_debt = float(latest_bs.get("shortLongTermDebt") or latest_bs.get("shortTermDebt") or 0)
-            long_debt = float(latest_bs.get("longTermDebt") or 0)
-            ttm_debt = short_debt + long_debt
+    if _quarterly_rows:
+        _latest_q = _quarterly_rows[0]
+        _cash_val = _sf(_latest_q.get("cash_and_equivalents"))
+        ttm_cash = _cash_val if _cash_val is not None else 0.0
+        _total_debt_val = _sf(_latest_q.get("total_debt"))
+        ttm_debt = _total_debt_val if _total_debt_val is not None else 0.0
 
     # Calculate Net Margin TTM
     net_margin_ttm = None
@@ -4034,7 +4034,6 @@ async def get_ticker_detail_mobile(
         fcf_yield = (ttm_fcf / market_cap) * 100
 
     # Calculate Net Debt/EBITDA
-    # P0 FIX: Use ttm_ebitda calculated from quarterly data, fallback to valuation_cache
     net_debt_ebitda = None
     ebitda_ttm = ttm_ebitda  # Use locally calculated EBITDA TTM first
     if ebitda_ttm is None:
@@ -4044,14 +4043,21 @@ async def get_ticker_detail_mobile(
         net_debt = ttm_debt - ttm_cash
         net_debt_ebitda = net_debt / ebitda_ttm
 
-    # Get Dividend Yield from fundamentals
-    splits_dividends = embedded_fundamentals.get("SplitsDividends", {})
-    dividend_yield_ttm = splits_dividends.get("ForwardAnnualDividendYield")
-    if dividend_yield_ttm:
-        try:
-            dividend_yield_ttm = float(dividend_yield_ttm) * 100  # Convert to percentage
-        except (ValueError, TypeError):
-            dividend_yield_ttm = None
+    # Get Dividend Yield from company_fundamentals_cache (canonical)
+    # NOTE: cache_doc may already be loaded earlier when building company info;
+    # only fetch it again if it was not loaded above.
+    dividend_yield_ttm = None
+    if cache_doc is None:
+        cache_doc = await db.company_fundamentals_cache.find_one(
+            {"ticker": ticker_full}, {"_id": 0, "logo_data": 0, "logo_content_type": 0}
+        )
+    if cache_doc:
+        _fdy = cache_doc.get("forward_dividend_yield")
+        if _fdy is not None:
+            try:
+                dividend_yield_ttm = float(_fdy) * 100  # Convert to percentage
+            except (ValueError, TypeError):
+                dividend_yield_ttm = None
 
     # FIX-2: Read PRECOMPUTED dividend data from peer_benchmarks
     # All fallback logic is already computed by compute_peer_benchmarks_v3
@@ -4148,54 +4154,27 @@ async def get_ticker_detail_mobile(
 
     # P8 FIX: Add Financials data (5 essential metrics: Revenue, Net Income, FCF, Cash, Debt)
     # P9: Extended with YoY comparisons and Core 5 for all periods
-    # BINDING: Read from EMBEDDED tracked_tickers.fundamentals.Financials, not financials_cache
+    # Read from CANONICAL company_financials collection (not embedded fundamentals)
     financials = None
 
-    # Extract embedded financials
-    embedded_financials = embedded_fundamentals.get("Financials", {})
+    # ---- Read annual financials from canonical company_financials collection ----
+    _annual_rows = await db.company_financials.find(
+        {"ticker": ticker_full, "period_type": "annual"},
+        {"_id": 0}
+    ).sort("period_date", -1).limit(6).to_list(length=6)
 
-    # Helper to convert embedded format to list of {date, data} dicts
-    def convert_embedded_to_list(statements_dict, limit=12):
-        """Convert embedded quarterly/yearly dict to sorted list by date desc."""
-        if not statements_dict or not isinstance(statements_dict, dict):
-            return []
-        result = []
-        for date_key, data in statements_dict.items():
-            if isinstance(data, dict):
-                result.append({"date": date_key, "data": data})
-        # Sort by date descending
-        result.sort(key=lambda x: x.get("date", ""), reverse=True)
-        return result[:limit]
-
-    # Get Income Statement data from embedded
-    income_stmt = embedded_financials.get("Income_Statement", {})
-    annual_income = convert_embedded_to_list(income_stmt.get("yearly", {}), 6)
-    quarterly_income = convert_embedded_to_list(income_stmt.get("quarterly", {}), 12)
-
-    # Get Balance Sheet data from embedded
-    balance_sheet = embedded_financials.get("Balance_Sheet", {})
-    quarterly_balance = convert_embedded_to_list(balance_sheet.get("quarterly", {}), 12)
-    annual_balance = convert_embedded_to_list(balance_sheet.get("yearly", {}), 6)
-
-    # Get Cash Flow data from embedded
-    cash_flow = embedded_financials.get("Cash_Flow", {})
-    quarterly_cashflow = convert_embedded_to_list(cash_flow.get("quarterly", {}), 12)
-    annual_cashflow = convert_embedded_to_list(cash_flow.get("yearly", {}), 6)
+    # NOTE: _quarterly_rows was already loaded above for Key Metrics TTM calculations
 
     # FIX 1: Calculate Revenue Growth 3Y CAGR from annual revenue history
     revenue_growth_3y_value = None
     revenue_growth_3y_na_reason = "insufficient_annual_history"
 
-    # Get annual revenues from annual_income (already sorted by date desc)
+    # Get annual revenues from _annual_rows (already sorted by date desc)
     annual_revenues = []
-    for inc in annual_income[:4]:
-        inc_data = inc.get("data", {})
-        rev = inc_data.get("totalRevenue")
+    for row in _annual_rows[:4]:
+        rev = _sf(row.get("revenue"))
         if rev is not None:
-            try:
-                annual_revenues.append(float(rev))
-            except (ValueError, TypeError):
-                pass
+            annual_revenues.append(rev)
 
     # Need exactly 4 annual revenue points for 3-year CAGR
     if len(annual_revenues) >= 4:
@@ -4220,97 +4199,58 @@ async def get_ticker_detail_mobile(
         "na_reason": revenue_growth_3y_na_reason
     }
 
-    # P9: Helper to extract Core 5 metrics from financial statements
-    def get_core5_from_period(income_data, balance_data, cashflow_data, period_date):
-        """Extract Core 5 metrics for a single period"""
-        revenue = None
-        net_income = None
-        fcf = None
-        cash = None
-        total_debt = None
+    # P9: Helper to extract Core 5 metrics from a canonical company_financials row
+    def _core5_from_row(row):
+        """Extract Core 5 metrics from a single company_financials document."""
+        revenue = _sf(row.get("revenue"))
+        net_income_val = _sf(row.get("net_income"))
 
-        # Income statement metrics
-        if income_data:
-            revenue = float(income_data.get("totalRevenue") or 0) if income_data.get("totalRevenue") else None
-            net_income = float(income_data.get("netIncome") or 0) if income_data.get("netIncome") else None
+        cash_val = _sf(row.get("cash_and_equivalents"))
+        debt_val = _sf(row.get("total_debt"))
 
-        # Balance sheet metrics
-        if balance_data:
-            cash = float(balance_data.get("cash") or balance_data.get("cashAndCashEquivalentsAtCarryingValue") or 0) \
-                if (balance_data.get("cash") or balance_data.get("cashAndCashEquivalentsAtCarryingValue")) else None
-            short_debt = float(balance_data.get("shortLongTermDebt") or balance_data.get("shortTermDebt") or 0)
-            long_debt = float(balance_data.get("longTermDebt") or 0)
-            total_debt = short_debt + long_debt if (short_debt or long_debt) else None
-
-        # Cash flow metrics
-        if cashflow_data:
-            ocf = float(cashflow_data.get("totalCashFromOperatingActivities") or cashflow_data.get("operatingCashFlow") or 0)
-            capex = float(cashflow_data.get("capitalExpenditures") or 0)
-            fcf = ocf - abs(capex) if capex else ocf
+        ocf = _sf(row.get("operating_cash_flow"))
+        capex = _sf(row.get("capital_expenditures"))
+        fcf_val = None
+        if ocf is not None:
+            fcf_val = ocf - abs(capex or 0)
 
         return {
-            "period_date": period_date,
+            "period_date": row.get("period_date"),
             "revenue": revenue,
-            "net_income": net_income,
-            "free_cash_flow": fcf,
-            "cash": cash,
-            "total_debt": total_debt,
+            "net_income": net_income_val,
+            "free_cash_flow": fcf_val,
+            "cash": cash_val,
+            "total_debt": debt_val,
         }
-
-    # P9: Build period-indexed maps for quick lookup
-    def build_period_map(statements):
-        """Create dict of date -> data for quick YoY lookup"""
-        return {s.get("date"): s.get("data", {}) for s in statements if s.get("date")}
-
-    income_q_map = build_period_map(quarterly_income)
-    income_a_map = build_period_map(annual_income)
-    balance_q_map = build_period_map(quarterly_balance)
-    balance_a_map = build_period_map(annual_balance)
-    cashflow_q_map = build_period_map(quarterly_cashflow)
-    cashflow_a_map = build_period_map(annual_cashflow)
 
     # P9: Transform quarterly data with Core 5
     quarterly = []
-    for inc in quarterly_income[:8]:
-        period = inc.get("date")
-        if not period:
-            continue
-        inc_data = inc.get("data", {})
-        bal_data = balance_q_map.get(period, {})
-        cf_data = cashflow_q_map.get(period, {})
-
-        core5 = get_core5_from_period(inc_data, bal_data, cf_data, period)
+    for row in _quarterly_rows[:8]:
+        core5 = _core5_from_row(row)
         if core5.get("revenue") or core5.get("net_income"):
             quarterly.append(core5)
 
     # P9: Transform annual data with Core 5
     annual = []
-    for inc in annual_income[:5]:
-        period = inc.get("date")
-        if not period:
-            continue
-        inc_data = inc.get("data", {})
-        bal_data = balance_a_map.get(period, {})
-        cf_data = cashflow_a_map.get(period, {})
-
-        core5 = get_core5_from_period(inc_data, bal_data, cf_data, period)
+    for row in _annual_rows[:5]:
+        core5 = _core5_from_row(row)
         if core5.get("revenue") or core5.get("net_income"):
             annual.append(core5)
 
     # P9: Calculate TTM (current) and Prior TTM (for YoY comparison)
-    ttm_revenue = None
-    ttm_net_income = None
-    ttm_fcf = None
+    _fin_ttm_revenue = None
+    _fin_ttm_net_income = None
+    _fin_ttm_fcf = None
     prior_ttm_revenue = None
     prior_ttm_net_income = None
     prior_ttm_fcf = None
 
     if len(quarterly) >= 4:
-        ttm_revenue = sum(q.get("revenue") or 0 for q in quarterly[:4])
-        ttm_net_income = sum(q.get("net_income") or 0 for q in quarterly[:4])
-        ttm_fcf = sum(q.get("free_cash_flow") or 0 for q in quarterly[:4] if q.get("free_cash_flow") is not None)
+        _fin_ttm_revenue = sum(q.get("revenue") or 0 for q in quarterly[:4])
+        _fin_ttm_net_income = sum(q.get("net_income") or 0 for q in quarterly[:4])
+        _fin_ttm_fcf = sum(q.get("free_cash_flow") or 0 for q in quarterly[:4] if q.get("free_cash_flow") is not None)
         if not any(q.get("free_cash_flow") is not None for q in quarterly[:4]):
-            ttm_fcf = None
+            _fin_ttm_fcf = None
 
     # Prior TTM (quarters 5-8, i.e., the 4 quarters before current TTM)
     if len(quarterly) >= 8:
@@ -4332,9 +4272,9 @@ async def get_ticker_detail_mobile(
             "annual": annual,
             "quarterly": quarterly,
             "ttm": {
-                "revenue": ttm_revenue,
-                "net_income": ttm_net_income,
-                "free_cash_flow": ttm_fcf,
+                "revenue": _fin_ttm_revenue,
+                "net_income": _fin_ttm_net_income,
+                "free_cash_flow": _fin_ttm_fcf,
                 "cash": cash,
                 "total_debt": total_debt,
             },
