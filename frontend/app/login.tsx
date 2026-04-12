@@ -10,12 +10,14 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, Image, Platform, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
+import { useAppDialog } from '../contexts/AppDialogContext';
 import { COLORS, FONTS, TYPOGRAPHY } from './_layout';
 import { Ionicons } from '@expo/vector-icons';
 
 export default function LoginScreen() {
   const router = useRouter();
   const { login, isLoading, isAuthenticated, devLogin } = useAuth();
+  const dialog = useAppDialog();
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [isDevLoggingIn, setIsDevLoggingIn] = useState(false);
 
@@ -38,7 +40,7 @@ export default function LoginScreen() {
   };
 
   const handleAppleLogin = () => {
-    alert('Apple Sign-In coming soon');
+    dialog.alert('Coming Soon', 'Apple Sign-In coming soon');
   };
 
   const handleDevLogin = async () => {

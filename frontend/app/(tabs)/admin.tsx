@@ -7,11 +7,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, Alert, TextInput,
+  RefreshControl, ActivityIndicator, TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import { COLORS } from '../_layout';
 import AppHeader from '../../components/AppHeader';
 import BrandedLoading from '../../components/BrandedLoading';
@@ -161,6 +162,7 @@ interface DashboardProps {
 }
 
 function DashboardTab({ sessionToken }: DashboardProps) {
+  const dialog = useAppDialog();
   const [overview, setOverview] = useState<OverviewData | null>(null);
   const [stats, setStats] = useState<StatsData | null>(null);
   const [calendarSummary, setCalendarSummary] = useState<{
@@ -289,7 +291,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       // Refresh overview to pick up the new "running" sentinel
       await fetchAll();
     } catch (e: any) {
-      Alert.alert('Morning Refresh', e?.message || 'Could not start news refresh');
+      dialog.alert('Morning Refresh', e?.message || 'Could not start news refresh');
     } finally {
       setNewsRefreshTriggered(false);
     }
@@ -311,7 +313,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       // Refresh to pick up new calendar data
       await fetchAll();
     } catch (e: any) {
-      Alert.alert('Calendar Refresh', e?.message || 'Could not refresh calendar');
+      dialog.alert('Calendar Refresh', e?.message || 'Could not refresh calendar');
     } finally {
       setCalendarRefreshing(false);
     }
@@ -902,6 +904,7 @@ interface ProofMetric {
 }
 
 function KeyMetricsProofCard({ sessionToken }: { sessionToken: string | null }) {
+  const dialog = useAppDialog();
   const [ticker, setTicker] = useState('');
   const [loading, setLoading] = useState(false);
   const [proof, setProof] = useState<Record<string, any> | null>(null);
@@ -912,7 +915,7 @@ function KeyMetricsProofCard({ sessionToken }: { sessionToken: string | null }) 
 
   const handleRun = async () => {
     const t = ticker.trim();
-    if (!t) { Alert.alert('Key Metrics Proof', 'Enter a ticker symbol'); return; }
+    if (!t) { dialog.alert('Key Metrics Proof', 'Enter a ticker symbol'); return; }
     setLoading(true);
     setError(null);
     setProof(null);

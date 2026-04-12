@@ -6,7 +6,6 @@ import {
   ScrollView,
   TouchableOpacity,
   TextInput,
-  Alert,
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
@@ -16,12 +15,14 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { LineChart } from 'react-native-gifted-charts';
 import { COLORS } from '../_layout';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function PositionDetail() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
+  const dialog = useAppDialog();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [position, setPosition] = useState<any>(null);
@@ -38,7 +39,7 @@ export default function PositionDetail() {
       setNewNotes(response.data.notes || '');
     } catch (error) {
       console.error('Error fetching position:', error);
-      Alert.alert('Error', 'Failed to load position');
+      dialog.alert('Error', 'Failed to load position');
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -62,7 +63,7 @@ export default function PositionDetail() {
       setPosition({ ...position, thesis: newThesis });
       setEditingThesis(false);
     } catch (error) {
-      Alert.alert('Error', 'Failed to update thesis');
+      dialog.alert('Error', 'Failed to update thesis');
     }
   };
 
@@ -72,7 +73,7 @@ export default function PositionDetail() {
       setPosition({ ...position, notes: newNotes });
       setEditingNotes(false);
     } catch (error) {
-      Alert.alert('Error', 'Failed to update notes');
+      dialog.alert('Error', 'Failed to update notes');
     }
   };
 
@@ -84,30 +85,23 @@ export default function PositionDetail() {
       await axios.put(`${API_URL}/api/positions/${id}`, { rules: updatedRules });
       setPosition({ ...position, rules: updatedRules });
     } catch (error) {
-      Alert.alert('Error', 'Failed to update rule');
+      dialog.alert('Error', 'Failed to update rule');
     }
   };
 
-  const handleDeletePosition = () => {
-    Alert.alert(
+  const handleDeletePosition = async () => {
+    const confirmed = await dialog.confirm(
       'Delete Position',
       `Are you sure you want to remove ${position?.ticker} from your portfolio?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await axios.delete(`${API_URL}/api/positions/${id}`);
-              router.back();
-            } catch (error) {
-              Alert.alert('Error', 'Failed to delete position');
-            }
-          },
-        },
-      ]
+      { confirmLabel: 'Delete', confirmStyle: 'destructive' },
     );
+    if (!confirmed) return;
+    try {
+      await axios.delete(`${API_URL}/api/positions/${id}`);
+      router.back();
+    } catch (error) {
+      dialog.alert('Error', 'Failed to delete position');
+    }
   };
 
   const formatCurrency = (value: number) => {

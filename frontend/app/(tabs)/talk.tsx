@@ -21,6 +21,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import BrandedLoading from '../../components/BrandedLoading';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -89,6 +90,7 @@ interface Subscription {
 export default function TalkScreen() {
   const router = useRouter();
   const { user, isAuthenticated, sessionToken, isLoading: authLoading } = useAuth();
+  const dialog = useAppDialog();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [posts, setPosts] = useState<TalkPost[]>([]);
@@ -625,7 +627,7 @@ export default function TalkScreen() {
     } catch (err: any) {
       console.error('Error editing post:', err);
       const errorMsg = err?.response?.data?.detail || 'Failed to edit post';
-      alert(errorMsg);
+      dialog.alert('Error', errorMsg);
     } finally {
       setEditLoading(false);
     }
@@ -655,7 +657,7 @@ export default function TalkScreen() {
     } catch (err: any) {
       console.error('Error deleting post:', err);
       const errorMsg = err?.response?.data?.detail || 'Failed to delete post';
-      alert(errorMsg);
+      dialog.alert('Error', errorMsg);
     } finally {
       setDeleteConfirmPost(null);
     }

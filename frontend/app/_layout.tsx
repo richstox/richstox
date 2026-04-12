@@ -4,6 +4,7 @@ import { StatusBar } from 'expo-status-bar';
 import { View, StyleSheet, Platform } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AuthProvider, useAuth } from '../contexts/AuthContext';
+import { AppDialogProvider } from '../contexts/AppDialogContext';
 import { useFonts, DMSerifDisplay_400Regular } from '@expo-google-fonts/dm-serif-display';
 import { Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold } from '@expo-google-fonts/inter';
 import { FontDisplay } from 'expo-font';
@@ -85,9 +86,11 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
-      <SafeAreaProvider>
-        <RootShell />
-      </SafeAreaProvider>
+      <AppDialogProvider>
+        <SafeAreaProvider>
+          <RootShell />
+        </SafeAreaProvider>
+      </AppDialogProvider>
     </AuthProvider>
   );
 }

@@ -31,6 +31,7 @@ import AppHeader from '../../components/AppHeader';
 import BrandedLoading from '../../components/BrandedLoading';
 import { useSearchStore } from '../../stores/searchStore';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
@@ -340,6 +341,7 @@ export default function StockDetail() {
   const { ticker } = useLocalSearchParams();
   const router = useRouter();
   const { sessionToken } = useAuth();
+  const dialog = useAppDialog();
   const sp = useLayoutSpacing();
   
   const [loading, setLoading] = useState(true);
@@ -609,7 +611,7 @@ export default function StockDetail() {
       // Revert optimistic update on error
       setIsFollowed(wasFollowed);
       console.error('Error toggling follow:', err);
-      alert(`Failed to ${wasFollowed ? 'unfollow' : 'follow'} ${ticker}. Please try again.`);
+      dialog.alert('Error', `Failed to ${wasFollowed ? 'unfollow' : 'follow'} ${ticker}. Please try again.`);
     } finally {
       setFollowLoading(false);
     }
@@ -2332,7 +2334,7 @@ export default function StockDetail() {
                   return (
                     <TouchableOpacity 
                       style={styles.perfCheckMetricRow}
-                      onPress={() => alert('RRR (Upside/Downside): how much upside the stock had vs how much it dropped, measured from the start of the period. The higher, the better.')}
+                      onPress={() => dialog.alert('Reward / Risk', 'RRR (Upside/Downside): how much upside the stock had vs how much it dropped, measured from the start of the period. The higher, the better.')}
                       data-testid="rrr-performance-check"
                     >
                       <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
