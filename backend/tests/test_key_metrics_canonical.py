@@ -412,7 +412,8 @@ class TestMissingCashFlow:
             forward_dividend_yield=None,
         )
         # operating_cash_flow is None for all NOCF_QUARTERLY rows
-        assert r["ttm_fcf"] is None or r["fcf_yield"] is None
+        assert r["ttm_fcf"] is None
+        assert r["fcf_yield"] is None
 
     def test_net_margin_still_computed(self):
         """Net Margin should still compute even without cash flow."""

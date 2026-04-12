@@ -4044,6 +4044,8 @@ async def get_ticker_detail_mobile(
         net_debt_ebitda = net_debt / ebitda_ttm
 
     # Get Dividend Yield from company_fundamentals_cache (canonical)
+    # NOTE: cache_doc may already be loaded earlier when building company info;
+    # only fetch it again if it was not loaded above.
     dividend_yield_ttm = None
     if cache_doc is None:
         cache_doc = await db.company_fundamentals_cache.find_one(
