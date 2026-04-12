@@ -879,6 +879,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         </View>
       </View>
 
+      {/* Key Metrics Proof */}
+      <KeyMetricsProofCard sessionToken={sessionToken} />
+
       {/* Benchmark Medians */}
       <BenchmarkMediansCard sessionToken={sessionToken} />
 
@@ -886,6 +889,224 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     </ScrollView>
   );
 }
+
+// ─── Key Metrics Proof Card ──────────────────────────────────────────────────
+
+interface ProofMetric {
+  value?: number | null;
+  formatted?: string | null;
+  na_reason?: string | null;
+  formula?: string;
+  source?: string;
+  [key: string]: any;
+}
+
+function KeyMetricsProofCard({ sessionToken }: { sessionToken: string | null }) {
+  const [ticker, setTicker] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [proof, setProof] = useState<Record<string, any> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+
+  const headers: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+
+  const handleRun = async () => {
+    const t = ticker.trim();
+    if (!t) { Alert.alert('Key Metrics Proof', 'Enter a ticker symbol'); return; }
+    setLoading(true);
+    setError(null);
+    setProof(null);
+    setExpanded({});
+    try {
+      const res = await fetch(
+        `${API_URL}/api/admin/key-metrics-proof?ticker=${encodeURIComponent(t)}`,
+        { headers },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body?.detail || body?.message || `HTTP ${res.status}`);
+      }
+      setProof(await res.json());
+    } catch (e: any) {
+      setError(e?.message || 'Request failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const metricKeys = [
+    'pe_ttm', 'net_margin_ttm', 'fcf_yield',
+    'roe', 'net_debt_ebitda', 'revenue_growth_3y', 'dividend_yield_ttm',
+  ];
+  const metricLabels: Record<string, string> = {
+    pe_ttm: 'P/E (TTM)',
+    net_margin_ttm: 'Net Margin (TTM)',
+    fcf_yield: 'Free Cash Flow Yield',
+    roe: 'ROE',
+    net_debt_ebitda: 'Net Debt / EBITDA',
+    revenue_growth_3y: 'Revenue Growth (3Y CAGR)',
+    dividend_yield_ttm: 'Dividend Yield (TTM)',
+  };
+
+  const toggleExpand = (key: string) => {
+    setExpanded(prev => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // Render detail rows for a metric's raw inputs
+  const renderDetails = (key: string, m: ProofMetric) => {
+    const skip = new Set(['value', 'formatted', 'na_reason', 'formula', 'source']);
+    const entries = Object.entries(m).filter(([k]) => !skip.has(k));
+    if (entries.length === 0) return null;
+    return (
+      <View style={kmp.detailBox}>
+        {m.formula && (
+          <Text style={kmp.detailRow}>
+            <Text style={kmp.detailKey}>Formula: </Text>
+            <Text style={kmp.detailVal}>{m.formula}</Text>
+          </Text>
+        )}
+        {m.source && (
+          <Text style={kmp.detailRow}>
+            <Text style={kmp.detailKey}>Source: </Text>
+            <Text style={kmp.detailVal}>{m.source}</Text>
+          </Text>
+        )}
+        {entries.map(([k, v]) => (
+          <Text key={k} style={kmp.detailRow} numberOfLines={3}>
+            <Text style={kmp.detailKey}>{k}: </Text>
+            <Text style={kmp.detailVal}>
+              {v == null ? 'null' : typeof v === 'object' ? JSON.stringify(v, null, 0) : String(v)}
+            </Text>
+          </Text>
+        ))}
+      </View>
+    );
+  };
+
+  return (
+    <View style={d.card}>
+      <Text style={d.sectionTitle}>Key Metrics Proof</Text>
+      <Text style={d.cpHint}>
+        Audit tool: enter a ticker to see every raw input, formula, and result for the 7 Key Metrics.
+      </Text>
+
+      {/* Input row */}
+      <View style={kmp.inputRow}>
+        <TextInput
+          style={kmp.input}
+          placeholder="e.g. AAPL.US"
+          placeholderTextColor={COLORS.textMuted}
+          value={ticker}
+          onChangeText={setTicker}
+          autoCapitalize="characters"
+          returnKeyType="go"
+          onSubmitEditing={handleRun}
+        />
+        <TouchableOpacity
+          style={[kmp.runBtn, loading && { opacity: 0.5 }]}
+          onPress={handleRun}
+          disabled={loading}
+        >
+          {loading ? (
+            <ActivityIndicator size={12} color="#fff" />
+          ) : (
+            <Text style={kmp.runBtnText}>Run Proof</Text>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {/* Error */}
+      {error && (
+        <View style={kmp.errorBox}>
+          <Ionicons name="close-circle" size={13} color="#EF4444" />
+          <Text style={kmp.errorText}>{error}</Text>
+        </View>
+      )}
+
+      {/* Results */}
+      {proof && (
+        <View style={kmp.results}>
+          {/* Meta info */}
+          {proof.ticker && (
+            <View style={kmp.metaRow}>
+              <Text style={kmp.metaText}>Ticker: {proof.ticker}</Text>
+              {proof.price_date && <Text style={kmp.metaText}>Price date: {proof.price_date}</Text>}
+            </View>
+          )}
+          {proof.current_price != null && (
+            <View style={kmp.metaRow}>
+              <Text style={kmp.metaText}>Price: ${proof.current_price}</Text>
+              {proof.shares_outstanding_formatted && (
+                <Text style={kmp.metaText}>Shares: {proof.shares_outstanding_formatted}</Text>
+              )}
+            </View>
+          )}
+
+          {/* Metric cards */}
+          {metricKeys.map(key => {
+            const m = proof[key] as ProofMetric | undefined;
+            if (!m) return null;
+            const hasValue = m.value != null;
+            const isExpanded = expanded[key] === true;
+            return (
+              <View key={key} style={kmp.metricCard}>
+                <TouchableOpacity style={kmp.metricHeader} onPress={() => toggleExpand(key)} activeOpacity={0.7}>
+                  <View style={kmp.metricLeft}>
+                    <Ionicons
+                      name={hasValue ? 'checkmark-circle' : 'alert-circle'}
+                      size={14}
+                      color={hasValue ? '#22C55E' : '#F59E0B'}
+                    />
+                    <Text style={kmp.metricName}>{metricLabels[key] || key}</Text>
+                  </View>
+                  <View style={kmp.metricRight}>
+                    <Text style={[kmp.metricValue, !hasValue && { color: COLORS.textMuted }]}>
+                      {m.formatted ?? (m.na_reason ? `N/A (${m.na_reason.replace(/_/g, ' ')})` : 'N/A')}
+                    </Text>
+                    <Ionicons name={isExpanded ? 'chevron-up' : 'chevron-down'} size={12} color={COLORS.textMuted} />
+                  </View>
+                </TouchableOpacity>
+                {isExpanded && renderDetails(key, m)}
+              </View>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
+const kmp = StyleSheet.create({
+  inputRow: { flexDirection: 'row', gap: 8, marginBottom: 10 },
+  input: {
+    flex: 1, fontSize: 13, color: COLORS.text, backgroundColor: COLORS.background,
+    borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 12, paddingVertical: 8,
+  },
+  runBtn: {
+    backgroundColor: COLORS.primary, borderRadius: 8, paddingHorizontal: 14, paddingVertical: 8,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  runBtnText: { color: '#fff', fontSize: 12, fontWeight: '700' },
+
+  errorBox: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#EF444414', borderRadius: 6, padding: 8, marginBottom: 8, borderWidth: 1, borderColor: '#EF444433' },
+  errorText: { fontSize: 11, color: '#EF4444', flex: 1 },
+
+  results: { marginTop: 4 },
+  metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  metaText: { fontSize: 10, color: COLORS.textMuted },
+
+  metricCard: { backgroundColor: COLORS.background, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border, marginBottom: 6, overflow: 'hidden' },
+  metricHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 10 },
+  metricLeft: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  metricRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  metricName: { fontSize: 12, fontWeight: '600', color: COLORS.text },
+  metricValue: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+
+  detailBox: { paddingHorizontal: 10, paddingBottom: 10, borderTopWidth: 1, borderTopColor: COLORS.border + '55' },
+  detailRow: { fontSize: 10, color: COLORS.text, marginTop: 4 },
+  detailKey: { fontWeight: '600', color: COLORS.textMuted },
+  detailVal: { color: COLORS.text },
+});
 
 // ─── Benchmark Medians Card ──────────────────────────────────────────────────
 
