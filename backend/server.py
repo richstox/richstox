@@ -4002,17 +4002,20 @@ async def get_ticker_detail_mobile(
             ttm_ebitda = sum(ebitdas[:4])
 
     # Calculate TTM FCF from quarterly cash flow fields
-    # Requires all 4 quarters to have non-null OCF (matching revenue/net_income/EBITDA pattern).
-    # Null CapEx is treated as 0 (capex-light companies may not report it).
+    # Requires all 4 quarters to have BOTH operating_cash_flow AND capital_expenditures non-null.
+    # Null values are never coerced to zero — a missing value makes that quarter non-computable.
     ttm_fcf = None
     if len(_quarterly_rows) >= 4:
         _top4 = _quarterly_rows[:4]
-        ocfs = [_sf(q.get("operating_cash_flow")) for q in _top4 if _sf(q.get("operating_cash_flow")) is not None]
-        if len(ocfs) >= 4:
+        all_computable = all(
+            _sf(q.get("operating_cash_flow")) is not None and _sf(q.get("capital_expenditures")) is not None
+            for q in _top4
+        )
+        if all_computable:
             fcfs = []
             for q in _top4:
                 ocf = _sf(q.get("operating_cash_flow"))
-                capex = abs(_sf(q.get("capital_expenditures")) or 0)
+                capex = abs(_sf(q.get("capital_expenditures")))
                 fcfs.append(ocf - capex)
             ttm_fcf = sum(fcfs)
 

@@ -220,13 +220,16 @@ def compute_key_metrics(shares_outstanding, current_price, quarterly_rows,
         if len(ebitdas) >= 4:
             ttm_ebitda = sum(ebitdas[:4])
 
-        # FCF — require all 4 OCF values to be non-null
-        ocfs = [_sf(q.get("operating_cash_flow")) for q in top4 if _sf(q.get("operating_cash_flow")) is not None]
-        if len(ocfs) >= 4:
+        # FCF — require all 4 quarters to have BOTH OCF and CapEx non-null
+        all_computable = all(
+            _sf(q.get("operating_cash_flow")) is not None and _sf(q.get("capital_expenditures")) is not None
+            for q in top4
+        )
+        if all_computable:
             fcfs = []
             for q in top4:
                 ocf = _sf(q.get("operating_cash_flow"))
-                capex = abs(_sf(q.get("capital_expenditures")) or 0)
+                capex = abs(_sf(q.get("capital_expenditures")))
                 fcfs.append(ocf - capex)
             ttm_fcf = sum(fcfs)
 
@@ -851,3 +854,179 @@ class TestDividendYieldTTM:
         assert r["dividend_yield_ttm"] is not None
         assert abs(r["dividend_yield_ttm"] - expected) < 0.0001
         assert r["dividend_yield_na"] is None
+
+
+class TestFCFYieldNullHandling:
+    """Regression tests for FCF Yield null-handling.
+
+    Verifies that:
+    - Both operating_cash_flow AND capital_expenditures must be non-null per quarter
+    - Null values are never coerced to zero
+    - Explicit zero is treated as a valid value (not missing)
+    - Fewer than 4 quarterly rows → null/not computable
+    """
+
+    def test_4_valid_quarters(self):
+        """All 4 quarters have both OCF and CapEx → correct FCF Yield."""
+        shares = 1e10
+        price = 150.0
+        r = compute_key_metrics(
+            shares_outstanding=shares,
+            current_price=price,
+            quarterly_rows=ACME_QUARTERLY,
+            annual_rows=ACME_ANNUAL,
+        )
+        fcf_q = [
+            1.2e9 - 2e8,
+            1.1e9 - 1.8e8,
+            1.0e9 - 1.5e8,
+            1.05e9 - 1.7e8,
+        ]
+        expected_fcf = sum(fcf_q)
+        expected_yield = (expected_fcf / (shares * price)) * 100
+        assert r["ttm_fcf"] is not None
+        assert r["fcf_yield"] is not None
+        assert abs(r["fcf_yield"] - expected_yield) < 0.01
+
+    def test_1_quarter_missing_ocf(self):
+        """1 quarter missing OCF → null FCF Yield."""
+        rows = _make_quarterly_rows("MOCF.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 1.2e9, "capital_expenditures": -2e8,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "capital_expenditures": -1.8e8,  # OCF missing
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "operating_cash_flow": 1.0e9, "capital_expenditures": -1.5e8,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "operating_cash_flow": 1.05e9, "capital_expenditures": -1.7e8,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        assert r["ttm_fcf"] is None
+        assert r["fcf_yield"] is None
+
+    def test_1_quarter_missing_capex(self):
+        """1 quarter missing CapEx → null FCF Yield."""
+        rows = _make_quarterly_rows("MCAP.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 1.2e9, "capital_expenditures": -2e8,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "operating_cash_flow": 1.1e9,  # CapEx missing
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "operating_cash_flow": 1.0e9, "capital_expenditures": -1.5e8,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "operating_cash_flow": 1.05e9, "capital_expenditures": -1.7e8,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        assert r["ttm_fcf"] is None
+        assert r["fcf_yield"] is None
+
+    def test_fewer_than_4_rows(self):
+        """Fewer than 4 quarterly rows → null FCF Yield."""
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=ACME_QUARTERLY[:3], annual_rows=ACME_ANNUAL,
+        )
+        assert r["ttm_fcf"] is None
+        assert r["fcf_yield"] is None
+
+    def test_explicit_zero_ocf_with_valid_capex(self):
+        """OCF = 0 (explicit) with valid CapEx → computable quarter, not missing."""
+        rows = _make_quarterly_rows("ZOCF.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 0, "capital_expenditures": -2e8,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "operating_cash_flow": 1.1e9, "capital_expenditures": -1.8e8,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "operating_cash_flow": 1.0e9, "capital_expenditures": -1.5e8,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "operating_cash_flow": 1.05e9, "capital_expenditures": -1.7e8,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        shares = 1e10
+        price = 100.0
+        r = compute_key_metrics(
+            shares_outstanding=shares, current_price=price,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        # OCF=0 is valid → FCF for Q1 = 0 - 2e8 = -2e8
+        fcf_q = [0 - 2e8, 1.1e9 - 1.8e8, 1.0e9 - 1.5e8, 1.05e9 - 1.7e8]
+        expected_fcf = sum(fcf_q)
+        expected_yield = (expected_fcf / (shares * price)) * 100
+        assert r["ttm_fcf"] is not None
+        assert r["fcf_yield"] is not None
+        assert abs(r["fcf_yield"] - expected_yield) < 0.01
+
+    def test_explicit_zero_capex_with_valid_ocf(self):
+        """CapEx = 0 (explicit) with valid OCF → computable quarter, not missing."""
+        rows = _make_quarterly_rows("ZCAP.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "operating_cash_flow": 1.2e9, "capital_expenditures": 0,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "operating_cash_flow": 1.1e9, "capital_expenditures": -1.8e8,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "operating_cash_flow": 1.0e9, "capital_expenditures": -1.5e8,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "operating_cash_flow": 1.05e9, "capital_expenditures": -1.7e8,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        shares = 1e10
+        price = 100.0
+        r = compute_key_metrics(
+            shares_outstanding=shares, current_price=price,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        # CapEx=0 is valid → FCF for Q1 = 1.2e9 - 0 = 1.2e9
+        fcf_q = [1.2e9 - 0, 1.1e9 - 1.8e8, 1.0e9 - 1.5e8, 1.05e9 - 1.7e8]
+        expected_fcf = sum(fcf_q)
+        expected_yield = (expected_fcf / (shares * price)) * 100
+        assert r["ttm_fcf"] is not None
+        assert r["fcf_yield"] is not None
+        assert abs(r["fcf_yield"] - expected_yield) < 0.01
+
+    def test_no_or_zero_coercion_in_fcf_path(self):
+        """Assert that no `or 0` null-coercion remains in the FCF computation paths."""
+        import inspect
+
+        # Check server.py FCF block
+        src_server = open("/home/runner/work/richstox/richstox/backend/server.py").read()
+        fcf_start = src_server.find("# Calculate TTM FCF from quarterly cash flow fields")
+        fcf_end = src_server.find("# Get Cash and Debt from latest quarterly balance sheet row")
+        assert fcf_start != -1 and fcf_end != -1
+        fcf_block = src_server[fcf_start:fcf_end]
+        assert "or 0" not in fcf_block, f"Found 'or 0' in server.py FCF block"
+
+        # Check key_metrics_proof.py FCF block
+        src_proof = open("/home/runner/work/richstox/richstox/backend/key_metrics_proof.py").read()
+        fcf_start_p = src_proof.find("# 4. FCF Yield")
+        fcf_end_p = src_proof.find("# 5. Net Debt / EBITDA")
+        assert fcf_start_p != -1 and fcf_end_p != -1
+        fcf_block_p = src_proof[fcf_start_p:fcf_end_p]
+        assert "or 0" not in fcf_block_p, f"Found 'or 0' in proof FCF block"
+
+        # Check test helper FCF block
+        src_test = inspect.getsource(compute_key_metrics)
+        fcf_idx = src_test.find("# FCF")
+        dividend_idx = src_test.find("# Dividend")
+        assert fcf_idx != -1 and dividend_idx != -1
+        fcf_block_t = src_test[fcf_idx:dividend_idx]
+        assert "or 0" not in fcf_block_t, f"Found 'or 0' in test helper FCF block"

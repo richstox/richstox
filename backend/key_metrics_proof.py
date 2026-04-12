@@ -168,31 +168,32 @@ def compute_proof(
     capex_per_q: List[Optional[float]] = []
     fcf_per_q: List[Optional[float]] = []
 
+    quarter_computable: List[bool] = []
+
     if len(_top4) >= 4:
-        ocfs_valid = [_sf(q.get("operating_cash_flow")) for q in _top4 if _sf(q.get("operating_cash_flow")) is not None]
-        if len(ocfs_valid) >= 4:
-            for q in _top4:
-                raw_ocf = _sf(q.get("operating_cash_flow"))
-                raw_capex = _sf(q.get("capital_expenditures"))
-                ocf = raw_ocf
-                capex = abs(raw_capex or 0)
-                ocf_per_q.append(raw_ocf)
-                capex_per_q.append(raw_capex)
-                fcf_per_q.append(ocf - capex)
+        for q in _top4:
+            raw_ocf = _sf(q.get("operating_cash_flow"))
+            raw_capex = _sf(q.get("capital_expenditures"))
+            ocf_per_q.append(raw_ocf)
+            capex_per_q.append(raw_capex)
+            computable = raw_ocf is not None and raw_capex is not None
+            quarter_computable.append(computable)
+            if computable:
+                fcf_per_q.append(raw_ocf - abs(raw_capex))
+            else:
+                fcf_per_q.append(None)
+        if all(quarter_computable):
             ttm_fcf = sum(fcf_per_q)
-        else:
-            # Partial OCF data — expose raw values but don't compute TTM
-            for q in _top4:
-                ocf_per_q.append(_sf(q.get("operating_cash_flow")))
-                capex_per_q.append(_sf(q.get("capital_expenditures")))
 
     fcf_yield: Optional[float] = None
-    fcf_na = "missing_data"
-    if ttm_fcf is not None and market_cap and market_cap > 0:
+    fcf_na = "not_reported"
+    if len(_top4) < 4:
+        fcf_na = "not_reported"
+    elif not all(quarter_computable):
+        fcf_na = "not_reported"
+    elif ttm_fcf is not None and market_cap and market_cap > 0:
         fcf_yield = (ttm_fcf / market_cap) * 100
         fcf_na = None
-    elif ttm_fcf is not None and ttm_fcf < 0:
-        fcf_na = "negative_fcf"
 
     proof["fcf_yield"] = {
         "value": fcf_yield,
@@ -201,10 +202,11 @@ def compute_proof(
         "quarter_dates_used": quarter_dates_used,
         "operating_cash_flow_per_quarter": ocf_per_q,
         "capital_expenditures_per_quarter": capex_per_q,
+        "quarter_computable": quarter_computable,
         "fcf_per_quarter": fcf_per_q,
         "ttm_fcf": ttm_fcf,
         "market_cap_used": market_cap,
-        "formula": "(ttm_fcf / market_cap) * 100  where fcf_q = ocf - abs(capex)",
+        "formula": "(ttm_fcf / market_cap) * 100  where fcf_q = ocf - abs(capex); requires both non-null per quarter",
         "source": "company_financials (quarterly, last 4)",
     }
 
