@@ -271,16 +271,17 @@ def compute_key_metrics(shares_outstanding, current_price, quarterly_rows,
             revenue_growth_3y = round(((end_rev / start_rev) ** (1 / 3) - 1) * 100, 1)
 
     # Dividend Yield (TTM) — from quarterly dividends_paid / market_cap
+    # Uses up to 4 most recent quarterly rows; does NOT assume payment frequency.
     dividend_yield_ttm = None
     dividend_yield_na = None
-    if len(quarterly_rows) >= 4:
-        top4 = quarterly_rows[:4]
-        div_vals = [_sf(q.get("dividends_paid")) for q in top4]
+    div_window = quarterly_rows[:4]  # up to 4 most recent quarters
+    if div_window:
+        div_vals = [_sf(q.get("dividends_paid")) for q in div_window]
         if all(v is None for v in div_vals):
             dividend_yield_ttm = None
             dividend_yield_na = "not_reported"
         else:
-            dividends_ttm = sum(abs(v) if v is not None else 0.0 for v in div_vals)
+            dividends_ttm = sum(abs(v) for v in div_vals if v is not None)
             if dividends_ttm == 0.0:
                 dividend_yield_ttm = 0.0
                 dividend_yield_na = "no_dividend"
@@ -542,8 +543,8 @@ class TestDividendYieldTTM:
         assert r["dividend_yield_ttm"] is None
         assert r["dividend_yield_na"] == "not_reported"
 
-    def test_missing_dividends_fewer_than_4_rows(self):
-        """Case 2b: Fewer than 4 quarterly rows → not_reported."""
+    def test_missing_dividends_fewer_than_4_rows_all_null(self):
+        """Fewer than 4 quarterly rows, all with null dividends_paid → not_reported."""
         r = compute_key_metrics(
             shares_outstanding=1e10,
             current_price=100.0,
@@ -631,3 +632,143 @@ class TestDividendYieldTTM:
         )
         assert r["dividend_yield_ttm"] is None
         assert r["dividend_yield_na"] == "missing_inputs"
+
+    def test_semiannual_payer_2_nonzero_2_zero(self):
+        """Semiannual payer: 2 non-zero + 2 zero quarters → computes yield (NOT N/A)."""
+        rows = _make_quarterly_rows("SEMI.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        rows[0]["dividends_paid"] = -5e7   # paid in Q4
+        rows[1]["dividends_paid"] = 0       # no payment in Q3
+        rows[2]["dividends_paid"] = -5e7   # paid in Q2
+        rows[3]["dividends_paid"] = 0       # no payment in Q1
+
+        shares = 1e10
+        price = 100.0
+        r = compute_key_metrics(
+            shares_outstanding=shares,
+            current_price=price,
+            quarterly_rows=rows,
+            annual_rows=[],
+        )
+        dividends_ttm = 5e7 + 5e7  # 1e8
+        market_cap = shares * price
+        expected = (dividends_ttm / market_cap) * 100
+        assert r["dividend_yield_ttm"] is not None
+        assert abs(r["dividend_yield_ttm"] - expected) < 0.0001
+        assert r["dividend_yield_na"] is None
+
+    def test_annual_payer_1_nonzero_3_zero(self):
+        """Annual payer: 1 non-zero + 3 zero quarters → computes yield (NOT N/A)."""
+        rows = _make_quarterly_rows("ANNUAL.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        rows[0]["dividends_paid"] = -2e8   # annual payment
+        rows[1]["dividends_paid"] = 0
+        rows[2]["dividends_paid"] = 0
+        rows[3]["dividends_paid"] = 0
+
+        shares = 1e10
+        price = 100.0
+        r = compute_key_metrics(
+            shares_outstanding=shares,
+            current_price=price,
+            quarterly_rows=rows,
+            annual_rows=[],
+        )
+        dividends_ttm = 2e8
+        market_cap = shares * price
+        expected = (dividends_ttm / market_cap) * 100
+        assert r["dividend_yield_ttm"] is not None
+        assert abs(r["dividend_yield_ttm"] - expected) < 0.0001
+        assert r["dividend_yield_na"] is None
+
+    def test_3_payments_1_explicit_zero(self):
+        """3 non-zero + 1 explicit zero → computes yield (NOT N/A)."""
+        rows = _make_quarterly_rows("THREE.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        rows[0]["dividends_paid"] = -1e8
+        rows[1]["dividends_paid"] = -9e7
+        rows[2]["dividends_paid"] = -8e7
+        rows[3]["dividends_paid"] = 0       # explicit zero in one quarter
+
+        shares = 1e10
+        price = 100.0
+        r = compute_key_metrics(
+            shares_outstanding=shares,
+            current_price=price,
+            quarterly_rows=rows,
+            annual_rows=[],
+        )
+        dividends_ttm = 1e8 + 9e7 + 8e7  # 2.7e8
+        market_cap = shares * price
+        expected = (dividends_ttm / market_cap) * 100
+        assert r["dividend_yield_ttm"] is not None
+        assert abs(r["dividend_yield_ttm"] - expected) < 0.0001
+        assert r["dividend_yield_na"] is None
+
+    def test_no_quarterly_rows(self):
+        """No quarterly rows at all → not_reported."""
+        r = compute_key_metrics(
+            shares_outstanding=1e10,
+            current_price=100.0,
+            quarterly_rows=[],
+            annual_rows=ACME_ANNUAL,
+        )
+        assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "not_reported"
+
+    def test_mixed_null_and_nonzero(self):
+        """Some quarters have null dividends_paid, some have values → computes yield.
+        This handles companies where only some quarters report dividends_paid."""
+        rows = _make_quarterly_rows("MIX.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9,
+             "ebitda": 1.35e9, "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        rows[0]["dividends_paid"] = -1e8   # reported
+        rows[1]["dividends_paid"] = None    # not reported
+        rows[2]["dividends_paid"] = -5e7   # reported
+        rows[3]["dividends_paid"] = None    # not reported
+
+        shares = 1e10
+        price = 100.0
+        r = compute_key_metrics(
+            shares_outstanding=shares,
+            current_price=price,
+            quarterly_rows=rows,
+            annual_rows=[],
+        )
+        dividends_ttm = 1e8 + 5e7  # 1.5e8
+        market_cap = shares * price
+        expected = (dividends_ttm / market_cap) * 100
+        assert r["dividend_yield_ttm"] is not None
+        assert abs(r["dividend_yield_ttm"] - expected) < 0.0001
+        assert r["dividend_yield_na"] is None

@@ -367,9 +367,11 @@ class TestDividendYieldProof:
             annual_rows=ACME_ANNUAL,
         )
         result = proof["dividend_yield_ttm"]
-        assert result["source"] == "company_financials (quarterly, last 4 by period_date desc)"
+        assert result["source"] == "company_financials (quarterly, trailing 12-month window)"
         assert "formula" in result
         assert "forward_dividend_yield" not in str(result.get("source", ""))
+        assert "note" in result
+        assert "payment frequency is not assumed" in result["note"]
 
     def test_quarterly_dividends_paid_exposed(self):
         """quarterly dividends_paid must be exposed for audit transparency."""
@@ -431,18 +433,84 @@ class TestDividendYieldProof:
         assert result["value"] is None
         assert result["na_reason"] == "missing_inputs"
 
-    def test_fewer_than_4_quarters(self):
-        """Fewer than 4 quarterly rows → not_reported."""
+    def test_fewer_than_4_quarters_with_dividends(self):
+        """Fewer than 4 quarterly rows but with dividends → computes yield (NOT not_reported).
+        Supports annual/irregular payers who may only have 1-3 quarters of data."""
+        shares = 1e10
+        price = 150.0
+        rows = ACME_QUARTERLY[:3]  # 3 rows with dividends_paid: -1e8, -9e7, -8e7
+        proof = compute_proof(
+            shares_outstanding=shares,
+            current_price=price,
+            price_date="2025-10-01",
+            quarterly_rows=rows,
+            annual_rows=ACME_ANNUAL,
+        )
+        result = proof["dividend_yield_ttm"]
+        dividends_ttm = abs(-1e8) + abs(-9e7) + abs(-8e7)  # 2.7e8
+        market_cap = shares * price
+        expected = (dividends_ttm / market_cap) * 100
+        assert result["value"] is not None
+        assert abs(result["value"] - expected) < 0.0001
+        assert result["na_reason"] is None
+
+    def test_fewer_than_4_quarters_all_null(self):
+        """Fewer than 4 quarterly rows, all null dividends_paid → not_reported."""
+        rows = [dict(q) for q in ACME_QUARTERLY[:2]]
+        for r in rows:
+            r["dividends_paid"] = None
         proof = compute_proof(
             shares_outstanding=1e10,
             current_price=150.0,
             price_date="2025-10-01",
-            quarterly_rows=ACME_QUARTERLY[:3],
+            quarterly_rows=rows,
             annual_rows=ACME_ANNUAL,
         )
         result = proof["dividend_yield_ttm"]
         assert result["value"] is None
         assert result["na_reason"] == "not_reported"
+
+    def test_no_quarterly_rows(self):
+        """No quarterly rows → not_reported."""
+        proof = compute_proof(
+            shares_outstanding=1e10,
+            current_price=150.0,
+            price_date="2025-10-01",
+            quarterly_rows=[],
+            annual_rows=ACME_ANNUAL,
+        )
+        result = proof["dividend_yield_ttm"]
+        assert result["value"] is None
+        assert result["na_reason"] == "not_reported"
+
+    def test_annual_payer_1_payment_3_zeros(self):
+        """Annual payer: 1 non-zero + 3 zero quarters → valid yield.
+        Concrete proof: fewer than 4 payments still produces valid TTM yield."""
+        rows = [dict(q) for q in ACME_QUARTERLY[:4]]
+        rows[0]["dividends_paid"] = -2e8   # annual payment
+        rows[1]["dividends_paid"] = 0
+        rows[2]["dividends_paid"] = 0
+        rows[3]["dividends_paid"] = 0
+
+        shares = 1e10
+        price = 150.0
+        proof = compute_proof(
+            shares_outstanding=shares,
+            current_price=price,
+            price_date="2025-10-01",
+            quarterly_rows=rows,
+            annual_rows=ACME_ANNUAL,
+        )
+        result = proof["dividend_yield_ttm"]
+        dividends_ttm = 2e8
+        market_cap = shares * price
+        expected = (dividends_ttm / market_cap) * 100
+        assert result["value"] is not None
+        assert abs(result["value"] - expected) < 0.0001
+        assert result["na_reason"] is None
+        # Verify proof fields
+        assert result["quarterly_dividends_paid"] == [-2e8, 0, 0, 0]
+        assert result["dividends_ttm"] == 2e8
 
 
 class TestProofMatchesServerLogic:

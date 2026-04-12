@@ -4043,18 +4043,19 @@ async def get_ticker_detail_mobile(
         net_debt = ttm_debt - ttm_cash
         net_debt_ebitda = net_debt / ebitda_ttm
 
-    # Dividend Yield (TTM) — computed from last 4 quarterly dividends_paid
+    # Dividend Yield (TTM) — computed from trailing quarterly dividends_paid
+    # Uses up to 4 most recent quarterly rows; does NOT assume payment frequency.
     dividend_yield_ttm = None
     dividend_yield_na = None
-    if len(_quarterly_rows) >= 4:
-        _div_top4 = _quarterly_rows[:4]
-        _div_vals = [_sf(q.get("dividends_paid")) for q in _div_top4]
+    _div_window = _quarterly_rows[:4]  # up to 4 most recent quarters
+    if _div_window:
+        _div_vals = [_sf(q.get("dividends_paid")) for q in _div_window]
         if all(v is None for v in _div_vals):
-            # All 4 quarters have null dividends_paid
+            # All included quarters have null dividends_paid
             dividend_yield_ttm = None
             dividend_yield_na = "not_reported"
         else:
-            dividends_ttm = sum(abs(v) if v is not None else 0.0 for v in _div_vals)
+            dividends_ttm = sum(abs(v) for v in _div_vals if v is not None)
             if dividends_ttm == 0.0:
                 dividend_yield_ttm = 0.0
                 dividend_yield_na = "no_dividend"
@@ -4064,7 +4065,7 @@ async def get_ticker_detail_mobile(
                 dividend_yield_ttm = None
                 dividend_yield_na = "missing_inputs"
     else:
-        # Fewer than 4 quarterly rows
+        # No quarterly rows at all
         dividend_yield_ttm = None
         dividend_yield_na = "not_reported"
 

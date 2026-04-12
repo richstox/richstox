@@ -296,24 +296,30 @@ def compute_proof(
 
     # ------------------------------------------------------------------
     # 7. Dividend Yield (TTM) — from quarterly dividends_paid / market_cap
+    #    Uses up to 4 most recent quarterly rows; does NOT assume payment
+    #    frequency. Annual, semiannual, and irregular payers are handled.
     # ------------------------------------------------------------------
     dividend_yield_ttm: Optional[float] = None
     div_na: Optional[str] = None
 
+    # Use up to 4 most recent quarterly rows (not just _top4 which gates on >=4)
+    _div_window = quarterly_rows[:4]
+    div_quarter_dates = [q.get("period_date") for q in _div_window]
+
     # Gather per-quarter dividends_paid values
     dividends_paid_per_q: List[Optional[float]] = []
-    for q in _top4:
+    for q in _div_window:
         dividends_paid_per_q.append(_sf(q.get("dividends_paid")))
 
     dividends_ttm: Optional[float] = None
 
-    if len(_top4) >= 4:
+    if _div_window:
         if all(v is None for v in dividends_paid_per_q):
-            # All 4 quarters have null dividends_paid
+            # All included quarters have null dividends_paid
             dividend_yield_ttm = None
             div_na = "not_reported"
         else:
-            dividends_ttm = sum(abs(v) if v is not None else 0.0 for v in dividends_paid_per_q)
+            dividends_ttm = sum(abs(v) for v in dividends_paid_per_q if v is not None)
             if dividends_ttm == 0.0:
                 dividend_yield_ttm = 0.0
                 div_na = "no_dividend"
@@ -323,7 +329,7 @@ def compute_proof(
                 dividend_yield_ttm = None
                 div_na = "missing_inputs"
     else:
-        # Fewer than 4 quarterly rows
+        # No quarterly rows at all
         dividend_yield_ttm = None
         div_na = "not_reported"
 
@@ -331,12 +337,13 @@ def compute_proof(
         "value": dividend_yield_ttm,
         "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
         "na_reason": div_na,
-        "source": "company_financials (quarterly, last 4 by period_date desc)",
+        "source": "company_financials (quarterly, trailing 12-month window)",
         "quarterly_dividends_paid": dividends_paid_per_q,
         "dividends_ttm": dividends_ttm,
         "market_cap_used": market_cap,
-        "quarter_dates_used": quarter_dates_used,
-        "formula": "(sum(abs(dividends_paid)) over last 4 quarters / market_cap) * 100",
+        "quarter_dates_used": div_quarter_dates,
+        "formula": "(dividends_ttm / market_cap) * 100",
+        "note": "TTM window is based on trailing 12 months of reported quarterly financials; payment frequency is not assumed.",
     }
 
     return proof
