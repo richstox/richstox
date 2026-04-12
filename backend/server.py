@@ -4044,11 +4044,11 @@ async def get_ticker_detail_mobile(
         net_debt_ebitda = net_debt / ebitda_ttm
 
     # Dividend Yield (TTM) — computed from trailing quarterly dividends_paid
-    # Uses up to 4 most recent quarterly rows; does NOT assume payment frequency.
+    # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
     dividend_yield_ttm = None
     dividend_yield_na = None
-    _div_window = _quarterly_rows[:4]  # up to 4 most recent quarters
-    if _div_window:
+    _div_window = _quarterly_rows[:4]  # latest 4 quarterly reporting periods
+    if len(_div_window) >= 4:
         _div_vals = [_sf(q.get("dividends_paid")) for q in _div_window]
         if all(v is None for v in _div_vals):
             # All included quarters have null dividends_paid
@@ -4065,7 +4065,7 @@ async def get_ticker_detail_mobile(
                 dividend_yield_ttm = None
                 dividend_yield_na = "missing_inputs"
     else:
-        # No quarterly rows at all
+        # Fewer than 4 quarterly rows — TTM window not fully covered
         dividend_yield_ttm = None
         dividend_yield_na = "not_reported"
 

@@ -271,11 +271,11 @@ def compute_key_metrics(shares_outstanding, current_price, quarterly_rows,
             revenue_growth_3y = round(((end_rev / start_rev) ** (1 / 3) - 1) * 100, 1)
 
     # Dividend Yield (TTM) — from quarterly dividends_paid / market_cap
-    # Uses up to 4 most recent quarterly rows; does NOT assume payment frequency.
+    # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
     dividend_yield_ttm = None
     dividend_yield_na = None
-    div_window = quarterly_rows[:4]  # up to 4 most recent quarters
-    if div_window:
+    div_window = quarterly_rows[:4]  # latest 4 quarterly reporting periods
+    if len(div_window) >= 4:
         div_vals = [_sf(q.get("dividends_paid")) for q in div_window]
         if all(v is None for v in div_vals):
             dividend_yield_ttm = None
@@ -736,6 +736,51 @@ class TestDividendYieldTTM:
             current_price=100.0,
             quarterly_rows=[],
             annual_rows=ACME_ANNUAL,
+        )
+        assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "not_reported"
+
+    def test_only_2_quarterly_rows(self):
+        """Only 2 quarterly rows (even with dividends) → not_reported.
+        TTM requires 4 quarterly reporting periods for full 12-month coverage."""
+        rows = _make_quarterly_rows("TWO.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+        ])
+        rows[0]["dividends_paid"] = -1e8
+        rows[1]["dividends_paid"] = -9e7
+
+        r = compute_key_metrics(
+            shares_outstanding=1e10,
+            current_price=100.0,
+            quarterly_rows=rows,
+            annual_rows=[],
+        )
+        assert r["dividend_yield_ttm"] is None
+        assert r["dividend_yield_na"] == "not_reported"
+
+    def test_only_3_quarterly_rows(self):
+        """Only 3 quarterly rows (even with dividends) → not_reported.
+        TTM requires 4 quarterly reporting periods for full 12-month coverage."""
+        rows = _make_quarterly_rows("THREE_Q.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9,
+             "ebitda": 1.5e9, "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "ebitda": 1.4e9, "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9,
+             "ebitda": 1.3e9, "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+        ])
+        rows[0]["dividends_paid"] = -1e8
+        rows[1]["dividends_paid"] = -9e7
+        rows[2]["dividends_paid"] = -8e7
+
+        r = compute_key_metrics(
+            shares_outstanding=1e10,
+            current_price=100.0,
+            quarterly_rows=rows,
+            annual_rows=[],
         )
         assert r["dividend_yield_ttm"] is None
         assert r["dividend_yield_na"] == "not_reported"

@@ -367,11 +367,12 @@ class TestDividendYieldProof:
             annual_rows=ACME_ANNUAL,
         )
         result = proof["dividend_yield_ttm"]
-        assert result["source"] == "company_financials (quarterly, trailing 12-month window)"
+        assert result["source"] == "company_financials (quarterly, last 4 by period_date desc)"
         assert "formula" in result
         assert "forward_dividend_yield" not in str(result.get("source", ""))
         assert "note" in result
         assert "payment frequency is not assumed" in result["note"]
+        assert "4 quarterly reporting periods" in result["note"]
 
     def test_quarterly_dividends_paid_exposed(self):
         """quarterly dividends_paid must be exposed for audit transparency."""
@@ -434,8 +435,8 @@ class TestDividendYieldProof:
         assert result["na_reason"] == "missing_inputs"
 
     def test_fewer_than_4_quarters_with_dividends(self):
-        """Fewer than 4 quarterly rows but with dividends → computes yield (NOT not_reported).
-        Supports annual/irregular payers who may only have 1-3 quarters of data."""
+        """Fewer than 4 quarterly rows even with dividends → not_reported.
+        TTM requires 4 quarterly reporting periods for full trailing-12-month coverage."""
         shares = 1e10
         price = 150.0
         rows = ACME_QUARTERLY[:3]  # 3 rows with dividends_paid: -1e8, -9e7, -8e7
@@ -447,12 +448,8 @@ class TestDividendYieldProof:
             annual_rows=ACME_ANNUAL,
         )
         result = proof["dividend_yield_ttm"]
-        dividends_ttm = abs(-1e8) + abs(-9e7) + abs(-8e7)  # 2.7e8
-        market_cap = shares * price
-        expected = (dividends_ttm / market_cap) * 100
-        assert result["value"] is not None
-        assert abs(result["value"] - expected) < 0.0001
-        assert result["na_reason"] is None
+        assert result["value"] is None
+        assert result["na_reason"] == "not_reported"
 
     def test_fewer_than_4_quarters_all_null(self):
         """Fewer than 4 quarterly rows, all null dividends_paid → not_reported."""

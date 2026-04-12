@@ -296,13 +296,13 @@ def compute_proof(
 
     # ------------------------------------------------------------------
     # 7. Dividend Yield (TTM) — from quarterly dividends_paid / market_cap
-    #    Uses up to 4 most recent quarterly rows; does NOT assume payment
+    #    Requires 4 quarterly reporting periods; does NOT assume payment
     #    frequency. Annual, semiannual, and irregular payers are handled.
     # ------------------------------------------------------------------
     dividend_yield_ttm: Optional[float] = None
     div_na: Optional[str] = None
 
-    # Use up to 4 most recent quarterly rows (not just _top4 which gates on >=4)
+    # Latest 4 quarterly reporting periods (required for TTM coverage)
     _div_window = quarterly_rows[:4]
     div_quarter_dates = [q.get("period_date") for q in _div_window]
 
@@ -313,7 +313,7 @@ def compute_proof(
 
     dividends_ttm: Optional[float] = None
 
-    if _div_window:
+    if len(_div_window) >= 4:
         if all(v is None for v in dividends_paid_per_q):
             # All included quarters have null dividends_paid
             dividend_yield_ttm = None
@@ -329,7 +329,7 @@ def compute_proof(
                 dividend_yield_ttm = None
                 div_na = "missing_inputs"
     else:
-        # No quarterly rows at all
+        # Fewer than 4 quarterly rows — TTM window not fully covered
         dividend_yield_ttm = None
         div_na = "not_reported"
 
@@ -337,13 +337,13 @@ def compute_proof(
         "value": dividend_yield_ttm,
         "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
         "na_reason": div_na,
-        "source": "company_financials (quarterly, trailing 12-month window)",
+        "source": "company_financials (quarterly, last 4 by period_date desc)",
         "quarterly_dividends_paid": dividends_paid_per_q,
         "dividends_ttm": dividends_ttm,
         "market_cap_used": market_cap,
         "quarter_dates_used": div_quarter_dates,
-        "formula": "(dividends_ttm / market_cap) * 100",
-        "note": "TTM window is based on trailing 12 months of reported quarterly financials; payment frequency is not assumed.",
+        "formula": "Dividend Yield (TTM) (%) = (dividends_ttm / market_cap) * 100",
+        "note": "TTM requires 4 quarterly reporting periods covering the last 12 months; dividend payment frequency is not assumed within that window.",
     }
 
     return proof
