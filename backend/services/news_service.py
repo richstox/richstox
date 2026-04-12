@@ -389,23 +389,31 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     
     logger.info(f"Processing {len(hot_symbols)} hot symbols")
 
-    # Self-healing: detect corrupted state where mappings exist but articles
-    # were wiped (e.g. by a prior orphan-cleanup bug).  Reset sync state so
-    # the next fetch covers the full 7-day window instead of a narrow delta.
-    has_mappings = await db.article_ticker_mapping.find_one({}, {"_id": 1})
-    has_articles = await db.news_articles.find_one({}, {"_id": 1})
-    if has_mappings and not has_articles:
+    # Self-healing: proactively remove dangling mappings (article_ticker_mapping
+    # rows that point to deleted articles).  This cleans up the aftermath of the
+    # orphan-cleanup bug that shipped in PR #258.  Harmless if nothing to clean.
+    dangling_removed = await _cleanup_dangling_mappings(db)
+    if dangling_removed:
+        logger.info(f"Self-healing: removed {dangling_removed} dangling mappings")
+
+    # After cleaning dangling mappings, check whether the hot symbols still
+    # have at least one valid mapping.  If not, the data is corrupt — widen the
+    # fetch window to a full 7-day re-fetch so articles are repopulated.
+    valid_for_hot = await db.article_ticker_mapping.count_documents(
+        {"ticker": {"$in": hot_symbols}}, limit=1
+    )
+
+    global_sync = await db.news_sync_state.find_one({"_id": "global"})
+    if valid_for_hot == 0 and global_sync:
         logger.warning(
-            "Self-healing: article_ticker_mapping has data but news_articles is empty — "
-            "resetting sync state to force full re-fetch"
+            "Self-healing: zero valid mappings for hot symbols after dangling cleanup — "
+            "resetting sync state to force full 7-day re-fetch"
         )
         await db.news_sync_state.delete_one({"_id": "global"})
-        # Remove dangling mappings that point to deleted articles
-        await _cleanup_dangling_mappings(db)
+        global_sync = None  # already deleted, avoid stale read below
 
     # Step 2: Group tickers by last_synced_at for delta sync
     # For simplicity, use global sync date (7 days ago for initial, yesterday for delta)
-    global_sync = await db.news_sync_state.find_one({"_id": "global"})
     if global_sync and global_sync.get("last_synced_at"):
         # Delta sync: from last sync date
         from_date = global_sync["last_synced_at"].strftime("%Y-%m-%d")
