@@ -9152,6 +9152,24 @@ async def admin_delete_user(user_id: str, request: Request):
     return {"status": "deleted", "user_id": user_id, "email": user.get("email")}
 
 
+# ---------------------------------------------------------------------------
+# Admin: Key-Metrics Proof (read-only audit endpoint)
+# ---------------------------------------------------------------------------
+
+@api_router.get("/admin/key-metrics-proof")
+async def admin_key_metrics_proof(ticker: str = Query(..., description="Ticker to audit")):
+    """Return a deterministic proof payload showing every raw input,
+    intermediate value and final result used by the Key Metrics section
+    of ``/api/v1/ticker/{ticker}/detail``.
+
+    Protected by AdminAuthMiddleware (all ``/api/admin/*`` routes).
+    """
+    from key_metrics_proof import generate_key_metrics_proof
+
+    proof = await generate_key_metrics_proof(db, ticker)
+    return proof
+
+
 # Include router
 app.include_router(api_router)
 
