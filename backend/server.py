@@ -202,7 +202,7 @@ async def startup_visibility_guard():
     - QUALITY: sector AND industry present
     - STATUS: is_delisted != true
     """
-    from visibility_rules import get_canonical_sieve_query, VISIBLE_TICKERS_QUERY
+    from visibility_rules import get_canonical_sieve_query, VISIBLE_TICKERS_QUERY, compute_visibility
 
     canonical_count = await db.tracked_tickers.count_documents(get_canonical_sieve_query())
     is_visible_count = await db.tracked_tickers.count_documents(VISIBLE_TICKERS_QUERY)
@@ -213,6 +213,65 @@ async def startup_visibility_guard():
         error_msg = f"🚨 VISIBILITY MISMATCH: canonical_sieve={canonical_count}, is_visible={is_visible_count}, diff={mismatch}"
         logger.error(error_msg)
 
+        # ── Identify exact mismatched tickers (max 50) ──────────────────
+        mismatched_tickers = []
+        MAX_MISMATCH_DETAIL = 50
+        try:
+            canonical_sieve = get_canonical_sieve_query()
+            # Tickers that pass the canonical sieve but are NOT is_visible=True
+            should_be_visible_q = {**canonical_sieve, "is_visible": {"$ne": True}}
+            async for doc in db.tracked_tickers.find(
+                should_be_visible_q,
+                {"ticker": 1, "is_visible": 1, "visibility_failed_reason": 1},
+            ).limit(MAX_MISMATCH_DETAIL):
+                computed_vis, computed_reason = compute_visibility(doc)
+                mismatched_tickers.append({
+                    "ticker": doc.get("ticker"),
+                    "stored_is_visible": doc.get("is_visible"),
+                    "computed_canonical_visible": computed_vis,
+                    "stored_visibility_failed_reason": doc.get("visibility_failed_reason"),
+                    "computed_visibility_failed_reason": computed_reason,
+                    "direction": "should_be_visible",
+                })
+
+            # Tickers that are is_visible=True but do NOT pass canonical sieve
+            remaining = MAX_MISMATCH_DETAIL - len(mismatched_tickers)
+            if remaining > 0:
+                # visible=True but failing at least one sieve gate
+                async for doc in db.tracked_tickers.find(
+                    {"is_visible": True},
+                    {"ticker": 1, "is_visible": 1, "visibility_failed_reason": 1,
+                     "is_seeded": 1, "has_price_data": 1, "sector": 1, "industry": 1,
+                     "shares_outstanding": 1, "financial_currency": 1, "is_delisted": 1,
+                     "status": 1, "price_history_complete": 1},
+                ):
+                    computed_vis, computed_reason = compute_visibility(doc)
+                    if not computed_vis:
+                        mismatched_tickers.append({
+                            "ticker": doc.get("ticker"),
+                            "stored_is_visible": doc.get("is_visible"),
+                            "computed_canonical_visible": computed_vis,
+                            "stored_visibility_failed_reason": doc.get("visibility_failed_reason"),
+                            "computed_visibility_failed_reason": computed_reason,
+                            "direction": "should_NOT_be_visible",
+                        })
+                        if len(mismatched_tickers) >= MAX_MISMATCH_DETAIL:
+                            break
+
+            for entry in mismatched_tickers:
+                logger.error(
+                    f"  MISMATCH TICKER: {entry['ticker']} | "
+                    f"stored_is_visible={entry['stored_is_visible']} | "
+                    f"computed_canonical_visible={entry['computed_canonical_visible']} | "
+                    f"stored_reason={entry['stored_visibility_failed_reason']} | "
+                    f"computed_reason={entry['computed_visibility_failed_reason']} | "
+                    f"direction={entry['direction']}"
+                )
+            logger.error(f"  Total mismatched tickers logged: {len(mismatched_tickers)} (max {MAX_MISMATCH_DETAIL})")
+        except Exception as e:
+            logger.error(f"  Failed to enumerate mismatched tickers: {e}")
+            mismatched_tickers = []
+
         # Log audit failure
         await db.ops_audit_runs.update_one(
             {"audit_type": "visibility_guard"},
@@ -222,6 +281,7 @@ async def startup_visibility_guard():
                 "canonical_count": canonical_count,
                 "is_visible_count": is_visible_count,
                 "mismatch": mismatch,
+                "mismatched_tickers": mismatched_tickers[:MAX_MISMATCH_DETAIL],
                 "timestamp": datetime.now(timezone.utc),
                 "action_required": "Run recompute_visibility_all job from Admin Panel"
             }},
@@ -5481,9 +5541,9 @@ async def admin_run_job_now(
     """
     # Pipeline steps must only be run via the full sequential chain.
     # Note: universe_seed, price_sync, and fundamentals_sync are blocked in their
-    # own dedicated endpoints above. recompute_visibility_all (visibility recompute) is
-    # accessible via this generic endpoint, so it is blocked here.
-    _PIPELINE_STEP_JOBS = {"recompute_visibility_all"}
+    # own dedicated endpoints above. recompute_visibility_all is now allowed
+    # as a standalone admin action to fix visibility mismatches.
+    _PIPELINE_STEP_JOBS: set = set()  # Currently empty — all JOB_RUNNERS are individually runnable
     if job_name in _PIPELINE_STEP_JOBS:
         raise HTTPException(
             status_code=403,
