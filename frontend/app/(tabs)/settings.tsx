@@ -5,7 +5,6 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -14,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { COLORS } from '../_layout';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import AppHeader from '../../components/AppHeader';
 import { useLayoutSpacing } from '../../constants/layout';
 
@@ -22,6 +22,7 @@ const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 export default function Settings() {
   const router = useRouter();
   const { isAdmin } = useAuth();
+  const dialog = useAppDialog();
   const sp = useLayoutSpacing();
   const [portfolioName, setPortfolioName] = useState('');
 
@@ -44,32 +45,25 @@ export default function Settings() {
     }
   };
 
-  const handleResetApp = () => {
-    Alert.alert(
+  const handleResetApp = async () => {
+    const confirmed = await dialog.confirm(
       'Reset App',
       'This will delete all your portfolio data and start fresh. This action cannot be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reset',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const portfolioId = await AsyncStorage.getItem('portfolioId');
-              if (portfolioId) {
-                await axios.delete(`${API_URL}/api/portfolios/${portfolioId}`);
-              }
-              await AsyncStorage.clear();
-              router.replace('/onboarding/step1');
-            } catch (error) {
-              console.error('Error resetting app:', error);
-              await AsyncStorage.clear();
-              router.replace('/onboarding/step1');
-            }
-          },
-        },
-      ]
+      { confirmLabel: 'Reset', confirmStyle: 'destructive' },
     );
+    if (!confirmed) return;
+    try {
+      const portfolioId = await AsyncStorage.getItem('portfolioId');
+      if (portfolioId) {
+        await axios.delete(`${API_URL}/api/portfolios/${portfolioId}`);
+      }
+      await AsyncStorage.clear();
+      router.replace('/onboarding/step1');
+    } catch (error) {
+      console.error('Error resetting app:', error);
+      await AsyncStorage.clear();
+      router.replace('/onboarding/step1');
+    }
   };
 
   return (

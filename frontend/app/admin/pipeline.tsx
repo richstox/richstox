@@ -6,10 +6,11 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, Alert, Linking, Platform, TextInput,
+  RefreshControl, ActivityIndicator, Linking, Platform, TextInput,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import { authenticatedFetch } from '../../utils/api_client';
 import BrandedLoading from '../../components/BrandedLoading';
 
@@ -357,6 +358,7 @@ function extractErrorText(run: any): string | null {
 }
 
 export default function PipelineTab({ sessionToken }: PipelineProps) {
+  const dialog = useAppDialog();
   const [data, setData] = useState<OverviewData | null>(null);
   const [exclusionReport, setExclusionReport] = useState<PipelineExclusionReport | null>(null);
   const [loading, setLoading] = useState(true);
@@ -703,7 +705,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         await Linking.openURL(downloadUrl);
       }
     } catch (e: any) {
-      Alert.alert('Download failed', e?.message || 'Could not open report download');
+      dialog.alert('Download failed', e?.message || 'Could not open report download');
     } finally {
       setDownloadingReport(false);
     }
@@ -723,7 +725,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const handleSchedulerToggle = async () => {
     if (schedulerUpdating) return;
     if (typeof schedulerActive !== 'boolean') {
-      Alert.alert('Scheduler status unavailable', 'Please refresh and try again.');
+      dialog.alert('Scheduler status unavailable', 'Please refresh and try again.');
       return;
     }
     setSchedulerUpdating(true);
@@ -739,9 +741,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         throw new Error(payload?.detail || payload?.message || res.statusText);
       }
       await fetchSnapshotOnce();
-      Alert.alert('Scheduler updated', targetEnabled ? 'Scheduler resumed.' : 'Scheduler paused.');
+      dialog.alert('Scheduler updated', targetEnabled ? 'Scheduler resumed.' : 'Scheduler paused.');
     } catch (e: any) {
-      Alert.alert('Update failed', e?.message || 'Could not update scheduler state');
+      dialog.alert('Update failed', e?.message || 'Could not update scheduler state');
     } finally {
       setSchedulerUpdating(false);
     }
@@ -759,10 +761,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       if (!res.ok) {
         throw new Error(payload?.detail || payload?.message || res.statusText);
       }
-      Alert.alert('Benchmark Update', 'Benchmark update started in background.');
+      dialog.alert('Benchmark Update', 'Benchmark update started in background.');
       await fetchSnapshotOnce();
     } catch (e: any) {
-      Alert.alert('Benchmark Update Failed', e?.message || 'Could not start benchmark update');
+      dialog.alert('Benchmark Update Failed', e?.message || 'Could not start benchmark update');
     } finally {
       setBenchmarkUpdating(false);
     }
@@ -782,10 +784,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
         throw new Error(msg);
       }
-      Alert.alert('Morning Fresh', 'News refresh started in background.');
+      dialog.alert('Morning Fresh', 'News refresh started in background.');
       await fetchSnapshotOnce();
     } catch (e: any) {
-      Alert.alert('Morning Fresh', e?.message || 'Could not start news refresh');
+      dialog.alert('Morning Fresh', e?.message || 'Could not start news refresh');
     } finally {
       setNewsRefreshRunning(false);
     }
@@ -895,9 +897,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         throw new Error(payload?.detail || payload?.message || res.statusText);
       }
       await fetchSnapshotOnce();
-      Alert.alert('Cancel requested', `Job ${jobName} is now marked as cancel_requested.`);
+      dialog.alert('Cancel requested', `Job ${jobName} is now marked as cancel_requested.`);
     } catch (e: any) {
-      Alert.alert('Cancel failed', e?.message || 'Could not request cancellation.');
+      dialog.alert('Cancel failed', e?.message || 'Could not request cancellation.');
     }
   };
 

@@ -21,6 +21,7 @@ import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useSearchStore } from '../../stores/searchStore';
 import BrandedLoading from '../../components/BrandedLoading';
 import { useLayoutSpacing } from '../../constants/layout';
@@ -44,6 +45,7 @@ export default function Search() {
   const params = useLocalSearchParams();
   const inputRef = useRef<TextInput>(null);
   const { sessionToken } = useAuth();
+  const dialog = useAppDialog();
   const { query: storedQuery, results: storedResults, setSearch } = useSearchStore();
   const sp = useLayoutSpacing();
   
@@ -134,7 +136,7 @@ export default function Search() {
       // Revert optimistic update on error
       setWatchlistState(prev => ({ ...prev, [ticker]: isCurrentlyFollowed }));
       console.error('Error toggling watchlist:', error);
-      alert(`Failed to ${isCurrentlyFollowed ? 'unfollow' : 'follow'} ${ticker}. Please try again.`);
+      dialog.alert('Error', `Failed to ${isCurrentlyFollowed ? 'unfollow' : 'follow'} ${ticker}. Please try again.`);
     } finally {
       setToggleLoading(prev => ({ ...prev, [ticker]: false }));
     }
@@ -151,7 +153,7 @@ export default function Search() {
       setWatchlistState(prev => ({ ...prev, [ticker]: false }));
     } catch (error) {
       console.error('Error removing from watchlist:', error);
-      alert(`Failed to remove ${ticker}. Please try again.`);
+      dialog.alert('Error', `Failed to remove ${ticker}. Please try again.`);
     }
   };
 

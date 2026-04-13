@@ -8,7 +8,6 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,11 +16,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { COLORS } from './_layout';
+import { useAppDialog } from '../contexts/AppDialogContext';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function AddPosition() {
   const router = useRouter();
+  const dialog = useAppDialog();
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -70,7 +71,7 @@ export default function AddPosition() {
 
   const handleAddPosition = async () => {
     if (!selectedTicker || !buyDate || !entryPrice || !shares || !thesis.trim()) {
-      Alert.alert('Missing Information', 'Please fill in all fields');
+      dialog.alert('Missing Information', 'Please fill in all fields');
       return;
     }
 
@@ -78,7 +79,7 @@ export default function AddPosition() {
     try {
       const portfolioId = await AsyncStorage.getItem('portfolioId');
       if (!portfolioId) {
-        Alert.alert('Error', 'Portfolio not found');
+        dialog.alert('Error', 'Portfolio not found');
         return;
       }
 
@@ -98,9 +99,9 @@ export default function AddPosition() {
       router.back();
     } catch (error: any) {
       if (error.response?.status === 400) {
-        Alert.alert('Limit Reached', error.response.data.detail);
+        dialog.alert('Limit Reached', error.response.data.detail);
       } else {
-        Alert.alert('Error', 'Failed to add position');
+        dialog.alert('Error', 'Failed to add position');
       }
     } finally {
       setLoading(false);

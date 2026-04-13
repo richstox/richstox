@@ -10,18 +10,19 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import axios from 'axios';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function OnboardingStep3() {
   const router = useRouter();
+  const dialog = useAppDialog();
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
@@ -64,7 +65,7 @@ export default function OnboardingStep3() {
 
   const handleComplete = async () => {
     if (!selectedTicker || !buyDate || !entryPrice || !shares || !thesis.trim()) {
-      Alert.alert('Missing Information', 'Please fill in all fields');
+      dialog.alert('Missing Information', 'Please fill in all fields');
       return;
     }
 
@@ -113,7 +114,7 @@ export default function OnboardingStep3() {
       router.replace('/(tabs)/dashboard');
     } catch (error) {
       console.error('Error completing onboarding:', error);
-      Alert.alert('Error', 'Failed to create portfolio. Please try again.');
+      dialog.alert('Error', 'Failed to create portfolio. Please try again.');
     } finally {
       setLoading(false);
     }

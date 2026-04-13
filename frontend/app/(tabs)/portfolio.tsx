@@ -7,7 +7,6 @@ import {
   RefreshControl,
   TouchableOpacity,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -15,12 +14,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { COLORS } from '../_layout';
+import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
 
 const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export default function Portfolio() {
   const router = useRouter();
+  const dialog = useAppDialog();
   const sp = useLayoutSpacing();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -54,10 +55,9 @@ export default function Portfolio() {
 
   const handleAddPosition = () => {
     if (portfolioData && portfolioData.position_count >= 7) {
-      Alert.alert(
+      dialog.alert(
         'Position Limit Reached',
         'You can have a maximum of 7 positions. Consider consolidating or closing an existing position.',
-        [{ text: 'Understood' }]
       );
       return;
     }
