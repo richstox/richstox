@@ -11,8 +11,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../contexts/AuthContext';
 import AppHeader from '../components/AppHeader';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../utils/config';
 
 // Colors matching admin.tsx
 const COLORS = {

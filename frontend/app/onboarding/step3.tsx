@@ -17,8 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import axios from 'axios';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../../utils/config';
 
 export default function OnboardingStep3() {
   const router = useRouter();

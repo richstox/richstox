@@ -16,8 +16,7 @@ import axios from 'axios';
 import { COLORS } from '../_layout';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../../utils/config';
 
 export default function Portfolio() {
   const router = useRouter();

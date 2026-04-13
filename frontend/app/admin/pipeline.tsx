@@ -13,8 +13,7 @@ import { COLORS } from '../_layout';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import { authenticatedFetch } from '../../utils/api_client';
 import BrandedLoading from '../../components/BrandedLoading';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+import { API_URL } from '../../utils/config';
 
 interface PipelineProps {
   sessionToken: string | null;

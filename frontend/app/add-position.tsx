@@ -17,8 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { COLORS } from './_layout';
 import { useAppDialog } from '../contexts/AppDialogContext';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../utils/config';
 
 export default function AddPosition() {
   const router = useRouter();

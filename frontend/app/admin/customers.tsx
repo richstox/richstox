@@ -11,8 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
 import BrandedLoading from '../../components/BrandedLoading';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+import { API_URL } from '../../utils/config';
 
 interface CustomersProps {
   sessionToken: string | null;

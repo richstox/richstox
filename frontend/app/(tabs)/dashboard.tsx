@@ -21,8 +21,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
 import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../../utils/config';
 
 const COLORS = {
   primary: '#1E3A5F',
