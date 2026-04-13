@@ -23,8 +23,8 @@ import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import BrandedLoading from '../../components/BrandedLoading';
+import { API_URL } from '../../utils/config';
 
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const COLORS = {

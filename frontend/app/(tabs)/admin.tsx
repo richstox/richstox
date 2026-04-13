@@ -18,8 +18,7 @@ import AppHeader from '../../components/AppHeader';
 import BrandedLoading from '../../components/BrandedLoading';
 import PipelineTab from '../admin/pipeline';
 import CustomersTab from '../admin/customers';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+import { API_URL } from '../../utils/config';
 
 type Tab = 'dashboard' | 'pipeline' | 'customers';
 

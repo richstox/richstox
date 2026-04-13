@@ -25,8 +25,7 @@ import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useSearchStore } from '../../stores/searchStore';
 import BrandedLoading from '../../components/BrandedLoading';
 import { useLayoutSpacing } from '../../constants/layout';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../../utils/config';
 
 const COLORS = {
   primary: '#6366F1',

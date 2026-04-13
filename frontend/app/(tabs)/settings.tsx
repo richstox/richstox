@@ -16,8 +16,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import AppHeader from '../../components/AppHeader';
 import { useLayoutSpacing } from '../../constants/layout';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../../utils/config';
 
 export default function Settings() {
   const router = useRouter();

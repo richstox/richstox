@@ -16,7 +16,7 @@
  *    'include'` option on the refresh call is the only requirement here.
  */
 
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+import { API_URL } from './config';
 const SESSION_TOKEN_KEY = 'richstox_session_token';
 const USER_DATA_KEY = 'richstox_user_data';
 

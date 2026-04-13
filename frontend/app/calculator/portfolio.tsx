@@ -15,8 +15,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { COLORS } from '../_layout';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../../utils/config';
 
 interface PortfolioResult {
   target_value: number;

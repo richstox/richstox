@@ -33,8 +33,8 @@ import { useSearchStore } from '../../stores/searchStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
+import { API_URL } from '../../utils/config';
 
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 // Delay before fetching below-the-fold content (talk posts) to prioritize critical data
 const DEFERRED_FETCH_MS = 800;
 

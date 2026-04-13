@@ -13,8 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { LineChart } from 'react-native-gifted-charts';
 import { COLORS } from './_layout';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../utils/config';
 
 export default function TickerDetail() {
   const { ticker } = useLocalSearchParams();

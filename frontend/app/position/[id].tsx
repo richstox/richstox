@@ -16,8 +16,7 @@ import axios from 'axios';
 import { LineChart } from 'react-native-gifted-charts';
 import { COLORS } from '../_layout';
 import { useAppDialog } from '../../contexts/AppDialogContext';
-
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
+import { API_URL } from '../../utils/config';
 
 export default function PositionDetail() {
   const { id } = useLocalSearchParams();

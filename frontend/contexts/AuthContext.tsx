@@ -7,7 +7,7 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 
-const API_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
+import { API_URL } from '../utils/config';
 
 const SESSION_TOKEN_KEY = 'richstox_session_token';
 const USER_DATA_KEY = 'richstox_user_data';
