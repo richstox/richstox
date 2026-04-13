@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "expo start",
-    "build": "npx expo export -p web && node scripts/verify-favicons.js",
+    "build": "npx expo export -p web && node scripts/copy-favicons.js && node scripts/verify-favicons.js",
     "start": "npx serve dist",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
