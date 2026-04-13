@@ -376,7 +376,7 @@ async def calculate_period_stats(db, ticker: str, period: str) -> Dict[str, Any]
     # Calculate Relative Outperformance (ratio-based) for short periods
     # outperformance_pct = (stock_total / sp500_total - 1) * 100
     outperformance_pct = None
-    if profit_pct is not None and benchmark_total_pct is not None and benchmark_total_pct > 0:
+    if profit_pct is not None and benchmark_total_pct is not None:
         # Convert percentages to multipliers: (1 + profit_pct/100) / (1 + benchmark/100) - 1
         stock_multiplier = 1 + (profit_pct / 100)
         bench_multiplier = 1 + (benchmark_total_pct / 100)
