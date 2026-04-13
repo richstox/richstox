@@ -395,6 +395,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [auditLoading, setAuditLoading] = useState(false);
   const [auditResult, setAuditResult] = useState<Record<string, any> | null>(null);
 
+  // ── Recompute Visibility state ──────────────────────────────────────────
+  const [visibilityRunning, setVisibilityRunning] = useState(false);
+  const [visibilityResult, setVisibilityResult] = useState<Record<string, any> | null>(null);
+
   // ── Full pipeline chain run state ─────────────────────────────────────────
   const [chainRunId, setChainRunId] = useState<string | null>(null);
   const [chainStatus, setChainStatus] = useState<string | null>(null);
@@ -814,6 +818,45 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setAuditResult({ error: e.message });
     } finally {
       setAuditLoading(false);
+    }
+  };
+
+  const handleRunVisibilityRecompute = async () => {
+    setVisibilityRunning(true);
+    setVisibilityResult(null);
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/job/recompute_visibility_all/run?wait=true`,
+        { method: 'POST' },
+        sessionToken,
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
+        throw new Error(msg);
+      }
+      const result = payload?.result ?? payload;
+      const stats = result?.stats ?? {};
+      setVisibilityResult({
+        fixed: stats.changed ?? 0,
+        unchanged: (stats.processed ?? 0) - (stats.changed ?? 0),
+        now_visible: stats.now_visible ?? 0,
+        now_invisible: stats.now_invisible ?? 0,
+        errors: stats.errors ?? 0,
+        duration_seconds: result?.duration_seconds,
+        reasons: stats.reasons ?? {},
+      });
+      dialog.alert(
+        'Recompute Visibility',
+        `Done. Fixed: ${stats.changed ?? 0}, Unchanged: ${(stats.processed ?? 0) - (stats.changed ?? 0)}, Errors: ${stats.errors ?? 0}`,
+      );
+      await fetchSnapshotOnce();
+    } catch (e: any) {
+      setVisibilityResult({ error: e.message });
+      dialog.alert('Recompute Visibility Failed', e?.message || 'Could not run visibility recompute');
+    } finally {
+      setVisibilityRunning(false);
     }
   };
 
@@ -2428,6 +2471,60 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         )}
         <Text style={[s.detailValue, { marginTop: 4 }]}>Incremental update of S&P 500 Total Return benchmark (SP500TR.INDX)</Text>
         <Text style={s.apiText}>· https://eodhd.com/api/eod/SP500TR.INDX?api_token=YOUR_API_TOKEN&from={'{DATE}'}&to={'{DATE}'}&fmt=json</Text>
+      </View>
+
+      {/* Recompute Visibility — Data Health action */}
+      <View style={[s.stepCard, { marginTop: 16, borderLeftColor: '#F97316', borderLeftWidth: 3 }]}>
+        <View style={s.stepHeader}>
+          <View style={[s.stepBadge, { backgroundColor: '#F9731622' }]}>
+            <Ionicons name="eye-outline" size={16} color="#F97316" />
+          </View>
+          <View style={s.stepMeta}>
+            <View style={s.stepTitleRow}>
+              <Text style={s.stepTitle}>Recompute Visibility</Text>
+              {visibilityRunning && (
+                <ActivityIndicator size="small" color="#F97316" style={{ marginLeft: 4 }} />
+              )}
+            </View>
+            <Text style={s.stepSchedule}>Fix is_visible mismatches · Data Health</Text>
+          </View>
+          <TouchableOpacity
+            style={[
+              { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: '#F97316' },
+              visibilityRunning && { opacity: 0.5 },
+            ]}
+            onPress={handleRunVisibilityRecompute}
+            disabled={visibilityRunning}
+          >
+            {visibilityRunning
+              ? <ActivityIndicator size="small" color="#fff" />
+              : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
+          </TouchableOpacity>
+        </View>
+        {visibilityRunning ? (
+          <View style={s.runInfo}>
+            <Text style={[s.runValue, { color: '#F97316' }]}>Running… this may take a few minutes</Text>
+          </View>
+        ) : visibilityResult ? (
+          <View style={s.runInfo}>
+            {visibilityResult.error ? (
+              <Text style={[s.runValue, { color: '#EF4444' }]}>Error: {visibilityResult.error}</Text>
+            ) : (
+              <View>
+                <View style={{ flexDirection: 'row', gap: 12, marginBottom: 4 }}>
+                  <Text style={[s.runValue, { color: '#22C55E' }]}>Fixed: {visibilityResult.fixed}</Text>
+                  <Text style={s.runValue}>Unchanged: {visibilityResult.unchanged}</Text>
+                  <Text style={[s.runValue, { color: visibilityResult.errors > 0 ? '#EF4444' : '#9CA3AF' }]}>Errors: {visibilityResult.errors}</Text>
+                </View>
+                <Text style={s.detailValue}>Visible: {visibilityResult.now_visible} · Invisible: {visibilityResult.now_invisible}</Text>
+                {visibilityResult.duration_seconds != null && (
+                  <Text style={s.detailValue}>Duration: {Math.round(visibilityResult.duration_seconds)}s</Text>
+                )}
+              </View>
+            )}
+          </View>
+        ) : null}
+        <Text style={[s.detailValue, { marginTop: 4 }]}>Recompute is_visible for all tickers using the canonical 8-gate sieve. Fixes startup VISIBILITY MISMATCH.</Text>
       </View>
 
       {/* ── All External API Endpoints Reference ── */}
