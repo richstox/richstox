@@ -30,6 +30,7 @@ import { MetricTooltip, TOOLTIP_CONTENT } from '../../components/MetricTooltip';
 import AppHeader from '../../components/AppHeader';
 import BrandedLoading from '../../components/BrandedLoading';
 import { useSearchStore } from '../../stores/searchStore';
+import { useMyStocksStore } from '../../stores/myStocksStore';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
@@ -340,7 +341,7 @@ interface MobileDetailData {
 export default function StockDetail() {
   const { ticker } = useLocalSearchParams();
   const router = useRouter();
-  const { sessionToken } = useAuth();
+  const { sessionToken, isAuthenticated } = useAuth();
   const dialog = useAppDialog();
   const sp = useLayoutSpacing();
   
@@ -429,6 +430,34 @@ export default function StockDetail() {
   const navigateToTicker = useCallback((target: string) => {
     router.replace(`/stock/${target}`);
   }, [router]);
+
+  // MY STOCKS list navigation (same UX as search pager)
+  const { tickers: myStocksTickers, clearTickers: clearMyStocks } = useMyStocksStore();
+  const myStocksIndex = useMemo(
+    () => myStocksTickers.findIndex(t => t === ticker),
+    [myStocksTickers, ticker]
+  );
+  const hasMyStocksNav = !hasSearchNav && myStocksIndex >= 0 && myStocksTickers.length > 1;
+  const prevMyStocksTicker = myStocksIndex > 0 ? myStocksTickers[myStocksIndex - 1] : null;
+  const nextMyStocksTicker = myStocksIndex >= 0 && myStocksIndex < myStocksTickers.length - 1 ? myStocksTickers[myStocksIndex + 1] : null;
+
+  // Unified pager state: search takes priority, then MY STOCKS
+  const hasPagerNav = hasSearchNav || hasMyStocksNav;
+  const pagerPrev = hasSearchNav ? prevTicker : prevMyStocksTicker;
+  const pagerNext = hasSearchNav ? nextTicker : nextMyStocksTicker;
+  const pagerIndex = hasSearchNav ? searchIndex : myStocksIndex;
+  const pagerTotal = hasSearchNav ? searchResults.length : myStocksTickers.length;
+  const pagerLabel = hasSearchNav ? `${pagerIndex + 1} of ${pagerTotal}` : `${pagerIndex + 1} of ${pagerTotal}`;
+  const pagerClear = hasSearchNav ? clearSearch : clearMyStocks;
+
+  // Safe back navigation: fallback when browser history is unavailable (e.g. hard refresh)
+  const safeBack = useCallback(() => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.history.length <= 1) {
+      router.replace(isAuthenticated ? '/(tabs)/dashboard' : '/login');
+    } else {
+      router.back();
+    }
+  }, [router, isAuthenticated]);
 
   // Swipe detection for search result navigation
   const swipeRef = useRef({ startX: 0, startY: 0 });
@@ -1400,12 +1429,12 @@ export default function StockDetail() {
         swipeRef.current = { startX: e.nativeEvent.pageX, startY: e.nativeEvent.pageY };
       }}
       onTouchEnd={(e: any) => {
-        if (!hasSearchNav) return;
+        if (!hasPagerNav) return;
         const dx = e.nativeEvent.pageX - swipeRef.current.startX;
         const dy = e.nativeEvent.pageY - swipeRef.current.startY;
         if (Math.abs(dx) > 80 && Math.abs(dx) > Math.abs(dy) * 2) {
-          if (dx < 0 && nextTicker) navigateToTicker(nextTicker);
-          else if (dx > 0 && prevTicker) navigateToTicker(prevTicker);
+          if (dx < 0 && pagerNext) navigateToTicker(pagerNext);
+          else if (dx > 0 && pagerPrev) navigateToTicker(pagerPrev);
         }
       }}
     >
@@ -1432,43 +1461,43 @@ export default function StockDetail() {
       />
 
       {/* Navigation row below AppHeader */}
-      {hasSearchNav ? (
+      {hasPagerNav ? (
         <View style={styles.searchNavBar}>
           <TouchableOpacity
-            style={[styles.searchNavButton, !prevTicker && styles.searchNavButtonDisabled]}
-            onPress={() => prevTicker && navigateToTicker(prevTicker)}
-            disabled={!prevTicker}
+            style={[styles.searchNavButton, !pagerPrev && styles.searchNavButtonDisabled]}
+            onPress={() => pagerPrev && navigateToTicker(pagerPrev)}
+            disabled={!pagerPrev}
           >
-            <Ionicons name="chevron-back" size={16} color={prevTicker ? COLORS.primary : COLORS.textMuted} />
-            {prevTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{prevTicker}</Text>}
+            <Ionicons name="chevron-back" size={16} color={pagerPrev ? COLORS.primary : COLORS.textMuted} />
+            {pagerPrev && <Text style={styles.searchNavTicker} numberOfLines={1}>{pagerPrev}</Text>}
           </TouchableOpacity>
 
           <View style={styles.searchNavCenter}>
             <Text style={styles.searchNavCounter}>
-              {searchIndex + 1} of {searchResults.length}
+              {pagerLabel}
             </Text>
             <TouchableOpacity
               style={styles.searchNavClose}
-              onPress={clearSearch}
+              onPress={pagerClear}
             >
               <Ionicons name="close" size={16} color={COLORS.textMuted} />
             </TouchableOpacity>
           </View>
 
           <TouchableOpacity
-            style={[styles.searchNavButton, styles.searchNavButtonRight, !nextTicker && styles.searchNavButtonDisabled]}
-            onPress={() => nextTicker && navigateToTicker(nextTicker)}
-            disabled={!nextTicker}
+            style={[styles.searchNavButton, styles.searchNavButtonRight, !pagerNext && styles.searchNavButtonDisabled]}
+            onPress={() => pagerNext && navigateToTicker(pagerNext)}
+            disabled={!pagerNext}
           >
-            {nextTicker && <Text style={styles.searchNavTicker} numberOfLines={1}>{nextTicker}</Text>}
-            <Ionicons name="chevron-forward" size={16} color={nextTicker ? COLORS.primary : COLORS.textMuted} />
+            {pagerNext && <Text style={styles.searchNavTicker} numberOfLines={1}>{pagerNext}</Text>}
+            <Ionicons name="chevron-forward" size={16} color={pagerNext ? COLORS.primary : COLORS.textMuted} />
           </TouchableOpacity>
         </View>
       ) : (
         <View style={styles.searchNavBar}>
           <TouchableOpacity
             style={styles.searchNavButton}
-            onPress={() => router.back()}
+            onPress={safeBack}
             accessibilityLabel="Go back"
             accessibilityRole="button"
           >

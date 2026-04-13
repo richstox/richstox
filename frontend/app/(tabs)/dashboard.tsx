@@ -22,6 +22,7 @@ import AppHeader from '../../components/AppHeader';
 import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
+import { useMyStocksStore } from '../../stores/myStocksStore';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -754,7 +755,10 @@ export default function Dashboard() {
                     
                     <TouchableOpacity
                       style={styles.companyRow}
-                      onPress={() => router.push(`/stock/${stock.ticker}`)}
+                      onPress={() => {
+                        useMyStocksStore.getState().setTickers(filteredStocks.map((s: any) => s.ticker));
+                        router.push(`/stock/${stock.ticker}`);
+                      }}
                     >
                       <View style={styles.companyLeft}>
                         <StockLogo logoUrl={logoUrl} ticker={stock.ticker} color={getCompanyColor(stock.ticker)} />
