@@ -6,7 +6,7 @@
  *
  * 1. Compares sha256 hashes between public/ (source of truth) and dist/.
  * 2. Reads the raw PNG bytes of favicon-16x16.png and favicon-32x32.png to
- *    verify: RGBA colour type, ≥ 20 % fully-transparent pixels, and all
+ *    verify: RGBA color type, ≥ 20 % fully-transparent pixels, and all
  *    four corner pixels have alpha = 0.
  */
 const fs = require("fs");
@@ -29,7 +29,10 @@ const EXPECTED_FILES = [
 
 /* Files that MUST have a transparent RGBA background. */
 const TRANSPARENT_PNGS = ["favicon-16x16.png", "favicon-32x32.png"];
-const MIN_TRANSPARENT_PCT = 20; // at least 20 % of pixels fully transparent
+// 20 % is a conservative floor: the Richstox mark with safe-area padding
+// yields ~40-60 % transparent pixels at 16–32 px; anything below 20 % means
+// the background was accidentally filled (e.g. white square regression).
+const MIN_TRANSPARENT_PCT = 20;
 
 // ── helpers ────────────────────────────────────────────────────────────
 
