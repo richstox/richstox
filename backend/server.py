@@ -9207,7 +9207,7 @@ app.add_middleware(AdminAuthMiddleware, db=db)
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=["https://jocular-faun-27ea7b.netlify.app","https://richstox.com","http://localhost:3000","http://localhost:8081"],
+    allow_origins=["https://jocular-faun-27ea7b.netlify.app","https://richstox.com","https://richstox.up.railway.app","http://localhost:3000","http://localhost:8081"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
