@@ -43,7 +43,7 @@ function sha256(filePath) {
 
 /**
  * Minimal PNG parser – extracts raw RGBA pixel rows from a PNG file.
- * Only supports 8-bit RGBA (colour type 6) which is what we generate.
+ * Only supports 8-bit RGBA (color type 6) which is what we generate.
  */
 function readPngRGBA(filePath) {
   const buf = fs.readFileSync(filePath);
@@ -58,7 +58,7 @@ function readPngRGBA(filePath) {
   let width = 0;
   let height = 0;
   let bitDepth = 0;
-  let colourType = 0;
+  let colorType = 0;
   const idatChunks = [];
 
   while (offset < buf.length) {
@@ -71,7 +71,7 @@ function readPngRGBA(filePath) {
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
       bitDepth = data[8];
-      colourType = data[9];
+      colorType = data[9];
     } else if (type === "IDAT") {
       idatChunks.push(data);
     } else if (type === "IEND") {
@@ -79,9 +79,9 @@ function readPngRGBA(filePath) {
     }
   }
 
-  if (colourType !== 6) {
+  if (colorType !== 6) {
     throw new Error(
-      `${filePath}: expected RGBA colour type 6 but got ${colourType}`
+      `${filePath}: expected RGBA color type 6 but got ${colorType}`
     );
   }
   if (bitDepth !== 8) {
