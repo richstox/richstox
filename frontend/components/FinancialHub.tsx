@@ -175,6 +175,7 @@ interface FinancialHubProps {
   financials: FinancialsData | null;
   expanded: boolean;
   onToggle: () => void;
+  loading?: boolean;
 }
 
 interface TooltipData {
@@ -510,7 +511,7 @@ const getFinancialVitalsPill = (financials: FinancialsData | null): { label: str
 };
 
 // Main Component
-const FinancialHub: React.FC<FinancialHubProps> = ({ financials, expanded, onToggle }) => {
+const FinancialHub: React.FC<FinancialHubProps> = ({ financials, expanded, onToggle, loading = false }) => {
   const [period, setPeriod] = useState<'quarterly' | 'annual'>('annual');
   const [displayMode, setDisplayMode] = useState<'usd' | 'pct'>('pct');
   const [tooltip, setTooltip] = useState<TooltipData>({ visible: false, value: '', label: '' });
@@ -689,7 +690,7 @@ const FinancialHub: React.FC<FinancialHubProps> = ({ financials, expanded, onTog
           <View style={styles.headerLeft}>
             <Text style={styles.title}>Financials</Text>
             <View style={[styles.pill, styles.pillNeutral]}>
-              <Text style={styles.pillText}>No Data</Text>
+              <Text style={styles.pillText}>{loading ? 'Verifying…' : 'No Data'}</Text>
             </View>
           </View>
           <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={20} color={COLORS.textMuted} />

@@ -348,6 +348,9 @@ export default function StockDetail() {
   const [refreshing, setRefreshing] = useState(false);
   const [data, setData] = useState<StockOverview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Track whether initial data fetches are still in progress (to avoid flashing negative pills)
+  const [mobileDataLoading, setMobileDataLoading] = useState(true);
+  const [dividendsLoading, setDividendsLoading] = useState(true);
   const [showFullDescription, setShowFullDescription] = useState(false);
   // P4: Single vertical scroll, no tabs - Key Metrics collapsed by default
   const [keyMetricsExpanded, setKeyMetricsExpanded] = useState(false); // Collapsed by default
@@ -436,6 +439,8 @@ export default function StockDetail() {
       setMobileData(response.data);
     } catch (err: any) {
       console.error('Error fetching mobile detail:', err.message || err);
+    } finally {
+      setMobileDataLoading(false);
     }
   };
 
@@ -465,6 +470,8 @@ export default function StockDetail() {
     } catch (err) {
       console.error('Error fetching dividends:', err);
       setDividendPayments([]);
+    } finally {
+      setDividendsLoading(false);
     }
   };
 
@@ -554,6 +561,9 @@ export default function StockDetail() {
     if (!ticker) return;
     // Clear chart cache when ticker changes (data is ticker-specific)
     chartCacheRef.current = {};
+    // Reset loading states for new ticker to avoid flashing negative pills
+    setMobileDataLoading(true);
+    setDividendsLoading(true);
     fetchStock(false);
     fetchDividends();
   }, [ticker]);
@@ -1188,8 +1198,11 @@ export default function StockDetail() {
    * - Priority cascade: evaluate in exact order, stop after 2 matches
    * - "In line" if no triggers match and data exists
    * - "N/A (Data pending)" if critical data missing
+   * - "Verifying…" while initial data fetch is in progress
    */
   const getKeyMetricsPills = (): string[] => {
+    // Show neutral loading pill while initial fetch is in progress
+    if (mobileDataLoading) return ['Verifying…'];
     if (!mobileData?.key_metrics) return ['N/A (Data pending)'];
     
     const km = mobileData.key_metrics;
@@ -1295,6 +1308,8 @@ export default function StockDetail() {
    * Growing / Stable / Cutting / No dividends / N/A (Insufficient history)
    */
   const getDividendPill = (): string => {
+    // Show neutral loading pill while initial fetch is in progress
+    if (dividendsLoading) return 'Verifying…';
     if (!dividendPayments || dividendPayments.length === 0) {
       return 'No dividends';
     }
@@ -1322,6 +1337,8 @@ export default function StockDetail() {
    * Revenue up / Revenue down / No financials
    */
   const getFinancialsPill = (): string => {
+    // Show neutral loading pill while initial fetch is in progress
+    if (mobileDataLoading) return 'Verifying…';
     // P8 FIX: Use mobileData.financials (from new API) or fallback to data.financials
     const financials = mobileData?.financials || data?.financials;
     if (!financials) return 'No financials';
@@ -2911,6 +2928,7 @@ export default function StockDetail() {
             financials={mobileData?.financials || data?.financials}
             expanded={financialsExpanded}
             onToggle={() => setFinancialsExpanded(!financialsExpanded)}
+            loading={mobileDataLoading}
           />
         </View>
 

@@ -44,8 +44,12 @@ describe('P6 Regression: RICHSTOX Elite Matrix', () => {
       expect(fileContent).toContain('RICHSTOX ELITE MATRIX');
     });
     
-    it('should return N/A when key_metrics is missing', () => {
-      expect(fileContent).toContain("return ['N/A (Missing data)']");
+    it('should return Verifying… pill during initial load', () => {
+      expect(fileContent).toContain("return ['Verifying…']");
+    });
+    
+    it('should return N/A when key_metrics is missing after load', () => {
+      expect(fileContent).toContain("return ['N/A (Data pending)']");
     });
     
     // Priority 1-5: Risk & Warning pills
@@ -116,6 +120,10 @@ describe('P6 Regression: RICHSTOX Elite Matrix', () => {
       expect(fileContent).toContain('const getDividendPill');
     });
     
+    it('should return Verifying… pill during initial load', () => {
+      expect(fileContent).toContain("if (dividendsLoading) return 'Verifying…'");
+    });
+    
     it('should classify dividend trend (Growing/Stable/Cutting)', () => {
       expect(fileContent).toContain("return 'Growing'");
       expect(fileContent).toContain("return 'Stable'");
@@ -131,6 +139,10 @@ describe('P6 Regression: RICHSTOX Elite Matrix', () => {
     
     it('should have getFinancialsPill function defined', () => {
       expect(fileContent).toContain('const getFinancialsPill');
+    });
+    
+    it('should return Verifying… pill during initial load', () => {
+      expect(fileContent).toContain("if (mobileDataLoading) return 'Verifying…'");
     });
     
     it('should classify revenue trend (Revenue up/down)', () => {
