@@ -1,0 +1,22 @@
+{
+  "name": "RICHSTOX",
+  "short_name": "Richstox",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#F8F6F3",
+  "background_color": "#F8F6F3",
+  "icons": [
+    {
+      "src": "/icon-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
