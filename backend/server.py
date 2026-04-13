@@ -238,7 +238,6 @@ async def startup_visibility_guard():
             remaining = MAX_MISMATCH_DETAIL - len(mismatched_tickers)
             if remaining > 0:
                 # visible=True but failing at least one sieve gate
-                visible_tickers = set()
                 async for doc in db.tracked_tickers.find(
                     {"is_visible": True},
                     {"ticker": 1, "is_visible": 1, "visibility_failed_reason": 1,
@@ -263,7 +262,7 @@ async def startup_visibility_guard():
                 logger.error(
                     f"  MISMATCH TICKER: {entry['ticker']} | "
                     f"stored_is_visible={entry['stored_is_visible']} | "
-                    f"computed_visible={entry['computed_canonical_visible']} | "
+                    f"computed_canonical_visible={entry['computed_canonical_visible']} | "
                     f"stored_reason={entry['stored_visibility_failed_reason']} | "
                     f"computed_reason={entry['computed_visibility_failed_reason']} | "
                     f"direction={entry['direction']}"
