@@ -447,7 +447,7 @@ export default function StockDetail() {
   const pagerNext = hasSearchNav ? nextTicker : nextMyStocksTicker;
   const pagerIndex = hasSearchNav ? searchIndex : myStocksIndex;
   const pagerTotal = hasSearchNav ? searchResults.length : myStocksTickers.length;
-  const pagerLabel = hasSearchNav ? `${pagerIndex + 1} of ${pagerTotal}` : `${pagerIndex + 1} of ${pagerTotal}`;
+  const pagerLabel = `${pagerIndex + 1} of ${pagerTotal}`;
   const pagerClear = hasSearchNav ? clearSearch : clearMyStocks;
 
   // Safe back navigation: fallback when browser history is unavailable (e.g. hard refresh)
