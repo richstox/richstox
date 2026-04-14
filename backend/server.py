@@ -4161,14 +4161,59 @@ async def get_ticker_detail_mobile(
                 "dividend_median_level_payers": peer_bench.get("dividend_median_level_payers")
             }
 
-    # Read precomputed step4_medians from peer_bench_doc (already fetched for valuation)
-    _s4 = (peer_bench_doc.get("step4_medians") or {}) if peer_bench_doc else {}
-    def _s4_median(key: str):
-        """Extract median and n_used from step4_medians for a given metric key."""
-        entry = _s4.get(key) or {}
-        return entry.get("median"), entry.get("n_used")
+    # =========================================================================
+    # PER-METRIC FALLBACK CHAIN: Industry → Sector → Market
+    # For each step4 metric, walk the chain to find a valid median (n >= 5).
+    # This fixes the bug where an industry with <5 peers showed "no benchmark"
+    # even though sector/market data was available.
+    # =========================================================================
+    _MIN_BENCHMARK_N = 5
 
-    # Build key_metrics with all 7 fields + peer medians from step4_medians
+    # Fetch all three levels of peer_bench_docs for step4_medians fallback
+    _industry_s4_doc = peer_bench_doc if (peer_bench_doc and peer_bench_doc.get("industry")) else None
+    _sector_s4_doc = None
+    _market_s4_doc = None
+
+    # Only fetch sector doc if we don't already have it as peer_bench_doc
+    if tracked.get("sector"):
+        if peer_bench_doc and not peer_bench_doc.get("industry"):
+            _sector_s4_doc = peer_bench_doc  # peer_bench_doc is already the sector doc
+        else:
+            _sector_s4_doc = await db.peer_benchmarks.find_one(
+                {"sector": tracked.get("sector"), "industry": None},
+                {"_id": 0, "step4_medians": 1}
+            )
+
+    _market_s4_doc = await db.peer_benchmarks.find_one(
+        {"sector": None, "industry": None},
+        {"_id": 0, "step4_medians": 1}
+    )
+
+    _s4_industry = (_industry_s4_doc.get("step4_medians") or {}) if _industry_s4_doc else {}
+    _s4_sector = (_sector_s4_doc.get("step4_medians") or {}) if _sector_s4_doc else {}
+    _s4_market = (_market_s4_doc.get("step4_medians") or {}) if _market_s4_doc else {}
+
+    def _s4_median_with_fallback(key: str):
+        """
+        Per-metric fallback: Industry → Sector → Market.
+        Returns (median, n_used, level) where level is 'industry'/'sector'/'market'/None.
+        """
+        for s4_data, level in [(_s4_industry, "industry"), (_s4_sector, "sector"), (_s4_market, "market")]:
+            entry = s4_data.get(key) or {}
+            n = entry.get("n_used")
+            med = entry.get("median")
+            if med is not None and n is not None and n >= _MIN_BENCHMARK_N:
+                return med, n, level
+        return None, None, None
+
+    # Pre-compute fallback results for each metric (avoid redundant calls)
+    _fb_net_margin = _s4_median_with_fallback("net_margin_ttm")
+    _fb_fcf_yield = _s4_median_with_fallback("fcf_yield")
+    _fb_net_debt = _s4_median_with_fallback("net_debt_ebitda")
+    _fb_rev_growth = _s4_median_with_fallback("revenue_growth_3y")
+    _fb_div_yield = _s4_median_with_fallback("dividend_yield_ttm")
+
+    # Build key_metrics with all 7 fields + peer medians from step4_medians (with fallback)
     key_metrics = {
         "market_cap": {
             "name": "Market Cap",
@@ -4187,16 +4232,18 @@ async def get_ticker_detail_mobile(
             "value": net_margin_ttm,
             "formatted": f"{net_margin_ttm:.1f}%" if net_margin_ttm is not None else None,
             "na_reason": None if net_margin_ttm is not None else ("unprofitable" if ttm_net_income and ttm_net_income < 0 else "missing_data"),
-            "peer_median": _s4_median("net_margin_ttm")[0],
-            "peer_median_n": _s4_median("net_margin_ttm")[1],
+            "peer_median": _fb_net_margin[0],
+            "peer_median_n": _fb_net_margin[1],
+            "peer_median_level": _fb_net_margin[2],
         },
         "fcf_yield": {
             "name": "FCF Yield",
             "value": fcf_yield,
             "formatted": f"{fcf_yield:.1f}%" if fcf_yield is not None else None,
             "na_reason": None if fcf_yield is not None else ("negative_fcf" if ttm_fcf and ttm_fcf < 0 else "missing_data"),
-            "peer_median": _s4_median("fcf_yield")[0],
-            "peer_median_n": _s4_median("fcf_yield")[1],
+            "peer_median": _fb_fcf_yield[0],
+            "peer_median_n": _fb_fcf_yield[1],
+            "peer_median_level": _fb_fcf_yield[2],
         },
         "net_debt_ebitda": {
             "name": "Net Debt/EBITDA",
@@ -4210,24 +4257,27 @@ async def get_ticker_detail_mobile(
                 "missing_cash_data" if ttm_cash is None else
                 "missing_data"
             ),
-            "peer_median": _s4_median("net_debt_ebitda")[0],
-            "peer_median_n": _s4_median("net_debt_ebitda")[1],
+            "peer_median": _fb_net_debt[0],
+            "peer_median_n": _fb_net_debt[1],
+            "peer_median_level": _fb_net_debt[2],
         },
         "revenue_growth_3y": {
             "name": "Revenue Growth (3Y CAGR)",
             "value": None,  # Will be updated after annual_income is loaded
             "formatted": None,
             "na_reason": "insufficient_annual_history",
-            "peer_median": _s4_median("revenue_growth_3y")[0],
-            "peer_median_n": _s4_median("revenue_growth_3y")[1],
+            "peer_median": _fb_rev_growth[0],
+            "peer_median_n": _fb_rev_growth[1],
+            "peer_median_level": _fb_rev_growth[2],
         },
         "dividend_yield_ttm": {
             "name": "Dividend Yield",
             "value": dividend_yield_ttm,
             "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
             "na_reason": dividend_yield_na,
-            "peer_median": _s4_median("dividend_yield_ttm")[0],
-            "peer_median_n": _s4_median("dividend_yield_ttm")[1],
+            "peer_median": _fb_div_yield[0],
+            "peer_median_n": _fb_div_yield[1],
+            "peer_median_level": _fb_div_yield[2],
             # BACKWARD COMPAT (keep existing fields for frontend):
             "industry_dividend_yield_median": industry_dividend_data.get("dividend_yield_median_all"),
             "industry_dividend_peer_count": industry_dividend_data.get("dividend_peer_count", 0),
@@ -4241,6 +4291,30 @@ async def get_ticker_detail_mobile(
             "dividend_median_level_payers": industry_dividend_data.get("dividend_median_level_payers")
         },
     }
+
+    # Determine has_benchmark: True if ANY step4 metric has a valid benchmark
+    _benchmark_metrics = ["net_margin_ttm", "fcf_yield", "net_debt_ebitda",
+                          "revenue_growth_3y", "dividend_yield_ttm"]
+    _any_benchmark = any(
+        key_metrics[mk].get("peer_median") is not None
+        for mk in _benchmark_metrics
+    )
+
+    # Determine the highest fallback level used across all metrics
+    _fallback_levels_used = set(
+        key_metrics[mk].get("peer_median_level")
+        for mk in _benchmark_metrics
+        if key_metrics[mk].get("peer_median_level")
+    )
+    _benchmark_fallback = None
+    if _fallback_levels_used:
+        # Report the most degraded level used (market > sector > industry)
+        if "market" in _fallback_levels_used:
+            _benchmark_fallback = "market"
+        elif "sector" in _fallback_levels_used:
+            _benchmark_fallback = "sector"
+        else:
+            _benchmark_fallback = "industry"
 
     # Peer Transparency (P0 requirement: total_industry_peers + valid_metric_peers)
     peer_transparency = await get_peer_transparency(db, ticker_full)
@@ -4441,9 +4515,10 @@ async def get_ticker_detail_mobile(
         # NO 52W High/Low - removed per P0 spec
         "key_metrics": key_metrics,
 
-        # Whether peer benchmark data exists for this ticker's industry/sector
-        # (reads from peer_benchmarks, the current collection)
-        "has_benchmark": peer_bench_doc is not None,
+        # Whether peer benchmark data exists (per-metric fallback chain)
+        "has_benchmark": _any_benchmark,
+        # Highest fallback level used: 'industry', 'sector', 'market', or None
+        "benchmark_fallback": _benchmark_fallback,
 
         # Peer Transparency (P0)
         # Format: "vs 12 industry peers / 6 with valid data"
