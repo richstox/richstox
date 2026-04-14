@@ -393,6 +393,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [peerMediansRunning, setPeerMediansRunning] = useState(false);
   const peerMediansPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPeerMediansResultRef = useRef<Record<string, any>>({});
+  const [peerMediansStartedAt, setPeerMediansStartedAt] = useState<number | null>(null);
+  const [peerMediansElapsed, setPeerMediansElapsed] = useState(0);
+  const peerMediansTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
@@ -780,6 +783,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunPeerMedians = async () => {
     setPeerMediansRunning(true);
+    setPeerMediansStartedAt(Date.now());
+    // 1. Start the job — this is the critical step
+    let jobStarted = false;
     try {
       const res = await authenticatedFetch(
         `${API_URL}/api/admin/job/peer_medians/run`,
@@ -792,14 +798,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
         throw new Error(msg);
       }
-      // No modal — polling will pick up the running state and update on completion
-      await fetchSnapshotOnce();
+      jobStarted = true;
     } catch (e: any) {
       dialog.alert('Peer Medians Failed', e?.message || 'Could not start peer medians');
-      setPeerMediansRunning(false); // Clear on error so user can retry
+      setPeerMediansRunning(false);
+      setPeerMediansStartedAt(null);
+      return;
     }
-    // On success: polling effect clears isPeerMediansRunning when ops_job_runs
-    // reports a terminal state. We do NOT call setPeerMediansRunning(false) here.
+    // 2. Job started successfully — refresh overview (best-effort, non-blocking)
+    //    fetchSnapshotOnce failure must NOT mask the fact that the job is running.
+    if (jobStarted) {
+      try { await fetchSnapshotOnce(); } catch { /* non-fatal — polling will track the job */ }
+    }
+    // Polling effect will pick up the running state and call setPeerMediansRunning(false)
+    // when a terminal status is detected.
   };
 
   const handleRunNewsRefresh = async () => {
@@ -1080,6 +1092,28 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const peerMediansBackendStatus = peerMediansBackendRun?.status;
   const isPeerMediansRunning = peerMediansRunning || (peerMediansBackendStatus === 'running' && !peerMediansBackendRun?.finished_at);
 
+  // Elapsed timer for peer medians manual run
+  useEffect(() => {
+    if (isPeerMediansRunning && peerMediansStartedAt) {
+      setPeerMediansElapsed(Math.round((Date.now() - peerMediansStartedAt) / 1000));
+      peerMediansTimerRef.current = setInterval(() => {
+        setPeerMediansElapsed(Math.round((Date.now() - (peerMediansStartedAt ?? Date.now())) / 1000));
+      }, 1000);
+      return () => {
+        if (peerMediansTimerRef.current) {
+          clearInterval(peerMediansTimerRef.current);
+          peerMediansTimerRef.current = null;
+        }
+      };
+    }
+    // Reset when not running
+    if (peerMediansTimerRef.current) {
+      clearInterval(peerMediansTimerRef.current);
+      peerMediansTimerRef.current = null;
+    }
+    return undefined;
+  }, [isPeerMediansRunning, peerMediansStartedAt]);
+
   // Poll benchmark status while it is running so UI updates when the job finishes
   useEffect(() => {
     if (!isBenchmarkRunning || !sessionToken) {
@@ -1184,12 +1218,29 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             const terminalStatuses = ['completed', 'success', 'failed', 'error', 'cancelled'];
             if (terminalStatuses.includes(lr.status)) {
               setPeerMediansRunning(false);
+              setPeerMediansStartedAt(null);
+              // Show completion feedback to the user
+              const resultData = lr.result;
+              if (lr.status === 'completed' || lr.status === 'success') {
+                const processed = resultData?.tickers_processed;
+                const included = resultData?.tickers_included_any_metric;
+                const elapsed = lr.duration_seconds;
+                const statsMsg = processed
+                  ? `${processed.toLocaleString()} tickers processed, ${(included ?? 0).toLocaleString()} eligible${elapsed ? ` in ${elapsed}s` : ''}`
+                  : (elapsed ? `Completed in ${elapsed}s` : 'Completed');
+                dialog.alert('Step 4 Completed ✅', statsMsg);
+              } else {
+                const errMsg = extractErrorText(lr) || `Job finished with status: ${lr.status}`;
+                dialog.alert('Step 4 Failed', errMsg);
+              }
+              // Refresh all overview data to ensure funnel counts are up to date
+              try { await fetchSnapshotOnce(); } catch { /* non-fatal */ }
             }
           }
         }
       } catch { /* non-fatal */ }
       if (!cancelled) {
-        peerMediansPollRef.current = setTimeout(poll, 5000);
+        peerMediansPollRef.current = setTimeout(poll, 3000);
       }
     };
     poll();
@@ -1656,7 +1707,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
               {/* Step 4 "Run now" button — peer_medians is independently runnable */}
               {step.job_name === 'peer_medians' && (
-                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 12, paddingBottom: 6 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center', paddingHorizontal: 12, paddingBottom: 6, gap: 8 }}>
+                  {isPeerMediansRunning && peerMediansElapsed > 0 && (
+                    <Text style={{ fontSize: 11, color: COLORS.textMuted }}>
+                      Running… {peerMediansElapsed}s
+                    </Text>
+                  )}
                   <TouchableOpacity
                     style={[
                       { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: step.color },
@@ -1666,7 +1722,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     disabled={isPeerMediansRunning}
                   >
                     {isPeerMediansRunning
-                      ? <ActivityIndicator size="small" color="#fff" />
+                      ? <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <ActivityIndicator size="small" color="#fff" />
+                          <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Running</Text>
+                        </View>
                       : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
                   </TouchableOpacity>
                 </View>
@@ -1680,11 +1739,22 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <Text style={s.waitingText}>Waiting for Step {step.step - 1} to complete</Text>
                 </View>
               ) : step.job_name === 'peer_medians' && inCount === undefined && outCount === undefined ? (
-                /* Step 4: no data at all — show placeholder prompting a run */
+                /* Step 4: no data at all — show context-aware placeholder */
                 <View style={s.funnelRow}>
                   <View style={[s.funnelBox, s.funnelBoxOut, { borderColor: step.color + '88', flex: 1 }]}>
-                    <Text style={[s.funnelBoxNum, { color: COLORS.textMuted }]}>—</Text>
-                    <Text style={s.funnelBoxLabel}>No data (run Step 4)</Text>
+                    {isPeerMediansRunning ? (
+                      <>
+                        <ActivityIndicator size="small" color={step.color} />
+                        <Text style={[s.funnelBoxLabel, { marginTop: 4 }]}>
+                          Computing medians{peerMediansElapsed > 0 ? `… ${peerMediansElapsed}s` : '…'}
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Text style={[s.funnelBoxNum, { color: COLORS.textMuted }]}>—</Text>
+                        <Text style={s.funnelBoxLabel}>No data (run Step 4)</Text>
+                      </>
+                    )}
                   </View>
                 </View>
               ) : (
