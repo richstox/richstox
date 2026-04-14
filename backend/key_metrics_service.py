@@ -1584,10 +1584,15 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         # Get excluded tickers for this industry
         excluded = [t["ticker"] for t in all_tickers if t.get("currency_mismatch")]
         
-        # Use USD-only tickers for benchmark calculation
+        # Use USD-only tickers for valuation benchmark calculation
         tickers_data = usd_tickers
         
-        if len(tickers_data) < MIN_PEER_COUNT:
+        # Phase 2A fix: Allow industry doc creation if EITHER pool has enough tickers.
+        # USD pool gates valuation metrics (pe, ps, pb, ev_ebitda, ev_revenue).
+        # Known-currency pool gates Step 4 safe metrics (net_margin, roe, rev_growth, div_yield).
+        # Previously this only checked usd_tickers, skipping industries where safe metrics
+        # had enough data but valuation metrics didn't.
+        if len(tickers_data) < MIN_PEER_COUNT and len(known_currency_tickers) < MIN_PEER_COUNT:
             continue
         
         # Build metric_values with sorted parallel arrays
@@ -1713,7 +1718,10 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
         
-        if metric_values:
+        # Write doc if we have EITHER valuation metric_values OR step4 medians.
+        # Phase 2A: safe metrics may produce step4 entries even when no valuation
+        # metrics pass (e.g. <5 USD tickers but ≥5 known-currency tickers).
+        if metric_values or step4:
             await db.peer_benchmarks.update_one(
                 {"industry": industry},
                 {"$set": {
@@ -1768,10 +1776,10 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     sector_stored = 0
     for sector, usd_tickers in sectors.items():
         _step4_stats["sector"]["groups_total"] += 1
-        if len(usd_tickers) < MIN_PEER_COUNT:
-            continue
-        
         sector_known_currency = sectors_known_currency.get(sector, [])  # Phase 2A
+        # Phase 2A fix: same gate relaxation as industry level
+        if len(usd_tickers) < MIN_PEER_COUNT and len(sector_known_currency) < MIN_PEER_COUNT:
+            continue
         
         metric_values = {}
         metrics_count = {}
@@ -1903,7 +1911,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
         
-        if metric_values:
+        if metric_values or step4:
             await db.peer_benchmarks.update_one(
                 {"sector": sector, "industry": None},
                 {"$set": {
