@@ -278,14 +278,15 @@ interface MobileDetailData {
     metrics_used?: number;
   } | null;
   // Hybrid 7 Key Metrics (P0)
+  has_benchmark?: boolean;
   key_metrics?: {
     market_cap: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
     shares_outstanding: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
-    net_margin_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
-    fcf_yield: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
-    net_debt_ebitda: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
-    revenue_growth_3y: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
-    dividend_yield_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
+    net_margin_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
+    fcf_yield: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
+    net_debt_ebitda: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
+    revenue_growth_3y: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
+    dividend_yield_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; industry_dividend_yield_median?: number | null };
   } | null;
   // Peer Transparency (P0)
   peer_transparency?: {
@@ -1105,6 +1106,12 @@ export default function StockDetail() {
       text: displayText,
       color: isNegativeState ? RED : MUTED
     };
+  };
+
+  /** Format peer median hint for a key metric (e.g. "peers: 12,3%") */
+  const formatPeerMedianHint = (median: number | null | undefined, unit: '%' | 'x'): string | null => {
+    if (median == null) return null;
+    return `peers: ${toEU(median, 1)}${unit}`;
   };
 
   // P1 UX POLISH: Valuation Pulse calculation (Peer + 5Y integrated)
@@ -2742,10 +2749,15 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Net Margin (TTM)</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    {(() => {
-                      const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_margin_ttm, 'net_margin_ttm');
-                      return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                    })()}
+                    <View style={styles.metricValueRow}>
+                      {(() => {
+                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_margin_ttm, 'net_margin_ttm');
+                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                      })()}
+                      {formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%')}</Text>
+                      )}
+                    </View>
                   </View>
                 
                   {/* FCF Yield */}
@@ -2754,10 +2766,15 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Free Cash Flow Yield</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    {(() => {
-                      const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.fcf_yield, 'fcf_yield');
-                      return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                    })()}
+                    <View style={styles.metricValueRow}>
+                      {(() => {
+                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.fcf_yield, 'fcf_yield');
+                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                      })()}
+                      {formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%')}</Text>
+                      )}
+                    </View>
                   </View>
                 
                   {/* Net Debt / EBITDA */}
@@ -2766,10 +2783,15 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Net Debt / EBITDA</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    {(() => {
-                      const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_debt_ebitda, 'net_debt_ebitda');
-                      return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                    })()}
+                    <View style={styles.metricValueRow}>
+                      {(() => {
+                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_debt_ebitda, 'net_debt_ebitda');
+                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                      })()}
+                      {formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x')}</Text>
+                      )}
+                    </View>
                   </View>
                 
                   {/* Revenue Growth 3Y CAGR */}
@@ -2778,10 +2800,15 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Revenue Growth (3Y CAGR)</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    {(() => {
-                      const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.revenue_growth_3y, 'revenue_growth_3y');
-                      return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                    })()}
+                    <View style={styles.metricValueRow}>
+                      {(() => {
+                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.revenue_growth_3y, 'revenue_growth_3y');
+                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                      })()}
+                      {formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%')}</Text>
+                      )}
+                    </View>
                   </View>
                 
                   {/* Dividend Yield TTM with sector context */}
@@ -2934,16 +2961,21 @@ export default function StockDetail() {
               </View>
             )}
 
-            {/* No Benchmark Warning */}
-            {!data.has_benchmark && data.company?.industry && (
-              <View style={[styles.peerDisclaimer, { backgroundColor: '#FEF3C7' }]}>
-                <Ionicons name="alert-circle-outline" size={14} color="#D97706" />
-                <Text style={[styles.disclaimerText, { color: '#92400E' }]}>
-                  No peer benchmark available for {data.company.industry}. 
-                  Industry has fewer than 5 companies in our database.
-                </Text>
-              </View>
-            )}
+            {/* No Benchmark Warning — prefer mobileData (peer_benchmarks) over legacy data (industry_benchmarks) */}
+            {(() => {
+              const hasBenchmark = mobileData?.has_benchmark ?? data.has_benchmark;
+              const industryName = mobileData?.company?.industry || data.company?.industry;
+              if (hasBenchmark || !industryName) return null;
+              return (
+                <View style={[styles.peerDisclaimer, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="alert-circle-outline" size={14} color="#D97706" />
+                  <Text style={[styles.disclaimerText, { color: '#92400E' }]}>
+                    No peer benchmark available for {industryName}. 
+                    Industry has fewer than 5 companies in our database.
+                  </Text>
+                </View>
+              );
+            })()}
             </>
           )}
         </View>
@@ -3598,6 +3630,7 @@ const styles = StyleSheet.create({
   metricLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
   metricValue: { fontSize: 14, fontWeight: '600', color: COLORS.text },
   metricValueRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  peerMedianHint: { fontSize: 11, color: COLORS.textMuted, marginLeft: 4 },
   capBadge: { backgroundColor: '#F5F8FC', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
   capBadgeText: { fontSize: 11, color: COLORS.primary, fontWeight: '500' },
   
