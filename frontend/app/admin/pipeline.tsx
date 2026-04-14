@@ -391,6 +391,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   // ── Peer Medians (Step 4) manual run state ─────────────────────────────────
   const [peerMediansRunning, setPeerMediansRunning] = useState(false);
+  const peerMediansPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastPeerMediansResultRef = useRef<Record<string, any>>({});
 
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
@@ -1072,6 +1074,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const newsRefreshStatus = newsRefreshRun?.status;
   const isNewsRefreshRunning = newsRefreshRunning || (newsRefreshStatus === 'running' && !newsRefreshRun?.finished_at);
 
+  // Derive peer medians running state from real backend status
+  const peerMediansBackendRun = jobRuns['peer_medians'];
+  const peerMediansBackendStatus = peerMediansBackendRun?.status;
+  const isPeerMediansRunning = peerMediansRunning || (peerMediansBackendStatus === 'running' && !peerMediansBackendRun?.finished_at);
+
   // Poll benchmark status while it is running so UI updates when the job finishes
   useEffect(() => {
     if (!isBenchmarkRunning || !sessionToken) {
@@ -1150,6 +1157,45 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     };
   }, [isNewsRefreshRunning, sessionToken]);
 
+  // Poll peer_medians status while it is running so UI updates when the job finishes
+  useEffect(() => {
+    if (!isPeerMediansRunning || !sessionToken) {
+      if (peerMediansPollRef.current) {
+        clearTimeout(peerMediansPollRef.current);
+        peerMediansPollRef.current = null;
+      }
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/job/peer_medians/status`,
+          {},
+          sessionToken,
+        );
+        if (res.ok && !cancelled) {
+          const payload = await res.json();
+          const lr = normaliseRun(payload.last_run);
+          if (lr) {
+            setLiveLastRuns(prev => ({ ...prev, peer_medians: lr }));
+          }
+        }
+      } catch { /* non-fatal */ }
+      if (!cancelled) {
+        peerMediansPollRef.current = setTimeout(poll, 5000);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+      if (peerMediansPollRef.current) {
+        clearTimeout(peerMediansPollRef.current);
+        peerMediansPollRef.current = null;
+      }
+    };
+  }, [isPeerMediansRunning, sessionToken]);
+
   useEffect(() => {
     const lr = jobRuns['price_sync'];
     if (lr) {
@@ -1225,8 +1271,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
   // ── Step 4: read real benchmark stats from the last peer_medians run ──
+  // Preserve last completed result so stats stay visible while a new run is in progress.
   const peerMediansRun = jobRuns['peer_medians'];
-  const peerMediansResult = (peerMediansRun as any)?.result ?? {};
+  const peerMediansRunResult = (peerMediansRun as any)?.result;
+  if (peerMediansRunResult && typeof peerMediansRunResult === 'object' && Object.keys(peerMediansRunResult).length > 0) {
+    lastPeerMediansResultRef.current = peerMediansRunResult;
+  }
+  const peerMediansResult = peerMediansRunResult ?? lastPeerMediansResultRef.current;
   const s4Processed: number | undefined = asFiniteNumber(peerMediansResult.tickers_processed);
   const s4Included: number | undefined = asFiniteNumber(peerMediansResult.tickers_included_any_metric);
   const s4Excluded: number | undefined = asFiniteNumber(peerMediansResult.tickers_excluded_all_metrics);
@@ -1603,12 +1654,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <TouchableOpacity
                     style={[
                       { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: step.color },
-                      peerMediansRunning && { opacity: 0.5 },
+                      isPeerMediansRunning && { opacity: 0.5 },
                     ]}
                     onPress={handleRunPeerMedians}
-                    disabled={peerMediansRunning}
+                    disabled={isPeerMediansRunning}
                   >
-                    {peerMediansRunning
+                    {isPeerMediansRunning
                       ? <ActivityIndicator size="small" color="#fff" />
                       : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
                   </TouchableOpacity>
