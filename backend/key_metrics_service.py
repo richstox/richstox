@@ -1509,9 +1509,9 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         "sector":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
         "market":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
     }
-    _s4_metric_display = ["pe_ttm", "net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "dividend_yield_ttm", "roe"]
+    _step4_metric_display = ["pe_ttm", "net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "dividend_yield_ttm", "roe"]
     for _lvl in _step4_stats.values():
-        for _mk in _s4_metric_display:
+        for _mk in _step4_metric_display:
             _lvl["per_metric"][_mk] = {"groups_with_n_ge_5": 0, "total_n_sum": 0}
     # Metrics that can be negative (don't filter > 0)
     step4_allow_negative = {"net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "roe"}
@@ -1687,7 +1687,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             )
             stored += 1
             _step4_stats["industry"]["groups_written"] += 1
-            for _mk in _s4_metric_display:
+            for _mk in _step4_metric_display:
                 _entry = step4.get(_mk)
                 if _entry and _entry.get("n_used", 0) >= 5:
                     _step4_stats["industry"]["per_metric"][_mk]["groups_with_n_ge_5"] += 1
@@ -1875,7 +1875,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             )
             sector_stored += 1
             _step4_stats["sector"]["groups_written"] += 1
-            for _mk in _s4_metric_display:
+            for _mk in _step4_metric_display:
                 _entry = step4.get(_mk)
                 if _entry and _entry.get("n_used", 0) >= 5:
                     _step4_stats["sector"]["per_metric"][_mk]["groups_with_n_ge_5"] += 1
@@ -2042,7 +2042,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             )
             logger.info(f"Stored market-level benchmarks (peer_count={len(all_usd_tickers)})")
             _step4_stats["market"]["groups_written"] = 1
-            for _mk in _s4_metric_display:
+            for _mk in _step4_metric_display:
                 _entry = step4.get(_mk)
                 if _entry and _entry.get("n_used", 0) >= 5:
                     _step4_stats["market"]["per_metric"][_mk]["groups_with_n_ge_5"] += 1
