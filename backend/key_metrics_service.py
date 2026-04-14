@@ -1201,35 +1201,17 @@ MIN_PEERS_FOR_INDUSTRY = 12  # Minimum peers before fallback to sector
 
 async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     """
-    Job: Compute peer benchmarks with USD-only filter.
+    Job: Compute peer benchmarks with per-metric currency eligibility.
     
-    BINDING FIX (P1 Policy): Excludes tickers where financial_currency != "USD".
+    Phase 2A: Currency-agnostic metrics (net_margin_ttm, roe, revenue_growth_3y,
+    net_debt_ebitda, dividend_yield) use all tickers with known financial_currency.
+    Currency-sensitive metrics (pe, fcf_yield) remain USD-only.
     
-    Uses the new `financial_currency` field populated by currency extraction
-    from fundamentals.Financials.*.currency_symbol (with fallback to nested
-    quarterly/yearly entries).
+    Non-valuation benchmarks (pe, ps, pb, ev_ebitda, ev_revenue) still use USD-only pools.
     
-    Non-USD tickers still have their own metrics calculated, but they are
-    NOT included in the pool of peers used to calculate sector/industry medians.
-    
-    Schema for peer_benchmarks:
-    {
-        _id: ObjectId,
-        industry: "Consumer Electronics",
-        sector: "Technology",
-        currency_filter: "USD_only",
-        peer_count_total: 16,      # Before filter
-        peer_count_usd: 13,        # After filter (USD-only)
-        excluded_tickers: [{ticker, currency, reason}],
-        benchmarks: {
-            pe_median: 25.3,
-            ps_median: 8.1,
-            ...
-        },
-        computed_at: "2026-02-26T04:30:00Z"
-    }
+    Tickers with null/unknown financial_currency are excluded from ALL peer pools.
     """
-    logger.info("Starting peer benchmarks V3 computation (P1 Policy: USD-only filter)...")
+    logger.info("Starting peer benchmarks V3 computation (Phase 2A: per-metric currency eligibility)...")
     
     start_time = datetime.now(timezone.utc)
     
@@ -1505,11 +1487,14 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 industries[industry] = {
                     "sector": sector,
                     "all_tickers": [],
-                    "usd_only_tickers": []
+                    "usd_only_tickers": [],
+                    "known_currency_tickers": []  # Phase 2A: non-null financial_currency
                 }
             industries[industry]["all_tickers"].append(m)
             if not m.get("currency_mismatch"):
                 industries[industry]["usd_only_tickers"].append(m)
+            if m.get("financial_currency"):
+                industries[industry]["known_currency_tickers"].append(m)
     
     # Compute and store benchmarks (USD-only) with SORTED metric_values lists
     # FIX-2: Dual dividend medians (median_all + median_payers)
@@ -1519,11 +1504,16 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     step4_metric_keys = ["pe", "net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "dividend_yield", "roe"]
     # Metrics that can be negative (don't filter > 0)
     step4_allow_negative = {"net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "roe"}
+    # Phase 2A: Metrics whose math is currency-agnostic (ratios of same-currency values
+    # or direct percentages). These can use ALL tickers with known financial_currency.
+    # USD-only: pe (price/EPS cross-currency), fcf_yield (FCF/market_cap cross-currency)
+    step4_all_currency_eligible = {"net_margin_ttm", "roe", "revenue_growth_3y", "net_debt_ebitda", "dividend_yield"}
     
     for industry, data in industries.items():
         sector = data["sector"]
         all_tickers = data["all_tickers"]
         usd_tickers = data["usd_only_tickers"]
+        known_currency_tickers = data["known_currency_tickers"]  # Phase 2A
         
         # Get excluded tickers for this industry
         excluded = [t["ticker"] for t in all_tickers if t.get("currency_mismatch")]
@@ -1625,15 +1615,26 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         # ── STEP 4: Compute medians for the 7 admin Key Metrics ─────
         step4 = {}
         for mk in step4_metric_keys:
+            # Phase 2A: select per-metric peer pool
+            pool = known_currency_tickers if mk in step4_all_currency_eligible else tickers_data
             if mk == "dividend_yield":
-                # Use the already-computed dividend_median_all
-                if dividend_median_all is not None:
-                    step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
+                # Phase 2A: recompute dividend median using expanded pool for safe metrics
+                div_pairs = [t["dividend_yield"] for t in pool
+                             if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
+                if len(div_pairs) >= MIN_PEER_COUNT:
+                    div_pairs = winsorize_values(div_pairs)
+                    div_pairs.sort()
+                    n_dv = len(div_pairs)
+                    if n_dv % 2 == 1:
+                        d_med = round(div_pairs[n_dv // 2], 2)
+                    else:
+                        d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
+                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
                 continue
             if mk in step4_allow_negative:
-                pairs_s4 = [t[mk] for t in tickers_data if t.get(mk) is not None]
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
             else:
-                pairs_s4 = [t[mk] for t in tickers_data if t.get(mk) is not None and t.get(mk) > 0]
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
                 pairs_s4 = winsorize_values(pairs_s4)
                 pairs_s4.sort()
@@ -1652,9 +1653,10 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 {"$set": {
                     "industry": industry,
                     "sector": sector,
-                    "currency_filter": "USD_only",
+                    "currency_filter": "per_metric",  # Phase 2A: safe metrics use all currencies
                     "peer_count_total": len(all_tickers),
                     "peer_count_used": len(usd_tickers),
+                    "peer_count_known_currency": len(known_currency_tickers),
                     "excluded_tickers": excluded,
                     "metrics_count": metrics_count,
                     "metric_values": metric_values,
@@ -1678,17 +1680,25 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     MAX_PEERS_PER_METRIC = 1000  # Hard guardrail for document size
     
     sectors = {}
+    sectors_known_currency = {}  # Phase 2A: tickers with non-null financial_currency
     for m in ticker_metrics:
         sector = m.get("sector")
-        if sector and not m.get("currency_mismatch"):
-            if sector not in sectors:
-                sectors[sector] = []
-            sectors[sector].append(m)
+        if sector:
+            if not m.get("currency_mismatch"):
+                if sector not in sectors:
+                    sectors[sector] = []
+                sectors[sector].append(m)
+            if m.get("financial_currency"):
+                if sector not in sectors_known_currency:
+                    sectors_known_currency[sector] = []
+                sectors_known_currency[sector].append(m)
     
     sector_stored = 0
     for sector, usd_tickers in sectors.items():
         if len(usd_tickers) < MIN_PEER_COUNT:
             continue
+        
+        sector_known_currency = sectors_known_currency.get(sector, [])  # Phase 2A
         
         metric_values = {}
         metrics_count = {}
@@ -1790,14 +1800,25 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         # ── STEP 4: Compute medians for the 7 admin Key Metrics (sector) ─
         step4 = {}
         for mk in step4_metric_keys:
+            # Phase 2A: select per-metric peer pool
+            pool = sector_known_currency if mk in step4_all_currency_eligible else usd_tickers
             if mk == "dividend_yield":
-                if dividend_median_all is not None:
-                    step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
+                div_pairs = [t["dividend_yield"] for t in pool
+                             if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
+                if len(div_pairs) >= MIN_PEER_COUNT:
+                    div_pairs = winsorize_values(div_pairs)
+                    div_pairs.sort()
+                    n_dv = len(div_pairs)
+                    if n_dv % 2 == 1:
+                        d_med = round(div_pairs[n_dv // 2], 2)
+                    else:
+                        d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
+                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
                 continue
             if mk in step4_allow_negative:
-                pairs_s4 = [t[mk] for t in usd_tickers if t.get(mk) is not None]
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
             else:
-                pairs_s4 = [t[mk] for t in usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
                 pairs_s4 = winsorize_values(pairs_s4)
                 pairs_s4.sort()
@@ -1815,8 +1836,9 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 {"$set": {
                     "industry": None,
                     "sector": sector,
-                    "currency_filter": "USD_only",
+                    "currency_filter": "per_metric",  # Phase 2A
                     "peer_count": len(usd_tickers),
+                    "peer_count_known_currency": len(sector_known_currency),
                     "metrics_count": metrics_count,
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
@@ -1839,6 +1861,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     # FIX-2: Also compute dual dividend medians for market fallback
     # =========================================================================
     all_usd_tickers = [m for m in ticker_metrics if not m.get("currency_mismatch")]
+    all_known_currency_tickers = [m for m in ticker_metrics if m.get("financial_currency")]  # Phase 2A
     
     if len(all_usd_tickers) >= MIN_PEER_COUNT:
         metric_values = {}
@@ -1936,14 +1959,25 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         # ── STEP 4: Compute medians for the 7 admin Key Metrics (market) ─
         step4 = {}
         for mk in step4_metric_keys:
+            # Phase 2A: select per-metric peer pool
+            pool = all_known_currency_tickers if mk in step4_all_currency_eligible else all_usd_tickers
             if mk == "dividend_yield":
-                if dividend_median_all is not None:
-                    step4["dividend_yield_ttm"] = {"median": dividend_median_all, "n_used": dividend_peer_count}
+                div_pairs = [t["dividend_yield"] for t in pool
+                             if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
+                if len(div_pairs) >= MIN_PEER_COUNT:
+                    div_pairs = winsorize_values(div_pairs)
+                    div_pairs.sort()
+                    n_dv = len(div_pairs)
+                    if n_dv % 2 == 1:
+                        d_med = round(div_pairs[n_dv // 2], 2)
+                    else:
+                        d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
+                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
                 continue
             if mk in step4_allow_negative:
-                pairs_s4 = [t[mk] for t in all_usd_tickers if t.get(mk) is not None]
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
             else:
-                pairs_s4 = [t[mk] for t in all_usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
                 pairs_s4 = winsorize_values(pairs_s4)
                 pairs_s4.sort()
@@ -1962,8 +1996,9 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     "industry": None,
                     "sector": None,
                     "level": "market",
-                    "currency_filter": "USD_only",
+                    "currency_filter": "per_metric",  # Phase 2A
                     "peer_count": len(all_usd_tickers),
+                    "peer_count_known_currency": len(all_known_currency_tickers),
                     "metrics_count": metrics_count,
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
