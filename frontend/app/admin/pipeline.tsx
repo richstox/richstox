@@ -1281,8 +1281,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       apiUrl: 'Local DB only — no external API',
       inputLabel: 'Visible tickers',
       inputCount: visible,
-      outputCount: visible,
-      outputLabel: 'with medians',
+      outputCount: undefined,
+      outputLabel: 'coverage: n/a',
       filters: [
         'Winsorize outliers (1–99%)',
         'Exclude self from own peer group',

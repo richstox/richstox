@@ -1635,6 +1635,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             else:
                 pairs_s4 = [t[mk] for t in tickers_data if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4 = winsorize_values(pairs_s4)
                 pairs_s4.sort()
                 n_s4 = len(pairs_s4)
                 if n_s4 % 2 == 1:
@@ -1798,6 +1799,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             else:
                 pairs_s4 = [t[mk] for t in usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4 = winsorize_values(pairs_s4)
                 pairs_s4.sort()
                 n_s4 = len(pairs_s4)
                 if n_s4 % 2 == 1:
@@ -1943,6 +1945,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             else:
                 pairs_s4 = [t[mk] for t in all_usd_tickers if t.get(mk) is not None and t.get(mk) > 0]
             if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4 = winsorize_values(pairs_s4)
                 pairs_s4.sort()
                 n_s4 = len(pairs_s4)
                 if n_s4 % 2 == 1:
