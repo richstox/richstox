@@ -226,6 +226,7 @@ function extractDayProgress(message: string | undefined): string | null {
 }
 
 const CHAIN_STATUS_POLL_MS = 5000;
+const PEER_MEDIANS_POLL_MS = 3000;
 
 // ── Step 3 phase telemetry constants ────────────────────────────────────────
 const S3_PHASE_LABELS: Record<string, string> = { A: 'Phase A — Fundamentals', B: 'Phase B — Visibility', C: 'Phase C — Price History' };
@@ -1097,7 +1098,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     if (isPeerMediansRunning && peerMediansStartedAt) {
       setPeerMediansElapsed(Math.round((Date.now() - peerMediansStartedAt) / 1000));
       peerMediansTimerRef.current = setInterval(() => {
-        setPeerMediansElapsed(Math.round((Date.now() - (peerMediansStartedAt ?? Date.now())) / 1000));
+        setPeerMediansElapsed(Math.round((Date.now() - peerMediansStartedAt) / 1000));
       }, 1000);
       return () => {
         if (peerMediansTimerRef.current) {
@@ -1224,10 +1225,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               if (lr.status === 'completed' || lr.status === 'success') {
                 const processed = resultData?.tickers_processed;
                 const included = resultData?.tickers_included_any_metric;
-                const elapsed = lr.duration_seconds;
-                const statsMsg = processed
-                  ? `${processed.toLocaleString()} tickers processed, ${(included ?? 0).toLocaleString()} eligible${elapsed ? ` in ${elapsed}s` : ''}`
-                  : (elapsed ? `Completed in ${elapsed}s` : 'Completed');
+                const elapsedSec = lr.duration_seconds;
+                let statsMsg = 'Completed';
+                if (processed) {
+                  statsMsg = `${processed.toLocaleString()} tickers processed, ${(included ?? 0).toLocaleString()} eligible`;
+                  if (elapsedSec) statsMsg += ` in ${elapsedSec}s`;
+                } else if (elapsedSec) {
+                  statsMsg = `Completed in ${elapsedSec}s`;
+                }
                 dialog.alert('Step 4 Completed ✅', statsMsg);
               } else {
                 const errMsg = extractErrorText(lr) || `Job finished with status: ${lr.status}`;
@@ -1240,7 +1245,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         }
       } catch { /* non-fatal */ }
       if (!cancelled) {
-        peerMediansPollRef.current = setTimeout(poll, 3000);
+        peerMediansPollRef.current = setTimeout(poll, PEER_MEDIANS_POLL_MS);
       }
     };
     poll();
