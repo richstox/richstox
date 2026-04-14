@@ -1502,6 +1502,17 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     non_dividend_metrics = ["pe", "ps", "pb", "ev_ebitda", "ev_revenue"]
     # STEP 4 Key Metrics for admin overview (allow negative values for some)
     step4_metric_keys = ["pe", "net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "dividend_yield", "roe"]
+
+    # ── Observability: structured stats for Admin Step 4 card ──
+    _step4_stats = {
+        "industry": {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+        "sector":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+        "market":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+    }
+    _s4_metric_display = ["pe_ttm", "net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "dividend_yield_ttm", "roe"]
+    for _lvl in _step4_stats.values():
+        for _mk in _s4_metric_display:
+            _lvl["per_metric"][_mk] = {"groups_with_n_ge_5": 0, "total_n_sum": 0}
     # Metrics that can be negative (don't filter > 0)
     step4_allow_negative = {"net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "roe"}
     # Phase 2A: Metrics whose math is currency-agnostic (ratios of same-currency values
@@ -1512,6 +1523,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     step4_all_currency_eligible = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"}
     
     for industry, data in industries.items():
+        _step4_stats["industry"]["groups_total"] += 1
         sector = data["sector"]
         all_tickers = data["all_tickers"]
         usd_tickers = data["usd_only_tickers"]
@@ -1674,6 +1686,12 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 upsert=True
             )
             stored += 1
+            _step4_stats["industry"]["groups_written"] += 1
+            for _mk in _s4_metric_display:
+                _entry = step4.get(_mk)
+                if _entry and _entry.get("n_used", 0) >= 5:
+                    _step4_stats["industry"]["per_metric"][_mk]["groups_with_n_ge_5"] += 1
+                    _step4_stats["industry"]["per_metric"][_mk]["total_n_sum"] += _entry["n_used"]
     
     # =========================================================================
     # SECTOR-LEVEL BENCHMARKS (USD-only, for fallback when industry < 3 peers)
@@ -1697,6 +1715,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     
     sector_stored = 0
     for sector, usd_tickers in sectors.items():
+        _step4_stats["sector"]["groups_total"] += 1
         if len(usd_tickers) < MIN_PEER_COUNT:
             continue
         
@@ -1855,6 +1874,12 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 upsert=True
             )
             sector_stored += 1
+            _step4_stats["sector"]["groups_written"] += 1
+            for _mk in _s4_metric_display:
+                _entry = step4.get(_mk)
+                if _entry and _entry.get("n_used", 0) >= 5:
+                    _step4_stats["sector"]["per_metric"][_mk]["groups_with_n_ge_5"] += 1
+                    _step4_stats["sector"]["per_metric"][_mk]["total_n_sum"] += _entry["n_used"]
     
     logger.info(f"Stored {sector_stored} sector-level benchmarks")
     
@@ -1865,6 +1890,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     all_usd_tickers = [m for m in ticker_metrics if not m.get("currency_mismatch")]
     all_known_currency_tickers = [m for m in ticker_metrics if m.get("financial_currency")]  # Phase 2A
     
+    _step4_stats["market"]["groups_total"] = 1  # market is always 1 group
     if len(all_usd_tickers) >= MIN_PEER_COUNT:
         metric_values = {}
         metrics_count = {}
@@ -2015,6 +2041,12 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 upsert=True
             )
             logger.info(f"Stored market-level benchmarks (peer_count={len(all_usd_tickers)})")
+            _step4_stats["market"]["groups_written"] = 1
+            for _mk in _s4_metric_display:
+                _entry = step4.get(_mk)
+                if _entry and _entry.get("n_used", 0) >= 5:
+                    _step4_stats["market"]["per_metric"][_mk]["groups_with_n_ge_5"] += 1
+                    _step4_stats["market"]["per_metric"][_mk]["total_n_sum"] += _entry["n_used"]
     
     # =========================================================================
     # FIX-2: FALLBACK PASS - Update industries missing payers median
@@ -2080,8 +2112,19 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
     
+    # Compute total benchmarks_written across all levels
+    benchmarks_written = (
+        _step4_stats["industry"]["groups_written"]
+        + _step4_stats["sector"]["groups_written"]
+        + _step4_stats["market"]["groups_written"]
+    )
+    
     logger.info(f"Peer benchmarks V3 completed: {stored} benchmarks in {elapsed:.1f}s")
     logger.info(f"Excluded {len(excluded_currency_mismatch)} tickers due to currency mismatch")
+    logger.info(f"Step 4 stats: benchmarks_written={benchmarks_written} "
+                f"(industry={_step4_stats['industry']['groups_written']}, "
+                f"sector={_step4_stats['sector']['groups_written']}, "
+                f"market={_step4_stats['market']['groups_written']})")
     
     return {
         "status": "success",
@@ -2089,5 +2132,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         "tickers_excluded_currency": len(excluded_currency_mismatch),
         "excluded_details": excluded_currency_mismatch[:20],  # Top 20 for logging
         "industries_stored": stored,
-        "elapsed_seconds": round(elapsed, 1)
+        "elapsed_seconds": round(elapsed, 1),
+        "benchmarks_written": benchmarks_written,
+        "stats": _step4_stats,
     }

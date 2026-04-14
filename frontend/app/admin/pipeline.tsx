@@ -1198,6 +1198,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const healthPct = Math.round((completedCount / 3) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
+  // ── Step 4: read real benchmark stats from the last peer_medians run ──
+  const peerMediansRun = jobRuns['peer_medians'];
+  const peerMediansResult = (peerMediansRun as any)?.result ?? {};
+  const benchmarksWritten: number | undefined = asFiniteNumber(peerMediansResult.benchmarks_written);
+
   const steps = [
     {
       step: 1,
@@ -1279,10 +1284,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       icon: 'stats-chart-outline' as const,
       color: '#EC4899',
       apiUrl: 'Local DB only — no external API',
-      inputLabel: 'Visible tickers',
-      inputCount: visible,
-      outputCount: undefined,
-      outputLabel: 'coverage: n/a',
+      inputLabel: 'Tickers processed',
+      inputCount: asFiniteNumber(peerMediansResult.tickers_processed) ?? visible,
+      outputCount: benchmarksWritten,
+      outputLabel: 'benchmarks written',
       filters: [
         'Winsorize outliers (1–99%)',
         'Exclude self from own peer group',
@@ -2324,6 +2329,41 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   {step.filters.map(f => (
                     <Text key={f} style={s.filterText}>✕ {f}</Text>
                   ))}
+                  {/* Step 4 per-metric benchmark coverage details */}
+                  {step.job_name === 'peer_medians' && peerMediansResult.stats && (() => {
+                    const stats = peerMediansResult.stats;
+                    const levels = ['industry', 'sector', 'market'] as const;
+                    const metricLabels: Record<string, string> = {
+                      pe_ttm: 'P/E (TTM)',
+                      net_margin_ttm: 'Net Margin',
+                      fcf_yield: 'FCF Yield',
+                      net_debt_ebitda: 'Net Debt/EBITDA',
+                      revenue_growth_3y: 'Rev Growth 3Y',
+                      dividend_yield_ttm: 'Div Yield',
+                      roe: 'ROE',
+                    };
+                    return (
+                      <View style={{ marginTop: 10 }}>
+                        <Text style={s.detailLabel}>BENCHMARK COVERAGE (groups with n≥5)</Text>
+                        {levels.map(level => {
+                          const lv = stats[level];
+                          if (!lv) return null;
+                          return (
+                            <View key={level} style={{ marginTop: 6 }}>
+                              <Text style={[s.filterText, { fontWeight: '600', color: COLORS.textSecondary }]}>
+                                {level.charAt(0).toUpperCase() + level.slice(1)}: {lv.groups_written ?? '—'} / {lv.groups_total ?? '—'} groups written
+                              </Text>
+                              {lv.per_metric && Object.entries(lv.per_metric).map(([mk, mv]: [string, any]) => (
+                                <Text key={mk} style={[s.filterText, { paddingLeft: 10 }]}>
+                                  {metricLabels[mk] ?? mk}: {mv.groups_with_n_ge_5 ?? 0} groups
+                                </Text>
+                              ))}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    );
+                  })()}
                 </View>
               )}
 
