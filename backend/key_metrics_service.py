@@ -1479,11 +1479,11 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     # ── Ticker-level inclusion/exclusion stats for Admin Step 4 card ──
     # A ticker is "included in any metric" if, under Phase 2A eligibility rules,
     # it has at least one valid step4 metric value eligible for a peer pool.
-    # USD-only metrics: pe, fcf_yield — require financial_currency == "USD"
-    # Safe metrics: net_margin_ttm, roe, revenue_growth_3y, dividend_yield, net_debt_ebitda —
-    #   require non-null financial_currency
-    _s4_usd_only_metrics = {"pe", "fcf_yield"}
-    _s4_safe_metrics = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield", "net_debt_ebitda"}
+    # USD-only metrics: pe, fcf_yield, net_debt_ebitda — require financial_currency == "USD"
+    # Safe metrics: net_margin_ttm, roe, revenue_growth_3y, dividend_yield —
+    #   require non-null financial_currency (must match step4_all_currency_eligible)
+    _s4_usd_only_metrics = {"pe", "fcf_yield", "net_debt_ebitda"}
+    _s4_safe_metrics = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"}
     _s4_all_metric_keys = _s4_usd_only_metrics | _s4_safe_metrics
     _tickers_included = 0
     _tickers_excluded = 0
