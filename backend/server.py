@@ -4163,6 +4163,10 @@ async def get_ticker_detail_mobile(
 
     # Read precomputed step4_medians from peer_bench_doc (already fetched for valuation)
     _s4 = (peer_bench_doc.get("step4_medians") or {}) if peer_bench_doc else {}
+    def _s4_median(key: str):
+        """Extract median and n_used from step4_medians for a given metric key."""
+        entry = _s4.get(key) or {}
+        return entry.get("median"), entry.get("n_used")
 
     # Build key_metrics with all 7 fields + peer medians from step4_medians
     key_metrics = {
@@ -4183,16 +4187,16 @@ async def get_ticker_detail_mobile(
             "value": net_margin_ttm,
             "formatted": f"{net_margin_ttm:.1f}%" if net_margin_ttm is not None else None,
             "na_reason": None if net_margin_ttm is not None else ("unprofitable" if ttm_net_income and ttm_net_income < 0 else "missing_data"),
-            "peer_median": (_s4.get("net_margin_ttm") or {}).get("median"),
-            "peer_median_n": (_s4.get("net_margin_ttm") or {}).get("n_used"),
+            "peer_median": _s4_median("net_margin_ttm")[0],
+            "peer_median_n": _s4_median("net_margin_ttm")[1],
         },
         "fcf_yield": {
             "name": "FCF Yield",
             "value": fcf_yield,
             "formatted": f"{fcf_yield:.1f}%" if fcf_yield is not None else None,
             "na_reason": None if fcf_yield is not None else ("negative_fcf" if ttm_fcf and ttm_fcf < 0 else "missing_data"),
-            "peer_median": (_s4.get("fcf_yield") or {}).get("median"),
-            "peer_median_n": (_s4.get("fcf_yield") or {}).get("n_used"),
+            "peer_median": _s4_median("fcf_yield")[0],
+            "peer_median_n": _s4_median("fcf_yield")[1],
         },
         "net_debt_ebitda": {
             "name": "Net Debt/EBITDA",
@@ -4206,24 +4210,24 @@ async def get_ticker_detail_mobile(
                 "missing_cash_data" if ttm_cash is None else
                 "missing_data"
             ),
-            "peer_median": (_s4.get("net_debt_ebitda") or {}).get("median"),
-            "peer_median_n": (_s4.get("net_debt_ebitda") or {}).get("n_used"),
+            "peer_median": _s4_median("net_debt_ebitda")[0],
+            "peer_median_n": _s4_median("net_debt_ebitda")[1],
         },
         "revenue_growth_3y": {
             "name": "Revenue Growth (3Y CAGR)",
             "value": None,  # Will be updated after annual_income is loaded
             "formatted": None,
             "na_reason": "insufficient_annual_history",
-            "peer_median": (_s4.get("revenue_growth_3y") or {}).get("median"),
-            "peer_median_n": (_s4.get("revenue_growth_3y") or {}).get("n_used"),
+            "peer_median": _s4_median("revenue_growth_3y")[0],
+            "peer_median_n": _s4_median("revenue_growth_3y")[1],
         },
         "dividend_yield_ttm": {
             "name": "Dividend Yield",
             "value": dividend_yield_ttm,
             "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
             "na_reason": dividend_yield_na,
-            "peer_median": (_s4.get("dividend_yield_ttm") or {}).get("median"),
-            "peer_median_n": (_s4.get("dividend_yield_ttm") or {}).get("n_used"),
+            "peer_median": _s4_median("dividend_yield_ttm")[0],
+            "peer_median_n": _s4_median("dividend_yield_ttm")[1],
             # BACKWARD COMPAT (keep existing fields for frontend):
             "industry_dividend_yield_median": industry_dividend_data.get("dividend_yield_median_all"),
             "industry_dividend_peer_count": industry_dividend_data.get("dividend_peer_count", 0),

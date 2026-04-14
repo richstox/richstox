@@ -1108,6 +1108,12 @@ export default function StockDetail() {
     };
   };
 
+  /** Format peer median hint for a key metric (e.g. "peers: 12,3%") */
+  const formatPeerMedianHint = (median: number | null | undefined, unit: '%' | 'x'): string | null => {
+    if (median == null) return null;
+    return `peers: ${toEU(median, 1)}${unit}`;
+  };
+
   // P1 UX POLISH: Valuation Pulse calculation (Peer + 5Y integrated)
   const getValuationPulse = (valuation: any): { 
     label: string; 
@@ -2748,8 +2754,8 @@ export default function StockDetail() {
                         const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_margin_ttm, 'net_margin_ttm');
                         return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
                       })()}
-                      {mobileData.key_metrics.net_margin_ttm?.peer_median != null && (
-                        <Text style={styles.peerMedianHint}>peers: {toEU(mobileData.key_metrics.net_margin_ttm.peer_median, 1)}%</Text>
+                      {formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%')}</Text>
                       )}
                     </View>
                   </View>
@@ -2765,8 +2771,8 @@ export default function StockDetail() {
                         const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.fcf_yield, 'fcf_yield');
                         return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
                       })()}
-                      {mobileData.key_metrics.fcf_yield?.peer_median != null && (
-                        <Text style={styles.peerMedianHint}>peers: {toEU(mobileData.key_metrics.fcf_yield.peer_median, 1)}%</Text>
+                      {formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%')}</Text>
                       )}
                     </View>
                   </View>
@@ -2782,8 +2788,8 @@ export default function StockDetail() {
                         const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_debt_ebitda, 'net_debt_ebitda');
                         return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
                       })()}
-                      {mobileData.key_metrics.net_debt_ebitda?.peer_median != null && (
-                        <Text style={styles.peerMedianHint}>peers: {toEU(mobileData.key_metrics.net_debt_ebitda.peer_median, 1)}x</Text>
+                      {formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x')}</Text>
                       )}
                     </View>
                   </View>
@@ -2799,8 +2805,8 @@ export default function StockDetail() {
                         const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.revenue_growth_3y, 'revenue_growth_3y');
                         return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
                       })()}
-                      {mobileData.key_metrics.revenue_growth_3y?.peer_median != null && (
-                        <Text style={styles.peerMedianHint}>peers: {toEU(mobileData.key_metrics.revenue_growth_3y.peer_median, 1)}%</Text>
+                      {formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%') && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%')}</Text>
                       )}
                     </View>
                   </View>
