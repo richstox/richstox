@@ -6000,6 +6000,7 @@ async def admin_get_job_status(job_name: str):
                 "records_upserted": records_upserted,
                 "phase": phase,
             },
+            "result": raw_last_run.get("result"),
         }
 
     # Get previous completed run (most recent successful/completed run)
