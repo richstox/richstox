@@ -2178,6 +2178,12 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 f"sector={_step4_stats['sector']['groups_written']}, "
                 f"market={_step4_stats['market']['groups_written']})")
     
+    # Read back market-level step4 medians so the admin panel can display them.
+    _market_doc = await db.peer_benchmarks.find_one(
+        {"sector": None, "industry": None}, {"step4_medians": 1, "_id": 0}
+    )
+    _market_medians = _market_doc.get("step4_medians") if _market_doc else None
+
     return {
         "status": "success",
         "tickers_processed": len(ticker_metrics),
@@ -2190,4 +2196,5 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         "elapsed_seconds": round(elapsed, 1),
         "benchmarks_written": benchmarks_written,
         "stats": _step4_stats,
+        "market_medians": _market_medians,
     }

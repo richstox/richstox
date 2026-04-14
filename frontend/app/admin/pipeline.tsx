@@ -2495,6 +2495,17 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                             })}
                           </View>
                         )}
+                        {/* Market-level medians */}
+                        {peerMediansResult.market_medians && (
+                          <View style={{ marginTop: 10 }}>
+                            <Text style={s.detailLabel}>MARKET-LEVEL MEDIANS</Text>
+                            {Object.entries(peerMediansResult.market_medians).map(([mk, mv]: [string, any]) => (
+                              <Text key={mk} style={s.filterText}>
+                                {metricLabels[mk] ?? mk}: {mv?.median != null ? mv.median : '—'} (n={mv?.n_used ?? 0})
+                              </Text>
+                            ))}
+                          </View>
+                        )}
                       </>
                     );
                   })()}
