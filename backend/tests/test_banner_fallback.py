@@ -8,7 +8,7 @@ relevant page metric has a benchmark at *any* level, the banner is
 suppressed.
 
 Run:
-    cd /app/backend && python -m pytest tests/test_banner_fallback.py -v
+    python -m pytest tests/test_banner_fallback.py -v
 """
 
 import pytest

@@ -796,10 +796,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       await fetchSnapshotOnce();
     } catch (e: any) {
       dialog.alert('Peer Medians Failed', e?.message || 'Could not start peer medians');
-      setPeerMediansRunning(false);
+      setPeerMediansRunning(false); // Clear on error so user can retry
     }
-    // Note: setPeerMediansRunning(false) is NOT called on success — the polling
-    // effect will clear isPeerMediansRunning when ops_job_runs shows a terminal state.
+    // On success: polling effect clears isPeerMediansRunning when ops_job_runs
+    // reports a terminal state. We do NOT call setPeerMediansRunning(false) here.
   };
 
   const handleRunNewsRefresh = async () => {
