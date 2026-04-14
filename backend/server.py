@@ -3778,12 +3778,59 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
 
     # 4. Get industry benchmark
     industry = company.get("industry")
+    sector = company.get("sector")
     benchmark = None
     if industry:
         benchmark = await db.industry_benchmarks.find_one(
             {"industry": industry},
             {"_id": 0}
         )
+
+    # 4b. Determine has_benchmark using peer_benchmarks with Industry→Sector→Market
+    # fallback (same logic as the new /v1/ticker/{ticker}/detail endpoint).
+    # The old `benchmark` variable (from industry_benchmarks) is only used for
+    # legacy valuation scoring above; has_benchmark controls the yellow banner.
+    _has_peer_benchmark = False
+    _benchmark_fallback_level = None
+    _MIN_BM_N = 5
+    _bm_check_metrics = ["net_margin_ttm", "fcf_yield", "net_debt_ebitda",
+                         "revenue_growth_3y", "dividend_yield_ttm"]
+    _pb_industry = None
+    _pb_sector = None
+    _pb_market = None
+    if industry:
+        _pb_industry = await db.peer_benchmarks.find_one(
+            {"industry": industry}, {"_id": 0, "step4_medians": 1}
+        )
+    if sector:
+        _pb_sector = await db.peer_benchmarks.find_one(
+            {"sector": sector, "industry": None}, {"_id": 0, "step4_medians": 1}
+        )
+    _pb_market = await db.peer_benchmarks.find_one(
+        {"sector": None, "industry": None}, {"_id": 0, "step4_medians": 1}
+    )
+    _s4_levels = [
+        ((_pb_industry.get("step4_medians") or {}) if _pb_industry else {}, "industry"),
+        ((_pb_sector.get("step4_medians") or {}) if _pb_sector else {}, "sector"),
+        ((_pb_market.get("step4_medians") or {}) if _pb_market else {}, "market"),
+    ]
+    _fallback_levels_used: set = set()
+    for _mk in _bm_check_metrics:
+        for _s4_data, _level in _s4_levels:
+            _entry = _s4_data.get(_mk) or {}
+            _n = _entry.get("n_used")
+            _med = _entry.get("median")
+            if _med is not None and _n is not None and _n >= _MIN_BM_N:
+                _has_peer_benchmark = True
+                _fallback_levels_used.add(_level)
+                break
+    if _fallback_levels_used:
+        if "market" in _fallback_levels_used:
+            _benchmark_fallback_level = "market"
+        elif "sector" in _fallback_levels_used:
+            _benchmark_fallback_level = "sector"
+        else:
+            _benchmark_fallback_level = "industry"
 
     # 5. Calculate Dividend Yield TTM
     dividend_yield_ttm = None
@@ -4019,7 +4066,8 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
         # Metadata
         "lite_mode": lite,
         "data_source": "cache",
-        "has_benchmark": benchmark is not None,
+        "has_benchmark": _has_peer_benchmark,
+        "benchmark_fallback": _benchmark_fallback_level,
         "fundamentals_pending": fundamentals_pending,  # VARIANT C: True if no fundamentals yet
     }
 
