@@ -2964,10 +2964,13 @@ export default function StockDetail() {
 
             {/* No Benchmark Warning — uses per-metric fallback chain from new endpoint */}
             {(() => {
-              const hasBenchmark = mobileData?.has_benchmark ?? data.has_benchmark;
-              const benchmarkFallback = mobileData?.benchmark_fallback;
-              const industryName = mobileData?.company?.industry || data.company?.industry;
-              const sectorName = mobileData?.company?.sector || data.company?.sector;
+              const hasBenchmark = mobileData?.has_benchmark ?? data?.has_benchmark;
+              const benchmarkFallback = mobileData?.benchmark_fallback ?? data?.benchmark_fallback;
+              const industryName = mobileData?.company?.industry || data?.company?.industry;
+              const sectorName = mobileData?.company?.sector || data?.company?.sector;
+
+              // Don't flash a yellow banner while data is still loading
+              if (mobileDataLoading) return null;
 
               // If we have benchmarks, show info about fallback level if not industry
               if (hasBenchmark) {

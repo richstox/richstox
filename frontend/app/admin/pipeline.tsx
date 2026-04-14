@@ -792,13 +792,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
         throw new Error(msg);
       }
-      dialog.alert('Peer Medians', 'Peer medians computation started in background.');
+      // No modal — polling will pick up the running state and update on completion
       await fetchSnapshotOnce();
     } catch (e: any) {
       dialog.alert('Peer Medians Failed', e?.message || 'Could not start peer medians');
-    } finally {
-      setPeerMediansRunning(false);
+      setPeerMediansRunning(false); // Clear on error so user can retry
     }
+    // On success: polling effect clears isPeerMediansRunning when ops_job_runs
+    // reports a terminal state. We do NOT call setPeerMediansRunning(false) here.
   };
 
   const handleRunNewsRefresh = async () => {
@@ -1179,6 +1180,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           const lr = normaliseRun(payload.last_run);
           if (lr) {
             setLiveLastRuns(prev => ({ ...prev, peer_medians: lr }));
+            // Clear local running flag once the backend reports a terminal state
+            const terminalStatuses = ['completed', 'success', 'failed', 'error', 'cancelled'];
+            if (terminalStatuses.includes(lr.status)) {
+              setPeerMediansRunning(false);
+            }
           }
         }
       } catch { /* non-fatal */ }
@@ -1367,7 +1373,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       inputCount: s4Processed,
       outputCount: s4Included,
       droppedCount: s4Excluded,
-      outputLabel: 'eligible for benchmarks',
+      outputLabel: 'Eligible (≥1 metric)',
       filters: [
         'Financial currency missing or null',
         'Non-USD ticker with only USD-metric values',
@@ -1672,6 +1678,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 <View style={s.waitingRow}>
                   <Ionicons name="time-outline" size={13} color={COLORS.textMuted} />
                   <Text style={s.waitingText}>Waiting for Step {step.step - 1} to complete</Text>
+                </View>
+              ) : step.job_name === 'peer_medians' && inCount === undefined && outCount === undefined ? (
+                /* Step 4: no data at all — show placeholder prompting a run */
+                <View style={s.funnelRow}>
+                  <View style={[s.funnelBox, s.funnelBoxOut, { borderColor: step.color + '88', flex: 1 }]}>
+                    <Text style={[s.funnelBoxNum, { color: COLORS.textMuted }]}>—</Text>
+                    <Text style={s.funnelBoxLabel}>No data (run Step 4)</Text>
+                  </View>
                 </View>
               ) : (
                 <View style={s.funnelRow}>
