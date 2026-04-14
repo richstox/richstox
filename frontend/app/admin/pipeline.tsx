@@ -1274,7 +1274,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // Preserve last completed result so stats stay visible while a new run is in progress.
   const peerMediansRun = jobRuns['peer_medians'];
   const peerMediansRunResult = (peerMediansRun as any)?.result;
-  if (peerMediansRunResult && Object.keys(peerMediansRunResult).length > 0) {
+  if (peerMediansRunResult && typeof peerMediansRunResult === 'object' && Object.keys(peerMediansRunResult).length > 0) {
     lastPeerMediansResultRef.current = peerMediansRunResult;
   }
   const peerMediansResult = peerMediansRunResult ?? lastPeerMediansResultRef.current;
