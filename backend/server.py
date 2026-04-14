@@ -4193,12 +4193,15 @@ async def get_ticker_detail_mobile(
     _s4_sector = (_sector_s4_doc.get("step4_medians") or {}) if _sector_s4_doc else {}
     _s4_market = (_market_s4_doc.get("step4_medians") or {}) if _market_s4_doc else {}
 
+    # Fallback chain order: Industry (best) → Sector → Market (most degraded)
+    _s4_fallback_chain = [(_s4_industry, "industry"), (_s4_sector, "sector"), (_s4_market, "market")]
+
     def _s4_median_with_fallback(key: str):
         """
         Per-metric fallback: Industry → Sector → Market.
         Returns (median, n_used, level) where level is 'industry'/'sector'/'market'/None.
         """
-        for s4_data, level in [(_s4_industry, "industry"), (_s4_sector, "sector"), (_s4_market, "market")]:
+        for s4_data, level in _s4_fallback_chain:
             entry = s4_data.get(key) or {}
             n = entry.get("n_used")
             med = entry.get("median")
@@ -4300,7 +4303,8 @@ async def get_ticker_detail_mobile(
         for mk in _benchmark_metrics
     )
 
-    # Determine the highest fallback level used across all metrics
+    # Determine the most degraded fallback level used across all metrics
+    # (market = most degraded, industry = best, no fallback needed)
     _fallback_levels_used = set(
         key_metrics[mk].get("peer_median_level")
         for mk in _benchmark_metrics
@@ -4308,7 +4312,7 @@ async def get_ticker_detail_mobile(
     )
     _benchmark_fallback = None
     if _fallback_levels_used:
-        # Report the most degraded level used (market > sector > industry)
+        # Most degraded fallback level used: market > sector > industry
         if "market" in _fallback_levels_used:
             _benchmark_fallback = "market"
         elif "sector" in _fallback_levels_used:
