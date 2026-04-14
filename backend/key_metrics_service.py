@@ -1506,8 +1506,10 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     step4_allow_negative = {"net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "roe"}
     # Phase 2A: Metrics whose math is currency-agnostic (ratios of same-currency values
     # or direct percentages). These can use ALL tickers with known financial_currency.
-    # USD-only: pe (price/EPS cross-currency), fcf_yield (FCF/market_cap cross-currency)
-    step4_all_currency_eligible = {"net_margin_ttm", "roe", "revenue_growth_3y", "net_debt_ebitda", "dividend_yield"}
+    # USD-only: pe (price/EPS cross-currency), fcf_yield (FCF/market_cap cross-currency),
+    #           net_debt_ebitda (cannot deterministically prove total_debt, cash, ebitda_ttm
+    #           are in the same reporting currency from existing fields)
+    step4_all_currency_eligible = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"}
     
     for industry, data in industries.items():
         sector = data["sector"]

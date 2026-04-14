@@ -17,13 +17,13 @@ import pytest
 # The set under test (must match key_metrics_service.py)
 # ---------------------------------------------------------------------------
 STEP4_ALL_CURRENCY_ELIGIBLE = {
-    "net_margin_ttm", "roe", "revenue_growth_3y", "net_debt_ebitda", "dividend_yield",
+    "net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield",
 }
 STEP4_METRIC_KEYS = [
     "pe", "net_margin_ttm", "fcf_yield", "net_debt_ebitda",
     "revenue_growth_3y", "dividend_yield", "roe",
 ]
-STEP4_USD_ONLY = {"pe", "fcf_yield"}
+STEP4_USD_ONLY = {"pe", "fcf_yield", "net_debt_ebitda"}
 
 
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ class TestPoolSelection:
         return usd, known
 
     def test_safe_metrics_include_non_usd(self):
-        """net_margin_ttm, roe, revenue_growth_3y, net_debt_ebitda, dividend_yield
+        """net_margin_ttm, roe, revenue_growth_3y, dividend_yield
         should include non-USD tickers with known currency."""
         tickers = [
             _build_ticker("AAPL", "USD", net_margin_ttm=25.0),
@@ -70,20 +70,20 @@ class TestPoolSelection:
         ]
         usd, known = self._make_pools(tickers)
 
-        for mk in ["net_margin_ttm", "roe", "revenue_growth_3y", "net_debt_ebitda", "dividend_yield"]:
+        for mk in ["net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"]:
             pool = _select_pool(mk, usd, known)
             assert len(pool) == 3, f"{mk} should use all 3 known-currency tickers"
 
     def test_usd_only_metrics_exclude_non_usd(self):
-        """pe and fcf_yield must use USD-only pool."""
+        """pe, fcf_yield, and net_debt_ebitda must use USD-only pool."""
         tickers = [
-            _build_ticker("AAPL", "USD", pe=28.0, fcf_yield=3.5),
-            _build_ticker("SHOP.TO", "CAD", pe=60.0, fcf_yield=1.2),
-            _build_ticker("SAP.DE", "EUR", pe=35.0, fcf_yield=2.8),
+            _build_ticker("AAPL", "USD", pe=28.0, fcf_yield=3.5, net_debt_ebitda=1.2),
+            _build_ticker("SHOP.TO", "CAD", pe=60.0, fcf_yield=1.2, net_debt_ebitda=0.8),
+            _build_ticker("SAP.DE", "EUR", pe=35.0, fcf_yield=2.8, net_debt_ebitda=1.5),
         ]
         usd, known = self._make_pools(tickers)
 
-        for mk in ["pe", "fcf_yield"]:
+        for mk in ["pe", "fcf_yield", "net_debt_ebitda"]:
             pool = _select_pool(mk, usd, known)
             assert len(pool) == 1, f"{mk} should only include USD tickers"
             assert pool[0]["ticker"] == "AAPL"
