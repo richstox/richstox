@@ -389,6 +389,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [newsRefreshRunning, setNewsRefreshRunning] = useState(false);
   const newsRefreshPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── Peer Medians (Step 4) manual run state ─────────────────────────────────
+  const [peerMediansRunning, setPeerMediansRunning] = useState(false);
+
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
   const [auditLive, setAuditLive] = useState(false);
@@ -770,6 +773,29 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       dialog.alert('Benchmark Update Failed', e?.message || 'Could not start benchmark update');
     } finally {
       setBenchmarkUpdating(false);
+    }
+  };
+
+  const handleRunPeerMedians = async () => {
+    setPeerMediansRunning(true);
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/job/peer_medians/run`,
+        { method: 'POST' },
+        sessionToken,
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
+        throw new Error(msg);
+      }
+      dialog.alert('Peer Medians', 'Peer medians computation started in background.');
+      await fetchSnapshotOnce();
+    } catch (e: any) {
+      dialog.alert('Peer Medians Failed', e?.message || 'Could not start peer medians');
+    } finally {
+      setPeerMediansRunning(false);
     }
   };
 
@@ -1519,7 +1545,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const earningsDetector: Step2SubStep = eventDetectors?.step_2_6_earnings || {};
         const hasStep2DetectorPayload = Object.keys(eventDetectors || {}).length > 0;
         const pendingEventCounts = data?.pipeline_sync_status?.pending_event_counts || {};
-        const nextRunLabel = step.step === 1
+        const nextRunLabel = step.step === 1 || step.job_name === 'peer_medians'
           ? getNextRun(step.scheduledHour, step.scheduledMinute, true)
           : (!prevRunOk || inCount === 0)
             ? `After Step ${step.step - 1} completion`
@@ -1571,9 +1597,27 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             </View>
             </TouchableOpacity>
 
+              {/* Step 4 "Run now" button — peer_medians is independently runnable */}
+              {step.job_name === 'peer_medians' && (
+                <View style={{ flexDirection: 'row', justifyContent: 'flex-end', paddingHorizontal: 12, paddingBottom: 6 }}>
+                  <TouchableOpacity
+                    style={[
+                      { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: step.color },
+                      peerMediansRunning && { opacity: 0.5 },
+                    ]}
+                    onPress={handleRunPeerMedians}
+                    disabled={peerMediansRunning}
+                  >
+                    {peerMediansRunning
+                      ? <ActivityIndicator size="small" color="#fff" />
+                      : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
+                  </TouchableOpacity>
+                </View>
+              )}
+
               {/* ── Integrated Funnel Row ── */}
-              {/* Steps 2+: waiting state if previous step has 0 output */}
-              {inCount === 0 && step.step > 1 ? (
+              {/* Steps 2-3: waiting state if previous step has 0 output (Step 4 is independent) */}
+              {inCount === 0 && step.step > 1 && step.job_name !== 'peer_medians' ? (
                 <View style={s.waitingRow}>
                   <Ionicons name="time-outline" size={13} color={COLORS.textMuted} />
                   <Text style={s.waitingText}>Waiting for Step {step.step - 1} to complete</Text>
