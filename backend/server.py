@@ -6110,6 +6110,16 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
     if result:
         update_doc["tickers_updated"] = result.get("tickers_updated", 0)
         update_doc["api_calls"] = result.get("api_calls", 0)
+        # Store the full result dict so the frontend can read job-specific
+        # output (e.g. tickers_processed, stats, exclusion_reasons for Step 4).
+        # This matches what run_job_with_retry() stores in scheduler.py.
+        update_doc["result"] = result if isinstance(result, dict) else {"value": str(result)}
+        # Also compute duration_seconds for consistency with scheduler path
+        started_doc = await database.ops_job_runs.find_one(
+            {"_id": ObjectId(audit_id)}, {"started_at": 1}
+        )
+        if started_doc and started_doc.get("started_at"):
+            update_doc["duration_seconds"] = (finished_at - started_doc["started_at"]).total_seconds()
 
     await database.ops_job_runs.update_one(
         {"_id": ObjectId(audit_id)},
