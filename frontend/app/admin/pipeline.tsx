@@ -1201,7 +1201,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // ── Step 4: read real benchmark stats from the last peer_medians run ──
   const peerMediansRun = jobRuns['peer_medians'];
   const peerMediansResult = (peerMediansRun as any)?.result ?? {};
-  const benchmarksWritten: number | undefined = asFiniteNumber(peerMediansResult.benchmarks_written);
+  const s4Processed: number | undefined = asFiniteNumber(peerMediansResult.tickers_processed);
 
   const steps = [
     {
@@ -1284,10 +1284,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       icon: 'stats-chart-outline' as const,
       color: '#EC4899',
       apiUrl: 'Local DB only — no external API',
-      inputLabel: 'Tickers processed',
-      inputCount: asFiniteNumber(peerMediansResult.tickers_processed) ?? visible,
-      outputCount: benchmarksWritten,
-      outputLabel: 'benchmarks written',
+      inputLabel: 'Visible tickers',
+      inputCount: visible,
+      outputCount: s4Processed,
+      outputLabel: 'tickers processed',
       filters: [
         'Winsorize outliers (1–99%)',
         'Exclude self from own peer group',
