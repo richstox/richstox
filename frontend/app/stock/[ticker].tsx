@@ -279,14 +279,15 @@ interface MobileDetailData {
   } | null;
   // Hybrid 7 Key Metrics (P0)
   has_benchmark?: boolean;
+  benchmark_fallback?: 'industry' | 'sector' | 'market' | null;
   key_metrics?: {
     market_cap: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
     shares_outstanding: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
-    net_margin_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
-    fcf_yield: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
-    net_debt_ebitda: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
-    revenue_growth_3y: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null };
-    dividend_yield_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; industry_dividend_yield_median?: number | null };
+    net_margin_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
+    fcf_yield: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
+    net_debt_ebitda: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
+    revenue_growth_3y: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
+    dividend_yield_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null; industry_dividend_yield_median?: number | null };
   } | null;
   // Peer Transparency (P0)
   peer_transparency?: {
@@ -2961,17 +2962,36 @@ export default function StockDetail() {
               </View>
             )}
 
-            {/* No Benchmark Warning — prefer mobileData (peer_benchmarks) over legacy data (industry_benchmarks) */}
+            {/* No Benchmark Warning — uses per-metric fallback chain from new endpoint */}
             {(() => {
               const hasBenchmark = mobileData?.has_benchmark ?? data.has_benchmark;
+              const benchmarkFallback = mobileData?.benchmark_fallback;
               const industryName = mobileData?.company?.industry || data.company?.industry;
-              if (hasBenchmark || !industryName) return null;
+              const sectorName = mobileData?.company?.sector || data.company?.sector;
+
+              // If we have benchmarks, show info about fallback level if not industry
+              if (hasBenchmark) {
+                if (benchmarkFallback && benchmarkFallback !== 'industry' && industryName) {
+                  const levelLabel = benchmarkFallback === 'sector' ? `${sectorName || 'Sector'}` : 'Market';
+                  return (
+                    <View style={[styles.peerDisclaimer, { backgroundColor: '#EFF6FF' }]}>
+                      <Ionicons name="information-circle-outline" size={14} color="#3B82F6" />
+                      <Text style={[styles.disclaimerText, { color: '#1E40AF' }]}>
+                        Benchmarks use {levelLabel} peers (insufficient data for {industryName} alone).
+                      </Text>
+                    </View>
+                  );
+                }
+                return null; // Industry-level benchmarks — no warning needed
+              }
+
+              // No benchmark at any level
+              if (!industryName) return null;
               return (
                 <View style={[styles.peerDisclaimer, { backgroundColor: '#FEF3C7' }]}>
                   <Ionicons name="alert-circle-outline" size={14} color="#D97706" />
                   <Text style={[styles.disclaimerText, { color: '#92400E' }]}>
-                    No peer benchmark available for {industryName}. 
-                    Industry has fewer than 5 companies in our database.
+                    No peer benchmark available for {industryName}. Insufficient data at all levels.
                   </Text>
                 </View>
               );
