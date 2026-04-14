@@ -6107,6 +6107,7 @@ async def admin_run_job_now(
     from benchmark_service import update_all_benchmarks
     from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
     from services.news_service import refresh_hot_tickers_news
+    from key_metrics_service import compute_peer_benchmarks_v3
 
     async def _market_calendar_refresh(database):
         await _mc_ensure_indexes(database)
@@ -6132,6 +6133,7 @@ async def admin_run_job_now(
         "benchmark_update": update_all_benchmarks,
         "market_calendar": _market_calendar_refresh,
         "news_refresh": refresh_hot_tickers_news,
+        "peer_medians": compute_peer_benchmarks_v3,
     }
 
     if job_name not in JOB_RUNNERS:
@@ -6379,14 +6381,8 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
 
 @api_router.post("/admin/scheduler/run/peer-medians")
 async def admin_manual_peer_medians(background_tasks: BackgroundTasks):
-    """Individually triggering pipeline steps is disabled. Use the full sequential run instead."""
-    raise HTTPException(
-        status_code=403,
-        detail={
-            "error": "per_step_run_disabled",
-            "message": "Individual step execution is disabled. Use the full sequential pipeline run (Run Full Pipeline Now).",
-        },
-    )
+    """Redirect to the generic job runner — peer_medians is independently runnable."""
+    return await admin_run_job_now("peer_medians", background_tasks)
 
 
 @api_router.post("/admin/jobs/{job_name}/cancel")
