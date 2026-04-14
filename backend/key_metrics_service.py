@@ -1476,6 +1476,58 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     logger.info(f"Computed metrics for {len(ticker_metrics)} tickers")
     logger.info(f"P1 Policy: {len(excluded_currency_mismatch)} non-USD tickers excluded from peer medians")
     
+    # ── Ticker-level inclusion/exclusion stats for Admin Step 4 card ──
+    # A ticker is "included in any metric" if, under Phase 2A eligibility rules,
+    # it has at least one valid step4 metric value eligible for a peer pool.
+    # USD-only metrics: pe, fcf_yield — require financial_currency == "USD"
+    # Safe metrics: net_margin_ttm, roe, revenue_growth_3y, dividend_yield, net_debt_ebitda —
+    #   require non-null financial_currency
+    _s4_usd_only_metrics = {"pe", "fcf_yield"}
+    _s4_safe_metrics = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield", "net_debt_ebitda"}
+    _s4_all_metric_keys = _s4_usd_only_metrics | _s4_safe_metrics
+    _tickers_included = 0
+    _tickers_excluded = 0
+    _excl_reasons = {
+        "missing_or_null_financial_currency": 0,
+        "excluded_by_usd_only_metrics_only": 0,
+        "missing_metric_values_all": 0,
+    }
+    for _m in ticker_metrics:
+        _has_any_eligible = False
+        _fc = _m.get("financial_currency")
+        _is_usd = (_fc == "USD")
+        if not _fc:
+            # Null currency → excluded from all pools
+            _tickers_excluded += 1
+            _excl_reasons["missing_or_null_financial_currency"] += 1
+            continue
+        # Check safe metrics (known currency eligible)
+        for _mk in _s4_safe_metrics:
+            if _m.get(_mk) is not None:
+                _has_any_eligible = True
+                break
+        # Check USD-only metrics (only if USD)
+        if not _has_any_eligible and _is_usd:
+            for _mk in _s4_usd_only_metrics:
+                if _m.get(_mk) is not None:
+                    _has_any_eligible = True
+                    break
+        if _has_any_eligible:
+            _tickers_included += 1
+        else:
+            _tickers_excluded += 1
+            # Determine reason: has currency but only USD metrics available and not USD?
+            _has_any_usd_only_val = any(_m.get(_mk) is not None for _mk in _s4_usd_only_metrics)
+            if _has_any_usd_only_val and not _is_usd:
+                _excl_reasons["excluded_by_usd_only_metrics_only"] += 1
+            else:
+                _excl_reasons["missing_metric_values_all"] += 1
+    
+    logger.info(f"Step 4 ticker stats: included={_tickers_included}, excluded={_tickers_excluded} "
+                f"(null_currency={_excl_reasons['missing_or_null_financial_currency']}, "
+                f"usd_only={_excl_reasons['excluded_by_usd_only_metrics_only']}, "
+                f"no_values={_excl_reasons['missing_metric_values_all']})")
+    
     # Group by industry (separating USD-only)
     industries = {}
     for m in ticker_metrics:
@@ -2129,6 +2181,9 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     return {
         "status": "success",
         "tickers_processed": len(ticker_metrics),
+        "tickers_included_any_metric": _tickers_included,
+        "tickers_excluded_all_metrics": _tickers_excluded,
+        "exclusion_reasons": _excl_reasons,
         "tickers_excluded_currency": len(excluded_currency_mismatch),
         "excluded_details": excluded_currency_mismatch[:20],  # Top 20 for logging
         "industries_stored": stored,

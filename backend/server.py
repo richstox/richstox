@@ -2830,6 +2830,113 @@ async def admin_peer_medians(
     }
 
 
+@api_router.get("/admin/benchmark-debug/{ticker}")
+async def admin_benchmark_debug(ticker: str):
+    """
+    Read-only debug endpoint: evaluate per-metric benchmark fallback evidence
+    for a single ticker. Reads from tracked_tickers + peer_benchmarks only.
+    Returns what the yellow banner logic would conclude for this ticker.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+    ticker_short = ticker_full.replace(".US", "")
+
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": {"$in": [ticker_full, ticker_short]}},
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1, "financial_currency": 1, "is_visible": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker_full} not found in tracked_tickers")
+
+    industry = tracked.get("industry")
+    sector = tracked.get("sector")
+
+    # Fetch the three levels of peer_benchmarks docs
+    industry_doc = None
+    sector_doc = None
+    market_doc = None
+
+    if industry:
+        industry_doc = await db.peer_benchmarks.find_one(
+            {"industry": industry},
+            {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count_total": 1, "computed_at": 1},
+        )
+    if sector:
+        sector_doc = await db.peer_benchmarks.find_one(
+            {"sector": sector, "industry": None},
+            {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count_total": 1, "computed_at": 1},
+        )
+    market_doc = await db.peer_benchmarks.find_one(
+        {"sector": None, "industry": None},
+        {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count_total": 1, "computed_at": 1},
+    )
+
+    s4_industry = (industry_doc.get("step4_medians") or {}) if industry_doc else {}
+    s4_sector = (sector_doc.get("step4_medians") or {}) if sector_doc else {}
+    s4_market = (market_doc.get("step4_medians") or {}) if market_doc else {}
+
+    _MIN_N = 5
+    metric_keys = ["net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y",
+                    "dividend_yield_ttm", "pe_ttm", "roe"]
+
+    per_metric = {}
+    any_benchmark_available = False
+    most_degraded = None
+
+    for mk in metric_keys:
+        ind_entry = s4_industry.get(mk) or {}
+        sec_entry = s4_sector.get(mk) or {}
+        mkt_entry = s4_market.get(mk) or {}
+
+        ind_n = ind_entry.get("n_used")
+        sec_n = sec_entry.get("n_used")
+        mkt_n = mkt_entry.get("n_used")
+
+        # Walk fallback chain
+        winner_level = None
+        if ind_n is not None and ind_n >= _MIN_N and ind_entry.get("median") is not None:
+            winner_level = "industry"
+        elif sec_n is not None and sec_n >= _MIN_N and sec_entry.get("median") is not None:
+            winner_level = "sector"
+        elif mkt_n is not None and mkt_n >= _MIN_N and mkt_entry.get("median") is not None:
+            winner_level = "market"
+
+        benchmark_available = winner_level is not None
+        if benchmark_available:
+            any_benchmark_available = True
+            if most_degraded is None:
+                most_degraded = winner_level
+            elif winner_level == "market":
+                most_degraded = "market"
+            elif winner_level == "sector" and most_degraded != "market":
+                most_degraded = "sector"
+
+        per_metric[mk] = {
+            "industry_n": ind_n,
+            "sector_n": sec_n,
+            "market_n": mkt_n,
+            "fallback_winner": winner_level,
+            "benchmark_available": benchmark_available,
+        }
+
+    return {
+        "ticker": tracked.get("ticker"),
+        "industry": industry,
+        "sector": sector,
+        "financial_currency": tracked.get("financial_currency"),
+        "is_visible": tracked.get("is_visible"),
+        "peer_benchmarks_docs": {
+            "industry_exists": industry_doc is not None,
+            "sector_exists": sector_doc is not None,
+            "market_exists": market_doc is not None,
+        },
+        "per_metric": per_metric,
+        "has_benchmark": any_benchmark_available,
+        "benchmark_fallback": most_degraded,
+        "yellow_banner_should_show": not any_benchmark_available,
+    }
+
+
 # ----- Dividend History Endpoints -----
 
 @api_router.post("/admin/dividends/sync-ticker/{ticker}")
