@@ -1198,6 +1198,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const healthPct = Math.round((completedCount / 3) * 100);
   const healthColor = healthPct === 100 ? '#22C55E' : healthPct >= 60 ? '#F59E0B' : '#EF4444';
 
+  // ── Step 4: read real benchmark stats from the last peer_medians run ──
+  const peerMediansRun = jobRuns['peer_medians'];
+  const peerMediansResult = (peerMediansRun as any)?.result ?? {};
+  const s4Processed: number | undefined = asFiniteNumber(peerMediansResult.tickers_processed);
+  const s4Included: number | undefined = asFiniteNumber(peerMediansResult.tickers_included_any_metric);
+  const s4Excluded: number | undefined = asFiniteNumber(peerMediansResult.tickers_excluded_all_metrics);
+
   const steps = [
     {
       step: 1,
@@ -1279,11 +1286,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       icon: 'stats-chart-outline' as const,
       color: '#EC4899',
       apiUrl: 'Local DB only — no external API',
-      inputLabel: 'Visible tickers',
-      inputCount: visible,
-      outputCount: undefined,
-      outputLabel: 'coverage: n/a',
+      inputLabel: 'Tickers processed',
+      inputCount: s4Processed,
+      outputCount: s4Included,
+      droppedCount: s4Excluded,
+      outputLabel: 'eligible for benchmarks',
       filters: [
+        'Financial currency missing or null',
+        'Non-USD ticker with only USD-metric values',
+        'No valid Step 4 metric values at all',
         'Winsorize outliers (1–99%)',
         'Exclude self from own peer group',
       ],
@@ -2324,6 +2335,60 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   {step.filters.map(f => (
                     <Text key={f} style={s.filterText}>✕ {f}</Text>
                   ))}
+                  {/* Step 4 exclusion reasons + benchmark coverage details */}
+                  {step.job_name === 'peer_medians' && (() => {
+                    const reasons = peerMediansResult.exclusion_reasons;
+                    const stats = peerMediansResult.stats;
+                    const levels = ['industry', 'sector', 'market'] as const;
+                    const metricLabels: Record<string, string> = {
+                      pe_ttm: 'P/E (TTM)',
+                      net_margin_ttm: 'Net Margin',
+                      fcf_yield: 'FCF Yield',
+                      net_debt_ebitda: 'Net Debt/EBITDA',
+                      revenue_growth_3y: 'Rev Growth 3Y',
+                      dividend_yield_ttm: 'Div Yield',
+                      roe: 'ROE',
+                    };
+                    return (
+                      <>
+                        {reasons && (
+                          <View style={{ marginTop: 10 }}>
+                            <Text style={s.detailLabel}>EXCLUSION REASONS</Text>
+                            <Text style={s.filterText}>
+                              Null/missing currency: {reasons.missing_or_null_financial_currency ?? 0}
+                            </Text>
+                            <Text style={s.filterText}>
+                              Non-USD with only USD-metric values: {reasons.excluded_by_usd_only_metrics_only ?? 0}
+                            </Text>
+                            <Text style={s.filterText}>
+                              No valid metric values: {reasons.missing_metric_values_all ?? 0}
+                            </Text>
+                          </View>
+                        )}
+                        {stats && (
+                          <View style={{ marginTop: 10 }}>
+                            <Text style={s.detailLabel}>BENCHMARK COVERAGE (groups with n≥5)</Text>
+                            {levels.map(level => {
+                              const lv = stats[level];
+                              if (!lv) return null;
+                              return (
+                                <View key={level} style={{ marginTop: 6 }}>
+                                  <Text style={[s.filterText, { fontWeight: '600', color: COLORS.textSecondary }]}>
+                                    {level.charAt(0).toUpperCase() + level.slice(1)}: {lv.groups_written ?? '—'} / {lv.groups_total ?? '—'} groups written
+                                  </Text>
+                                  {lv.per_metric && Object.entries(lv.per_metric).map(([mk, mv]: [string, any]) => (
+                                    <Text key={mk} style={[s.filterText, { paddingLeft: 10 }]}>
+                                      {metricLabels[mk] ?? mk}: {mv.groups_with_n_ge_5 ?? 0} groups
+                                    </Text>
+                                  ))}
+                                </View>
+                              );
+                            })}
+                          </View>
+                        )}
+                      </>
+                    );
+                  })()}
                 </View>
               )}
 

@@ -2830,6 +2830,455 @@ async def admin_peer_medians(
     }
 
 
+@api_router.get("/admin/benchmark-debug/industry")
+async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
+    """
+    Read-only debug endpoint: show per-ticker eligibility detail for an industry.
+    Replicates compute_peer_benchmarks_v3 logic to show exactly which tickers
+    are included/excluded from each Step 4 metric pool, and why.
+
+    Query param: name — the industry name (e.g. "Internet Content & Information")
+    """
+
+    # ── Helper functions (same as compute_peer_benchmarks_v3) ──
+    def _sf(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    def _get_ttm_sum(quarterly_data: dict, field: str):
+        if not quarterly_data:
+            return None
+        sorted_quarters = sorted(quarterly_data.keys(), reverse=True)[:4]
+        if len(sorted_quarters) < 4:
+            return None
+        total = 0
+        for q in sorted_quarters:
+            val = _sf(quarterly_data[q].get(field))
+            if val is not None:
+                total += val
+        return total if total != 0 else None
+
+    def _get_latest_value(quarterly_data: dict, field: str):
+        if not quarterly_data:
+            return None
+        for q in sorted(quarterly_data.keys(), reverse=True):
+            val = _sf(quarterly_data[q].get(field))
+            if val is not None:
+                return val
+        return None
+
+    # ── 1. Get ALL tickers in this industry from tracked_tickers ──
+    all_in_industry = await db.tracked_tickers.find(
+        {"industry": name},
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
+         "financial_currency": 1, "is_visible": 1, "fundamentals": 1}
+    ).to_list(length=500)
+
+    if not all_in_industry:
+        raise HTTPException(404, f"No tickers found with industry={name!r}")
+
+    sector = next((t.get("sector") for t in all_in_industry if t.get("sector")), None)
+
+    # ── 2. Get latest prices ──
+    ticker_names = [t["ticker"] for t in all_in_industry]
+    latest_prices = {}
+    cursor = db.stock_prices.aggregate([
+        {"$match": {"ticker": {"$in": ticker_names}}},
+        {"$sort": {"date": -1}},
+        {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}}
+    ])
+    async for doc in cursor:
+        if doc.get("price"):
+            latest_prices[doc["_id"]] = doc["price"]
+
+    # ── Step 4 metric definitions (same as compute_peer_benchmarks_v3) ──
+    _MIN_N = 5
+    # Metrics whose pool is all tickers with known financial_currency
+    step4_all_currency = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"}
+    # Metrics whose pool is USD-only tickers
+    step4_usd_only = {"pe", "fcf_yield", "net_debt_ebitda"}
+    # Metrics that allow negative values
+    step4_allow_neg = {"net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y", "roe"}
+    # All step4 metric keys
+    step4_keys = ["pe", "net_margin_ttm", "fcf_yield", "net_debt_ebitda",
+                  "revenue_growth_3y", "dividend_yield", "roe"]
+
+    # ── 3. Compute per-ticker eligibility + step4 metric values ──
+    tickers_detail = []
+    # Counters
+    _n_not_visible = 0
+    _n_no_fundamentals = 0
+    _n_no_price = 0
+    _n_no_shares = 0
+    _n_zero_mcap = 0
+    _n_in_ticker_metrics = 0
+
+    for t in all_in_industry:
+        ticker = t["ticker"]
+        is_visible = t.get("is_visible", False)
+        financial_currency = t.get("financial_currency")
+        fundamentals = t.get("fundamentals") or {}
+        has_fundamentals = bool(fundamentals)
+        current_price = latest_prices.get(ticker)
+
+        detail = {
+            "ticker": ticker,
+            "financial_currency": financial_currency,
+            "is_visible": is_visible,
+        }
+
+        # ── Filter 1: visibility + fundamentals ──
+        if not is_visible:
+            detail["exclusion_stage"] = "not_visible"
+            detail["in_ticker_metrics"] = False
+            _n_not_visible += 1
+            tickers_detail.append(detail)
+            continue
+
+        if not has_fundamentals:
+            detail["exclusion_stage"] = "no_fundamentals"
+            detail["in_ticker_metrics"] = False
+            _n_no_fundamentals += 1
+            tickers_detail.append(detail)
+            continue
+
+        # ── Filter 2: price ──
+        if not current_price:
+            detail["exclusion_stage"] = "no_price"
+            detail["in_ticker_metrics"] = False
+            _n_no_price += 1
+            tickers_detail.append(detail)
+            continue
+
+        # ── Filter 3: shares outstanding ──
+        shares_stats = fundamentals.get("SharesStats", {})
+        shares = _sf(shares_stats.get("SharesOutstanding"))
+        if not shares:
+            outstanding = fundamentals.get("outstandingShares", {}).get("annual", {})
+            if outstanding:
+                latest_key = sorted(outstanding.keys(), reverse=True)[0] if outstanding else None
+                if latest_key:
+                    shares = _sf(outstanding[latest_key].get("shares"))
+        if not shares or shares <= 0:
+            detail["exclusion_stage"] = "no_shares"
+            detail["in_ticker_metrics"] = False
+            _n_no_shares += 1
+            tickers_detail.append(detail)
+            continue
+
+        # ── Filter 4: market cap ──
+        market_cap = current_price * shares
+        if market_cap <= 0:
+            detail["exclusion_stage"] = "zero_market_cap"
+            detail["in_ticker_metrics"] = False
+            _n_zero_mcap += 1
+            tickers_detail.append(detail)
+            continue
+
+        # ── Passed all filters → in ticker_metrics ──
+        _n_in_ticker_metrics += 1
+        is_usd = (financial_currency == "USD")
+        detail["in_ticker_metrics"] = True
+        detail["is_usd"] = is_usd
+        detail["market_cap"] = round(market_cap)
+
+        # ── Compute step4 metric values ──
+        # (Replicate compute_peer_benchmarks_v3 lines 1356-1467)
+        financials_data = fundamentals.get("Financials", {})
+        quarterly_income = financials_data.get("Income_Statement", {}).get("quarterly", {})
+        quarterly_balance = financials_data.get("Balance_Sheet", {}).get("quarterly", {})
+        quarterly_cashflow = financials_data.get("Cash_Flow", {}).get("quarterly", {})
+        earnings = fundamentals.get("Earnings", {})
+
+        revenue_ttm = _get_ttm_sum(quarterly_income, "totalRevenue")
+        net_income_ttm = _get_ttm_sum(quarterly_income, "netIncome")
+        ebitda_ttm = _get_ttm_sum(quarterly_income, "ebitda")
+        if not ebitda_ttm:
+            operating_income = _get_ttm_sum(quarterly_income, "operatingIncome")
+            depreciation = _get_ttm_sum(quarterly_cashflow, "depreciation")
+            if operating_income:
+                ebitda_ttm = operating_income + abs(depreciation or 0)
+
+        total_equity = _get_latest_value(quarterly_balance, "totalStockholderEquity")
+        total_debt = _get_latest_value(quarterly_balance, "totalDebt")
+        if not total_debt:
+            short_term = _get_latest_value(quarterly_balance, "shortTermDebt") or 0
+            long_term = _get_latest_value(quarterly_balance, "longTermDebt") or 0
+            total_debt = short_term + long_term if (short_term or long_term) else 0
+        cash = (_get_latest_value(quarterly_balance, "cash")
+                or _get_latest_value(quarterly_balance, "cashAndShortTermInvestments")
+                or 0)
+
+        # EPS TTM
+        eps_ttm = None
+        earnings_history = earnings.get("History", {})
+        if earnings_history:
+            sorted_q = sorted(earnings_history.keys(), reverse=True)[:4]
+            eps_values = [_sf(earnings_history[q].get("epsActual"))
+                          for q in sorted_q
+                          if _sf(earnings_history[q].get("epsActual")) is not None]
+            if len(eps_values) >= 3:
+                eps_ttm = sum(eps_values)
+        if not eps_ttm and net_income_ttm and shares:
+            eps_ttm = net_income_ttm / shares
+
+        # Operating CF TTM
+        operating_cf_ttm = _get_ttm_sum(quarterly_cashflow, "totalCashFromOperatingActivities")
+        if not operating_cf_ttm:
+            operating_cf_ttm = _get_ttm_sum(quarterly_cashflow, "operatingCashflow")
+        capex_ttm = _get_ttm_sum(quarterly_cashflow, "capitalExpenditures")
+
+        # Dividend yield
+        splits_dividends = fundamentals.get("SplitsDividends", {})
+        forward_div_yield = _sf(splits_dividends.get("ForwardAnnualDividendYield"))
+
+        # Revenue growth 3Y
+        annual_income = financials_data.get("Income_Statement", {}).get("yearly", {})
+        revenue_growth_3y = None
+        if annual_income:
+            sorted_years = sorted(annual_income.keys(), reverse=True)
+            if len(sorted_years) >= 4:
+                rev_current = _sf(annual_income[sorted_years[0]].get("totalRevenue"))
+                rev_3y_ago = _sf(annual_income[sorted_years[3]].get("totalRevenue"))
+                if rev_current and rev_3y_ago and rev_3y_ago > 0 and rev_current > 0:
+                    revenue_growth_3y = ((rev_current / rev_3y_ago) ** (1.0 / 3.0) - 1) * 100
+
+        # Build step4 metric values dict
+        raw_metrics = {}
+        # pe
+        if eps_ttm and eps_ttm > 0:
+            raw_metrics["pe"] = round(current_price / eps_ttm, 4)
+        # net_margin_ttm
+        if net_income_ttm is not None and revenue_ttm and revenue_ttm > 0:
+            raw_metrics["net_margin_ttm"] = round((net_income_ttm / revenue_ttm) * 100, 4)
+        # fcf_yield
+        if operating_cf_ttm is not None and market_cap > 0:
+            fcf_ttm = operating_cf_ttm - abs(capex_ttm or 0)
+            raw_metrics["fcf_yield"] = round((fcf_ttm / market_cap) * 100, 4)
+        # net_debt_ebitda
+        net_debt = (total_debt or 0) - cash
+        if ebitda_ttm and ebitda_ttm > 0:
+            raw_metrics["net_debt_ebitda"] = round(net_debt / ebitda_ttm, 4)
+        # revenue_growth_3y
+        if revenue_growth_3y is not None:
+            raw_metrics["revenue_growth_3y"] = round(revenue_growth_3y, 4)
+        # dividend_yield
+        if forward_div_yield is not None and forward_div_yield >= 0:
+            raw_metrics["dividend_yield"] = round(forward_div_yield * 100, 4)
+        # roe
+        if net_income_ttm is not None and total_equity and total_equity > 0:
+            raw_metrics["roe"] = round((net_income_ttm / total_equity) * 100, 4)
+
+        # Per-metric eligibility
+        step4_detail = {}
+        for mk in step4_keys:
+            pool_type = "all_currency" if mk in step4_all_currency else "usd_only"
+            in_pool = (financial_currency is not None) if pool_type == "all_currency" else is_usd
+            val = raw_metrics.get(mk)
+            # Check value filter (same as compute_peer_benchmarks_v3)
+            if mk == "dividend_yield":
+                value_ok = val is not None and val >= 0
+            elif mk in step4_allow_neg:
+                value_ok = val is not None
+            else:
+                value_ok = val is not None and val > 0
+            step4_detail[mk] = {
+                "value": val,
+                "pool_type": pool_type,
+                "in_pool": in_pool,
+                "value_ok": value_ok,
+                "would_contribute": in_pool and value_ok,
+            }
+            if not in_pool:
+                step4_detail[mk]["reason"] = (
+                    "null_currency" if financial_currency is None
+                    else f"non_usd ({financial_currency})"
+                )
+            elif not value_ok:
+                step4_detail[mk]["reason"] = "null_value" if val is None else "value_filtered"
+
+        detail["step4_metrics"] = step4_detail
+        detail["exclusion_stage"] = None  # passed all filters
+        tickers_detail.append(detail)
+
+    # ── 4. Compute per-metric pool sizes (same logic as actual computation) ──
+    per_metric_pools = {}
+    for mk in step4_keys:
+        pool_type = "all_currency" if mk in step4_all_currency else "usd_only"
+        contributors = []
+        for d in tickers_detail:
+            s4 = d.get("step4_metrics", {}).get(mk)
+            if s4 and s4.get("would_contribute"):
+                contributors.append(d["ticker"])
+        per_metric_pools[mk] = {
+            "pool_type": pool_type,
+            "n_contributing": len(contributors),
+            "passes_min_peer_count": len(contributors) >= _MIN_N,
+            "contributing_tickers": contributors,
+        }
+
+    # ── 5. Fetch existing peer_benchmarks doc for this industry ──
+    pb_doc = await db.peer_benchmarks.find_one(
+        {"industry": name},
+        {"_id": 0, "step4_medians": 1, "peer_count_total": 1,
+         "peer_count_used": 1, "peer_count_known_currency": 1,
+         "excluded_tickers": 1, "computed_at": 1}
+    )
+
+    pb_summary = None
+    if pb_doc:
+        pb_summary = {
+            "peer_count_total": pb_doc.get("peer_count_total"),
+            "peer_count_used": pb_doc.get("peer_count_used"),
+            "peer_count_known_currency": pb_doc.get("peer_count_known_currency"),
+            "excluded_tickers": pb_doc.get("excluded_tickers", []),
+            "step4_medians": pb_doc.get("step4_medians", {}),
+            "computed_at": pb_doc.get("computed_at"),
+        }
+
+    # Sort tickers: in_ticker_metrics first, then by market_cap desc
+    tickers_detail.sort(
+        key=lambda d: (
+            not d.get("in_ticker_metrics", False),
+            -(d.get("market_cap") or 0),
+        )
+    )
+
+    return {
+        "industry": name,
+        "sector": sector,
+        "total_tickers_in_industry": len(all_in_industry),
+        "summary": {
+            "not_visible": _n_not_visible,
+            "no_fundamentals": _n_no_fundamentals,
+            "no_price": _n_no_price,
+            "no_shares": _n_no_shares,
+            "zero_market_cap": _n_zero_mcap,
+            "in_ticker_metrics": _n_in_ticker_metrics,
+            "usd_tickers": sum(1 for d in tickers_detail if d.get("is_usd")),
+            "non_usd_tickers": sum(1 for d in tickers_detail
+                                   if d.get("in_ticker_metrics") and not d.get("is_usd")),
+            "null_currency_tickers": sum(1 for d in tickers_detail
+                                         if d.get("in_ticker_metrics")
+                                         and d.get("financial_currency") is None),
+        },
+        "per_metric_pools": per_metric_pools,
+        "peer_benchmarks_doc": pb_summary,
+        "tickers": tickers_detail,
+    }
+
+
+@api_router.get("/admin/benchmark-debug/{ticker}")
+async def admin_benchmark_debug(ticker: str):
+    """
+    Read-only debug endpoint: evaluate per-metric benchmark fallback evidence
+    for a single ticker. Reads from tracked_tickers + peer_benchmarks only.
+    Returns what the yellow banner logic would conclude for this ticker.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+    ticker_short = ticker_full.replace(".US", "")
+
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": {"$in": [ticker_full, ticker_short]}},
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1, "financial_currency": 1, "is_visible": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker_full} not found in tracked_tickers")
+
+    industry = tracked.get("industry")
+    sector = tracked.get("sector")
+
+    # Fetch the three levels of peer_benchmarks docs
+    industry_doc = None
+    sector_doc = None
+    market_doc = None
+
+    if industry:
+        industry_doc = await db.peer_benchmarks.find_one(
+            {"industry": industry},
+            {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count_total": 1, "computed_at": 1},
+        )
+    if sector:
+        sector_doc = await db.peer_benchmarks.find_one(
+            {"sector": sector, "industry": None},
+            {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count_total": 1, "computed_at": 1},
+        )
+    market_doc = await db.peer_benchmarks.find_one(
+        {"sector": None, "industry": None},
+        {"_id": 0, "step4_medians": 1, "peer_count_used": 1, "peer_count_total": 1, "computed_at": 1},
+    )
+
+    s4_industry = (industry_doc.get("step4_medians") or {}) if industry_doc else {}
+    s4_sector = (sector_doc.get("step4_medians") or {}) if sector_doc else {}
+    s4_market = (market_doc.get("step4_medians") or {}) if market_doc else {}
+
+    _MIN_N = 5
+    metric_keys = ["net_margin_ttm", "fcf_yield", "net_debt_ebitda", "revenue_growth_3y",
+                    "dividend_yield_ttm", "pe_ttm", "roe"]
+
+    per_metric = {}
+    any_benchmark_available = False
+    most_degraded = None
+
+    for mk in metric_keys:
+        ind_entry = s4_industry.get(mk) or {}
+        sec_entry = s4_sector.get(mk) or {}
+        mkt_entry = s4_market.get(mk) or {}
+
+        ind_n = ind_entry.get("n_used")
+        sec_n = sec_entry.get("n_used")
+        mkt_n = mkt_entry.get("n_used")
+
+        # Walk fallback chain
+        winner_level = None
+        if ind_n is not None and ind_n >= _MIN_N and ind_entry.get("median") is not None:
+            winner_level = "industry"
+        elif sec_n is not None and sec_n >= _MIN_N and sec_entry.get("median") is not None:
+            winner_level = "sector"
+        elif mkt_n is not None and mkt_n >= _MIN_N and mkt_entry.get("median") is not None:
+            winner_level = "market"
+
+        benchmark_available = winner_level is not None
+        if benchmark_available:
+            any_benchmark_available = True
+            if most_degraded is None:
+                most_degraded = winner_level
+            elif winner_level == "market":
+                most_degraded = "market"
+            elif winner_level == "sector" and most_degraded != "market":
+                most_degraded = "sector"
+
+        per_metric[mk] = {
+            "industry_n": ind_n,
+            "sector_n": sec_n,
+            "market_n": mkt_n,
+            "fallback_winner": winner_level,
+            "benchmark_available": benchmark_available,
+        }
+
+    return {
+        "ticker": tracked.get("ticker"),
+        "industry": industry,
+        "sector": sector,
+        "financial_currency": tracked.get("financial_currency"),
+        "is_visible": tracked.get("is_visible"),
+        "peer_benchmarks_docs": {
+            "industry_exists": industry_doc is not None,
+            "sector_exists": sector_doc is not None,
+            "market_exists": market_doc is not None,
+        },
+        "per_metric": per_metric,
+        "has_benchmark": any_benchmark_available,
+        "benchmark_fallback": most_degraded,
+        "yellow_banner_should_show": not any_benchmark_available,
+    }
+
+
 # ----- Dividend History Endpoints -----
 
 @api_router.post("/admin/dividends/sync-ticker/{ticker}")
