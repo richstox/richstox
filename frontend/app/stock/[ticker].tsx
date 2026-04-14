@@ -2956,15 +2956,20 @@ export default function StockDetail() {
             )}
 
             {/* No Benchmark Warning — prefer mobileData (peer_benchmarks) over legacy data (industry_benchmarks) */}
-            {!(mobileData?.has_benchmark ?? data.has_benchmark) && (mobileData?.company?.industry || data.company?.industry) && (
-              <View style={[styles.peerDisclaimer, { backgroundColor: '#FEF3C7' }]}>
-                <Ionicons name="alert-circle-outline" size={14} color="#D97706" />
-                <Text style={[styles.disclaimerText, { color: '#92400E' }]}>
-                  No peer benchmark available for {mobileData?.company?.industry || data.company.industry}. 
-                  Industry has fewer than 5 companies in our database.
-                </Text>
-              </View>
-            )}
+            {(() => {
+              const hasBenchmark = mobileData?.has_benchmark ?? data.has_benchmark;
+              const industryName = mobileData?.company?.industry || data.company?.industry;
+              if (hasBenchmark || !industryName) return null;
+              return (
+                <View style={[styles.peerDisclaimer, { backgroundColor: '#FEF3C7' }]}>
+                  <Ionicons name="alert-circle-outline" size={14} color="#D97706" />
+                  <Text style={[styles.disclaimerText, { color: '#92400E' }]}>
+                    No peer benchmark available for {industryName}. 
+                    Industry has fewer than 5 companies in our database.
+                  </Text>
+                </View>
+              );
+            })()}
             </>
           )}
         </View>
