@@ -1268,10 +1268,14 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 return val
         return pairs[-1][0] if pairs else None
     
-    # Get all visible tickers with their financial_currency
+    # Get all visible tickers with completed fundamentals.
+    # NOTE: The canonical data source for financial statements is company_financials
+    # (not the legacy embedded tracked_tickers.fundamentals field).
+    # We use fundamentals_status="complete" as the gate for eligibility.
     ticker_list = await db.tracked_tickers.find(
-        {"is_visible": True, "fundamentals": {"$exists": True, "$ne": None}},
-        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1, "financial_currency": 1}
+        {"is_visible": True, "fundamentals_status": "complete"},
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
+         "financial_currency": 1, "shares_outstanding": 1}
     ).to_list(length=10000)
     
     # Separate USD and non-USD tickers upfront (P1 Policy)
@@ -1283,6 +1287,33 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     logger.info(f"  USD tickers: {len(usd_tickers)} (will be used for peer medians)")
     logger.info(f"  Non-USD tickers: {len(non_usd_tickers)} (excluded from peer medians)")
     logger.info(f"  NULL currency tickers: {len(null_currency_tickers)} (excluded from peer medians)")
+    
+    # ── EARLY EXIT: If no visible tickers with fundamentals ──
+    if not ticker_list:
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.error(
+            f"ABORT: 0 visible tickers with fundamentals_status=complete found! "
+            f"This likely means Steps 1-3 haven't completed."
+        )
+        return {
+            "status": "error",
+            "error": "no_visible_tickers_with_fundamentals",
+            "tickers_processed": 0,
+            "tickers_included_any_metric": 0,
+            "tickers_excluded_all_metrics": 0,
+            "exclusion_reasons": {},
+            "tickers_excluded_currency": 0,
+            "excluded_details": [],
+            "industries_stored": 0,
+            "elapsed_seconds": round(elapsed, 1),
+            "benchmarks_written": 0,
+            "stats": {
+                "industry": {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+                "sector":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+                "market":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+            },
+            "market_medians": None,
+        }
     
     # Get latest prices
     latest_prices = {}
@@ -1306,24 +1337,90 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         batch_tickers = ticker_list[batch_start:batch_start + batch_size]
         batch_ticker_names = [t["ticker"] for t in batch_tickers]
         
-        # Fetch fundamentals for this batch
-        fundamentals_batch = {}
-        cursor = db.tracked_tickers.find(
+        # ── Fetch financial statements from company_financials (canonical) ──
+        # Build per-ticker quarterly dicts that match the shape the downstream
+        # computation expects: {period_date: {field: value, ...}, ...}
+        quarterly_income_batch = {}   # ticker -> {period_date: {...}}
+        quarterly_balance_batch = {}
+        quarterly_cashflow_batch = {}
+        annual_income_batch = {}      # ticker -> {period_date: {...}}
+        
+        fin_cursor = db.company_financials.find(
             {"ticker": {"$in": batch_ticker_names}},
-            {"_id": 0, "ticker": 1, "fundamentals": 1}
+            {"_id": 0, "ticker": 1, "period_type": 1, "period_date": 1,
+             "revenue": 1, "net_income": 1, "ebitda": 1, "operating_income": 1,
+             "total_equity": 1, "total_debt": 1, "cash_and_equivalents": 1,
+             "short_term_investments": 1, "retained_earnings": 1,
+             "operating_cash_flow": 1, "capital_expenditures": 1, "free_cash_flow": 1,
+             "total_assets": 1, "total_liabilities": 1,
+             "total_current_assets": 1, "total_current_liabilities": 1,
+             "diluted_eps": 1}
         )
-        async for doc in cursor:
-            fundamentals_batch[doc["ticker"]] = doc.get("fundamentals", {})
+        async for row in fin_cursor:
+            tk = row["ticker"]
+            pd_key = row.get("period_date", "")
+            if not pd_key:
+                continue
+            if row.get("period_type") == "quarterly":
+                quarterly_income_batch.setdefault(tk, {})[pd_key] = {
+                    "totalRevenue": row.get("revenue"),
+                    "netIncome": row.get("net_income"),
+                    "ebitda": row.get("ebitda"),
+                    "operatingIncome": row.get("operating_income"),
+                }
+                quarterly_balance_batch.setdefault(tk, {})[pd_key] = {
+                    "totalStockholderEquity": row.get("total_equity"),
+                    "totalDebt": row.get("total_debt"),
+                    "cash": row.get("cash_and_equivalents"),
+                    "cashAndShortTermInvestments": (
+                        (safe_float(row.get("cash_and_equivalents")) or 0)
+                        + (safe_float(row.get("short_term_investments")) or 0)
+                    ) if (row.get("cash_and_equivalents") is not None
+                          or row.get("short_term_investments") is not None) else None,
+                    "shortTermDebt": None,   # canonical schema stores total_debt directly
+                    "longTermDebt": None,    # canonical schema stores total_debt directly
+                }
+                quarterly_cashflow_batch.setdefault(tk, {})[pd_key] = {
+                    "totalCashFromOperatingActivities": row.get("operating_cash_flow"),
+                    "capitalExpenditures": row.get("capital_expenditures"),
+                    "depreciation": None,   # not stored separately in canonical schema
+                }
+            elif row.get("period_type") == "annual":
+                annual_income_batch.setdefault(tk, {})[pd_key] = {
+                    "totalRevenue": row.get("revenue"),
+                }
+        
+        # ── Fetch earnings history from company_earnings_history ──
+        earnings_batch = {}   # ticker -> {quarter_date: {epsActual: ...}}
+        earn_cursor = db.company_earnings_history.find(
+            {"ticker": {"$in": batch_ticker_names}},
+            {"_id": 0, "ticker": 1, "quarter_date": 1, "eps_actual": 1}
+        )
+        async for row in earn_cursor:
+            tk = row["ticker"]
+            qd = row.get("quarter_date", "")
+            if qd:
+                earnings_batch.setdefault(tk, {})[qd] = {
+                    "epsActual": row.get("eps_actual"),
+                }
+        
+        # ── Fetch dividend yield from company_fundamentals_cache ──
+        div_yield_batch = {}  # ticker -> forward_dividend_yield
+        cache_cursor = db.company_fundamentals_cache.find(
+            {"ticker": {"$in": batch_ticker_names}},
+            {"_id": 0, "ticker": 1, "forward_dividend_yield": 1}
+        )
+        async for row in cache_cursor:
+            div_yield_batch[row["ticker"]] = safe_float(row.get("forward_dividend_yield"))
         
         for t in batch_tickers:
             ticker = t.get("ticker")
             sector = t.get("sector")
             industry = t.get("industry")
             financial_currency = t.get("financial_currency")  # P1 Policy: Use persisted currency
-            fundamentals = fundamentals_batch.get(ticker, {})
             current_price = latest_prices.get(ticker)
             
-            if not current_price or not fundamentals:
+            if not current_price:
                 continue
             
             # P1 Policy: Track non-USD tickers for exclusion from peer medians
@@ -1336,15 +1433,8 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     "reason": f"financial_currency={financial_currency} (non-USD excluded from peer medians)"
                 })
             
-            # Extract shares outstanding
-            shares_stats = fundamentals.get("SharesStats", {})
-            shares = safe_float(shares_stats.get("SharesOutstanding"))
-            if not shares:
-                outstanding = fundamentals.get("outstandingShares", {}).get("annual", {})
-                if outstanding:
-                    latest_key = sorted(outstanding.keys(), reverse=True)[0] if outstanding else None
-                    if latest_key:
-                        shares = safe_float(outstanding[latest_key].get("shares"))
+            # Extract shares outstanding from tracked_tickers (set by sync_single_ticker_fundamentals)
+            shares = safe_float(t.get("shares_outstanding"))
             
             if not shares or shares <= 0:
                 continue
@@ -1353,12 +1443,11 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             if market_cap <= 0:
                 continue
             
-            # Financial statements
-            financials_data = fundamentals.get("Financials", {})
-            quarterly_income = financials_data.get("Income_Statement", {}).get("quarterly", {})
-            quarterly_balance = financials_data.get("Balance_Sheet", {}).get("quarterly", {})
-            quarterly_cashflow = financials_data.get("Cash_Flow", {}).get("quarterly", {})
-            earnings = fundamentals.get("Earnings", {})
+            # Financial statements from canonical company_financials collection
+            quarterly_income = quarterly_income_batch.get(ticker, {})
+            quarterly_balance = quarterly_balance_batch.get(ticker, {})
+            quarterly_cashflow = quarterly_cashflow_batch.get(ticker, {})
+            earnings = {"History": earnings_batch.get(ticker, {})}
             
             # TTM values
             revenue_ttm = get_ttm_sum(quarterly_income, "totalRevenue")
@@ -1425,9 +1514,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 metrics["ev_revenue"] = enterprise_value / revenue_ttm
             
             # Dividend Yield (ForwardAnnualDividendYield)
-            # P1 FIX: Add to peer_benchmarks for consistent infrastructure
-            splits_dividends = fundamentals.get("SplitsDividends", {})
-            forward_div_yield = safe_float(splits_dividends.get("ForwardAnnualDividendYield"))
+            forward_div_yield = div_yield_batch.get(ticker)
             if forward_div_yield is not None and forward_div_yield >= 0:
                 # EODHD returns decimal (0.025 = 2.5%), convert to percentage
                 metrics["dividend_yield"] = forward_div_yield * 100
@@ -1452,8 +1539,8 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             if ebitda_ttm and ebitda_ttm > 0:
                 metrics["net_debt_ebitda"] = net_debt / ebitda_ttm
             
-            # Revenue Growth (3Y CAGR) from annual Income_Statement
-            annual_income = financials_data.get("Income_Statement", {}).get("yearly", {})
+            # Revenue Growth (3Y CAGR) from annual financials
+            annual_income = annual_income_batch.get(ticker, {})
             if annual_income:
                 sorted_years = sorted(annual_income.keys(), reverse=True)
                 if len(sorted_years) >= 4:
@@ -1473,7 +1560,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             
             ticker_metrics.append(metrics)
     
-    logger.info(f"Computed metrics for {len(ticker_metrics)} tickers")
+    logger.info(f"Computed metrics for {len(ticker_metrics)} tickers (input: {len(ticker_list)})")
     logger.info(f"P1 Policy: {len(excluded_currency_mismatch)} non-USD tickers excluded from peer medians")
     
     # ── Ticker-level inclusion/exclusion stats for Admin Step 4 card ──
@@ -2197,4 +2284,5 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         "benchmarks_written": benchmarks_written,
         "stats": _step4_stats,
         "market_medians": _market_medians,
+        "diagnostics": _diag,
     }
