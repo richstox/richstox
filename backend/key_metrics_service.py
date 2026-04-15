@@ -2284,5 +2284,5 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         "benchmarks_written": benchmarks_written,
         "stats": _step4_stats,
         "market_medians": _market_medians,
-        "diagnostics": _diag,
+        "diagnostics": {},
     }

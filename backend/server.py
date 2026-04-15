@@ -6076,7 +6076,7 @@ async def create_job_audit_entry(database, job_name: str, triggered_by: str = "a
     return str(result.inserted_id)
 
 
-async def finalize_job_audit_entry(database, audit_id: str, result: dict = None, error: str = None):
+async def finalize_job_audit_entry(database, audit_id: str, result: dict = None, error: str = None, error_traceback: str = None):
     """Update audit entry after job completion with inventory snapshot AFTER."""
     from datetime import datetime, timezone
     from bson import ObjectId
@@ -6106,6 +6106,8 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
 
     if error:
         update_doc["error_message"] = str(error)[:1000]
+        if error_traceback:
+            update_doc["error_traceback"] = str(error_traceback)[:4000]
 
     if result:
         update_doc["tickers_updated"] = result.get("tickers_updated", 0)
@@ -6114,12 +6116,16 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
         # output (e.g. tickers_processed, stats, exclusion_reasons for Step 4).
         # This matches what run_job_with_retry() stores in scheduler.py.
         update_doc["result"] = result if isinstance(result, dict) else {"value": str(result)}
-        # Also compute duration_seconds for consistency with scheduler path
+
+    # Always compute duration_seconds (both success and error paths)
+    try:
         started_doc = await database.ops_job_runs.find_one(
             {"_id": ObjectId(audit_id)}, {"started_at": 1}
         )
         if started_doc and started_doc.get("started_at"):
             update_doc["duration_seconds"] = (finished_at - started_doc["started_at"]).total_seconds()
+    except Exception:
+        pass  # non-fatal: don't block finalization
 
     await database.ops_job_runs.update_one(
         {"_id": ObjectId(audit_id)},
@@ -6131,6 +6137,7 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
 async def admin_run_job_now(
     job_name: str,
     background_tasks: BackgroundTasks,
+    request: Request,
     wait: bool = Query(False),
     full_history: bool = Query(False, description="Benchmark only: fetch full history from 1988"),
     date_from: str = Query(None, description="Benchmark only: start date YYYY-MM-DD"),
@@ -6301,6 +6308,9 @@ async def admin_run_job_now(
 
     logger.info(f"Admin manually triggering job: {job_name}")
 
+    # Request ID for correlation between API response, server logs, and ops_job_runs
+    _request_id = request.headers.get("x-railway-request-id") or str(uuid.uuid4())
+
     # C2: Create audit entry with inventory snapshot BEFORE
     audit_id = await create_job_audit_entry(db, job_name)
 
@@ -6311,29 +6321,40 @@ async def admin_run_job_now(
             # C2: Finalize audit with inventory snapshot AFTER
             await finalize_job_audit_entry(db, audit_id, result=result)
             _wait_finalized = True
-            return {"job": job_name, "status": "completed", "result": result, "audit_id": audit_id}
+            return {"job": job_name, "status": "completed", "result": result, "audit_id": audit_id, "request_id": _request_id}
         except Exception as e:
-            logger.error(f"Job {job_name} failed: {e}")
+            import traceback as _tb
+            _tb_str = _tb.format_exc()
+            logger.error(
+                f"[request_id={_request_id}] Job {job_name} failed (audit_id={audit_id}): {e}\n{_tb_str}"
+            )
             try:
-                await finalize_job_audit_entry(db, audit_id, error=str(e))
+                await finalize_job_audit_entry(db, audit_id, error=str(e), error_traceback=_tb_str)
                 _wait_finalized = True
             except Exception as finalize_err:
                 logger.error(f"finalize_job_audit_entry also failed for {job_name}: {finalize_err}")
                 try:
                     from bson import ObjectId as _OID2
+                    from zoneinfo import ZoneInfo as _WaitZI
                     _now2 = datetime.now(timezone.utc)
                     await db.ops_job_runs.update_one(
                         {"_id": _OID2(audit_id)},
                         {"$set": {
                             "status": "error",
                             "finished_at": _now2,
+                            "finished_at_prague": _now2.astimezone(_WaitZI("Europe/Prague")).isoformat(),
                             "error_message": f"finalize failed: {finalize_err}; original: {e}"[:1000],
+                            "error_traceback": _tb_str[:4000],
                         }},
                     )
                     _wait_finalized = True
                 except Exception:
                     logger.exception(f"Last-resort finalization failed for {job_name} audit_id={audit_id}")
-            return {"job": job_name, "status": "error", "error": str(e), "audit_id": audit_id}
+            return {
+                "job": job_name, "status": "error",
+                "error": str(e), "error_message": str(e),
+                "audit_id": audit_id, "request_id": _request_id,
+            }
         finally:
             # Guarantee finalization even if a BaseException (e.g. asyncio.CancelledError
             # during server shutdown) bypassed the except Exception block.
@@ -6362,9 +6383,14 @@ async def admin_run_job_now(
             await finalize_job_audit_entry(db, audit_id, result=result)
             _bg_finalized = True
         except Exception as e:
-            logger.error(f"Job {job_name} failed in background: {e}")
+            import traceback as _bg_tb
+            _bg_tb_str = _bg_tb.format_exc()
+            logger.error(
+                f"[request_id={_request_id}] Job {job_name} failed in background "
+                f"(audit_id={audit_id}): {e}\n{_bg_tb_str}"
+            )
             try:
-                await finalize_job_audit_entry(db, audit_id, error=str(e))
+                await finalize_job_audit_entry(db, audit_id, error=str(e), error_traceback=_bg_tb_str)
                 _bg_finalized = True
             except Exception as finalize_err:
                 # Last resort: at minimum close the record so it never stays "running"
@@ -6374,13 +6400,16 @@ async def admin_run_job_now(
                 )
                 try:
                     from bson import ObjectId as _OID
+                    from zoneinfo import ZoneInfo as _BgZI
                     _now = datetime.now(timezone.utc)
                     await db.ops_job_runs.update_one(
                         {"_id": _OID(audit_id)},
                         {"$set": {
                             "status": "error",
                             "finished_at": _now,
+                            "finished_at_prague": _now.astimezone(_BgZI("Europe/Prague")).isoformat(),
                             "error_message": f"finalize failed: {finalize_err}; original: {e}"[:1000],
+                            "error_traceback": _bg_tb_str[:4000],
                         }},
                     )
                     _bg_finalized = True
@@ -6412,6 +6441,7 @@ async def admin_run_job_now(
         "job": job_name,
         "status": "started",
         "audit_id": audit_id,
+        "request_id": _request_id,
         "message": "Job started in background with audit trail. Check Admin Panel for results."
     }
 
@@ -6439,9 +6469,9 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
     )
 
 @api_router.post("/admin/scheduler/run/peer-medians")
-async def admin_manual_peer_medians(background_tasks: BackgroundTasks):
+async def admin_manual_peer_medians(request: Request, background_tasks: BackgroundTasks):
     """Redirect to the generic job runner — peer_medians is independently runnable."""
-    return await admin_run_job_now("peer_medians", background_tasks)
+    return await admin_run_job_now(job_name="peer_medians", background_tasks=background_tasks, request=request)
 
 
 @api_router.post("/admin/jobs/{job_name}/cancel")
