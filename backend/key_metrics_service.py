@@ -1375,9 +1375,10 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                     "cashAndShortTermInvestments": (
                         (safe_float(row.get("cash_and_equivalents")) or 0)
                         + (safe_float(row.get("short_term_investments")) or 0)
-                    ) or None,
-                    "shortTermDebt": None,  # aggregated into total_debt
-                    "longTermDebt": None,
+                    ) if (row.get("cash_and_equivalents") is not None
+                          or row.get("short_term_investments") is not None) else None,
+                    "shortTermDebt": None,   # canonical schema stores total_debt directly
+                    "longTermDebt": None,    # canonical schema stores total_debt directly
                 }
                 quarterly_cashflow_batch.setdefault(tk, {})[pd_key] = {
                     "totalCashFromOperatingActivities": row.get("operating_cash_flow"),
