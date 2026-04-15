@@ -6351,7 +6351,8 @@ async def admin_run_job_now(
                 except Exception:
                     logger.exception(f"Last-resort finalization failed for {job_name} audit_id={audit_id}")
             return {
-                "job": job_name, "status": "error", "error_message": str(e),
+                "job": job_name, "status": "error",
+                "error": str(e), "error_message": str(e),
                 "audit_id": audit_id, "request_id": _request_id,
             }
         finally:
@@ -6470,7 +6471,7 @@ async def admin_manual_fundamentals_sync(background_tasks: BackgroundTasks, batc
 @api_router.post("/admin/scheduler/run/peer-medians")
 async def admin_manual_peer_medians(request: Request, background_tasks: BackgroundTasks):
     """Redirect to the generic job runner — peer_medians is independently runnable."""
-    return await admin_run_job_now("peer_medians", background_tasks, request)
+    return await admin_run_job_now(job_name="peer_medians", background_tasks=background_tasks, request=request)
 
 
 @api_router.post("/admin/jobs/{job_name}/cancel")
