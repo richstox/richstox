@@ -1222,7 +1222,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               setPeerMediansStartedAt(null);
               // Show completion feedback to the user
               const resultData = lr.result;
-              if (lr.status === 'completed' || lr.status === 'success') {
+              // Detect zero-data error results from the backend
+              // (the ops_job_runs status may be "completed" but result.status = "error")
+              const isResultError = resultData?.status === 'error' || (resultData?.tickers_processed === 0 && resultData?.error);
+              if ((lr.status === 'completed' || lr.status === 'success') && !isResultError) {
                 const processed = resultData?.tickers_processed;
                 const included = resultData?.tickers_included_any_metric;
                 const elapsedSec = lr.duration_seconds;
@@ -1234,6 +1237,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   statsMsg = `Completed in ${elapsedSec}s`;
                 }
                 dialog.alert('Step 4 Completed ✅', statsMsg);
+              } else if (isResultError) {
+                const errDetail = resultData?.error ?? 'Returned 0 tickers';
+                dialog.alert('Step 4 Error ⚠️', `${errDetail}. Check if Steps 1-3 have completed.`);
               } else {
                 const errMsg = extractErrorText(lr) || `Job finished with status: ${lr.status}`;
                 dialog.alert('Step 4 Failed', errMsg);
@@ -1336,13 +1342,28 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   // Preserve last completed result so stats stay visible while a new run is in progress.
   const peerMediansRun = jobRuns['peer_medians'];
   const peerMediansRunResult = (peerMediansRun as any)?.result;
-  if (peerMediansRunResult && typeof peerMediansRunResult === 'object' && Object.keys(peerMediansRunResult).length > 0) {
+  // Only cache results that actually contain meaningful data (status=success AND tickers_processed > 0).
+  // This prevents a zero-data error run from overwriting a previous good result in the UI.
+  const _isGoodResult = peerMediansRunResult
+    && typeof peerMediansRunResult === 'object'
+    && Object.keys(peerMediansRunResult).length > 0
+    && peerMediansRunResult.status === 'success'
+    && (peerMediansRunResult.tickers_processed ?? 0) > 0;
+  if (_isGoodResult) {
     lastPeerMediansResultRef.current = peerMediansRunResult;
   }
-  const peerMediansResult = peerMediansRunResult ?? lastPeerMediansResultRef.current;
-  const s4Processed: number | undefined = asFiniteNumber(peerMediansResult.tickers_processed);
-  const s4Included: number | undefined = asFiniteNumber(peerMediansResult.tickers_included_any_metric);
-  const s4Excluded: number | undefined = asFiniteNumber(peerMediansResult.tickers_excluded_all_metrics);
+  // If the latest result is an error or zero-data, fall back to the last known good result.
+  const _hasCachedGood = Object.keys(lastPeerMediansResultRef.current).length > 0;
+  const peerMediansResult = _isGoodResult
+    ? peerMediansRunResult
+    : (_hasCachedGood ? lastPeerMediansResultRef.current : peerMediansRunResult);
+  const s4Processed: number | undefined = asFiniteNumber(peerMediansResult?.tickers_processed);
+  const s4Included: number | undefined = asFiniteNumber(peerMediansResult?.tickers_included_any_metric);
+  const s4Excluded: number | undefined = asFiniteNumber(peerMediansResult?.tickers_excluded_all_metrics);
+  // Detect if the latest run was a zero-data error (show warning to user)
+  const s4LatestWasError = peerMediansRunResult
+    && typeof peerMediansRunResult === 'object'
+    && (peerMediansRunResult.status === 'error' || (peerMediansRunResult.tickers_processed === 0 && peerMediansRunResult.error));
 
   const steps = [
     {
@@ -1733,6 +1754,17 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                         </View>
                       : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
                   </TouchableOpacity>
+                </View>
+              )}
+
+              {/* ── Step 4 error warning (latest run returned 0 data) ── */}
+              {step.job_name === 'peer_medians' && s4LatestWasError && !isPeerMediansRunning && (
+                <View style={{ backgroundColor: '#FEF3C7', borderRadius: 6, padding: 8, marginBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="warning-outline" size={14} color="#D97706" />
+                  <Text style={{ color: '#92400E', fontSize: 11, flex: 1 }}>
+                    Last run returned 0 tickers: {peerMediansRunResult?.error ?? 'unknown error'}.
+                    {Object.keys(lastPeerMediansResultRef.current).length > 0 ? ' Showing previous successful result below.' : ' Click Run Now to retry.'}
+                  </Text>
                 </View>
               )}
 

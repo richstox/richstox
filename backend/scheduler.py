@@ -1236,15 +1236,40 @@ async def scheduler_loop():
                     logger.error(f"[scheduler] key_metrics unhandled error (will retry next minute): {exc}")
             
             # PEER MEDIANS at 05:30 (catch-up enabled)
+            # DEPENDENCY: peer_medians reads visible tickers with fundamentals —
+            # it produces useful results only after Steps 1-3 have completed today.
+            # If Step 3 hasn't finished yet, defer to the next tick so the pipeline
+            # chain has time to populate the data peer_medians needs.
             if should_run("peer_medians", PEER_MEDIANS_HOUR, PEER_MEDIANS_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering peer_medians (hour={current_hour}, scheduled={PEER_MEDIANS_HOUR}:{PEER_MEDIANS_MINUTE:02d})")
-                try:
-                    from key_metrics_service import compute_peer_benchmarks_v3
-                    await run_job_with_retry("peer_medians", compute_peer_benchmarks_v3, db)
-                    last_run["peer_medians"] = today_str
-                    await set_last_run_state(last_run)
-                except Exception as exc:
-                    logger.error(f"[scheduler] peer_medians unhandled error (will retry next minute): {exc}")
+                _step3_done_today = last_run.get("fundamentals_sync") == today_str
+                if not _step3_done_today:
+                    logger.warning(
+                        f"[scheduler] peer_medians: Step 3 (fundamentals_sync) has NOT completed today "
+                        f"(last_run={last_run.get('fundamentals_sync')}). "
+                        f"Deferring peer_medians to next tick."
+                    )
+                else:
+                    logger.info(f"Triggering peer_medians (hour={current_hour}, scheduled={PEER_MEDIANS_HOUR}:{PEER_MEDIANS_MINUTE:02d})")
+                    try:
+                        from key_metrics_service import compute_peer_benchmarks_v3
+                        _pm_result = await run_job_with_retry("peer_medians", compute_peer_benchmarks_v3, db)
+                        # Only mark as "ran today" if the result was actually successful.
+                        # An error result (e.g. 0 visible tickers) should allow retry next tick.
+                        _pm_failed = (
+                            not isinstance(_pm_result, dict)
+                            or _pm_result.get("status") == "error"
+                            or _pm_result.get("error")
+                        )
+                        if _pm_failed:
+                            logger.warning(
+                                f"[scheduler] peer_medians returned error result — will retry next tick: "
+                                f"{_pm_result.get('error', 'unknown') if isinstance(_pm_result, dict) else _pm_result}"
+                            )
+                        else:
+                            last_run["peer_medians"] = today_str
+                            await set_last_run_state(last_run)
+                    except Exception as exc:
+                        logger.error(f"[scheduler] peer_medians unhandled error (will retry next minute): {exc}")
             
             # PAIN CACHE at 05:00 (catch-up enabled)
             if should_run("pain_cache", PAIN_CACHE_HOUR, PAIN_CACHE_MINUTE, last_run, today_str, current_hour, current_minute):

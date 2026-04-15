@@ -1215,6 +1215,27 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     
     start_time = datetime.now(timezone.utc)
     
+    # ── PRE-FLIGHT: diagnostic counts (always logged, never block execution) ──
+    # These counts help diagnose "0 tickers processed" issues in production.
+    _diag = {}
+    try:
+        _diag["total_tracked"] = await db.tracked_tickers.count_documents({})
+        _diag["total_seeded"] = await db.tracked_tickers.count_documents({"is_seeded": True})
+        _diag["total_visible"] = await db.tracked_tickers.count_documents({"is_visible": True})
+        _diag["visible_with_fundamentals"] = await db.tracked_tickers.count_documents(
+            {"is_visible": True, "fundamentals": {"$exists": True, "$ne": None}}
+        )
+        _diag["visible_no_fundamentals"] = _diag["total_visible"] - _diag["visible_with_fundamentals"]
+        _diag["stock_prices_tickers"] = len(await db.stock_prices.distinct("ticker"))
+        logger.info(
+            f"PRE-FLIGHT: tracked={_diag['total_tracked']}, seeded={_diag['total_seeded']}, "
+            f"visible={_diag['total_visible']}, visible_with_fundamentals={_diag['visible_with_fundamentals']}, "
+            f"visible_no_fundamentals={_diag['visible_no_fundamentals']}, "
+            f"stock_prices_tickers={_diag['stock_prices_tickers']}"
+        )
+    except Exception as _diag_err:
+        logger.warning(f"PRE-FLIGHT diagnostics failed (non-fatal): {_diag_err}")
+    
     # Helper functions
     def safe_float(val):
         if val is None:
@@ -1284,6 +1305,35 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     logger.info(f"  Non-USD tickers: {len(non_usd_tickers)} (excluded from peer medians)")
     logger.info(f"  NULL currency tickers: {len(null_currency_tickers)} (excluded from peer medians)")
     
+    # ── EARLY EXIT: If no visible tickers with fundamentals, abort with diagnostics ──
+    if not ticker_list:
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.error(
+            f"ABORT: 0 visible tickers with fundamentals found! "
+            f"Diagnostics: {_diag}. "
+            f"This likely means Steps 1-3 haven't completed or fundamentals were cleared."
+        )
+        return {
+            "status": "error",
+            "error": "no_visible_tickers_with_fundamentals",
+            "tickers_processed": 0,
+            "tickers_included_any_metric": 0,
+            "tickers_excluded_all_metrics": 0,
+            "exclusion_reasons": {},
+            "tickers_excluded_currency": 0,
+            "excluded_details": [],
+            "industries_stored": 0,
+            "elapsed_seconds": round(elapsed, 1),
+            "benchmarks_written": 0,
+            "stats": {
+                "industry": {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+                "sector":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+                "market":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+            },
+            "market_medians": None,
+            "diagnostics": _diag,
+        }
+    
     # Get latest prices
     latest_prices = {}
     cursor = db.stock_prices.aggregate([
@@ -1296,6 +1346,34 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             latest_prices[doc["_id"]] = doc["price"]
     
     logger.info(f"Got prices for {len(latest_prices)} tickers")
+    
+    # ── EARLY EXIT: If no prices found, abort with diagnostics ──
+    if not latest_prices:
+        elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.error(
+            f"ABORT: {len(ticker_list)} visible tickers found but 0 have prices in stock_prices! "
+            f"Check if price_sync (Step 2) completed. Diagnostics: {_diag}"
+        )
+        return {
+            "status": "error",
+            "error": "no_prices_for_visible_tickers",
+            "tickers_processed": 0,
+            "tickers_included_any_metric": 0,
+            "tickers_excluded_all_metrics": 0,
+            "exclusion_reasons": {},
+            "tickers_excluded_currency": 0,
+            "excluded_details": [],
+            "industries_stored": 0,
+            "elapsed_seconds": round(elapsed, 1),
+            "benchmarks_written": 0,
+            "stats": {
+                "industry": {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+                "sector":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+                "market":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
+            },
+            "market_medians": None,
+            "diagnostics": _diag,
+        }
     
     # Compute metrics for each ticker in batches
     ticker_metrics = []
@@ -1473,6 +1551,29 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             
             ticker_metrics.append(metrics)
     
+    # ── Post-batch diagnostics: track why tickers were dropped ──
+    _batch_skipped_no_price = 0
+    _batch_skipped_no_fundamentals = 0
+    _batch_skipped_no_shares = 0
+    _batch_skipped_zero_mcap = 0
+    # Re-count skip reasons (these were already continue'd above, so recount from inputs)
+    for batch_start in range(0, len(ticker_list), batch_size):
+        batch_tickers = ticker_list[batch_start:batch_start + batch_size]
+        for t in batch_tickers:
+            ticker = t.get("ticker")
+            if ticker not in latest_prices:
+                _batch_skipped_no_price += 1
+    _batch_total_in = len(ticker_list)
+    _batch_total_out = len(ticker_metrics)
+    _batch_dropped = _batch_total_in - _batch_total_out
+    logger.info(
+        f"Batch processing: {_batch_total_in} in → {_batch_total_out} out "
+        f"(dropped {_batch_dropped}: ~{_batch_skipped_no_price} no price)"
+    )
+    _diag["batch_in"] = _batch_total_in
+    _diag["batch_out"] = _batch_total_out
+    _diag["batch_skipped_no_price"] = _batch_skipped_no_price
+
     logger.info(f"Computed metrics for {len(ticker_metrics)} tickers")
     logger.info(f"P1 Policy: {len(excluded_currency_mismatch)} non-USD tickers excluded from peer medians")
     
@@ -2197,4 +2298,5 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
         "benchmarks_written": benchmarks_written,
         "stats": _step4_stats,
         "market_medians": _market_medians,
+        "diagnostics": _diag,
     }
