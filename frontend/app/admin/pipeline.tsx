@@ -1762,7 +1762,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                 <View style={{ backgroundColor: '#FEF3C7', borderRadius: 6, padding: 8, marginBottom: 6, flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Ionicons name="warning-outline" size={14} color="#D97706" />
                   <Text style={{ color: '#92400E', fontSize: 11, flex: 1 }}>
-                    Last run returned 0 tickers: {peerMediansRunResult?.error ?? 'unknown error'}.
+                    Last run returned 0 tickers: {peerMediansRunResult?.error ?? 'check server logs for details'}.
                     {Object.keys(lastPeerMediansResultRef.current).length > 0 ? ' Showing previous successful result below.' : ' Click Run Now to retry.'}
                   </Text>
                 </View>

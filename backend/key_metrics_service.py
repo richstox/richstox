@@ -1553,9 +1553,6 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     
     # ── Post-batch diagnostics: track why tickers were dropped ──
     _batch_skipped_no_price = 0
-    _batch_skipped_no_fundamentals = 0
-    _batch_skipped_no_shares = 0
-    _batch_skipped_zero_mcap = 0
     # Re-count skip reasons (these were already continue'd above, so recount from inputs)
     for batch_start in range(0, len(ticker_list), batch_size):
         batch_tickers = ticker_list[batch_start:batch_start + batch_size]
