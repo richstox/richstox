@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, Linking, Platform, TextInput,
+  RefreshControl, ActivityIndicator, Linking, Platform, TextInput, Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { COLORS } from '../_layout';
@@ -393,6 +393,50 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [peerMediansRunning, setPeerMediansRunning] = useState(false);
   const peerMediansPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPeerMediansResultRef = useRef<Record<string, any>>({});
+
+  // ── Peer pool ticker list modal ───────────────────────────────────────────
+  const [poolModalVisible, setPoolModalVisible] = useState(false);
+  const [poolModalLoading, setPoolModalLoading] = useState(false);
+  const [poolModalData, setPoolModalData] = useState<{
+    level: string; group?: string; metric: string;
+    median?: number; n_used?: number;
+    n_unique_tickers?: number; n_records?: number;
+    duplicates?: Record<string, number>;
+    filters_applied?: Record<string, any>;
+    tickers: { ticker: string; value: number | null }[];
+    note?: string;
+  } | null>(null);
+
+  const openPoolModal = async (level: string, metric: string, group?: string) => {
+    setPoolModalVisible(true);
+    setPoolModalLoading(true);
+    setPoolModalData(null);
+    try {
+      const params = new URLSearchParams({ level, metric });
+      if (group) params.set('group', group);
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/peer-pool-tickers?${params}`,
+        {},
+        sessionToken,
+      );
+      if (res.ok) {
+        setPoolModalData(await res.json());
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setPoolModalData({
+          level, group, metric, tickers: [],
+          note: err?.detail || 'Failed to load ticker list',
+        });
+      }
+    } catch (e: any) {
+      setPoolModalData({
+        level, group, metric, tickers: [],
+        note: e?.message || 'Network error',
+      });
+    } finally {
+      setPoolModalLoading(false);
+    }
+  };
 
   // ── Per-ticker audit state ────────────────────────────────────────────────
   const [auditTicker, setAuditTicker] = useState('');
@@ -1408,6 +1452,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const chainIconActive = chainRunning || chainStatus === 'completed' || isChainFailed || isChainCancelled;
 
   return (
+    <>
     <ScrollView
       style={s.container}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={COLORS.primary} />}
@@ -1636,7 +1681,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   <View style={s.stepTitleRow}>
                     <Text style={s.stepNum}>STEP {step.step}</Text>
                     <Text style={s.stepTitle}>{step.title}</Text>
-                    {chainStepRunning ? (
+                    {/* Peer medians: override icon when independently running */}
+                    {step.job_name === 'peer_medians' && isPeerMediansRunning ? (
+                      <ActivityIndicator size="small" color={step.color} style={{ marginLeft: 4 }} />
+                    ) : chainStepRunning ? (
                       <ActivityIndicator size="small" color="#F59E0B" style={{ marginLeft: 4 }} />
                     ) : chainStepDone ? (
                       <Ionicons name="checkmark-circle" size={14} color="#22C55E" style={{ marginLeft: 4 }} />
@@ -1730,6 +1778,13 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                       <Text style={s.funnelDropLabel}>filtered out</Text>
                     </View>
                   )}
+                </View>
+              )}
+
+              {/* Running indicator for peer_medians (independent job) */}
+              {step.job_name === 'peer_medians' && isPeerMediansRunning && (
+                <View style={s.runInfo}>
+                  <Text style={[s.runValue, { color: step.color }]}>Running…</Text>
                 </View>
               )}
 
@@ -2506,9 +2561,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                           <View style={{ marginTop: 10 }}>
                             <Text style={s.detailLabel}>MARKET-LEVEL MEDIANS</Text>
                             {Object.entries(peerMediansResult.market_medians).map(([mk, mv]: [string, any]) => (
-                              <Text key={mk} style={s.filterText}>
-                                {metricLabels[mk] ?? mk}: {mv?.median != null ? mv.median : '—'} (n={mv?.n_used ?? 0})
-                              </Text>
+                              <View key={mk} style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <Text style={s.filterText}>
+                                  {metricLabels[mk] ?? mk}: {mv?.median != null ? mv.median : '—'} (
+                                </Text>
+                                <TouchableOpacity onPress={() => openPoolModal('market', mk)} accessibilityLabel={`View ticker list for ${metricLabels[mk] ?? mk}`}>
+                                  <Text style={[s.filterText, s.clickableN]}>n={mv?.n_used ?? 0}</Text>
+                                </TouchableOpacity>
+                                <Text style={s.filterText}>)</Text>
+                              </View>
                             ))}
                           </View>
                         )}
@@ -2791,6 +2852,73 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
       <View style={{ height: 40 }} />
     </ScrollView>
+
+    {/* ── Peer pool ticker-list modal ── */}
+    <Modal
+      visible={poolModalVisible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setPoolModalVisible(false)}
+    >
+      <View style={s.modalOverlay}>
+        <View style={s.modalCard}>
+          <View style={s.modalHeader}>
+            <Text style={s.modalTitle}>
+              {poolModalData
+                ? `${poolModalData.metric} — ${poolModalData.level}${poolModalData.group ? `: ${poolModalData.group}` : ''}`
+                : 'Loading…'}
+            </Text>
+            <TouchableOpacity onPress={() => setPoolModalVisible(false)}>
+              <Ionicons name="close" size={20} color={COLORS.textLight} />
+            </TouchableOpacity>
+          </View>
+          {poolModalLoading ? (
+            <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
+          ) : poolModalData ? (
+            <>
+              {poolModalData.median != null && (
+                <Text style={s.modalSubtitle}>
+                  Median: {poolModalData.median}  ·  n_used={poolModalData.n_used ?? poolModalData.tickers.length}
+                </Text>
+              )}
+              {(poolModalData.n_unique_tickers != null || poolModalData.n_records != null) && (
+                <Text style={s.modalSubtitle}>
+                  Unique tickers: {poolModalData.n_unique_tickers ?? '—'}  ·  Records: {poolModalData.n_records ?? '—'}
+                </Text>
+              )}
+              {poolModalData.filters_applied && (
+                <Text style={[s.filterText, { color: COLORS.textMuted, marginBottom: 4 }]}>
+                  Filters: currency={poolModalData.filters_applied.currency_filter ?? '?'}, values={poolModalData.filters_applied.value_filter ?? '?'}, visible={poolModalData.filters_applied.visible_only ? 'true' : 'false'}, fundamentals={poolModalData.filters_applied.fundamentals_complete ? 'complete' : '?'}
+                </Text>
+              )}
+              {poolModalData.duplicates && Object.keys(poolModalData.duplicates).length > 0 && (
+                <View style={{ marginBottom: 6 }}>
+                  <Text style={[s.filterText, { color: '#F59E0B', fontWeight: '600' }]}>
+                    Duplicates: {Object.entries(poolModalData.duplicates).map(([t, c]) => `${t}×${c}`).join(', ')}
+                  </Text>
+                </View>
+              )}
+              {poolModalData.note ? (
+                <Text style={[s.filterText, { color: '#F59E0B', marginVertical: 8 }]}>{poolModalData.note}</Text>
+              ) : null}
+              <ScrollView style={s.modalScroll}>
+                {poolModalData.tickers.map((t, i) => (
+                  <View key={`${t.ticker}-${i}`} style={s.modalTickerRow}>
+                    <Text style={s.modalTickerIdx}>{i + 1}.</Text>
+                    <Text style={s.modalTickerName}>{t.ticker}</Text>
+                    <Text style={s.modalTickerVal}>{t.value != null ? t.value : '—'}</Text>
+                  </View>
+                ))}
+                {poolModalData.tickers.length === 0 && !poolModalData.note && (
+                  <Text style={[s.filterText, { textAlign: 'center', marginVertical: 12 }]}>No tickers</Text>
+                )}
+              </ScrollView>
+            </>
+          ) : null}
+        </View>
+      </View>
+    </Modal>
+    </>
   );
 }
 
@@ -3003,4 +3131,17 @@ const s = StyleSheet.create({
 
   arrow: { alignItems: 'center', paddingVertical: 4 },
   arrowLine: { width: 1, height: 8, backgroundColor: COLORS.border },
+
+  // Peer pool ticker-list modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  modalCard: { backgroundColor: COLORS.card, borderRadius: 12, padding: 16, width: '100%', maxWidth: 420, maxHeight: '80%', borderWidth: 1, borderColor: COLORS.border },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  modalTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, flex: 1, marginRight: 8 },
+  modalSubtitle: { fontSize: 11, color: COLORS.textLight, marginBottom: 8 },
+  modalScroll: { maxHeight: 400 },
+  modalTickerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: COLORS.border + '44' },
+  modalTickerIdx: { fontSize: 10, color: COLORS.textMuted, width: 28, textAlign: 'right', marginRight: 6 },
+  modalTickerName: { fontSize: 11, color: COLORS.text, fontWeight: '600', flex: 1 },
+  modalTickerVal: { fontSize: 11, color: COLORS.textLight, textAlign: 'right', minWidth: 60 },
+  clickableN: { color: '#6366F1', textDecorationLine: 'underline' },
 });

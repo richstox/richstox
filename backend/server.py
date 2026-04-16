@@ -3210,6 +3210,114 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
     }
 
 
+@api_router.get("/admin/peer-pool-tickers")
+async def admin_peer_pool_tickers(
+    level: str = Query(..., description="Level: industry, sector, or market"),
+    metric: str = Query(..., description="Step4 metric key, e.g. pe_ttm"),
+    group: str = Query(None, description="Industry or sector name (not required for market level)"),
+):
+    """
+    Return the canonical list of tickers that contributed to a specific Step4 median.
+
+    Reads from the **peer_benchmarks_constituents** collection (admin-only audit
+    artifact) which is written alongside peer_benchmarks during Step 4 but kept
+    in a separate collection to avoid bloating production docs.  Falls back to
+    step4_medians in peer_benchmarks for the median/n_used if the constituents
+    doc hasn't been computed yet.
+    """
+    from collections import Counter
+
+    if level not in ("industry", "sector", "market"):
+        raise HTTPException(400, "level must be industry, sector, or market")
+
+    # Resolve group for the constituents query
+    if level == "market":
+        constituents_group = "market"
+    elif level == "sector":
+        if not group:
+            raise HTTPException(400, "group (sector name) is required for sector level")
+        constituents_group = group
+    else:  # industry
+        if not group:
+            raise HTTPException(400, "group (industry name) is required for industry level")
+        constituents_group = group
+
+    # 1) Read from the separate admin audit collection
+    cons_doc = await db.peer_benchmarks_constituents.find_one(
+        {"level": level, "group": constituents_group},
+        {"_id": 0},
+    )
+
+    # 2) Also read step4_medians from peer_benchmarks for median/n_used
+    if level == "market":
+        pb_query = {"sector": None, "industry": None}
+    elif level == "sector":
+        pb_query = {"sector": group, "industry": None}
+    else:
+        pb_query = {"industry": group}
+    pb_doc = await db.peer_benchmarks.find_one(
+        pb_query,
+        {"_id": 0, "step4_medians": 1},
+    )
+    s4 = (pb_doc or {}).get("step4_medians") or {}
+    s4_entry = s4.get(metric)
+
+    # Extract constituents entry for the requested metric
+    entry = ((cons_doc or {}).get("metrics") or {}).get(metric) if cons_doc else None
+
+    if not entry:
+        return {
+            "level": level,
+            "group": group,
+            "metric": metric,
+            "tickers": [],
+            "n_unique_tickers": 0,
+            "n_records": 0,
+            "duplicates": {},
+            "median": s4_entry.get("median") if s4_entry else None,
+            "n_used": s4_entry.get("n_used") if s4_entry else 0,
+            "filters_applied": {},
+            "note": (
+                "No constituents data found for this metric. "
+                "Re-run Step 4 (peer_medians) to populate the peer_benchmarks_constituents collection."
+            ),
+        }
+
+    tickers = entry.get("tickers", [])
+    values = entry.get("values", [])
+
+    # Compute unique tickers and duplicates
+    ticker_counts = Counter(tickers)
+    unique_tickers = sorted(set(tickers))
+    duplicates = {t: c for t, c in ticker_counts.items() if c > 1}
+
+    # Pair them up for the response (sorted by value ascending — as stored)
+    ticker_list = [
+        {"ticker": t, "value": round(v, 4) if v is not None else None}
+        for t, v in zip(tickers, values)
+    ]
+
+    filters_applied = {
+        "visible_only": True,
+        "fundamentals_complete": True,
+        "currency_filter": entry.get("currency_filter", "unknown"),
+        "value_filter": entry.get("value_filter", "unknown"),
+    }
+
+    return {
+        "level": level,
+        "group": group,
+        "metric": metric,
+        "median": s4_entry.get("median") if s4_entry else None,
+        "n_used": s4_entry.get("n_used") if s4_entry else len(tickers),
+        "n_unique_tickers": len(unique_tickers),
+        "n_records": entry.get("n_records", len(tickers)),
+        "duplicates": duplicates,
+        "filters_applied": filters_applied,
+        "tickers": ticker_list,
+    }
+
+
 @api_router.get("/admin/benchmark-debug/{ticker}")
 async def admin_benchmark_debug(ticker: str):
     """
@@ -4646,6 +4754,10 @@ async def get_ticker_detail_mobile(
 
     # Dividend Yield (TTM) — computed from trailing quarterly dividends_paid
     # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
+    # EXCEPTION to strict 4/4 TTM rule: None quarters are skipped (not treated
+    # as missing) because companies may pay dividends annually, semi-annually,
+    # or quarterly. Matches compute_peer_benchmarks_v3 logic exactly
+    # (key_metrics_service.py ~L1534-1545).
     dividend_yield_ttm = None
     dividend_yield_na = None
     _div_window = _quarterly_rows[:4]  # latest 4 quarterly reporting periods
