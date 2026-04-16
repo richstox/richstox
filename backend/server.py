@@ -4793,6 +4793,20 @@ async def get_ticker_detail_mobile(
         },
     }
 
+    # Add normalized benchmark_metadata struct per displayed metric (Deliverable E)
+    for _mk in ["net_margin_ttm", "fcf_yield", "net_debt_ebitda",
+                 "revenue_growth_3y", "dividend_yield_ttm"]:
+        _km = key_metrics[_mk]
+        _bv = _km.get("peer_median")
+        _bl = _km.get("peer_median_level")
+        _bn = _km.get("peer_median_n")
+        key_metrics[_mk]["benchmark_metadata"] = {
+            "benchmark_value": _bv,
+            "benchmark_level": _bl,
+            "benchmark_n": _bn,
+            "statistic_type": "median",
+        }
+
     # Determine has_benchmark: True if ANY step4 metric has a valid benchmark
     _benchmark_metrics = ["net_margin_ttm", "fcf_yield", "net_debt_ebitda",
                           "revenue_growth_3y", "dividend_yield_ttm"]
@@ -4860,13 +4874,13 @@ async def get_ticker_detail_mobile(
             revenue_growth_3y_value = round(cagr, 1)
             revenue_growth_3y_na_reason = None
 
-    # Update key_metrics with calculated revenue_growth_3y
-    key_metrics["revenue_growth_3y"] = {
+    # Update key_metrics with calculated revenue_growth_3y (preserve peer_median fields)
+    key_metrics["revenue_growth_3y"].update({
         "name": "Revenue Growth (3Y CAGR)",
         "value": revenue_growth_3y_value,
         "formatted": f"{revenue_growth_3y_value:.1f}%" if revenue_growth_3y_value is not None else None,
         "na_reason": revenue_growth_3y_na_reason
-    }
+    })
 
     # P9: Helper to extract Core 5 metrics from a canonical company_financials row
     def _core5_from_row(row):
