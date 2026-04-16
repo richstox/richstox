@@ -1125,7 +1125,7 @@ export default function StockDetail() {
     benchmarkMeta: BenchmarkMetadata | null | undefined,
     metricKey: string
   ): { label: string; color: string; bgColor: string } | null => {
-    if (companyValue == null || !benchmarkMeta?.benchmark_value == null || benchmarkMeta?.benchmark_level == null) return null;
+    if (companyValue == null || benchmarkMeta == null || benchmarkMeta.benchmark_level == null) return null;
     const bv = benchmarkMeta.benchmark_value;
     if (bv == null) return null;
 
