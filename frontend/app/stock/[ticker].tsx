@@ -210,6 +210,13 @@ const RANGE_DAYS: Record<PriceRange, number | 'YTD' | 'MAX'> = {
 // NEW MOBILE DETAIL API TYPES (RAW FACTS ONLY)
 // ============================================================================
 
+interface BenchmarkMetadata {
+  benchmark_value: number | null;
+  benchmark_level: 'industry' | 'sector' | 'market' | null;
+  benchmark_n: number | null;
+  statistic_type: 'median';
+}
+
 interface MobileDetailData {
   ticker: string;
   symbol: string;
@@ -277,17 +284,18 @@ interface MobileDetailData {
     overall_vs_peers?: 'cheaper' | 'around' | 'more_expensive' | null;
     metrics_used?: number;
   } | null;
+  // Benchmark metadata (canonical struct per metric from API)
   // Hybrid 7 Key Metrics (P0)
   has_benchmark?: boolean;
   benchmark_fallback?: 'industry' | 'sector' | 'market' | null;
   key_metrics?: {
     market_cap: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
     shares_outstanding: { name: string; value: number | null; formatted: string | null; na_reason: string | null };
-    net_margin_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
-    fcf_yield: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
-    net_debt_ebitda: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
-    revenue_growth_3y: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null };
-    dividend_yield_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null; industry_dividend_yield_median?: number | null };
+    net_margin_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null; benchmark_metadata?: BenchmarkMetadata | null };
+    fcf_yield: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null; benchmark_metadata?: BenchmarkMetadata | null };
+    net_debt_ebitda: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null; benchmark_metadata?: BenchmarkMetadata | null };
+    revenue_growth_3y: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null; benchmark_metadata?: BenchmarkMetadata | null };
+    dividend_yield_ttm: { name: string; value: number | null; formatted: string | null; na_reason: string | null; peer_median?: number | null; peer_median_n?: number | null; peer_median_level?: string | null; benchmark_metadata?: BenchmarkMetadata | null; industry_dividend_yield_median?: number | null };
   } | null;
   // Peer Transparency (P0)
   peer_transparency?: {
@@ -1038,9 +1046,7 @@ export default function StockDetail() {
         'default': 'N/A (Insufficient history)'
       },
       dividend_yield_ttm: {
-        'no_dividend': industryDivMedian !== null && industryDivMedian !== undefined
-          ? `0.00% (Industry avg: ${toEU(industryDivMedian, 2)}%)`
-          : '0.00% (No dividend)',
+        'no_dividend': '0.00% (No dividend)',
         'default': '0.00% (No dividend)'
       }
     };
@@ -1051,13 +1057,10 @@ export default function StockDetail() {
       
       // D) Dividend with industry context + RED color rule
       if (metricType === 'dividend_yield_ttm') {
-        const industryText = industryDivMedian !== null && industryDivMedian !== undefined
-          ? ` (Industry avg: ${toEU(industryDivMedian, 2)}%)`
-          : '';
         // D) RED if dividend == 0% AND industry median > 1% (opportunity cost)
         const isOpportunityCost = metric.value === 0 && industryDivMedian !== null && industryDivMedian > 1;
         return {
-          text: `${toEU(metric.value, 2)}%${industryText}`,
+          text: `${toEU(metric.value, 2)}%`,
           color: isOpportunityCost ? RED : (metric.value === 0 ? MUTED : TEXT)
         };
       }
@@ -1109,10 +1112,52 @@ export default function StockDetail() {
     };
   };
 
-  /** Format peer median hint for a key metric (e.g. "peers: 12,3%") */
-  const formatPeerMedianHint = (median: number | null | undefined, unit: '%' | 'x'): string | null => {
+  /** Format peer median hint for a key metric (e.g. "Industry median: 12,3%") */
+  const formatPeerMedianHint = (median: number | null | undefined, unit: '%' | 'x', level?: string | null): string | null => {
     if (median == null) return null;
-    return `peers: ${toEU(median, 1)}${unit}`;
+    const levelLabel = level ? level.charAt(0).toUpperCase() + level.slice(1) : 'Peer';
+    return `${levelLabel} median: ${toEU(median, unit === 'x' ? 1 : 2)}${unit}`;
+  };
+
+  /** Compute comparison pill for company value vs benchmark */
+  const getBenchmarkPill = (
+    companyValue: number | null | undefined,
+    benchmarkMeta: BenchmarkMetadata | null | undefined,
+    metricKey: string
+  ): { label: string; color: string; bgColor: string } | null => {
+    if (companyValue == null || !benchmarkMeta?.benchmark_value == null || benchmarkMeta?.benchmark_level == null) return null;
+    const bv = benchmarkMeta.benchmark_value;
+    if (bv == null) return null;
+
+    const delta = companyValue - bv;
+
+    // Determine epsilon threshold
+    // percentage metrics: 0.1 pp; multiple/x metrics: 0.05x; pe_ttm: 0.1
+    const pctMetrics = new Set(['net_margin_ttm', 'fcf_yield', 'revenue_growth_3y', 'dividend_yield_ttm', 'roe']);
+    const multipleMetrics = new Set(['net_debt_ebitda']);
+    let epsilon: number;
+    if (pctMetrics.has(metricKey)) {
+      epsilon = 0.1;
+    } else if (multipleMetrics.has(metricKey)) {
+      epsilon = 0.05;
+    } else {
+      epsilon = 0.1; // pe_ttm default
+    }
+
+    if (Math.abs(delta) < epsilon) {
+      return { label: 'Same', color: '#6B7280', bgColor: '#F3F4F6' };
+    }
+
+    // Determine direction: higher is better vs lower is better
+    const lowerIsBetter = new Set(['pe_ttm', 'net_debt_ebitda']);
+    const isLower = lowerIsBetter.has(metricKey);
+    const isBetter = isLower ? delta < 0 : delta > 0;
+
+    if (isBetter) {
+      return { label: 'Better than peers', color: '#166534', bgColor: '#DCFCE7' };
+    } else {
+      return { label: 'Worse than peers', color: '#991B1B', bgColor: '#FEE2E2' };
+    }
   };
 
   // P1 UX POLISH: Valuation Pulse calculation (Peer + 5Y integrated)
@@ -2750,13 +2795,19 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Net Margin (TTM)</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    <View style={styles.metricValueRow}>
-                      {(() => {
-                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_margin_ttm, 'net_margin_ttm');
-                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                      })()}
-                      {formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%') && (
-                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%')}</Text>
+                    <View style={styles.metricValueCol}>
+                      <View style={styles.metricValueRow}>
+                        {(() => {
+                          const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_margin_ttm, 'net_margin_ttm');
+                          return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                        })()}
+                        {(() => {
+                          const pill = getBenchmarkPill(mobileData.key_metrics.net_margin_ttm?.value, mobileData.key_metrics.net_margin_ttm?.benchmark_metadata, 'net_margin_ttm');
+                          return pill ? <View style={[styles.benchmarkPill, { backgroundColor: pill.bgColor }]}><Text style={[styles.benchmarkPillText, { color: pill.color }]}>{pill.label}</Text></View> : null;
+                        })()}
+                      </View>
+                      {formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%', mobileData.key_metrics.net_margin_ttm?.peer_median_level) && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_margin_ttm?.peer_median, '%', mobileData.key_metrics.net_margin_ttm?.peer_median_level)}</Text>
                       )}
                     </View>
                   </View>
@@ -2767,13 +2818,19 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Free Cash Flow Yield</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    <View style={styles.metricValueRow}>
-                      {(() => {
-                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.fcf_yield, 'fcf_yield');
-                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                      })()}
-                      {formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%') && (
-                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%')}</Text>
+                    <View style={styles.metricValueCol}>
+                      <View style={styles.metricValueRow}>
+                        {(() => {
+                          const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.fcf_yield, 'fcf_yield');
+                          return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                        })()}
+                        {(() => {
+                          const pill = getBenchmarkPill(mobileData.key_metrics.fcf_yield?.value, mobileData.key_metrics.fcf_yield?.benchmark_metadata, 'fcf_yield');
+                          return pill ? <View style={[styles.benchmarkPill, { backgroundColor: pill.bgColor }]}><Text style={[styles.benchmarkPillText, { color: pill.color }]}>{pill.label}</Text></View> : null;
+                        })()}
+                      </View>
+                      {formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%', mobileData.key_metrics.fcf_yield?.peer_median_level) && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.fcf_yield?.peer_median, '%', mobileData.key_metrics.fcf_yield?.peer_median_level)}</Text>
                       )}
                     </View>
                   </View>
@@ -2784,13 +2841,19 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Net Debt / EBITDA</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    <View style={styles.metricValueRow}>
-                      {(() => {
-                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_debt_ebitda, 'net_debt_ebitda');
-                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                      })()}
-                      {formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x') && (
-                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x')}</Text>
+                    <View style={styles.metricValueCol}>
+                      <View style={styles.metricValueRow}>
+                        {(() => {
+                          const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.net_debt_ebitda, 'net_debt_ebitda');
+                          return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                        })()}
+                        {(() => {
+                          const pill = getBenchmarkPill(mobileData.key_metrics.net_debt_ebitda?.value, mobileData.key_metrics.net_debt_ebitda?.benchmark_metadata, 'net_debt_ebitda');
+                          return pill ? <View style={[styles.benchmarkPill, { backgroundColor: pill.bgColor }]}><Text style={[styles.benchmarkPillText, { color: pill.color }]}>{pill.label}</Text></View> : null;
+                        })()}
+                      </View>
+                      {formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x', mobileData.key_metrics.net_debt_ebitda?.peer_median_level) && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.net_debt_ebitda?.peer_median, 'x', mobileData.key_metrics.net_debt_ebitda?.peer_median_level)}</Text>
                       )}
                     </View>
                   </View>
@@ -2801,29 +2864,46 @@ export default function StockDetail() {
                       <Text style={styles.metricLabel}>Revenue Growth (3Y CAGR)</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    <View style={styles.metricValueRow}>
-                      {(() => {
-                        const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.revenue_growth_3y, 'revenue_growth_3y');
-                        return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                      })()}
-                      {formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%') && (
-                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%')}</Text>
+                    <View style={styles.metricValueCol}>
+                      <View style={styles.metricValueRow}>
+                        {(() => {
+                          const { text, color } = formatKeyMetricWithEmpathy(mobileData.key_metrics.revenue_growth_3y, 'revenue_growth_3y');
+                          return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                        })()}
+                        {(() => {
+                          const pill = getBenchmarkPill(mobileData.key_metrics.revenue_growth_3y?.value, mobileData.key_metrics.revenue_growth_3y?.benchmark_metadata, 'revenue_growth_3y');
+                          return pill ? <View style={[styles.benchmarkPill, { backgroundColor: pill.bgColor }]}><Text style={[styles.benchmarkPillText, { color: pill.color }]}>{pill.label}</Text></View> : null;
+                        })()}
+                      </View>
+                      {formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%', mobileData.key_metrics.revenue_growth_3y?.peer_median_level) && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.revenue_growth_3y?.peer_median, '%', mobileData.key_metrics.revenue_growth_3y?.peer_median_level)}</Text>
                       )}
                     </View>
                   </View>
                 
-                  {/* Dividend Yield TTM with sector context */}
+                  {/* Dividend Yield TTM with peer median context */}
                   <View style={styles.metricRow}>
                     <TouchableOpacity style={styles.metricLabelRow} onPress={() => showTooltip('dividendYield')}>
                       <Text style={styles.metricLabel}>Dividend Yield (TTM)</Text>
                       <Ionicons name="information-circle-outline" size={14} color={COLORS.textMuted} />
                     </TouchableOpacity>
-                    {(() => {
-                      const div = mobileData.key_metrics.dividend_yield_ttm;
-                      const industryMedian = div?.industry_dividend_yield_median;
-                      const { text, color } = formatKeyMetricWithEmpathy(div, 'dividend_yield_ttm', industryMedian);
-                      return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
-                    })()}
+                    <View style={styles.metricValueCol}>
+                      <View style={styles.metricValueRow}>
+                        {(() => {
+                          const div = mobileData.key_metrics.dividend_yield_ttm;
+                          const industryMedian = div?.industry_dividend_yield_median;
+                          const { text, color } = formatKeyMetricWithEmpathy(div, 'dividend_yield_ttm', industryMedian);
+                          return <Text style={[styles.metricValue, { color }]}>{text}</Text>;
+                        })()}
+                        {(() => {
+                          const pill = getBenchmarkPill(mobileData.key_metrics.dividend_yield_ttm?.value, mobileData.key_metrics.dividend_yield_ttm?.benchmark_metadata, 'dividend_yield_ttm');
+                          return pill ? <View style={[styles.benchmarkPill, { backgroundColor: pill.bgColor }]}><Text style={[styles.benchmarkPillText, { color: pill.color }]}>{pill.label}</Text></View> : null;
+                        })()}
+                      </View>
+                      {formatPeerMedianHint(mobileData.key_metrics.dividend_yield_ttm?.peer_median, '%', mobileData.key_metrics.dividend_yield_ttm?.peer_median_level) && (
+                        <Text style={styles.peerMedianHint}>{formatPeerMedianHint(mobileData.key_metrics.dividend_yield_ttm?.peer_median, '%', mobileData.key_metrics.dividend_yield_ttm?.peer_median_level)}</Text>
+                      )}
+                    </View>
                   </View>
                 </>
               ) : (
@@ -3653,7 +3733,10 @@ const styles = StyleSheet.create({
   metricLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
   metricValue: { fontSize: 14, fontWeight: '600', color: COLORS.text },
   metricValueRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  peerMedianHint: { fontSize: 11, color: COLORS.textMuted, marginLeft: 4 },
+  metricValueCol: { alignItems: 'flex-end' },
+  peerMedianHint: { fontSize: 11, color: COLORS.textMuted, marginTop: 2 },
+  benchmarkPill: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginLeft: 6 },
+  benchmarkPillText: { fontSize: 10, fontWeight: '600' },
   capBadge: { backgroundColor: '#F5F8FC', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 4 },
   capBadgeText: { fontSize: 11, color: COLORS.primary, fontWeight: '500' },
   
