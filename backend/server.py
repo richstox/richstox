@@ -3219,37 +3219,51 @@ async def admin_peer_pool_tickers(
     """
     Return the canonical list of tickers that contributed to a specific Step4 median.
 
-    Reads from the peer_benchmarks.step4_constituents sub-document which stores
-    the exact (ticker, value) pairs used for each metric's median computation,
-    including currency_filter and value_filter metadata.
+    Reads from the **peer_benchmarks_constituents** collection (admin-only audit
+    artifact) which is written alongside peer_benchmarks during Step 4 but kept
+    in a separate collection to avoid bloating production docs.  Falls back to
+    step4_medians in peer_benchmarks for the median/n_used if the constituents
+    doc hasn't been computed yet.
     """
+    from collections import Counter
+
     if level not in ("industry", "sector", "market"):
         raise HTTPException(400, "level must be industry, sector, or market")
 
-    # Build the query to find the right peer_benchmarks document.
+    # Resolve group for the constituents query
     if level == "market":
-        query = {"sector": None, "industry": None}
+        constituents_group = "market"
     elif level == "sector":
         if not group:
             raise HTTPException(400, "group (sector name) is required for sector level")
-        query = {"sector": group, "industry": None}
+        constituents_group = group
     else:  # industry
         if not group:
             raise HTTPException(400, "group (industry name) is required for industry level")
-        query = {"industry": group}
+        constituents_group = group
 
-    doc = await db.peer_benchmarks.find_one(
-        query,
-        {"_id": 0, "step4_constituents": 1, "step4_medians": 1,
-         "industry": 1, "sector": 1, "level": 1},
+    # 1) Read from the separate admin audit collection
+    cons_doc = await db.peer_benchmarks_constituents.find_one(
+        {"level": level, "group": constituents_group},
+        {"_id": 0},
     )
-    if not doc:
-        raise HTTPException(404, f"No peer_benchmarks doc found for {level}={group or 'all'}")
 
-    s4 = doc.get("step4_medians") or {}
+    # 2) Also read step4_medians from peer_benchmarks for median/n_used
+    if level == "market":
+        pb_query = {"sector": None, "industry": None}
+    elif level == "sector":
+        pb_query = {"sector": group, "industry": None}
+    else:
+        pb_query = {"industry": group}
+    pb_doc = await db.peer_benchmarks.find_one(
+        pb_query,
+        {"_id": 0, "step4_medians": 1},
+    )
+    s4 = (pb_doc or {}).get("step4_medians") or {}
     s4_entry = s4.get(metric)
-    constituents = doc.get("step4_constituents") or {}
-    entry = constituents.get(metric)
+
+    # Extract constituents entry for the requested metric
+    entry = ((cons_doc or {}).get("metrics") or {}).get(metric) if cons_doc else None
 
     if not entry:
         return {
@@ -3264,8 +3278,8 @@ async def admin_peer_pool_tickers(
             "n_used": s4_entry.get("n_used") if s4_entry else 0,
             "filters_applied": {},
             "note": (
-                "No step4_constituents entry found for this metric. "
-                "The peer_medians job must be re-run to populate step4_constituents."
+                "No constituents data found for this metric. "
+                "Re-run Step 4 (peer_medians) to populate the peer_benchmarks_constituents collection."
             ),
         }
 
@@ -3273,7 +3287,6 @@ async def admin_peer_pool_tickers(
     values = entry.get("values", [])
 
     # Compute unique tickers and duplicates
-    from collections import Counter
     ticker_counts = Counter(tickers)
     unique_tickers = sorted(set(tickers))
     duplicates = {t: c for t, c in ticker_counts.items() if c > 1}
@@ -4741,6 +4754,10 @@ async def get_ticker_detail_mobile(
 
     # Dividend Yield (TTM) — computed from trailing quarterly dividends_paid
     # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
+    # EXCEPTION to strict 4/4 TTM rule: None quarters are skipped (not treated
+    # as missing) because companies may pay dividends annually, semi-annually,
+    # or quarterly. Matches compute_peer_benchmarks_v3 logic exactly
+    # (key_metrics_service.py ~L1534-1545).
     dividend_yield_ttm = None
     dividend_yield_na = None
     _div_window = _quarterly_rows[:4]  # latest 4 quarterly reporting periods

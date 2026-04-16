@@ -1532,8 +1532,12 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 metrics["ev_revenue"] = enterprise_value / revenue_ttm
             
             # Dividend Yield TTM — from quarterly dividends_paid / market_cap
-            # Consistent with ticker detail endpoint & key_metrics_proof.
+            # Consistent with ticker detail endpoint (server.py ~L4755-4772).
             # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
+            # EXCEPTION to get_ttm_sum strict 4/4 rule: None quarters are skipped
+            # (not treated as missing) because companies may pay dividends annually,
+            # semi-annually, or quarterly — null means "no payment that quarter",
+            # not "data unavailable".
             _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
             if len(_div_q_keys) >= 4:
                 _div_vals = [safe_float(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
@@ -1716,6 +1720,48 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
     #           are in the same reporting currency from existing fields)
     step4_all_currency_eligible = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"}
 
+    def _capture_step4_constituents(
+        metric_keys, all_currency_eligible, allow_negative,
+        known_currency_pool, usd_pool,
+    ):
+        """Capture per-metric ticker+value pairs using the same Step 4 pool logic.
+
+        Returns dict keyed by output metric name (e.g. pe_ttm) → {tickers, values,
+        currency_filter, value_filter, n_records}.  Written to the separate
+        peer_benchmarks_constituents collection for admin audit only.
+        """
+        result = {}
+        for mk in metric_keys:
+            is_safe = mk in all_currency_eligible
+            pool = known_currency_pool if is_safe else usd_pool
+            currency_filter = "all_known_currency" if is_safe else "usd_only"
+            out_key = "pe_ttm" if mk == "pe" else (
+                "dividend_yield_ttm" if mk == "dividend_yield" else mk
+            )
+            if mk == "dividend_yield":
+                pairs = [
+                    (t["ticker"], t["dividend_yield"])
+                    for t in pool
+                    if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0
+                ]
+                value_filter = ">=0"
+            elif mk in allow_negative:
+                pairs = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None]
+                value_filter = "not_null"
+            else:
+                pairs = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None and t.get(mk) > 0]
+                value_filter = ">0"
+            if len(pairs) >= MIN_PEER_COUNT:
+                pairs.sort(key=lambda x: x[1])
+                result[out_key] = {
+                    "tickers": [t for t, _ in pairs],
+                    "values": [round(v, 4) for _, v in pairs],
+                    "currency_filter": currency_filter,
+                    "value_filter": value_filter,
+                    "n_records": len(pairs),
+                }
+        return result
+
     await _hb("industry_benchmarks", processed=0, total=len(industries))
     _HEARTBEAT_INDUSTRY_INTERVAL = 20
     _ind_idx = 0
@@ -1860,6 +1906,26 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 # Map key to spec name (pe -> pe_ttm)
                 out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
+        
+        # ── Admin audit: capture Step 4 constituent ticker lists ──
+        # Written to a separate collection (peer_benchmarks_constituents),
+        # NOT embedded in peer_benchmarks, to keep production docs lean.
+        _constituents = _capture_step4_constituents(
+            step4_metric_keys, step4_all_currency_eligible,
+            step4_allow_negative, known_currency_tickers, tickers_data,
+        )
+        if _constituents:
+            await db.peer_benchmarks_constituents.update_one(
+                {"level": "industry", "group": industry},
+                {"$set": {
+                    "level": "industry",
+                    "group": industry,
+                    "sector": sector,
+                    "metrics": _constituents,
+                    "computed_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
         
         if metric_values:
             await db.peer_benchmarks.update_one(
@@ -2053,6 +2119,23 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
         
+        # ── Admin audit: capture Step 4 constituent ticker lists (sector) ──
+        _constituents = _capture_step4_constituents(
+            step4_metric_keys, step4_all_currency_eligible,
+            step4_allow_negative, sector_known_currency, usd_tickers,
+        )
+        if _constituents:
+            await db.peer_benchmarks_constituents.update_one(
+                {"level": "sector", "group": sector},
+                {"$set": {
+                    "level": "sector",
+                    "group": sector,
+                    "metrics": _constituents,
+                    "computed_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+
         if metric_values:
             await db.peer_benchmarks.update_one(
                 {"sector": sector, "industry": None},
@@ -2221,6 +2304,23 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
         
+        # ── Admin audit: capture Step 4 constituent ticker lists (market) ──
+        _constituents = _capture_step4_constituents(
+            step4_metric_keys, step4_all_currency_eligible,
+            step4_allow_negative, all_known_currency_tickers, all_usd_tickers,
+        )
+        if _constituents:
+            await db.peer_benchmarks_constituents.update_one(
+                {"level": "market", "group": "market"},
+                {"$set": {
+                    "level": "market",
+                    "group": "market",
+                    "metrics": _constituents,
+                    "computed_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+
         if metric_values:
             await db.peer_benchmarks.update_one(
                 {"sector": None, "industry": None},
