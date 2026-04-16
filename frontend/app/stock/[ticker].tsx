@@ -875,11 +875,13 @@ export default function StockDetail() {
   };
 
   const formatCurrency = (value: number | null | undefined) => {
-    if (!value) return 'N/A';
-    if (value >= 1e12) return `$${toEU(value / 1e12, 2)}T`;
-    if (value >= 1e9) return `$${toEU(value / 1e9, 2)}B`;
-    if (value >= 1e6) return `$${toEU(value / 1e6, 2)}M`;
-    return `$${toEU(value, 2)}`;
+    if (value === null || value === undefined || value === 0) return 'N/A';
+    const absValue = Math.abs(value);
+    const sign = value < 0 ? '-' : '';
+    if (absValue >= 1e12) return `${sign}$${toEU(absValue / 1e12, 2)}T`;
+    if (absValue >= 1e9) return `${sign}$${toEU(absValue / 1e9, 2)}B`;
+    if (absValue >= 1e6) return `${sign}$${toEU(absValue / 1e6, 2)}M`;
+    return `${sign}$${toEU(absValue, 2)}`;
   };
 
   const formatNumber = (value: number | null | undefined) => {
@@ -991,6 +993,9 @@ export default function StockDetail() {
         'income_missing': 'N/A (Income not reported)',
         'ebitda_missing': 'N/A (EBITDA not reported)',
         'data_pending': 'N/A (Data pending)',
+        'extreme_outlier': 'N/A (Data unreliable)',
+        'missing_inputs': 'N/A (Data missing)',
+        'not_reported': 'N/A (Not reported)',
       };
       return reasonLabels[metric.na_reason] || 'N/A';
     }
@@ -1047,6 +1052,9 @@ export default function StockDetail() {
       },
       dividend_yield_ttm: {
         'no_dividend': '0.00% (No dividend)',
+        'extreme_outlier': 'N/A (Data unreliable)',
+        'missing_inputs': 'N/A (Data missing)',
+        'not_reported': 'N/A (Not reported)',
         'default': '0.00% (No dividend)'
       }
     };

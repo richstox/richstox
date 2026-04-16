@@ -4782,6 +4782,32 @@ async def get_ticker_detail_mobile(
         dividend_yield_ttm = None
         dividend_yield_na = "not_reported"
 
+    # Guardrail: extreme dividend yield (>100%) is almost certainly bad data
+    # (e.g., ONFO.US shows 2.5M% from cash-flow dividendsPaid vs $3.9M market cap).
+    # Keep raw value available via _raw field for admin debug; display N/A.
+    _dividend_yield_ttm_raw = dividend_yield_ttm
+    if dividend_yield_ttm is not None and dividend_yield_ttm > 100:
+        dividend_yield_ttm = None
+        dividend_yield_na = "extreme_outlier"
+
+    # Cross-validate with dividend_history (same source as Earnings & Dividends).
+    # If dividend_history has no payments in the last 12 months but cash-flow
+    # dividendsPaid produced a non-zero yield, override to 0 — the cash-flow
+    # field likely contains preferred-stock or other non-common-dividend items.
+    if dividend_yield_ttm is not None and dividend_yield_ttm > 0:
+        _one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+        _div_hist_count = await db.dividend_history.count_documents({
+            "ticker": ticker_full,
+            "$or": [
+                {"ex_date": {"$gte": _one_year_ago}},
+                {"date": {"$gte": _one_year_ago}},
+            ],
+        })
+        if _div_hist_count == 0:
+            _dividend_yield_ttm_raw = dividend_yield_ttm
+            dividend_yield_ttm = 0.0
+            dividend_yield_na = "no_dividend"
+
     # FIX-2: Read PRECOMPUTED dividend data from peer_benchmarks
     # All fallback logic is already computed by compute_peer_benchmarks_v3
     # API only reads the pre-computed values + counts + levels
@@ -4925,6 +4951,7 @@ async def get_ticker_detail_mobile(
             "value": dividend_yield_ttm,
             "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
             "na_reason": dividend_yield_na,
+            "_raw_value": _dividend_yield_ttm_raw,  # admin debug: pre-guardrail value
             "peer_median": _fb_div_yield[0],
             "peer_median_n": _fb_div_yield[1],
             "peer_median_level": _fb_div_yield[2],

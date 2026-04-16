@@ -1548,6 +1548,12 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     elif market_cap > 0:
                         metrics["dividend_yield"] = (_dividends_ttm / market_cap) * 100
             
+            # Guardrail: dividend yield > 100% is almost certainly bad data
+            # (e.g., cash-flow dividendsPaid containing preferred-stock items).
+            # Exclude from peer pool to avoid contaminating medians.
+            if metrics.get("dividend_yield") is not None and metrics["dividend_yield"] > 100:
+                del metrics["dividend_yield"]
+            
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
             if net_income_ttm is not None and revenue_ttm and revenue_ttm > 0:
