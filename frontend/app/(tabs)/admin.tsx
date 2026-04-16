@@ -1401,7 +1401,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
                 )}
                 {poolModalData.filters_applied && (
                   <Text style={[bm.modalSub, { color: COLORS.textMuted }]}>
-                    Filters: currency={poolModalData.filters_applied.currency_filter ?? '?'}, values={poolModalData.filters_applied.value_filter ?? '?'}, visible=true, fundamentals=complete
+                    Filters: currency={poolModalData.filters_applied.currency_filter ?? '?'}, values={poolModalData.filters_applied.value_filter ?? '?'}, visible={poolModalData.filters_applied.visible_only ? 'true' : 'false'}, fundamentals={poolModalData.filters_applied.fundamentals_complete ? 'complete' : '?'}
                   </Text>
                 )}
                 {poolModalData.duplicates && Object.keys(poolModalData.duplicates).length > 0 && (
