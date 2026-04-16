@@ -3033,9 +3033,18 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
             operating_cf_ttm = _get_ttm_sum(quarterly_cashflow, "operatingCashflow")
         capex_ttm = _get_ttm_sum(quarterly_cashflow, "capitalExpenditures")
 
-        # Dividend yield
-        splits_dividends = fundamentals.get("SplitsDividends", {})
-        forward_div_yield = _sf(splits_dividends.get("ForwardAnnualDividendYield"))
+        # Dividend yield TTM — from quarterly dividends_paid / market_cap
+        # (consistent with compute_peer_benchmarks_v3)
+        _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
+        dividend_yield_ttm_val = None
+        if len(_div_q_keys) >= 4:
+            _div_vals_debug = [_sf(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
+            if not all(v is None for v in _div_vals_debug):
+                _dividends_ttm_debug = sum(abs(v) for v in _div_vals_debug if v is not None)
+                if _dividends_ttm_debug == 0.0:
+                    dividend_yield_ttm_val = 0.0
+                elif market_cap > 0:
+                    dividend_yield_ttm_val = (_dividends_ttm_debug / market_cap) * 100
 
         # Revenue growth 3Y
         annual_income = financials_data.get("Income_Statement", {}).get("yearly", {})
@@ -3067,9 +3076,9 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
         # revenue_growth_3y
         if revenue_growth_3y is not None:
             raw_metrics["revenue_growth_3y"] = round(revenue_growth_3y, 4)
-        # dividend_yield
-        if forward_div_yield is not None and forward_div_yield >= 0:
-            raw_metrics["dividend_yield"] = round(forward_div_yield * 100, 4)
+        # dividend_yield (TTM)
+        if dividend_yield_ttm_val is not None and dividend_yield_ttm_val >= 0:
+            raw_metrics["dividend_yield"] = round(dividend_yield_ttm_val, 4)
         # roe
         if net_income_ttm is not None and total_equity and total_equity > 0:
             raw_metrics["roe"] = round((net_income_ttm / total_equity) * 100, 4)

@@ -1367,7 +1367,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
              "revenue": 1, "net_income": 1, "ebitda": 1, "operating_income": 1,
              "total_equity": 1, "total_debt": 1, "cash_and_equivalents": 1,
              "short_term_investments": 1, "retained_earnings": 1,
-             "operating_cash_flow": 1, "capital_expenditures": 1, "free_cash_flow": 1,
+             "operating_cash_flow": 1, "capital_expenditures": 1, "free_cash_flow": 1, "dividends_paid": 1,
              "total_assets": 1, "total_liabilities": 1,
              "total_current_assets": 1, "total_current_liabilities": 1,
              "diluted_eps": 1}
@@ -1400,6 +1400,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     "totalCashFromOperatingActivities": row.get("operating_cash_flow"),
                     "capitalExpenditures": row.get("capital_expenditures"),
                     "depreciation": None,   # not stored separately in canonical schema
+                    "dividendsPaid": row.get("dividends_paid"),
                 }
             elif row.get("period_type") == "annual":
                 annual_income_batch.setdefault(tk, {})[pd_key] = {
@@ -1420,14 +1421,8 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     "epsActual": row.get("eps_actual"),
                 }
         
-        # ── Fetch dividend yield from company_fundamentals_cache ──
-        div_yield_batch = {}  # ticker -> forward_dividend_yield
-        cache_cursor = db.company_fundamentals_cache.find(
-            {"ticker": {"$in": batch_ticker_names}},
-            {"_id": 0, "ticker": 1, "forward_dividend_yield": 1}
-        )
-        async for row in cache_cursor:
-            div_yield_batch[row["ticker"]] = safe_float(row.get("forward_dividend_yield"))
+        # NOTE: dividend yield is now computed as TTM from quarterly
+        # dividends_paid (below), no longer from company_fundamentals_cache.
         
         for t in batch_tickers:
             ticker = t.get("ticker")
@@ -1529,11 +1524,18 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             if revenue_ttm and revenue_ttm > 0 and enterprise_value > 0:
                 metrics["ev_revenue"] = enterprise_value / revenue_ttm
             
-            # Dividend Yield (ForwardAnnualDividendYield)
-            forward_div_yield = div_yield_batch.get(ticker)
-            if forward_div_yield is not None and forward_div_yield >= 0:
-                # EODHD returns decimal (0.025 = 2.5%), convert to percentage
-                metrics["dividend_yield"] = forward_div_yield * 100
+            # Dividend Yield TTM — from quarterly dividends_paid / market_cap
+            # Consistent with ticker detail endpoint & key_metrics_proof.
+            # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
+            _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
+            if len(_div_q_keys) >= 4:
+                _div_vals = [safe_float(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
+                if not all(v is None for v in _div_vals):
+                    _dividends_ttm = sum(abs(v) for v in _div_vals if v is not None)
+                    if _dividends_ttm == 0.0:
+                        metrics["dividend_yield"] = 0.0  # explicit non-payer
+                    elif market_cap > 0:
+                        metrics["dividend_yield"] = (_dividends_ttm / market_cap) * 100
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
