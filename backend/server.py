@@ -6092,7 +6092,8 @@ async def recover_stale_job_run(database, job_name: str) -> dict | None:
             if isinstance(started, datetime)
             else float("inf")
         )
-    except Exception:
+    except Exception as _age_err:
+        logger.debug(f"recover_stale_job_run: could not compute age for {job_name}: {_age_err}")
         age_minutes = float("inf")
 
     if age_minutes <= max_minutes:

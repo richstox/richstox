@@ -1680,10 +1680,11 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
     step4_all_currency_eligible = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"}
 
     await _hb("industry_benchmarks", processed=0, total=len(industries))
+    _HEARTBEAT_INDUSTRY_INTERVAL = 20
     _ind_idx = 0
     for industry, data in industries.items():
         _ind_idx += 1
-        if _ind_idx % 20 == 0:
+        if _ind_idx % _HEARTBEAT_INDUSTRY_INTERVAL == 0:
             await _hb("industry_benchmarks", processed=_ind_idx, total=len(industries))
         _step4_stats["industry"]["groups_total"] += 1
         sector = data["sector"]
