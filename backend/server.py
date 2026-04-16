@@ -3466,6 +3466,105 @@ async def get_ticker_dividends(ticker: str):
     result = await get_dividend_history_for_ticker(db, ticker)
     return result
 
+
+@api_router.get("/admin/dividends/debug/{ticker}")
+async def admin_dividend_yield_debug(ticker: str):
+    """
+    Admin debug endpoint: Show all inputs used to compute dividend_yield_ttm
+    and explain why Earnings & Dividends may disagree with Key Metrics.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    # 1. Get tracked_tickers for market_cap, shares, price
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1, "shares_outstanding": 1, "sector": 1, "industry": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker_full} not found")
+
+    # 2. Latest price
+    latest_price_doc = await db.stock_prices.find_one(
+        {"ticker": ticker_full}, {"_id": 0}, sort=[("date", -1)]
+    )
+    last_price = latest_price_doc["close"] if latest_price_doc else None
+    shares = tracked.get("shares_outstanding")
+    market_cap = (last_price * shares) if last_price and shares else None
+
+    # 3. Last 4 quarterly dividends_paid from company_financials (Key Metrics source)
+    quarterly_rows = await db.company_financials.find(
+        {"ticker": ticker_full, "period_type": "quarterly"},
+        {"_id": 0, "period_date": 1, "dividends_paid": 1},
+    ).sort("period_date", -1).limit(4).to_list(length=4)
+
+    def _sf(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    quarterly_dividends = [
+        {"period_date": q["period_date"], "dividends_paid": _sf(q.get("dividends_paid"))}
+        for q in quarterly_rows
+    ]
+
+    div_vals = [d["dividends_paid"] for d in quarterly_dividends]
+    dividends_paid_ttm = sum(abs(v) for v in div_vals if v is not None) if not all(v is None for v in div_vals) else None
+    computed_yield = (dividends_paid_ttm / market_cap * 100) if dividends_paid_ttm and market_cap and market_cap > 0 else None
+
+    # 4. dividend_history (Earnings & Dividends source)
+    one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    div_hist_cursor = db.dividend_history.find(
+        {"ticker": ticker_full, "$or": [{"ex_date": {"$gte": one_year_ago}}, {"date": {"$gte": one_year_ago}}]},
+        {"_id": 0},
+    ).sort([("ex_date", -1), ("date", -1)])
+    div_hist_records = await div_hist_cursor.to_list(length=50)
+
+    # 5. Guardrail evaluation
+    guardrail_triggered = None
+    final_yield = computed_yield
+    if computed_yield is not None and computed_yield > 100:
+        guardrail_triggered = "extreme_outlier (>100%)"
+        final_yield = None
+    if final_yield is not None and final_yield > 0 and len(div_hist_records) == 0:
+        guardrail_triggered = "no_dividend_history_cross_check"
+        final_yield = 0.0
+
+    return {
+        "ticker": ticker_full,
+        "inputs": {
+            "market_cap": market_cap,
+            "shares_outstanding": shares,
+            "last_price": last_price,
+        },
+        "cash_flow_source": {
+            "description": "company_financials.dividends_paid (Key Metrics source)",
+            "quarterly_dividends_paid": quarterly_dividends,
+            "dividends_paid_ttm_sum": dividends_paid_ttm,
+            "computed_dividend_yield_ttm": computed_yield,
+        },
+        "dividend_history_source": {
+            "description": "dividend_history collection (Earnings & Dividends source)",
+            "records_last_12m": len(div_hist_records),
+            "records": div_hist_records[:8],
+            "shows_no_dividends": len(div_hist_records) == 0,
+        },
+        "guardrail": {
+            "triggered": guardrail_triggered,
+            "final_dividend_yield_ttm": final_yield,
+        },
+        "mismatch_explanation": (
+            "dividend_history has NO records (Earnings & Dividends shows 'No dividends') "
+            "but company_financials.dividends_paid has non-zero values. "
+            "The cash-flow dividendsPaid field likely contains preferred-stock dividends, "
+            "debt repayments, or other non-common-stock items misclassified by the data provider."
+        ) if dividends_paid_ttm and dividends_paid_ttm > 0 and len(div_hist_records) == 0 else None,
+    }
+
+
 # ----- TTM Calculations Endpoints -----
 
 @api_router.post("/admin/ttm/update-batch")
@@ -4949,7 +5048,7 @@ async def get_ticker_detail_mobile(
         "dividend_yield_ttm": {
             "name": "Dividend Yield",
             "value": dividend_yield_ttm,
-            "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm else "0.00%",
+            "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm is not None else None,
             "na_reason": dividend_yield_na,
             "_raw_value": _dividend_yield_ttm_raw,  # admin debug: pre-guardrail value
             "peer_median": _fb_div_yield[0],
