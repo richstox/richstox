@@ -1239,17 +1239,24 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             return None
     
     def get_ttm_sum(quarterly_data: dict, field: str):
+        """Strict 4/4 TTM sum — aligned with ticker detail endpoint.
+
+        Requires ALL 4 latest quarters to have a non-null value for *field*.
+        Zero is treated as a valid value (not missing).
+        Returns None when fewer than 4 quarters exist or any quarter is null.
+        """
         if not quarterly_data:
             return None
         sorted_quarters = sorted(quarterly_data.keys(), reverse=True)[:4]
         if len(sorted_quarters) < 4:
             return None
-        total = 0
+        values = []
         for q in sorted_quarters:
             val = safe_float(quarterly_data[q].get(field))
-            if val is not None:
-                total += val
-        return total if total != 0 else None
+            if val is None:
+                return None  # strict: any null quarter → metric unavailable
+            values.append(val)
+        return sum(values)
     
     def get_latest_value(quarterly_data: dict, field: str):
         if not quarterly_data:
@@ -1465,11 +1472,11 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             net_income_ttm = get_ttm_sum(quarterly_income, "netIncome")
             ebitda_ttm = get_ttm_sum(quarterly_income, "ebitda")
             
-            if not ebitda_ttm:
+            if ebitda_ttm is None:
                 operating_income = get_ttm_sum(quarterly_income, "operatingIncome")
                 depreciation = get_ttm_sum(quarterly_cashflow, "depreciation")
-                if operating_income:
-                    ebitda_ttm = operating_income + abs(depreciation or 0)
+                if operating_income is not None:
+                    ebitda_ttm = operating_income + abs(depreciation if depreciation is not None else 0)
             
             # Balance sheet
             total_equity = get_latest_value(quarterly_balance, "totalStockholderEquity")
@@ -1489,7 +1496,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                              if safe_float(earnings_history[q].get("epsActual")) is not None]
                 if len(eps_values) >= 3:
                     eps_ttm = sum(eps_values)
-            if not eps_ttm and net_income_ttm and shares:
+            if eps_ttm is None and net_income_ttm is not None and net_income_ttm != 0 and shares:
                 eps_ttm = net_income_ttm / shares
             
             enterprise_value = market_cap + (total_debt or 0) - cash
@@ -1542,14 +1549,42 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             if net_income_ttm is not None and revenue_ttm and revenue_ttm > 0:
                 metrics["net_margin_ttm"] = (net_income_ttm / revenue_ttm) * 100
             
-            # Free Cash Flow Yield = (operating_cf_ttm - capex_ttm) / market_cap * 100
-            operating_cf_ttm = get_ttm_sum(quarterly_cashflow, "totalCashFromOperatingActivities")
-            if not operating_cf_ttm:
-                operating_cf_ttm = get_ttm_sum(quarterly_cashflow, "operatingCashflow")
-            capex_ttm = get_ttm_sum(quarterly_cashflow, "capitalExpenditures")
-            if operating_cf_ttm is not None and market_cap > 0:
-                # EODHD stores capex as negative; abs() ensures subtraction is correct
-                fcf_ttm = operating_cf_ttm - abs(capex_ttm or 0)
+            # Free Cash Flow Yield — aligned with ticker detail endpoint.
+            # Requires ALL 4 quarters to have BOTH operating_cash_flow AND
+            # capital_expenditures non-null.  Null values are never coerced to
+            # zero — a missing value makes the metric unavailable.
+            _fcf_computable = False
+            if quarterly_cashflow and len(sorted(quarterly_cashflow.keys(), reverse=True)[:4]) >= 4:
+                _top4_cf_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4]
+                _fcf_computable = all(
+                    safe_float(quarterly_cashflow[q].get("totalCashFromOperatingActivities")) is not None
+                    and safe_float(quarterly_cashflow[q].get("capitalExpenditures")) is not None
+                    for q in _top4_cf_keys
+                )
+                if not _fcf_computable:
+                    # Fallback field name for OCF
+                    _fcf_computable = all(
+                        safe_float(quarterly_cashflow[q].get("operatingCashflow")) is not None
+                        and safe_float(quarterly_cashflow[q].get("capitalExpenditures")) is not None
+                        for q in _top4_cf_keys
+                    )
+                    if _fcf_computable:
+                        _ocf_field = "operatingCashflow"
+                    else:
+                        _ocf_field = None
+                else:
+                    _ocf_field = "totalCashFromOperatingActivities"
+            else:
+                _top4_cf_keys = []
+                _ocf_field = None
+
+            if _fcf_computable and _ocf_field and market_cap > 0:
+                _fcf_parts = []
+                for q in _top4_cf_keys:
+                    _ocf = safe_float(quarterly_cashflow[q].get(_ocf_field))
+                    _capex = abs(safe_float(quarterly_cashflow[q].get("capitalExpenditures")))
+                    _fcf_parts.append(_ocf - _capex)
+                fcf_ttm = sum(_fcf_parts)
                 metrics["fcf_yield"] = (fcf_ttm / market_cap) * 100
             
             # Net Debt / EBITDA  (net_debt can be negative if cash > debt)
