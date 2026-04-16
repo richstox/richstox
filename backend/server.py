@@ -4903,7 +4903,6 @@ async def get_ticker_detail_mobile(
             ],
         })
         if _div_hist_count == 0:
-            _dividend_yield_ttm_raw = dividend_yield_ttm
             dividend_yield_ttm = 0.0
             dividend_yield_na = "no_dividend"
 

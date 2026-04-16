@@ -8,7 +8,7 @@
  * CI/CD: Run with `npx jest __tests__/formatCurrency.test.js`
  */
 
-// ── FinancialHub.tsx formatCurrency (lines 210-250) ─────────────────────────
+// ── FinancialHub.tsx formatCurrency (local function) ─────────────────────────
 // Extracted verbatim so we can unit-test it without importing React Native.
 const formatCurrencyHub = (value) => {
   if (value === null || value === undefined) return 'N/A';
@@ -52,7 +52,7 @@ const formatCurrencyHub = (value) => {
   return `${sign}$${absValue.toFixed(0)}`;
 };
 
-// ── [ticker].tsx formatCurrency (lines 877-883) ─────────────────────────────
+// ── [ticker].tsx formatCurrency (EU style with negative handling) ────────────
 // EU-style (dots for thousands, comma for decimal)
 const toEU = (value, decimals = 2) => {
   if (value === null || value === undefined || isNaN(value)) return 'N/A';
