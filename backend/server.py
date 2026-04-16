@@ -2851,17 +2851,24 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
             return None
 
     def _get_ttm_sum(quarterly_data: dict, field: str):
+        """Strict 4/4 TTM sum — aligned with ticker detail endpoint.
+
+        Requires ALL 4 latest quarters to have a non-null value for *field*.
+        Zero is treated as a valid value (not missing).
+        Returns None when fewer than 4 quarters exist or any quarter is null.
+        """
         if not quarterly_data:
             return None
         sorted_quarters = sorted(quarterly_data.keys(), reverse=True)[:4]
         if len(sorted_quarters) < 4:
             return None
-        total = 0
+        values = []
         for q in sorted_quarters:
             val = _sf(quarterly_data[q].get(field))
-            if val is not None:
-                total += val
-        return total if total != 0 else None
+            if val is None:
+                return None  # strict: any null quarter → metric unavailable
+            values.append(val)
+        return sum(values)
 
     def _get_latest_value(quarterly_data: dict, field: str):
         if not quarterly_data:
@@ -2998,11 +3005,11 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
         revenue_ttm = _get_ttm_sum(quarterly_income, "totalRevenue")
         net_income_ttm = _get_ttm_sum(quarterly_income, "netIncome")
         ebitda_ttm = _get_ttm_sum(quarterly_income, "ebitda")
-        if not ebitda_ttm:
+        if ebitda_ttm is None:
             operating_income = _get_ttm_sum(quarterly_income, "operatingIncome")
             depreciation = _get_ttm_sum(quarterly_cashflow, "depreciation")
-            if operating_income:
-                ebitda_ttm = operating_income + abs(depreciation or 0)
+            if operating_income is not None:
+                ebitda_ttm = operating_income + abs(depreciation if depreciation is not None else 0)
 
         total_equity = _get_latest_value(quarterly_balance, "totalStockholderEquity")
         total_debt = _get_latest_value(quarterly_balance, "totalDebt")
@@ -3024,18 +3031,48 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
                           if _sf(earnings_history[q].get("epsActual")) is not None]
             if len(eps_values) >= 3:
                 eps_ttm = sum(eps_values)
-        if not eps_ttm and net_income_ttm and shares:
+        if eps_ttm is None and net_income_ttm is not None and net_income_ttm != 0 and shares:
             eps_ttm = net_income_ttm / shares
 
-        # Operating CF TTM
-        operating_cf_ttm = _get_ttm_sum(quarterly_cashflow, "totalCashFromOperatingActivities")
-        if not operating_cf_ttm:
-            operating_cf_ttm = _get_ttm_sum(quarterly_cashflow, "operatingCashflow")
-        capex_ttm = _get_ttm_sum(quarterly_cashflow, "capitalExpenditures")
+        # Operating CF TTM + FCF — require all 4 quarters with BOTH OCF and CapEx non-null
+        # (aligned with ticker detail endpoint)
+        operating_cf_ttm = None
+        capex_ttm = None
+        _fcf_debug_computable = False
+        if quarterly_cashflow:
+            _cf_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4]
+            if len(_cf_keys) >= 4:
+                # Try totalCashFromOperatingActivities first
+                _ocf_field_d = "totalCashFromOperatingActivities"
+                _all_ok = all(
+                    _sf(quarterly_cashflow[q].get(_ocf_field_d)) is not None
+                    and _sf(quarterly_cashflow[q].get("capitalExpenditures")) is not None
+                    for q in _cf_keys
+                )
+                if not _all_ok:
+                    _ocf_field_d = "operatingCashflow"
+                    _all_ok = all(
+                        _sf(quarterly_cashflow[q].get(_ocf_field_d)) is not None
+                        and _sf(quarterly_cashflow[q].get("capitalExpenditures")) is not None
+                        for q in _cf_keys
+                    )
+                if _all_ok:
+                    _fcf_debug_computable = True
+                    operating_cf_ttm = sum(_sf(quarterly_cashflow[q].get(_ocf_field_d)) for q in _cf_keys)
+                    capex_ttm = sum(_sf(quarterly_cashflow[q].get("capitalExpenditures")) for q in _cf_keys)
 
-        # Dividend yield
-        splits_dividends = fundamentals.get("SplitsDividends", {})
-        forward_div_yield = _sf(splits_dividends.get("ForwardAnnualDividendYield"))
+        # Dividend yield TTM — from quarterly dividends_paid / market_cap
+        # (consistent with compute_peer_benchmarks_v3)
+        _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
+        dividend_yield_ttm_val = None
+        if len(_div_q_keys) >= 4:
+            _div_vals_debug = [_sf(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
+            if not all(v is None for v in _div_vals_debug):
+                _dividends_ttm_debug = sum(abs(v) for v in _div_vals_debug if v is not None)
+                if _dividends_ttm_debug == 0.0:
+                    dividend_yield_ttm_val = 0.0
+                elif market_cap > 0:
+                    dividend_yield_ttm_val = (_dividends_ttm_debug / market_cap) * 100
 
         # Revenue growth 3Y
         annual_income = financials_data.get("Income_Statement", {}).get("yearly", {})
@@ -3056,9 +3093,9 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
         # net_margin_ttm
         if net_income_ttm is not None and revenue_ttm and revenue_ttm > 0:
             raw_metrics["net_margin_ttm"] = round((net_income_ttm / revenue_ttm) * 100, 4)
-        # fcf_yield
-        if operating_cf_ttm is not None and market_cap > 0:
-            fcf_ttm = operating_cf_ttm - abs(capex_ttm or 0)
+        # fcf_yield — strict: only when all 4 quarters had both OCF and CapEx
+        if _fcf_debug_computable and operating_cf_ttm is not None and capex_ttm is not None and market_cap > 0:
+            fcf_ttm = operating_cf_ttm - abs(capex_ttm)
             raw_metrics["fcf_yield"] = round((fcf_ttm / market_cap) * 100, 4)
         # net_debt_ebitda
         net_debt = (total_debt or 0) - cash
@@ -3067,9 +3104,9 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
         # revenue_growth_3y
         if revenue_growth_3y is not None:
             raw_metrics["revenue_growth_3y"] = round(revenue_growth_3y, 4)
-        # dividend_yield
-        if forward_div_yield is not None and forward_div_yield >= 0:
-            raw_metrics["dividend_yield"] = round(forward_div_yield * 100, 4)
+        # dividend_yield (TTM)
+        if dividend_yield_ttm_val is not None and dividend_yield_ttm_val >= 0:
+            raw_metrics["dividend_yield"] = round(dividend_yield_ttm_val, 4)
         # roe
         if net_income_ttm is not None and total_equity and total_equity > 0:
             raw_metrics["roe"] = round((net_income_ttm / total_equity) * 100, 4)

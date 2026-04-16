@@ -1032,3 +1032,106 @@ class TestFCFYieldNullHandling:
         assert fcf_idx != -1 and dividend_idx != -1
         fcf_block_t = src_test[fcf_idx:dividend_idx]
         assert "or 0" not in fcf_block_t, f"Found 'or 0' in test helper FCF block"
+
+
+# ── Step 4 metric-definition alignment tests ─────────────────────────────────
+# These tests verify the strictness rules that ensure Step 4 peer median
+# inputs match the ticker-detail endpoint definitions.
+
+
+class TestStrictTTMSumming:
+    """Verify 4/4 quarter requirement and 0-as-valid for TTM sums."""
+
+    def test_net_margin_none_when_1_quarter_missing_net_income(self):
+        """Net Margin TTM must be None when any quarter lacks net_income."""
+        rows = _make_quarterly_rows("PARTIAL_NI.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9, "ebitda": 1.5e9,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "ebitda": 1.4e9,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},  # net_income missing
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9, "ebitda": 1.3e9,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9, "ebitda": 1.35e9,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        assert r["net_margin_ttm"] is None
+
+    def test_net_margin_none_when_1_quarter_missing_revenue(self):
+        """Net Margin TTM must be None when any quarter lacks revenue."""
+        rows = _make_quarterly_rows("PARTIAL_REV.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9, "ebitda": 1.5e9,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "net_income": 0.9e9, "ebitda": 1.4e9,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},  # revenue missing
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9, "ebitda": 1.3e9,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9, "ebitda": 1.35e9,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        assert r["net_margin_ttm"] is None
+
+    def test_zero_net_income_is_valid_for_net_margin(self):
+        """Zero net income across 4 quarters → net_margin = 0%, NOT None."""
+        rows = _make_quarterly_rows("BREAKEVEN.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 0, "ebitda": 1.5e9,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0, "ebitda": 1.4e9,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0, "ebitda": 1.3e9,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0, "ebitda": 1.35e9,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        assert r["net_margin_ttm"] is not None
+        assert r["net_margin_ttm"] == 0.0
+
+    def test_zero_ebitda_is_valid_for_ttm(self):
+        """Zero EBITDA across 4 quarters → ebitda_ttm = 0, Net Debt/EBITDA = None (div/0 guard)."""
+        rows = _make_quarterly_rows("ZEROEBITDA.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9, "ebitda": 0,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9, "ebitda": 0,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9, "ebitda": 0,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9, "ebitda": 0,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        # ebitda_ttm = 0 → Net Debt/EBITDA should be None (division by zero guard)
+        assert r["ebitda_ttm"] == 0
+        assert r["net_debt_ebitda"] is None
+
+    def test_ebitda_none_when_1_quarter_missing(self):
+        """EBITDA TTM must be None when any quarter lacks ebitda."""
+        rows = _make_quarterly_rows("PARTIAL_EB.US", [
+            {"period_date": "2025-09-30", "revenue": 5e9, "net_income": 1e9, "ebitda": 1.5e9,
+             "cash_and_equivalents": 3e9, "total_debt": 2e9},
+            {"period_date": "2025-06-30", "revenue": 4.8e9, "net_income": 0.9e9,
+             "cash_and_equivalents": 2.8e9, "total_debt": 2.1e9},  # ebitda missing
+            {"period_date": "2025-03-31", "revenue": 4.5e9, "net_income": 0.8e9, "ebitda": 1.3e9,
+             "cash_and_equivalents": 2.5e9, "total_debt": 2.2e9},
+            {"period_date": "2024-12-31", "revenue": 4.6e9, "net_income": 0.85e9, "ebitda": 1.35e9,
+             "cash_and_equivalents": 2.6e9, "total_debt": 2.15e9},
+        ])
+        r = compute_key_metrics(
+            shares_outstanding=1e10, current_price=100.0,
+            quarterly_rows=rows, annual_rows=[],
+        )
+        assert r["ebitda_ttm"] is None
+        assert r["net_debt_ebitda"] is None
