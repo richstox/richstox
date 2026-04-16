@@ -1828,62 +1828,38 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
         
         # ── STEP 4: Compute medians for the 7 admin Key Metrics ─────
         step4 = {}
-        step4_constituents = {}  # canonical per-metric constituent lists
         for mk in step4_metric_keys:
             # Phase 2A: select per-metric peer pool
-            is_safe = mk in step4_all_currency_eligible
-            pool = known_currency_tickers if is_safe else tickers_data
-            currency_filter = "all_known_currency" if is_safe else "usd_only"
-            out_key = "pe_ttm" if mk == "pe" else ("dividend_yield_ttm" if mk == "dividend_yield" else mk)
+            pool = known_currency_tickers if mk in step4_all_currency_eligible else tickers_data
             if mk == "dividend_yield":
                 # Phase 2A: recompute dividend median using expanded pool for safe metrics
-                div_ticker_pairs = [(t["ticker"], t["dividend_yield"]) for t in pool
+                div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
-                if len(div_ticker_pairs) >= MIN_PEER_COUNT:
-                    div_vals = [v for _, v in div_ticker_pairs]
-                    div_vals = winsorize_values(div_vals)
-                    div_vals.sort()
-                    n_dv = len(div_vals)
+                if len(div_pairs) >= MIN_PEER_COUNT:
+                    div_pairs = winsorize_values(div_pairs)
+                    div_pairs.sort()
+                    n_dv = len(div_pairs)
                     if n_dv % 2 == 1:
-                        d_med = round(div_vals[n_dv // 2], 2)
+                        d_med = round(div_pairs[n_dv // 2], 2)
                     else:
-                        d_med = round((div_vals[n_dv // 2 - 1] + div_vals[n_dv // 2]) / 2, 2)
-                    step4[out_key] = {"median": d_med, "n_used": n_dv}
-                    # Store canonical constituents (pre-winsorization ticker+value)
-                    div_ticker_pairs.sort(key=lambda x: x[1])
-                    step4_constituents[out_key] = {
-                        "tickers": [t for t, _ in div_ticker_pairs],
-                        "values": [round(v, 4) for _, v in div_ticker_pairs],
-                        "currency_filter": currency_filter,
-                        "value_filter": ">=0",
-                        "n_records": len(div_ticker_pairs),
-                    }
+                        d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
+                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
                 continue
             if mk in step4_allow_negative:
-                ticker_pairs_s4 = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None]
-                value_filter = "not_null"
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
             else:
-                ticker_pairs_s4 = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None and t.get(mk) > 0]
-                value_filter = ">0"
-            if len(ticker_pairs_s4) >= MIN_PEER_COUNT:
-                vals_s4 = [v for _, v in ticker_pairs_s4]
-                vals_s4 = winsorize_values(vals_s4)
-                vals_s4.sort()
-                n_s4 = len(vals_s4)
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None and t.get(mk) > 0]
+            if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4 = winsorize_values(pairs_s4)
+                pairs_s4.sort()
+                n_s4 = len(pairs_s4)
                 if n_s4 % 2 == 1:
-                    med = round(vals_s4[n_s4 // 2], 2)
+                    med = round(pairs_s4[n_s4 // 2], 2)
                 else:
-                    med = round((vals_s4[n_s4 // 2 - 1] + vals_s4[n_s4 // 2]) / 2, 2)
+                    med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
+                # Map key to spec name (pe -> pe_ttm)
+                out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
-                # Store canonical constituents (pre-winsorization ticker+value)
-                ticker_pairs_s4.sort(key=lambda x: x[1])
-                step4_constituents[out_key] = {
-                    "tickers": [t for t, _ in ticker_pairs_s4],
-                    "values": [round(v, 4) for _, v in ticker_pairs_s4],
-                    "currency_filter": currency_filter,
-                    "value_filter": value_filter,
-                    "n_records": len(ticker_pairs_s4),
-                }
         
         if metric_values:
             await db.peer_benchmarks.update_one(
@@ -1900,14 +1876,14 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
                     "step4_medians": step4,
-                    "step4_constituents": step4_constituents,
                     # FIX-2: Dividend-specific fields
                     "dividend_peer_count": dividend_peer_count,
                     "dividend_payers_count": dividend_payers_count,
                     "dividend_median_level_all": dividend_level_all,
                     "dividend_median_level_payers": dividend_level_payers,
                     "computed_at": datetime.now(timezone.utc).isoformat()
-                }},
+                },
+                "$unset": {"step4_constituents": ""}},
                 upsert=True
             )
             stored += 1
@@ -2046,59 +2022,36 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
         
         # ── STEP 4: Compute medians for the 7 admin Key Metrics (sector) ─
         step4 = {}
-        step4_constituents = {}
         for mk in step4_metric_keys:
             # Phase 2A: select per-metric peer pool
-            is_safe = mk in step4_all_currency_eligible
-            pool = sector_known_currency if is_safe else usd_tickers
-            currency_filter = "all_known_currency" if is_safe else "usd_only"
-            out_key = "pe_ttm" if mk == "pe" else ("dividend_yield_ttm" if mk == "dividend_yield" else mk)
+            pool = sector_known_currency if mk in step4_all_currency_eligible else usd_tickers
             if mk == "dividend_yield":
-                div_ticker_pairs = [(t["ticker"], t["dividend_yield"]) for t in pool
+                div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
-                if len(div_ticker_pairs) >= MIN_PEER_COUNT:
-                    div_vals = [v for _, v in div_ticker_pairs]
-                    div_vals = winsorize_values(div_vals)
-                    div_vals.sort()
-                    n_dv = len(div_vals)
+                if len(div_pairs) >= MIN_PEER_COUNT:
+                    div_pairs = winsorize_values(div_pairs)
+                    div_pairs.sort()
+                    n_dv = len(div_pairs)
                     if n_dv % 2 == 1:
-                        d_med = round(div_vals[n_dv // 2], 2)
+                        d_med = round(div_pairs[n_dv // 2], 2)
                     else:
-                        d_med = round((div_vals[n_dv // 2 - 1] + div_vals[n_dv // 2]) / 2, 2)
-                    step4[out_key] = {"median": d_med, "n_used": n_dv}
-                    div_ticker_pairs.sort(key=lambda x: x[1])
-                    step4_constituents[out_key] = {
-                        "tickers": [t for t, _ in div_ticker_pairs],
-                        "values": [round(v, 4) for _, v in div_ticker_pairs],
-                        "currency_filter": currency_filter,
-                        "value_filter": ">=0",
-                        "n_records": len(div_ticker_pairs),
-                    }
+                        d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
+                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
                 continue
             if mk in step4_allow_negative:
-                ticker_pairs_s4 = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None]
-                value_filter = "not_null"
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
             else:
-                ticker_pairs_s4 = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None and t.get(mk) > 0]
-                value_filter = ">0"
-            if len(ticker_pairs_s4) >= MIN_PEER_COUNT:
-                vals_s4 = [v for _, v in ticker_pairs_s4]
-                vals_s4 = winsorize_values(vals_s4)
-                vals_s4.sort()
-                n_s4 = len(vals_s4)
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None and t.get(mk) > 0]
+            if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4 = winsorize_values(pairs_s4)
+                pairs_s4.sort()
+                n_s4 = len(pairs_s4)
                 if n_s4 % 2 == 1:
-                    med = round(vals_s4[n_s4 // 2], 2)
+                    med = round(pairs_s4[n_s4 // 2], 2)
                 else:
-                    med = round((vals_s4[n_s4 // 2 - 1] + vals_s4[n_s4 // 2]) / 2, 2)
+                    med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
+                out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
-                ticker_pairs_s4.sort(key=lambda x: x[1])
-                step4_constituents[out_key] = {
-                    "tickers": [t for t, _ in ticker_pairs_s4],
-                    "values": [round(v, 4) for _, v in ticker_pairs_s4],
-                    "currency_filter": currency_filter,
-                    "value_filter": value_filter,
-                    "n_records": len(ticker_pairs_s4),
-                }
         
         if metric_values:
             await db.peer_benchmarks.update_one(
@@ -2113,14 +2066,14 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
                     "step4_medians": step4,
-                    "step4_constituents": step4_constituents,
                     # FIX-2: Dividend-specific fields
                     "dividend_peer_count": dividend_peer_count,
                     "dividend_payers_count": dividend_payers_count,
                     "dividend_median_level_all": dividend_level_all,
                     "dividend_median_level_payers": dividend_level_payers,
                     "computed_at": datetime.now(timezone.utc).isoformat()
-                }},
+                },
+                "$unset": {"step4_constituents": ""}},
                 upsert=True
             )
             sector_stored += 1
@@ -2237,59 +2190,36 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
         
         # ── STEP 4: Compute medians for the 7 admin Key Metrics (market) ─
         step4 = {}
-        step4_constituents = {}
         for mk in step4_metric_keys:
             # Phase 2A: select per-metric peer pool
-            is_safe = mk in step4_all_currency_eligible
-            pool = all_known_currency_tickers if is_safe else all_usd_tickers
-            currency_filter = "all_known_currency" if is_safe else "usd_only"
-            out_key = "pe_ttm" if mk == "pe" else ("dividend_yield_ttm" if mk == "dividend_yield" else mk)
+            pool = all_known_currency_tickers if mk in step4_all_currency_eligible else all_usd_tickers
             if mk == "dividend_yield":
-                div_ticker_pairs = [(t["ticker"], t["dividend_yield"]) for t in pool
+                div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
-                if len(div_ticker_pairs) >= MIN_PEER_COUNT:
-                    div_vals = [v for _, v in div_ticker_pairs]
-                    div_vals = winsorize_values(div_vals)
-                    div_vals.sort()
-                    n_dv = len(div_vals)
+                if len(div_pairs) >= MIN_PEER_COUNT:
+                    div_pairs = winsorize_values(div_pairs)
+                    div_pairs.sort()
+                    n_dv = len(div_pairs)
                     if n_dv % 2 == 1:
-                        d_med = round(div_vals[n_dv // 2], 2)
+                        d_med = round(div_pairs[n_dv // 2], 2)
                     else:
-                        d_med = round((div_vals[n_dv // 2 - 1] + div_vals[n_dv // 2]) / 2, 2)
-                    step4[out_key] = {"median": d_med, "n_used": n_dv}
-                    div_ticker_pairs.sort(key=lambda x: x[1])
-                    step4_constituents[out_key] = {
-                        "tickers": [t for t, _ in div_ticker_pairs],
-                        "values": [round(v, 4) for _, v in div_ticker_pairs],
-                        "currency_filter": currency_filter,
-                        "value_filter": ">=0",
-                        "n_records": len(div_ticker_pairs),
-                    }
+                        d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
+                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
                 continue
             if mk in step4_allow_negative:
-                ticker_pairs_s4 = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None]
-                value_filter = "not_null"
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
             else:
-                ticker_pairs_s4 = [(t["ticker"], t[mk]) for t in pool if t.get(mk) is not None and t.get(mk) > 0]
-                value_filter = ">0"
-            if len(ticker_pairs_s4) >= MIN_PEER_COUNT:
-                vals_s4 = [v for _, v in ticker_pairs_s4]
-                vals_s4 = winsorize_values(vals_s4)
-                vals_s4.sort()
-                n_s4 = len(vals_s4)
+                pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None and t.get(mk) > 0]
+            if len(pairs_s4) >= MIN_PEER_COUNT:
+                pairs_s4 = winsorize_values(pairs_s4)
+                pairs_s4.sort()
+                n_s4 = len(pairs_s4)
                 if n_s4 % 2 == 1:
-                    med = round(vals_s4[n_s4 // 2], 2)
+                    med = round(pairs_s4[n_s4 // 2], 2)
                 else:
-                    med = round((vals_s4[n_s4 // 2 - 1] + vals_s4[n_s4 // 2]) / 2, 2)
+                    med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
+                out_key = "pe_ttm" if mk == "pe" else mk
                 step4[out_key] = {"median": med, "n_used": n_s4}
-                ticker_pairs_s4.sort(key=lambda x: x[1])
-                step4_constituents[out_key] = {
-                    "tickers": [t for t, _ in ticker_pairs_s4],
-                    "values": [round(v, 4) for _, v in ticker_pairs_s4],
-                    "currency_filter": currency_filter,
-                    "value_filter": value_filter,
-                    "n_records": len(ticker_pairs_s4),
-                }
         
         if metric_values:
             await db.peer_benchmarks.update_one(
@@ -2305,14 +2235,14 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     "metric_values": metric_values,
                     "benchmarks": benchmarks,
                     "step4_medians": step4,
-                    "step4_constituents": step4_constituents,
                     # FIX-2: Dividend-specific fields
                     "dividend_peer_count": dividend_peer_count,
                     "dividend_payers_count": dividend_payers_count,
                     "dividend_median_level_all": dividend_level_all,
                     "dividend_median_level_payers": dividend_level_payers,
                     "computed_at": datetime.now(timezone.utc).isoformat()
-                }},
+                },
+                "$unset": {"step4_constituents": ""}},
                 upsert=True
             )
             logger.info(f"Stored market-level benchmarks (peer_count={len(all_usd_tickers)})")
