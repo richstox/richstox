@@ -3210,6 +3210,90 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
     }
 
 
+@api_router.get("/admin/peer-pool-tickers")
+async def admin_peer_pool_tickers(
+    level: str = Query(..., description="Level: industry, sector, or market"),
+    metric: str = Query(..., description="Step4 metric key, e.g. pe_ttm"),
+    group: str = Query(None, description="Industry or sector name (not required for market level)"),
+):
+    """
+    Return the list of tickers that contributed to a specific Step4 median.
+
+    Reads from the peer_benchmarks collection's metric_values sub-document,
+    which stores per-metric ticker lists and values.
+    """
+    if level not in ("industry", "sector", "market"):
+        raise HTTPException(400, "level must be industry, sector, or market")
+
+    # Build the query to find the right peer_benchmarks document.
+    if level == "market":
+        query = {"sector": None, "industry": None}
+    elif level == "sector":
+        if not group:
+            raise HTTPException(400, "group (sector name) is required for sector level")
+        query = {"sector": group, "industry": None}
+    else:  # industry
+        if not group:
+            raise HTTPException(400, "group (industry name) is required for industry level")
+        query = {"industry": group}
+
+    doc = await db.peer_benchmarks.find_one(
+        query,
+        {"_id": 0, "metric_values": 1, "step4_medians": 1, "industry": 1, "sector": 1, "level": 1},
+    )
+    if not doc:
+        raise HTTPException(404, f"No peer_benchmarks doc found for {level}={group or 'all'}")
+
+    # Map Step4 metric key → metric_values key used in the document.
+    # Step4 uses pe_ttm but the doc stores pe; dividend_yield_ttm → dividend_yield_all or dividend_yield_payers.
+    mv = doc.get("metric_values") or {}
+    _s4_to_mv_key = {
+        "pe_ttm": "pe",
+        "net_margin_ttm": "net_margin_ttm",
+        "fcf_yield": "fcf_yield",
+        "net_debt_ebitda": "net_debt_ebitda",
+        "revenue_growth_3y": "revenue_growth_3y",
+        "dividend_yield_ttm": "dividend_yield_all",
+        "roe": "roe",
+    }
+    mv_key = _s4_to_mv_key.get(metric, metric)
+    entry = mv.get(mv_key) or mv.get(metric)
+
+    s4 = doc.get("step4_medians") or {}
+    s4_entry = s4.get(metric)
+
+    if not entry:
+        return {
+            "level": level,
+            "group": group,
+            "metric": metric,
+            "tickers": [],
+            "median": s4_entry.get("median") if s4_entry else None,
+            "n_used": s4_entry.get("n_used") if s4_entry else 0,
+            "note": f"No metric_values entry found for {mv_key} in this doc. "
+                    "Step4 medians are computed from ticker_metrics in memory and not all map to metric_values.",
+        }
+
+    tickers = entry.get("tickers", [])
+    values = entry.get("values", [])
+
+    # Pair them up for the response
+    ticker_list = [
+        {"ticker": t, "value": round(v, 4) if v is not None else None}
+        for t, v in zip(tickers, values)
+    ]
+
+    return {
+        "level": level,
+        "group": group,
+        "metric": metric,
+        "median": s4_entry.get("median") if s4_entry else None,
+        "n_used": s4_entry.get("n_used") if s4_entry else len(tickers),
+        "tickers": ticker_list,
+        "count": len(ticker_list),
+    }
+
+
 @api_router.get("/admin/benchmark-debug/{ticker}")
 async def admin_benchmark_debug(ticker: str):
     """
