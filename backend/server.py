@@ -3217,10 +3217,11 @@ async def admin_peer_pool_tickers(
     group: str = Query(None, description="Industry or sector name (not required for market level)"),
 ):
     """
-    Return the list of tickers that contributed to a specific Step4 median.
+    Return the canonical list of tickers that contributed to a specific Step4 median.
 
-    Reads from the peer_benchmarks collection's metric_values sub-document,
-    which stores per-metric ticker lists and values.
+    Reads from the peer_benchmarks.step4_constituents sub-document which stores
+    the exact (ticker, value) pairs used for each metric's median computation,
+    including currency_filter and value_filter metadata.
     """
     if level not in ("industry", "sector", "market"):
         raise HTTPException(400, "level must be industry, sector, or market")
@@ -3239,28 +3240,16 @@ async def admin_peer_pool_tickers(
 
     doc = await db.peer_benchmarks.find_one(
         query,
-        {"_id": 0, "metric_values": 1, "step4_medians": 1, "industry": 1, "sector": 1, "level": 1},
+        {"_id": 0, "step4_constituents": 1, "step4_medians": 1,
+         "industry": 1, "sector": 1, "level": 1},
     )
     if not doc:
         raise HTTPException(404, f"No peer_benchmarks doc found for {level}={group or 'all'}")
 
-    # Map Step4 metric key → metric_values key used in the document.
-    # Step4 uses pe_ttm but the doc stores pe; dividend_yield_ttm → dividend_yield_all or dividend_yield_payers.
-    mv = doc.get("metric_values") or {}
-    _s4_to_mv_key = {
-        "pe_ttm": "pe",
-        "net_margin_ttm": "net_margin_ttm",
-        "fcf_yield": "fcf_yield",
-        "net_debt_ebitda": "net_debt_ebitda",
-        "revenue_growth_3y": "revenue_growth_3y",
-        "dividend_yield_ttm": "dividend_yield_all",
-        "roe": "roe",
-    }
-    mv_key = _s4_to_mv_key.get(metric, metric)
-    entry = mv.get(mv_key) or mv.get(metric)
-
     s4 = doc.get("step4_medians") or {}
     s4_entry = s4.get(metric)
+    constituents = doc.get("step4_constituents") or {}
+    entry = constituents.get(metric)
 
     if not entry:
         return {
@@ -3268,20 +3257,39 @@ async def admin_peer_pool_tickers(
             "group": group,
             "metric": metric,
             "tickers": [],
+            "n_unique_tickers": 0,
+            "n_records": 0,
+            "duplicates": {},
             "median": s4_entry.get("median") if s4_entry else None,
             "n_used": s4_entry.get("n_used") if s4_entry else 0,
-            "note": f"No metric_values entry found for {mv_key} in this doc. "
-                    "Step4 medians are computed from ticker_metrics in memory and not all map to metric_values.",
+            "filters_applied": {},
+            "note": (
+                "No step4_constituents entry found for this metric. "
+                "The peer_medians job must be re-run to populate step4_constituents."
+            ),
         }
 
     tickers = entry.get("tickers", [])
     values = entry.get("values", [])
 
-    # Pair them up for the response
+    # Compute unique tickers and duplicates
+    from collections import Counter
+    ticker_counts = Counter(tickers)
+    unique_tickers = sorted(set(tickers))
+    duplicates = {t: c for t, c in ticker_counts.items() if c > 1}
+
+    # Pair them up for the response (sorted by value ascending — as stored)
     ticker_list = [
         {"ticker": t, "value": round(v, 4) if v is not None else None}
         for t, v in zip(tickers, values)
     ]
+
+    filters_applied = {
+        "visible_only": True,
+        "fundamentals_complete": True,
+        "currency_filter": entry.get("currency_filter", "unknown"),
+        "value_filter": entry.get("value_filter", "unknown"),
+    }
 
     return {
         "level": level,
@@ -3289,8 +3297,11 @@ async def admin_peer_pool_tickers(
         "metric": metric,
         "median": s4_entry.get("median") if s4_entry else None,
         "n_used": s4_entry.get("n_used") if s4_entry else len(tickers),
+        "n_unique_tickers": len(unique_tickers),
+        "n_records": entry.get("n_records", len(tickers)),
+        "duplicates": duplicates,
+        "filters_applied": filters_applied,
         "tickers": ticker_list,
-        "count": len(ticker_list),
     }
 
 

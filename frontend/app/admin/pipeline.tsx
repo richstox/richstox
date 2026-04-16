@@ -400,6 +400,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [poolModalData, setPoolModalData] = useState<{
     level: string; group?: string; metric: string;
     median?: number; n_used?: number;
+    n_unique_tickers?: number; n_records?: number;
+    duplicates?: Record<string, number>;
+    filters_applied?: Record<string, any>;
     tickers: { ticker: string; value: number | null }[];
     note?: string;
   } | null>(null);
@@ -2875,15 +2878,32 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             <>
               {poolModalData.median != null && (
                 <Text style={s.modalSubtitle}>
-                  Median: {poolModalData.median}  ·  n={poolModalData.n_used ?? poolModalData.tickers.length}
+                  Median: {poolModalData.median}  ·  n_used={poolModalData.n_used ?? poolModalData.tickers.length}
                 </Text>
+              )}
+              {(poolModalData.n_unique_tickers != null || poolModalData.n_records != null) && (
+                <Text style={s.modalSubtitle}>
+                  Unique tickers: {poolModalData.n_unique_tickers ?? '—'}  ·  Records: {poolModalData.n_records ?? '—'}
+                </Text>
+              )}
+              {poolModalData.filters_applied && (
+                <Text style={[s.filterText, { color: COLORS.textMuted, marginBottom: 4 }]}>
+                  Filters: currency={poolModalData.filters_applied.currency_filter ?? '?'}, values={poolModalData.filters_applied.value_filter ?? '?'}, visible_only=true, fundamentals=complete
+                </Text>
+              )}
+              {poolModalData.duplicates && Object.keys(poolModalData.duplicates).length > 0 && (
+                <View style={{ marginBottom: 6 }}>
+                  <Text style={[s.filterText, { color: '#F59E0B', fontWeight: '600' }]}>
+                    Duplicates: {Object.entries(poolModalData.duplicates).map(([t, c]) => `${t}×${c}`).join(', ')}
+                  </Text>
+                </View>
               )}
               {poolModalData.note ? (
                 <Text style={[s.filterText, { color: '#F59E0B', marginVertical: 8 }]}>{poolModalData.note}</Text>
               ) : null}
               <ScrollView style={s.modalScroll}>
                 {poolModalData.tickers.map((t, i) => (
-                  <View key={t.ticker} style={s.modalTickerRow}>
+                  <View key={`${t.ticker}-${i}`} style={s.modalTickerRow}>
                     <Text style={s.modalTickerIdx}>{i + 1}.</Text>
                     <Text style={s.modalTickerName}>{t.ticker}</Text>
                     <Text style={s.modalTickerVal}>{t.value != null ? t.value : '—'}</Text>

@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, TextInput,
+  RefreshControl, ActivityIndicator, TextInput, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -1139,7 +1139,50 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
+  // Pool ticker list modal
+  const [poolModalVisible, setPoolModalVisible] = useState(false);
+  const [poolModalLoading, setPoolModalLoading] = useState(false);
+  const [poolModalData, setPoolModalData] = useState<{
+    level: string; group?: string; metric: string;
+    median?: number; n_used?: number;
+    n_unique_tickers?: number; n_records?: number;
+    duplicates?: Record<string, number>;
+    filters_applied?: Record<string, any>;
+    tickers: { ticker: string; value: number | null }[];
+    note?: string;
+  } | null>(null);
+
   const headers: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+
+  const openPoolModal = async (bmLevel: string, metric: string, group?: string) => {
+    setPoolModalVisible(true);
+    setPoolModalLoading(true);
+    setPoolModalData(null);
+    try {
+      const params = new URLSearchParams({ level: bmLevel, metric });
+      if (group) params.set('group', group);
+      const res = await fetch(
+        `${API_URL}/api/admin/peer-pool-tickers?${params}`,
+        { headers },
+      );
+      if (res.ok) {
+        setPoolModalData(await res.json());
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setPoolModalData({
+          level: bmLevel, group, metric, tickers: [],
+          note: err?.detail || 'Failed to load ticker list',
+        });
+      }
+    } catch (e: any) {
+      setPoolModalData({
+        level: bmLevel, group, metric, tickers: [],
+        note: e?.message || 'Network error',
+      });
+    } finally {
+      setPoolModalLoading(false);
+    }
+  };
 
   // Fetch groups when level changes
   useEffect(() => {
@@ -1306,7 +1349,12 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
                   <View style={[bm.barFill, { width: `${barPct}%` }, isNA && { backgroundColor: COLORS.border }]} />
                 </View>
                 {m.n_used != null && (
-                  <Text style={bm.metricNUsed}>n={m.n_used}</Text>
+                  <TouchableOpacity
+                    onPress={() => openPoolModal(level, mk, level !== 'market' ? selectedKey ?? undefined : undefined)}
+                    accessibilityLabel={`View ticker list for ${m.name}`}
+                  >
+                    <Text style={[bm.metricNUsed, bm.metricNUsedClickable]}>n={m.n_used}</Text>
+                  </TouchableOpacity>
                 )}
               </View>
             );
@@ -1317,6 +1365,70 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
       {!loading && !data && selectedKey && (
         <Text style={[bm.emptyText, { marginVertical: 12 }]}>No data found for this group.</Text>
       )}
+
+      {/* Pool ticker list modal */}
+      <Modal
+        visible={poolModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPoolModalVisible(false)}
+      >
+        <View style={bm.modalOverlay}>
+          <View style={bm.modalCard}>
+            <View style={bm.modalHeader}>
+              <Text style={bm.modalTitle}>
+                {poolModalData
+                  ? `${poolModalData.metric} — ${poolModalData.level}${poolModalData.group ? `: ${poolModalData.group}` : ''}`
+                  : 'Loading…'}
+              </Text>
+              <TouchableOpacity onPress={() => setPoolModalVisible(false)}>
+                <Ionicons name="close" size={20} color={COLORS.textLight} />
+              </TouchableOpacity>
+            </View>
+            {poolModalLoading ? (
+              <ActivityIndicator size="small" color={COLORS.primary} style={{ marginVertical: 20 }} />
+            ) : poolModalData ? (
+              <>
+                {poolModalData.median != null && (
+                  <Text style={bm.modalSub}>
+                    Median: {poolModalData.median}  ·  n_used={poolModalData.n_used ?? poolModalData.tickers.length}
+                  </Text>
+                )}
+                {(poolModalData.n_unique_tickers != null || poolModalData.n_records != null) && (
+                  <Text style={bm.modalSub}>
+                    Unique tickers: {poolModalData.n_unique_tickers ?? '—'}  ·  Records: {poolModalData.n_records ?? '—'}
+                  </Text>
+                )}
+                {poolModalData.filters_applied && (
+                  <Text style={[bm.modalSub, { color: COLORS.textMuted }]}>
+                    Filters: currency={poolModalData.filters_applied.currency_filter ?? '?'}, values={poolModalData.filters_applied.value_filter ?? '?'}, visible=true, fundamentals=complete
+                  </Text>
+                )}
+                {poolModalData.duplicates && Object.keys(poolModalData.duplicates).length > 0 && (
+                  <Text style={[bm.modalSub, { color: '#F59E0B', fontWeight: '600' }]}>
+                    Duplicates: {Object.entries(poolModalData.duplicates).map(([t, c]) => `${t}×${c}`).join(', ')}
+                  </Text>
+                )}
+                {poolModalData.note ? (
+                  <Text style={[bm.modalSub, { color: '#F59E0B' }]}>{poolModalData.note}</Text>
+                ) : null}
+                <ScrollView style={bm.modalScroll}>
+                  {poolModalData.tickers.map((t, i) => (
+                    <View key={`${t.ticker}-${i}`} style={bm.modalTickerRow}>
+                      <Text style={bm.modalIdx}>{i + 1}.</Text>
+                      <Text style={bm.modalTicker}>{t.ticker}</Text>
+                      <Text style={bm.modalVal}>{t.value != null ? t.value : '—'}</Text>
+                    </View>
+                  ))}
+                  {poolModalData.tickers.length === 0 && !poolModalData.note && (
+                    <Text style={[bm.emptyText, { textAlign: 'center', marginVertical: 12 }]}>No tickers</Text>
+                  )}
+                </ScrollView>
+              </>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -1355,6 +1467,19 @@ const bm = StyleSheet.create({
   barTrack: { height: 6, backgroundColor: COLORS.border, borderRadius: 3, overflow: 'hidden' },
   barFill: { height: 6, backgroundColor: COLORS.primary, borderRadius: 3 },
   metricNUsed: { fontSize: 9, color: COLORS.textMuted, marginTop: 1 },
+  metricNUsedClickable: { color: '#6366F1', textDecorationLine: 'underline' },
+
+  // Pool ticker list modal
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  modalCard: { backgroundColor: COLORS.card, borderRadius: 12, padding: 16, width: '100%', maxWidth: 420, maxHeight: '80%', borderWidth: 1, borderColor: COLORS.border },
+  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  modalTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text, flex: 1, marginRight: 8 },
+  modalSub: { fontSize: 11, color: COLORS.textLight, marginBottom: 4 },
+  modalScroll: { maxHeight: 400 },
+  modalTickerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 4, borderBottomWidth: 1, borderBottomColor: COLORS.border + '44' },
+  modalIdx: { fontSize: 10, color: COLORS.textMuted, width: 28, textAlign: 'right', marginRight: 6 },
+  modalTicker: { fontSize: 11, color: COLORS.text, fontWeight: '600', flex: 1 },
+  modalVal: { fontSize: 11, color: COLORS.textLight, textAlign: 'right', minWidth: 60 },
 });
 
 function BizStat({ label, value, icon }: { label: string; value: string; icon: string }) {
