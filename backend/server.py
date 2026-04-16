@@ -40,6 +40,7 @@ All app queries MUST use VISIBLE_UNIVERSE_QUERY, never is_active alone.
 """
 
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks, Query
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -5940,14 +5941,31 @@ async def admin_toggle_job(job_name: str):
 async def admin_get_job_status(job_name: str):
     """
     Get current enabled/disabled status of a job.
-    READ-ONLY: no finalization side-effects (page refresh must never mutate).
+
+    Side-effect: if the last run is stuck in 'running' past its MAX_RUNTIME,
+    it is auto-finalized as a timeout error (shared ``recover_stale_job_run``
+    helper) so the system self-heals on the next poll.
 
     Returns:
         Job config and last run info
     """
+    # Auto-recover any stale running job before reading status
+    await recover_stale_job_run(db, job_name)
 
     config_key = f"job_{job_name}_enabled"
     config = await db.ops_config.find_one({"key": config_key}, {"_id": 0})
+
+    # Jobs listed in the generic JOB_RUNNERS map are always runnable even
+    # without an explicit ops_config toggle, so default to True for them.
+    _ALWAYS_RUNNABLE_JOBS = {
+        "backfill_all", "recompute_visibility_all", "clean_zombie_tickers",
+        "recompute_visibility_with_zombies", "benchmark_update",
+        "market_calendar", "news_refresh", "peer_medians",
+    }
+    if config:
+        enabled = config.get("value", False)
+    else:
+        enabled = job_name in _ALWAYS_RUNNABLE_JOBS
 
     def _iso(dt):
         if not dt:
@@ -6027,11 +6045,91 @@ async def admin_get_job_status(job_name: str):
 
     return {
         "job": job_name,
-        "enabled": config.get("value", False) if config else False,
+        "enabled": enabled,
         "config_key": config_key,
         "last_run": last_run,
         "previous_completed_run": previous_completed_run,
     }
+
+
+# ---------------------------------------------------------------------------
+# Stale-run recovery helper (shared by status + run endpoints)
+# ---------------------------------------------------------------------------
+# Per-job maximum expected runtime in minutes. If a run stays "running"
+# longer than this, it is auto-finalized as a timeout error so the system
+# self-heals and manual re-runs are unblocked.
+_JOB_MAX_RUNTIME_MINUTES: dict[str, int] = {
+    "peer_medians": 20,
+}
+_DEFAULT_MAX_RUNTIME_MINUTES = 120
+
+
+async def recover_stale_job_run(database, job_name: str) -> dict | None:
+    """Check for a stale 'running' job and auto-finalize it as a timeout error.
+
+    Returns the recovered document dict (with added ``recovered: True``) if a
+    stale run was finalized, or ``None`` if no recovery was needed.
+
+    This is the **single** timeout-recovery code-path; both the status and run
+    endpoints call it so the system self-heals regardless of which API is hit
+    first.
+    """
+    from zoneinfo import ZoneInfo as _RecoverZI
+
+    max_minutes = _JOB_MAX_RUNTIME_MINUTES.get(job_name, _DEFAULT_MAX_RUNTIME_MINUTES)
+
+    existing = await database.ops_job_runs.find_one(
+        {"job_name": job_name, "status": "running"},
+        sort=[("started_at", -1)],
+    )
+    if not existing:
+        return None
+
+    started = existing.get("started_at")
+    try:
+        age_minutes = (
+            (datetime.now(timezone.utc) - started).total_seconds() / 60.0
+            if isinstance(started, datetime)
+            else float("inf")
+        )
+    except Exception as _age_err:
+        logger.debug(f"recover_stale_job_run: could not compute age for {job_name}: {_age_err}")
+        age_minutes = float("inf")
+
+    if age_minutes <= max_minutes:
+        return None  # still within expected runtime
+
+    expire_at = datetime.now(timezone.utc)
+    duration_seconds = (expire_at - started).total_seconds() if isinstance(started, datetime) else None
+    error_msg = (
+        f"Timeout: job was still 'running' after {int(age_minutes)} min "
+        f"(max_runtime={max_minutes} min). Auto-finalized as error."
+    )
+
+    update_fields: dict = {
+        "status": "error",
+        "finished_at": expire_at,
+        "finished_at_prague": expire_at.astimezone(_RecoverZI("Europe/Prague")).isoformat(),
+        "error_message": error_msg,
+        "error_traceback": "Timeout recovery by recover_stale_job_run",
+    }
+    if duration_seconds is not None:
+        update_fields["duration_seconds"] = round(duration_seconds, 1)
+    update_fields["details.timeout_recovery"] = True
+    update_fields["details.timeout_recovered_at"] = expire_at.isoformat()
+
+    await database.ops_job_runs.update_one(
+        {"_id": existing["_id"]},
+        {"$set": update_fields},
+    )
+    logger.warning(
+        f"recover_stale_job_run: auto-finalized stale '{job_name}' run "
+        f"{existing['_id']} (running for {int(age_minutes)} min, max={max_minutes})"
+    )
+
+    existing.update(update_fields)
+    existing["recovered"] = True
+    return existing
 
 
 # C2: Enhanced audit trail helper functions
@@ -6220,50 +6318,26 @@ async def admin_run_job_now(
         )
 
     # Already-running guard: prevent concurrent execution of the same job.
-    # Auto-expire docs stuck in "running" for more than 120 minutes (deployment
-    # or crash that bypassed all finalization guards).
-    _STALE_RUNNING_THRESHOLD_MINUTES = 120
-    existing_running = await db.ops_job_runs.find_one(
-        {"job_name": job_name, "status": "running"},
-        sort=[("started_at", -1)],
-    )
-    if existing_running:
-        _started = existing_running.get("started_at")
-        try:
-            _age_minutes = (
-                (datetime.now(timezone.utc) - _started).total_seconds() / 60.0
-                if isinstance(_started, datetime) else float("inf")
-            )
-        except Exception:
-            _age_minutes = float("inf")
-        if _age_minutes > _STALE_RUNNING_THRESHOLD_MINUTES:
-            # Auto-expire: the old run is stuck — mark it so a new one can start.
-            from zoneinfo import ZoneInfo as _StaleZI
-            _expire_at = datetime.now(timezone.utc)
-            await db.ops_job_runs.update_one(
-                {"_id": existing_running["_id"]},
-                {"$set": {
-                    "status": "error",
-                    "finished_at": _expire_at,
-                    "finished_at_prague": _expire_at.astimezone(_StaleZI("Europe/Prague")).isoformat(),
-                    "error_message": (
-                        f"Auto-expired: job was still 'running' after "
-                        f"{int(_age_minutes)} min (threshold={_STALE_RUNNING_THRESHOLD_MINUTES} min). "
-                        f"Likely killed by a deployment or process restart."
-                    ),
-                }},
-            )
-            logger.warning(
-                f"Auto-expired stale '{job_name}' audit doc {existing_running['_id']} "
-                f"(running for {int(_age_minutes)} min)"
-            )
-        else:
-            raise HTTPException(
+    # Uses the shared recover_stale_job_run helper so timeout thresholds
+    # are consistent between the status and run endpoints.
+    recovered = await recover_stale_job_run(db, job_name)
+
+    # Even after recovery, re-check: there may still be a legitimately
+    # running job (different doc, or recovery returned None).
+    if not recovered:
+        still_running = await db.ops_job_runs.find_one(
+            {"job_name": job_name, "status": "running"},
+            sort=[("started_at", -1)],
+        )
+        if still_running:
+            _request_id_409 = request.headers.get("x-railway-request-id") or str(uuid.uuid4())
+            return JSONResponse(
                 status_code=409,
-                detail={
-                    "error": "already_running",
-                    "message": f"{job_name} is already running (started {existing_running.get('started_at_prague', 'unknown')}).",
-                    "audit_id": str(existing_running["_id"]),
+                content={
+                    "status": "already_running",
+                    "started_at_prague": still_running.get("started_at_prague", "unknown"),
+                    "request_id": _request_id_409,
+                    "audit_id": str(still_running["_id"]),
                 },
             )
 
@@ -6305,6 +6379,40 @@ async def admin_run_job_now(
             )
 
         job_func = _benchmark_with_progress
+
+    # Peer-medians: wrap to inject a heartbeat callback that periodically
+    # updates the audit doc's details.heartbeat so we can distinguish an
+    # actively running job from a hung/stale one.
+    if job_name == "peer_medians":
+        _base_pm_func = job_func
+
+        async def _peer_medians_with_heartbeat(database):
+            from bson import ObjectId as _HbOID
+
+            async def _heartbeat_cb(*, phase: str = "", processed: int = None, total: int = None):
+                """Write heartbeat + optional progress to the audit record."""
+                try:
+                    upd: dict = {
+                        "details.heartbeat": datetime.now(timezone.utc).isoformat(),
+                        "details.phase": phase,
+                    }
+                    if processed is not None:
+                        upd["details.progress_processed"] = processed
+                        upd["progress_processed"] = processed
+                    if total is not None:
+                        upd["details.progress_total"] = total
+                        upd["progress_total"] = total
+                    if total and processed is not None:
+                        upd["progress_pct"] = min(round(processed / total * 100), 99)
+                    await database.ops_job_runs.update_one(
+                        {"_id": _HbOID(audit_id)}, {"$set": upd},
+                    )
+                except Exception:
+                    pass  # non-fatal
+
+            return await _base_pm_func(database, heartbeat_cb=_heartbeat_cb)
+
+        job_func = _peer_medians_with_heartbeat
 
     logger.info(f"Admin manually triggering job: {job_name}")
 
@@ -6630,8 +6738,10 @@ async def admin_enqueue_manual_refresh():
 @api_router.get("/admin/jobs/{job_name}/status")
 async def admin_job_status(job_name: str):
     """Get the latest run status for a specific job.
-    READ-ONLY: no finalization side-effects (page refresh must never mutate).
+    Also auto-recovers stale running jobs (shared helper).
     """
+    # Auto-recover any stale running job before reading status
+    await recover_stale_job_run(db, job_name)
 
     run = await db.ops_job_runs.find_one(
         {"job_name": job_name},
