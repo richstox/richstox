@@ -875,7 +875,7 @@ export default function StockDetail() {
   };
 
   const formatCurrency = (value: number | null | undefined) => {
-    if (value === null || value === undefined || value === 0) return 'N/A';
+    if (value === null || value === undefined) return 'N/A';
     const absValue = Math.abs(value);
     const sign = value < 0 ? '-' : '';
     if (absValue >= 1e12) return `${sign}$${toEU(absValue / 1e12, 2)}T`;

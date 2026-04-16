@@ -63,7 +63,7 @@ const toEU = (value, decimals = 2) => {
 };
 
 const formatCurrencyTicker = (value) => {
-  if (value === null || value === undefined || value === 0) return 'N/A';
+  if (value === null || value === undefined) return 'N/A';
   const absValue = Math.abs(value);
   const sign = value < 0 ? '-' : '';
   if (absValue >= 1e12) return `${sign}$${toEU(absValue / 1e12, 2)}T`;
@@ -138,7 +138,7 @@ describe('[ticker].tsx formatCurrency (EU style)', () => {
   describe('null / undefined / zero', () => {
     test('null → N/A', () => expect(formatCurrencyTicker(null)).toBe('N/A'));
     test('undefined → N/A', () => expect(formatCurrencyTicker(undefined)).toBe('N/A'));
-    test('0 → N/A', () => expect(formatCurrencyTicker(0)).toBe('N/A'));
+    test('0 → $0,00', () => expect(formatCurrencyTicker(0)).toBe('$0,00'));
   });
 
   describe('positive values with EU formatting', () => {

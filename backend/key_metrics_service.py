@@ -1552,7 +1552,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             # (e.g., cash-flow dividendsPaid containing preferred-stock items).
             # Exclude from peer pool to avoid contaminating medians.
             if metrics.get("dividend_yield") is not None and metrics["dividend_yield"] > 100:
-                del metrics["dividend_yield"]
+                metrics["dividend_yield"] = None
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
