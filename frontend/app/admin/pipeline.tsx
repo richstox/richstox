@@ -787,6 +787,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         sessionToken,
       );
       const payload = await res.json().catch(() => ({}));
+      // 409 = already running — treat as non-fatal: the job is in progress,
+      // polling will pick up its terminal state.
+      if (res.status === 409 && payload?.status === 'already_running') {
+        // Leave isPeerMediansRunning=true so the polling effect keeps checking
+        return;
+      }
       if (!res.ok) {
         const detail = payload?.detail;
         const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;

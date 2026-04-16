@@ -1199,7 +1199,7 @@ async def compute_peer_benchmarks_v2(db) -> Dict[str, Any]:
 CURRENCY_MISMATCH_PS_THRESHOLD = 0.05  # P/S below this indicates non-USD financials
 MIN_PEERS_FOR_INDUSTRY = 12  # Minimum peers before fallback to sector
 
-async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
+async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]:
     """
     Job: Compute peer benchmarks with per-metric currency eligibility.
     
@@ -1210,10 +1210,24 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     Non-valuation benchmarks (pe, ps, pb, ev_ebitda, ev_revenue) still use USD-only pools.
     
     Tickers with null/unknown financial_currency are excluded from ALL peer pools.
+
+    Args:
+        heartbeat_cb: Optional async callback ``(phase, processed, total)`` that
+            is called at major phase transitions so the admin audit record gets
+            a heartbeat timestamp and callers can distinguish an active job from
+            a stale/hung one.
     """
     logger.info("Starting peer benchmarks V3 computation (Phase 2A: per-metric currency eligibility)...")
     
     start_time = datetime.now(timezone.utc)
+
+    # Internal heartbeat helper — no-op when no callback is provided.
+    async def _hb(phase: str, processed: int = None, total: int = None):
+        if heartbeat_cb:
+            try:
+                await heartbeat_cb(phase=phase, processed=processed, total=total)
+            except Exception:
+                pass  # non-fatal
     
     # Helper functions
     def safe_float(val):
@@ -1287,6 +1301,8 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     logger.info(f"  USD tickers: {len(usd_tickers)} (will be used for peer medians)")
     logger.info(f"  Non-USD tickers: {len(non_usd_tickers)} (excluded from peer medians)")
     logger.info(f"  NULL currency tickers: {len(null_currency_tickers)} (excluded from peer medians)")
+
+    await _hb("loading_data", total=len(ticker_list))
     
     # ── EARLY EXIT: If no visible tickers with fundamentals ──
     if not ticker_list:
@@ -1562,6 +1578,8 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     
     logger.info(f"Computed metrics for {len(ticker_metrics)} tickers (input: {len(ticker_list)})")
     logger.info(f"P1 Policy: {len(excluded_currency_mismatch)} non-USD tickers excluded from peer medians")
+
+    await _hb("computing_metrics", processed=len(ticker_metrics), total=len(ticker_list))
     
     # ── Ticker-level inclusion/exclusion stats for Admin Step 4 card ──
     # A ticker is "included in any metric" if, under Phase 2A eligibility rules,
@@ -1660,8 +1678,13 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     #           net_debt_ebitda (cannot deterministically prove total_debt, cash, ebitda_ttm
     #           are in the same reporting currency from existing fields)
     step4_all_currency_eligible = {"net_margin_ttm", "roe", "revenue_growth_3y", "dividend_yield"}
-    
+
+    await _hb("industry_benchmarks", processed=0, total=len(industries))
+    _ind_idx = 0
     for industry, data in industries.items():
+        _ind_idx += 1
+        if _ind_idx % 20 == 0:
+            await _hb("industry_benchmarks", processed=_ind_idx, total=len(industries))
         _step4_stats["industry"]["groups_total"] += 1
         sector = data["sector"]
         all_tickers = data["all_tickers"]
@@ -1853,6 +1876,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
                 sectors_known_currency[sector].append(m)
     
     sector_stored = 0
+    await _hb("sector_benchmarks", processed=0, total=len(sectors))
     for sector, usd_tickers in sectors.items():
         _step4_stats["sector"]["groups_total"] += 1
         if len(usd_tickers) < MIN_PEER_COUNT:
@@ -2026,6 +2050,7 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
     # MARKET-LEVEL BENCHMARKS (USD-only, final fallback)
     # FIX-2: Also compute dual dividend medians for market fallback
     # =========================================================================
+    await _hb("market_benchmarks")
     all_usd_tickers = [m for m in ticker_metrics if not m.get("currency_mismatch")]
     all_known_currency_tickers = [m for m in ticker_metrics if m.get("financial_currency")]  # Phase 2A
     
@@ -2248,6 +2273,8 @@ async def compute_peer_benchmarks_v3(db) -> Dict[str, Any]:
             fallback_updates += 1
     
     logger.info(f"Fallback pass complete: {fallback_updates} industries updated with sector/market payers median")
+
+    await _hb("finalizing")
     
     elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
     
