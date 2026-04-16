@@ -2562,7 +2562,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                                 <Text style={s.filterText}>
                                   {metricLabels[mk] ?? mk}: {mv?.median != null ? mv.median : '—'} (
                                 </Text>
-                                <TouchableOpacity onPress={() => openPoolModal('market', mk)}>
+                                <TouchableOpacity onPress={() => openPoolModal('market', mk)} accessibilityLabel={`View ticker list for ${metricLabels[mk] ?? mk}`}>
                                   <Text style={[s.filterText, s.clickableN]}>n={mv?.n_used ?? 0}</Text>
                                 </TouchableOpacity>
                                 <Text style={s.filterText}>)</Text>
