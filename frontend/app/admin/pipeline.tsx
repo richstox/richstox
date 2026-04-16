@@ -2512,6 +2512,41 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                             ))}
                           </View>
                         )}
+                        {/* Deliverable A: Methodology explanation */}
+                        <View style={{ marginTop: 14, paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border }}>
+                          <Text style={s.detailLabel}>METHODOLOGY: HOW MEDIANS ARE COMPUTED</Text>
+                          <Text style={[s.filterText, { marginTop: 4 }]}>
+                            1. Peer pool selection per metric:
+                          </Text>
+                          <Text style={[s.filterText, { paddingLeft: 12 }]}>
+                            • USD-only: pe_ttm, fcf_yield, net_debt_ebitda
+                          </Text>
+                          <Text style={[s.filterText, { paddingLeft: 12 }]}>
+                            • All known-currency: net_margin_ttm, roe, revenue_growth_3y, dividend_yield_ttm
+                          </Text>
+                          <Text style={[s.filterText, { marginTop: 4 }]}>
+                            2. For each level (industry / sector / market), compute the MEDIAN of eligible tickers after winsorization (1st–99th percentile).
+                          </Text>
+                          <Text style={[s.filterText, { marginTop: 4 }]}>
+                            3. Eligibility filters: visible ticker, fundamentals_status=complete, metric value present, exclude null/NaN/invalid, per-metric guardrails.
+                          </Text>
+                          <Text style={[s.filterText, { marginTop: 4 }]}>
+                            4. n = count of tickers used for that metric at that level.
+                          </Text>
+                          <Text style={[s.filterText, { marginTop: 4 }]}>
+                            5. Serving-time fallback: industry if n≥5, else sector if n≥5, else market if n≥5, else no benchmark.
+                          </Text>
+                        </View>
+                        {/* Deliverable B: Legacy n<5 confusion note */}
+                        <View style={{ marginTop: 10 }}>
+                          <Text style={s.detailLabel}>NOTE: LEGACY n&lt;5 ISSUE (RESOLVED)</Text>
+                          <Text style={[s.filterText, { marginTop: 4 }]}>
+                            The old issue was caused by: missing benchmark documentation, the peer medians job not running consistently, and an old eligibility path that used a legacy fundamentals gating field (tracked_tickers.fundamentals) which was never populated by the current sync pipeline.
+                          </Text>
+                          <Text style={[s.filterText, { marginTop: 4 }]}>
+                            Now resolved: the job runs daily and uses the current fundamentals_status=complete path from canonical collections (company_financials, company_earnings_history, company_fundamentals_cache). The n values shown above reflect real peer counts.
+                          </Text>
+                        </View>
                       </>
                     );
                   })()}
