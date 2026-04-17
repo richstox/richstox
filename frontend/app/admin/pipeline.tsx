@@ -395,6 +395,10 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const lastPeerMediansResultRef = useRef<Record<string, any>>({});
   const [peerMediansElapsed, setPeerMediansElapsed] = useState(0);
   const peerMediansTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Correlate by audit_id: POST /run returns audit_id, GET /status returns
+  // last_run.audit_id. Polling keeps running until it sees the expected
+  // audit_id with a terminal status. No timing gates needed.
+  const peerMediansAuditIdRef = useRef<string | null>(null);
 
   // ── Peer pool ticker list modal ───────────────────────────────────────────
   const [poolModalVisible, setPoolModalVisible] = useState(false);
@@ -826,6 +830,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunPeerMedians = async () => {
     setPeerMediansRunning(true);
+    peerMediansAuditIdRef.current = null; // clear until POST returns
     try {
       const res = await authenticatedFetch(
         `${API_URL}/api/admin/job/peer_medians/run`,
@@ -836,7 +841,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       // 409 = already running — treat as non-fatal: the job is in progress,
       // polling will pick up its terminal state.
       if (res.status === 409 && payload?.status === 'already_running') {
-        // Leave isPeerMediansRunning=true so the polling effect keeps checking
+        // Leave isPeerMediansRunning=true so the polling effect keeps checking.
+        // Store the running job's audit_id so polling correlates correctly.
+        peerMediansAuditIdRef.current = payload?.audit_id || null;
         return;
       }
       if (!res.ok) {
@@ -844,6 +851,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
         throw new Error(msg);
       }
+      // Store audit_id from POST response — polling will correlate by this id
+      peerMediansAuditIdRef.current = payload?.audit_id || null;
       // Immediately fetch status to get running state + previous_completed_run
       try {
         const statusRes = await authenticatedFetch(
@@ -1263,9 +1272,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             if (prevResult && typeof prevResult === 'object' && Object.keys(prevResult).length > 0) {
               lastPeerMediansResultRef.current = prevResult;
             }
-            // Clear local running flag once the backend reports a terminal state
+            // Correlate by audit_id: only treat a terminal status as "done"
+            // when it belongs to the run we started.  If we have an expected
+            // audit_id (from POST /run), require the poll's audit_id to match
+            // — any mismatch means the status endpoint still returns the OLD
+            // completed run and the new running doc isn't visible yet.
+            // When there is no expected audit_id (page-load with a running
+            // job, or before POST returns), any terminal status stops polling.
             const terminalStatuses = ['completed', 'success', 'failed', 'error', 'cancelled', 'timeout'];
-            if (terminalStatuses.includes(lr.status)) {
+            const expectedId = peerMediansAuditIdRef.current;
+            const pollId = lr.audit_id;
+            const isOurRun = !expectedId || (!!pollId && pollId === expectedId);
+            if (isOurRun && terminalStatuses.includes(lr.status)) {
               setPeerMediansRunning(false);
             }
           }
