@@ -393,6 +393,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [peerMediansRunning, setPeerMediansRunning] = useState(false);
   const peerMediansPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastPeerMediansResultRef = useRef<Record<string, any>>({});
+  const [peerMediansElapsed, setPeerMediansElapsed] = useState(0);
+  const peerMediansTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Peer pool ticker list modal ───────────────────────────────────────────
   const [poolModalVisible, setPoolModalVisible] = useState(false);
@@ -842,7 +844,29 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
         throw new Error(msg);
       }
-      // No modal — polling will pick up the running state and update on completion
+      // Immediately fetch status to get running state + previous_completed_run
+      try {
+        const statusRes = await authenticatedFetch(
+          `${API_URL}/api/admin/job/peer_medians/status`,
+          {},
+          sessionToken,
+        );
+        if (statusRes.ok) {
+          const statusPayload = await statusRes.json();
+          const lr = normaliseRun(statusPayload.last_run);
+          if (lr) {
+            if (statusPayload.previous_completed_run) {
+              lr.previous_completed_run = statusPayload.previous_completed_run;
+            }
+            setLiveLastRuns(prev => ({ ...prev, peer_medians: lr }));
+          }
+          // Preserve previous result for funnel numbers while running
+          const prevResult = statusPayload.previous_completed_run?.result;
+          if (prevResult && typeof prevResult === 'object' && Object.keys(prevResult).length > 0) {
+            lastPeerMediansResultRef.current = prevResult;
+          }
+        }
+      } catch { /* non-fatal: polling will catch up */ }
       await fetchSnapshotOnce();
     } catch (e: any) {
       dialog.alert('Peer Medians Failed', e?.message || 'Could not start peer medians');
@@ -1229,9 +1253,18 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           const payload = await res.json();
           const lr = normaliseRun(payload.last_run);
           if (lr) {
+            // Attach previous_completed_run so Last Run section can show previous data
+            if (payload.previous_completed_run) {
+              lr.previous_completed_run = payload.previous_completed_run;
+            }
             setLiveLastRuns(prev => ({ ...prev, peer_medians: lr }));
+            // Preserve result from previous completed run for funnel numbers
+            const prevResult = payload.previous_completed_run?.result;
+            if (prevResult && typeof prevResult === 'object' && Object.keys(prevResult).length > 0) {
+              lastPeerMediansResultRef.current = prevResult;
+            }
             // Clear local running flag once the backend reports a terminal state
-            const terminalStatuses = ['completed', 'success', 'failed', 'error', 'cancelled'];
+            const terminalStatuses = ['completed', 'success', 'failed', 'error', 'cancelled', 'timeout'];
             if (terminalStatuses.includes(lr.status)) {
               setPeerMediansRunning(false);
             }
@@ -1239,7 +1272,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         }
       } catch { /* non-fatal */ }
       if (!cancelled) {
-        peerMediansPollRef.current = setTimeout(poll, 5000);
+        peerMediansPollRef.current = setTimeout(poll, 3000);
       }
     };
     poll();
@@ -1251,6 +1284,31 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       }
     };
   }, [isPeerMediansRunning, sessionToken]);
+
+  // Live elapsed timer for peer_medians while running
+  useEffect(() => {
+    if (!isPeerMediansRunning) {
+      if (peerMediansTimerRef.current) {
+        clearInterval(peerMediansTimerRef.current);
+        peerMediansTimerRef.current = null;
+      }
+      setPeerMediansElapsed(0);
+      return;
+    }
+    const startedAt = peerMediansBackendRun?.started_at || peerMediansBackendRun?.start_time;
+    const startMs = startedAt ? Date.parse(startedAt) : Date.now();
+    const getElapsed = () => Math.max(0, Math.round((Date.now() - (Number.isFinite(startMs) ? startMs : Date.now())) / 1000));
+    setPeerMediansElapsed(getElapsed());
+    peerMediansTimerRef.current = setInterval(() => {
+      setPeerMediansElapsed(getElapsed());
+    }, 1000);
+    return () => {
+      if (peerMediansTimerRef.current) {
+        clearInterval(peerMediansTimerRef.current);
+        peerMediansTimerRef.current = null;
+      }
+    };
+  }, [isPeerMediansRunning, peerMediansBackendRun?.started_at]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const lr = jobRuns['price_sync'];
@@ -1784,7 +1842,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
               {/* Running indicator for peer_medians (independent job) */}
               {step.job_name === 'peer_medians' && isPeerMediansRunning && (
                 <View style={s.runInfo}>
-                  <Text style={[s.runValue, { color: step.color }]}>Running…</Text>
+                  <Text style={[s.runValue, { color: step.color }]}>Running… {formatElapsed(peerMediansElapsed)}</Text>
                 </View>
               )}
 
@@ -1820,9 +1878,11 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                     : '—';
                 const prevDuration = prevCompleted?.duration_seconds;
                 const durationText = isLiveRun
-                  ? (prevEnd && prevDuration !== undefined && prevDuration !== null
-                    ? ` (${formatDuration(prevDuration)})`
-                    : '')
+                  ? (step.job_name === 'peer_medians'
+                    ? ` (${formatElapsed(peerMediansElapsed)})`
+                    : (prevEnd && prevDuration !== undefined && prevDuration !== null
+                      ? ` (${formatDuration(prevDuration)})`
+                      : ''))
                   : run.status === 'cancelled'
                     ? (lastDuration !== undefined ? ` (stopped after ${formatDuration(lastDuration)})` : '')
                     : lastDuration !== undefined
