@@ -1274,15 +1274,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             }
             // Correlate by audit_id: only treat a terminal status as "done"
             // when it belongs to the run we started.  If we have an expected
-            // audit_id (from POST /run), ignore any poll response whose
-            // audit_id doesn't match — it's the OLD completed run that
-            // hasn't been replaced in MongoDB yet.
+            // audit_id (from POST /run), require the poll's audit_id to match
+            // — any mismatch means the status endpoint still returns the OLD
+            // completed run and the new running doc isn't visible yet.
             // When there is no expected audit_id (page-load with a running
-            // job), any terminal status is accepted immediately.
+            // job, or before POST returns), any terminal status stops polling.
             const terminalStatuses = ['completed', 'success', 'failed', 'error', 'cancelled', 'timeout'];
             const expectedId = peerMediansAuditIdRef.current;
             const pollId = lr.audit_id;
-            const isOurRun = !expectedId || pollId === expectedId;
+            const isOurRun = !expectedId || (!!pollId && pollId === expectedId);
             if (isOurRun && terminalStatuses.includes(lr.status)) {
               setPeerMediansRunning(false);
             }
