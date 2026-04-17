@@ -231,6 +231,9 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             "progress_pct":       {"$first": "$progress_pct"},
             "phase":              {"$first": "$phase"},
             "error_message_raw":  {"$first": "$error_message"},
+            "started_at_prague":  {"$first": "$started_at_prague"},
+            "finished_at_prague": {"$first": "$finished_at_prague"},
+            "completed_at_prague": {"$first": "$completed_at_prague"},
         }},
     ]
     docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
@@ -254,6 +257,8 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         result = doc.get("result") or doc.get("details") or {}
         doc["start_time"] = _to_iso_utc(started)
         doc["end_time"] = _to_iso_utc(finished)
+        doc["started_at_prague"] = doc.get("started_at_prague")
+        doc["finished_at_prague"] = doc.get("finished_at_prague") or doc.get("completed_at_prague")
         doc["duration_seconds"] = doc.get("duration_sec") or doc.get("duration_seconds")
         doc["records_processed"] = (
             result.get("tickers_with_price_data") or

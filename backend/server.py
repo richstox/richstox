@@ -6243,7 +6243,7 @@ async def admin_get_job_status(job_name: str):
     if raw_last_run:
         details = raw_last_run.get("details") or {}
         started_at = raw_last_run.get("started_at")
-        finished_at = raw_last_run.get("finished_at")
+        finished_at = raw_last_run.get("finished_at") or raw_last_run.get("completed_at")
         seeded_total = (
             raw_last_run.get("progress_total")
             or details.get("seeded_total")
@@ -6261,7 +6261,7 @@ async def admin_get_job_status(job_name: str):
             "started_at": _iso(started_at),
             "finished_at": _iso(finished_at),
             "started_at_prague": raw_last_run.get("started_at_prague"),
-            "finished_at_prague": raw_last_run.get("finished_at_prague"),
+            "finished_at_prague": raw_last_run.get("finished_at_prague") or raw_last_run.get("completed_at_prague"),
             "progress_processed": raw_last_run.get("progress_processed"),
             "progress_total": seeded_total or raw_last_run.get("progress_total"),
             "progress_pct": raw_last_run.get("progress_pct"),
