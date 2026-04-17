@@ -1286,6 +1286,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   }, [isPeerMediansRunning, sessionToken]);
 
   // Live elapsed timer for peer_medians while running
+  const peerMediansStartStr = peerMediansBackendRun?.started_at || peerMediansBackendRun?.start_time;
   useEffect(() => {
     if (!isPeerMediansRunning) {
       if (peerMediansTimerRef.current) {
@@ -1295,9 +1296,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setPeerMediansElapsed(0);
       return;
     }
-    const startedAt = peerMediansBackendRun?.started_at || peerMediansBackendRun?.start_time;
-    const startMs = startedAt ? Date.parse(startedAt) : Date.now();
-    const getElapsed = () => Math.max(0, Math.round((Date.now() - (Number.isFinite(startMs) ? startMs : Date.now())) / 1000));
+    const startMs = peerMediansStartStr ? Date.parse(peerMediansStartStr) : NaN;
+    // Capture fallback at effect-start so elapsed counts from button-click if
+    // the backend hasn't returned started_at yet.
+    const fallbackMs = Date.now();
+    const baseMs = Number.isFinite(startMs) ? startMs : fallbackMs;
+    const getElapsed = () => Math.max(0, Math.round((Date.now() - baseMs) / 1000));
     setPeerMediansElapsed(getElapsed());
     peerMediansTimerRef.current = setInterval(() => {
       setPeerMediansElapsed(getElapsed());
@@ -1308,7 +1312,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         peerMediansTimerRef.current = null;
       }
     };
-  }, [isPeerMediansRunning, peerMediansBackendRun?.started_at]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isPeerMediansRunning, peerMediansStartStr]);
 
   useEffect(() => {
     const lr = jobRuns['price_sync'];
