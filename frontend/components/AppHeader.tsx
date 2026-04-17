@@ -16,6 +16,7 @@ import {
   Image,
   Platform,
   Pressable,
+  ActivityIndicator,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -54,7 +55,7 @@ export default function AppHeader({
   rightAction,
 }: AppHeaderProps) {
   const router = useRouter();
-  const { user, isAdmin, logout } = useAuth();
+  const { user, isAdmin, logout, isSessionValidated } = useAuth();
   const [showMenu, setShowMenu] = useState(false);
   const sp = useLayoutSpacing();
 
@@ -163,95 +164,109 @@ export default function AppHeader({
         </View>
         )}
         
-        {/* Avatar with dropdown menu */}
+        {/* Avatar with dropdown menu - only interactive when user is fully loaded */}
         <View style={styles.avatarContainer}>
-          <TouchableOpacity 
-            style={styles.avatar} 
-            onPress={() => setShowMenu(!showMenu)}
-            testID="header-avatar-btn"
-          >
-            {user?.picture ? (
-              <Image source={{ uri: user.picture }} style={styles.avatarImage} />
-            ) : (
+          {!isSessionValidated ? (
+            /* Session validation in progress — show inert placeholder */
+            <View style={styles.avatar} testID="header-avatar-loading">
+              <ActivityIndicator size="small" color={COLORS.textMuted} />
+            </View>
+          ) : !user ? (
+            /* No authenticated user — show inert placeholder (page will redirect) */
+            <View style={styles.avatar} testID="header-avatar-placeholder">
               <Ionicons name="person" size={18} color={COLORS.textMuted} />
-            )}
-          </TouchableOpacity>
-
-          {/* Dropdown Menu - positioned absolutely below avatar */}
-          {showMenu && (
+            </View>
+          ) : (
             <>
-              {/* Invisible overlay to catch clicks outside menu */}
-              <Pressable 
-                style={styles.menuOverlay}
-                onPress={() => setShowMenu(false)}
-              />
-              <View style={styles.menuContainer} testID="avatar-menu">
-                {/* User info */}
-                <View style={styles.menuUserInfo}>
-                  {user?.picture ? (
-                    <Image source={{ uri: user.picture }} style={styles.menuAvatar} />
-                  ) : (
-                    <View style={styles.menuAvatarPlaceholder}>
-                      <Ionicons name="person" size={24} color={COLORS.textMuted} />
-                    </View>
-                  )}
-                  <View style={styles.menuUserText}>
-                    <Text style={styles.menuUserName}>{user?.name || 'User'}</Text>
-                    <Text style={styles.menuUserEmail}>{user?.email}</Text>
-                    {/* Subscription badge inside menu */}
-                    <View style={[
-                      styles.menuSubscriptionBadge,
-                      (user?.subscription_tier === 'pro') && styles.subscriptionBadgePro,
-                      (user?.subscription_tier === 'pro_plus') && styles.subscriptionBadgeProPlus,
-                    ]}>
-                      {(user?.subscription_tier === 'pro' || user?.subscription_tier === 'pro_plus') && (
-                        <Ionicons name="sparkles" size={10} color="#FFF" style={{ marginRight: 3 }} />
-                      )}
-                      <Text style={[
-                        styles.subscriptionBadgeText,
-                        (user?.subscription_tier === 'pro' || user?.subscription_tier === 'pro_plus') && styles.subscriptionBadgeTextPro,
-                      ]}>
-                        {user?.subscription_tier === 'pro_plus' ? 'PRO+' : 
-                         user?.subscription_tier === 'pro' ? 'PRO' : 'FREE'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-                
-                <View style={styles.menuDivider} />
-                
-                {/* Menu Items */}
-                {isAdmin && (
-                  <TouchableOpacity 
-                    style={styles.menuItem}
-                    onPress={() => handleMenuItemPress('admin')}
-                    testID="menu-admin-panel"
-                  >
-                    <Ionicons name="shield-outline" size={20} color={COLORS.primary} />
-                    <Text style={[styles.menuItemText, { color: COLORS.primary }]}>Admin Panel</Text>
-                  </TouchableOpacity>
+              <TouchableOpacity 
+                style={styles.avatar} 
+                onPress={() => setShowMenu(!showMenu)}
+                testID="header-avatar-btn"
+              >
+                {user.picture ? (
+                  <Image source={{ uri: user.picture }} style={styles.avatarImage} />
+                ) : (
+                  <Ionicons name="person" size={18} color={COLORS.textMuted} />
                 )}
-                
-                <TouchableOpacity 
-                  style={styles.menuItem}
-                  onPress={() => handleMenuItemPress('settings')}
-                  testID="menu-account-settings"
-                >
-                  <Ionicons name="settings-outline" size={20} color={COLORS.text} />
-                  <Text style={styles.menuItemText}>Account Settings</Text>
-                </TouchableOpacity>
-                
-                <View style={styles.menuDivider} />
-                
-                <TouchableOpacity 
-                  style={styles.menuItem}
-                  onPress={() => handleMenuItemPress('signout')}
-                  testID="menu-sign-out"
-                >
-                  <Ionicons name="log-out-outline" size={20} color={COLORS.danger} />
-                  <Text style={[styles.menuItemText, { color: COLORS.danger }]}>Sign out</Text>
-                </TouchableOpacity>
-              </View>
+              </TouchableOpacity>
+
+              {/* Dropdown Menu - positioned absolutely below avatar */}
+              {showMenu && (
+                <>
+                  {/* Invisible overlay to catch clicks outside menu */}
+                  <Pressable 
+                    style={styles.menuOverlay}
+                    onPress={() => setShowMenu(false)}
+                  />
+                  <View style={styles.menuContainer} testID="avatar-menu">
+                    {/* User info */}
+                    <View style={styles.menuUserInfo}>
+                      {user.picture ? (
+                        <Image source={{ uri: user.picture }} style={styles.menuAvatar} />
+                      ) : (
+                        <View style={styles.menuAvatarPlaceholder}>
+                          <Ionicons name="person" size={24} color={COLORS.textMuted} />
+                        </View>
+                      )}
+                      <View style={styles.menuUserText}>
+                        <Text style={styles.menuUserName}>{user.name || 'User'}</Text>
+                        <Text style={styles.menuUserEmail}>{user.email}</Text>
+                        {/* Subscription badge inside menu */}
+                        <View style={[
+                          styles.menuSubscriptionBadge,
+                          (user.subscription_tier === 'pro') && styles.subscriptionBadgePro,
+                          (user.subscription_tier === 'pro_plus') && styles.subscriptionBadgeProPlus,
+                        ]}>
+                          {(user.subscription_tier === 'pro' || user.subscription_tier === 'pro_plus') && (
+                            <Ionicons name="sparkles" size={10} color="#FFF" style={{ marginRight: 3 }} />
+                          )}
+                          <Text style={[
+                            styles.subscriptionBadgeText,
+                            (user.subscription_tier === 'pro' || user.subscription_tier === 'pro_plus') && styles.subscriptionBadgeTextPro,
+                          ]}>
+                            {user.subscription_tier === 'pro_plus' ? 'PRO+' : 
+                             user.subscription_tier === 'pro' ? 'PRO' : 'FREE'}
+                          </Text>
+                        </View>
+                      </View>
+                    </View>
+                    
+                    <View style={styles.menuDivider} />
+                    
+                    {/* Menu Items */}
+                    {isAdmin && (
+                      <TouchableOpacity 
+                        style={styles.menuItem}
+                        onPress={() => handleMenuItemPress('admin')}
+                        testID="menu-admin-panel"
+                      >
+                        <Ionicons name="shield-outline" size={20} color={COLORS.primary} />
+                        <Text style={[styles.menuItemText, { color: COLORS.primary }]}>Admin Panel</Text>
+                      </TouchableOpacity>
+                    )}
+                    
+                    <TouchableOpacity 
+                      style={styles.menuItem}
+                      onPress={() => handleMenuItemPress('settings')}
+                      testID="menu-account-settings"
+                    >
+                      <Ionicons name="settings-outline" size={20} color={COLORS.text} />
+                      <Text style={styles.menuItemText}>Account Settings</Text>
+                    </TouchableOpacity>
+                    
+                    <View style={styles.menuDivider} />
+                    
+                    <TouchableOpacity 
+                      style={styles.menuItem}
+                      onPress={() => handleMenuItemPress('signout')}
+                      testID="menu-sign-out"
+                    >
+                      <Ionicons name="log-out-outline" size={20} color={COLORS.danger} />
+                      <Text style={[styles.menuItemText, { color: COLORS.danger }]}>Sign out</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              )}
             </>
           )}
         </View>
