@@ -31,14 +31,6 @@ BULK_CHUNK = 10000
 # skipped, we allow a small tolerance when checking coverage.
 _RANGE_PROOF_TOLERANCE_DAYS = 5
 
-# ── Minimum visible price rows ─────────────────────────────────────
-# A ticker must have at least this many DB price rows for the chart
-# to be meaningful.  Without this guard, a ticker whose provider
-# returns only 2-3 data points passes range-proof (DB covers
-# provider range) but shows a broken 2-point chart to users.
-# 50 trading days ≈ ~2.5 months — enough for a usable chart.
-MINIMUM_VISIBLE_PRICE_ROWS = 50
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -406,39 +398,6 @@ async def _process_price_ticker(
             "records": len(ops),
             "rate_limited": False,
             "range_proof_failed": True,
-        }
-
-    # ── Minimum-row guard ────────────────────────────────────────────
-    # Range-proof passed (DB date range covers provider range), but a
-    # ticker with very few rows (e.g. 2-3 data points) would produce
-    # a broken chart.  Don't mark complete until the ticker accumulates
-    # enough data for a meaningful chart.
-    if db_row_count < MINIMUM_VISIBLE_PRICE_ROWS:
-        logger.warning(
-            "[Phase C] %s: range-proof passed but db_row_count=%d "
-            "< MINIMUM_VISIBLE_PRICE_ROWS=%d. Data written but NOT "
-            "marking price_history_complete=True — ticker will stay "
-            "invisible until it accumulates sufficient history.",
-            ticker_us, db_row_count, MINIMUM_VISIBLE_PRICE_ROWS,
-        )
-        _proof_fields["range_proof"]["min_rows_pass"] = False
-        await db.tracked_tickers.update_one(
-            {"ticker": ticker_us},
-            {"$set": {
-                **_proof_fields,
-                "price_history_status": "insufficient_history",
-                "history_download_error": (
-                    f"insufficient_history:db_row_count={db_row_count},"
-                    f"minimum={MINIMUM_VISIBLE_PRICE_ROWS}"
-                ),
-            }},
-        )
-        return {
-            "ticker": ticker_us,
-            "success": False,
-            "records": len(ops),
-            "rate_limited": False,
-            "insufficient_history": True,
         }
 
     await db.tracked_tickers.update_one(

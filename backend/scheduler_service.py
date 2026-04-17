@@ -826,62 +826,27 @@ async def _remediate_price_redownload(
             if result.get("success"):
                 records_upserted = result.get("records_upserted", 0)
                 if records_upserted > 0:
-                    # ── Minimum-row guard ────────────────────────────
-                    # Query actual DB row count to prevent marking
-                    # tickers with very few rows as complete (which
-                    # causes broken 2-point charts).
-                    from full_sync_service import MINIMUM_VISIBLE_PRICE_ROWS
-                    _count_pipeline = [
-                        {"$match": {"ticker": ticker_us}},
-                        {"$count": "n"},
-                    ]
-                    _count_result = await db.stock_prices.aggregate(
-                        _count_pipeline
-                    ).to_list(1)
-                    _actual_rows = (
-                        _count_result[0]["n"] if _count_result else 0
+                    succeeded += 1
+                    # Derive anchor from backfill result date_range
+                    _dr = result.get("date_range") or {}
+                    _anchor = _dr.get("to")
+                    _proof_fields: Dict[str, Any] = {
+                        "needs_price_redownload": False,
+                        "price_history_complete": True,
+                        "price_history_complete_as_of": _anchor,
+                        "price_history_status": "complete",
+                        "updated_at": now,
+                        # Strict proof marker — canonical source for history_download_completed
+                        "history_download_proven_at": now,
+                        "history_download_proven_anchor": _anchor,
+                        # Computed fields — kept in sync so dashboard facet reads work
+                        "history_download_completed": True,
+                        "gap_free_since_history_download": True,
+                    }
+                    await db.tracked_tickers.update_one(
+                        {"ticker": ticker_us},
+                        {"$set": _proof_fields},
                     )
-                    if _actual_rows < MINIMUM_VISIBLE_PRICE_ROWS:
-                        failed += 1
-                        msg = (
-                            f"success=True, records_upserted={records_upserted}, "
-                            f"but db_row_count={_actual_rows} < "
-                            f"MINIMUM_VISIBLE_PRICE_ROWS={MINIMUM_VISIBLE_PRICE_ROWS} — "
-                            f"NOT marking price_history_complete=True"
-                        )
-                        failures.append(_failure_record(ticker_us, msg))
-                        logger.warning(
-                            "_remediate_price_redownload: %s %s", ticker_us, msg
-                        )
-                        await db.tracked_tickers.update_one(
-                            {"ticker": ticker_us},
-                            {"$set": {
-                                "price_history_status": "insufficient_history",
-                                "updated_at": now,
-                            }},
-                        )
-                    else:
-                        succeeded += 1
-                        # Derive anchor from backfill result date_range
-                        _dr = result.get("date_range") or {}
-                        _anchor = _dr.get("to")
-                        _proof_fields: Dict[str, Any] = {
-                            "needs_price_redownload": False,
-                            "price_history_complete": True,
-                            "price_history_complete_as_of": _anchor,
-                            "price_history_status": "complete",
-                            "updated_at": now,
-                            # Strict proof marker — canonical source for history_download_completed
-                            "history_download_proven_at": now,
-                            "history_download_proven_anchor": _anchor,
-                            # Computed fields — kept in sync so dashboard facet reads work
-                            "history_download_completed": True,
-                            "gap_free_since_history_download": True,
-                        }
-                        await db.tracked_tickers.update_one(
-                            {"ticker": ticker_us},
-                            {"$set": _proof_fields},
-                        )
                 else:
                     failed += 1
                     msg = (
