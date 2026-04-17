@@ -58,7 +58,9 @@ export default function AuthCallback() {
           destination = returnTo;
           sessionStorage.removeItem('richstox_returnTo');
         }
-      } catch {}
+      } catch (e) {
+        console.warn('Could not read returnTo from sessionStorage:', e);
+      }
       setTimeout(() => router.replace(destination as any), 500);
     } else {
       setStatus('Login failed');

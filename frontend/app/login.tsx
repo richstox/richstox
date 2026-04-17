@@ -38,7 +38,9 @@ export default function LoginScreen() {
     try {
       // Persist returnTo so auth/callback can redirect back after OAuth
       if (returnTo) {
-        try { sessionStorage.setItem('richstox_returnTo', returnTo); } catch {}
+        try { sessionStorage.setItem('richstox_returnTo', returnTo); } catch (e) {
+          console.warn('Could not persist returnTo (sessionStorage unavailable):', e);
+        }
       }
       await login();
     } catch (error) {

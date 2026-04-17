@@ -462,11 +462,17 @@ export default function StockDetail() {
 
   // Safe back navigation: fallback when browser history is unavailable (e.g. hard refresh / direct entry)
   const safeBack = useCallback(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.history.length <= 2) {
-      router.push('/(tabs)/markets' as any);
-    } else {
-      router.back();
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      // Detect hard refresh via Performance Navigation Timing API
+      const navEntry = performance?.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined;
+      const isReload = navEntry?.type === 'reload';
+      // Direct URL entry or hard refresh: no meaningful SPA history to go back to
+      if (isReload || window.history.length <= 2) {
+        router.push('/(tabs)/markets' as any);
+        return;
+      }
     }
+    router.back();
   }, [router]);
 
   // Swipe detection for search result navigation
