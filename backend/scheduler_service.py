@@ -4539,17 +4539,22 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             }
                         except Exception as ph_err:
                             logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
-                            # Record failure on the ticker document
+                            # Record failure on the ticker document and re-flag
+                            # for retry so Phase C picks it up on the next run.
                             try:
                                 _ticker_us = ticker if ticker.endswith(".US") else f"{ticker}.US"
                                 _fail_ts = datetime.now(timezone.utc)
+                                _err_set: Dict[str, Any] = {
+                                    "price_history_status": "error",
+                                    "history_download_failed_at": _fail_ts,
+                                    "history_download_error": f"exception: {ph_err}",
+                                }
+                                if needs_redownload:
+                                    _err_set["needs_price_redownload"] = True
+                                    _err_set["price_history_complete"] = False
                                 await db.tracked_tickers.update_one(
                                     {"ticker": _ticker_us},
-                                    {"$set": {
-                                        "price_history_status": "error",
-                                        "history_download_failed_at": _fail_ts,
-                                        "history_download_error": f"exception: {ph_err}",
-                                    }},
+                                    {"$set": _err_set},
                                 )
                             except Exception:
                                 pass  # Best-effort — don't mask the original error
