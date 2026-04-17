@@ -875,11 +875,13 @@ export default function StockDetail() {
   };
 
   const formatCurrency = (value: number | null | undefined) => {
-    if (!value) return 'N/A';
-    if (value >= 1e12) return `$${toEU(value / 1e12, 2)}T`;
-    if (value >= 1e9) return `$${toEU(value / 1e9, 2)}B`;
-    if (value >= 1e6) return `$${toEU(value / 1e6, 2)}M`;
-    return `$${toEU(value, 2)}`;
+    if (value === null || value === undefined) return 'N/A';
+    const absValue = Math.abs(value);
+    const sign = value < 0 ? '-' : '';
+    if (absValue >= 1e12) return `${sign}$${toEU(absValue / 1e12, 2)}T`;
+    if (absValue >= 1e9) return `${sign}$${toEU(absValue / 1e9, 2)}B`;
+    if (absValue >= 1e6) return `${sign}$${toEU(absValue / 1e6, 2)}M`;
+    return `${sign}$${toEU(absValue, 2)}`;
   };
 
   const formatNumber = (value: number | null | undefined) => {
@@ -991,6 +993,10 @@ export default function StockDetail() {
         'income_missing': 'N/A (Income not reported)',
         'ebitda_missing': 'N/A (EBITDA not reported)',
         'data_pending': 'N/A (Data pending)',
+        'extreme_outlier': 'N/A (Data unreliable)',
+        'missing_inputs': 'N/A (Data missing)',
+        'not_reported': 'N/A (Not reported)',
+        'unreliable': 'N/A (Data unreliable)',
       };
       return reasonLabels[metric.na_reason] || 'N/A';
     }
@@ -1047,6 +1053,10 @@ export default function StockDetail() {
       },
       dividend_yield_ttm: {
         'no_dividend': '0.00% (No dividend)',
+        'extreme_outlier': 'N/A (Data unreliable)',
+        'unreliable': 'N/A (Data unreliable)',
+        'missing_inputs': 'N/A (Data missing)',
+        'not_reported': 'N/A (Not reported)',
         'default': '0.00% (No dividend)'
       }
     };
@@ -1392,6 +1402,12 @@ export default function StockDetail() {
   const getDividendPill = (): string => {
     // Show neutral loading pill while initial fetch is in progress
     if (dividendsLoading) return 'Verifying…';
+
+    // Canonical na_reason from Key Metrics — takes precedence over local dividend_history
+    const canonicalNaReason = mobileData?.key_metrics?.dividend_yield_ttm?.na_reason;
+    if (canonicalNaReason === 'unreliable') return 'Unreliable data';
+    if (canonicalNaReason === 'extreme_outlier') return 'Unreliable data';
+
     if (!dividendPayments || dividendPayments.length === 0) {
       return 'No dividends';
     }
@@ -1461,7 +1477,7 @@ export default function StockDetail() {
     // Risk & Warning pills (negative/red)
     const negativeLabels = [
       'Unprofitable', 'Overleveraged', 'Burning Cash', 'Revenue Decline', 'Debt: N/A',
-      'No dividends', 'Cutting', 'Revenue down', 'No financials'
+      'No dividends', 'Cutting', 'Revenue down', 'No financials', 'Unreliable data'
     ];
     // Strength & Elite pills (positive/green)
     const positiveLabels = [
@@ -3167,7 +3183,11 @@ export default function StockDetail() {
               
               {/* Dividends - always show */}
               <Text style={[styles.subsectionTitle, { marginTop: 16 }]}>Dividends</Text>
-              {dividendPayments && dividendPayments.length > 0 ? (
+              {mobileData?.key_metrics?.dividend_yield_ttm?.na_reason === 'unreliable' || mobileData?.key_metrics?.dividend_yield_ttm?.na_reason === 'extreme_outlier' ? (
+                <View style={styles.noDataPlaceholder}>
+                  <Text style={styles.noDataText}>Dividend data unreliable — sources disagree</Text>
+                </View>
+              ) : dividendPayments && dividendPayments.length > 0 ? (
                 <View style={styles.dividendsList}>
                   {dividendPayments.slice(0, 4).map((d, i) => (
                     <View key={i} style={styles.dividendRow}>

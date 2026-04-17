@@ -37,6 +37,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any, Optional
 import statistics
 
+from canonical_dividend import compute_canonical_dividend_yield
+
 logger = logging.getLogger("richstox.key_metrics")
 
 # Minimum peer count before fallback
@@ -1428,8 +1430,32 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     "epsActual": row.get("eps_actual"),
                 }
         
-        # NOTE: dividend yield is now computed as TTM from quarterly
-        # dividends_paid (below), no longer from company_fundamentals_cache.
+        # ── Fetch dividend_history TTM totals for canonical dividend function ──
+        # One aggregation for the whole batch: sum per-share amounts in last 12m.
+        _one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+        _div_hist_batch = {}  # ticker -> {"total": float, "count": int}
+        _div_hist_pipeline = [
+            {"$match": {
+                "ticker": {"$in": batch_ticker_names},
+                "$or": [
+                    {"ex_date": {"$gte": _one_year_ago}},
+                    {"date": {"$gte": _one_year_ago}},
+                ],
+            }},
+            {"$group": {
+                "_id": "$ticker",
+                "total_amount": {"$sum": {"$ifNull": ["$amount", {"$ifNull": ["$value", 0]}]}},
+                "count": {"$sum": 1},
+            }},
+        ]
+        async for doc in db.dividend_history.aggregate(_div_hist_pipeline):
+            _div_hist_batch[doc["_id"]] = {
+                "total": doc["total_amount"],
+                "count": doc["count"],
+            }
+        
+        # Dividend yield is now computed via canonical function using BOTH
+        # dividend_history (primary) and cashflow/dividends_paid (secondary).
         
         for t in batch_tickers:
             ticker = t.get("ticker")
@@ -1531,22 +1557,25 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             if revenue_ttm and revenue_ttm > 0 and enterprise_value > 0:
                 metrics["ev_revenue"] = enterprise_value / revenue_ttm
             
-            # Dividend Yield TTM — from quarterly dividends_paid / market_cap
-            # Consistent with ticker detail endpoint (server.py ~L4755-4772).
-            # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
-            # EXCEPTION to get_ttm_sum strict 4/4 rule: None quarters are skipped
-            # (not treated as missing) because companies may pay dividends annually,
-            # semi-annually, or quarterly — null means "no payment that quarter",
-            # not "data unavailable".
+            # Dividend Yield TTM — canonical function (same as ticker detail).
+            # Uses dividend_history (primary) + cashflow/dividends_paid (secondary)
+            # with integrity check and extreme outlier guardrail.
             _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
-            if len(_div_q_keys) >= 4:
-                _div_vals = [safe_float(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
-                if not all(v is None for v in _div_vals):
-                    _dividends_ttm = sum(abs(v) for v in _div_vals if v is not None)
-                    if _dividends_ttm == 0.0:
-                        metrics["dividend_yield"] = 0.0  # explicit non-payer
-                    elif market_cap > 0:
-                        metrics["dividend_yield"] = (_dividends_ttm / market_cap) * 100
+            _div_cf_vals = (
+                [safe_float(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
+                if len(_div_q_keys) >= 4 else []
+            )
+            _div_hist_info = _div_hist_batch.get(ticker, {})
+            _div_canonical = compute_canonical_dividend_yield(
+                market_cap=market_cap,
+                shares_outstanding=shares,
+                cashflow_dividends_paid_quarterly=_div_cf_vals,
+                dividend_history_ttm_total=_div_hist_info.get("total"),
+                dividend_history_count=_div_hist_info.get("count", 0),
+                include_debug=False,
+            )
+            if _div_canonical["dividend_yield_ttm_value"] is not None:
+                metrics["dividend_yield"] = _div_canonical["dividend_yield_ttm_value"]
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
