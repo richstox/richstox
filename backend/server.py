@@ -5418,6 +5418,31 @@ async def get_ticker_chart_data(
 
         logger.info(f"[CHART] {period}: {ticker_full} has {len(prices)} valid records")
     
+    # ── Low-history guard: trigger remediation for visible tickers with ─
+    # very few price rows (prevents broken 2-point charts from persisting).
+    _LOW_HISTORY_THRESHOLD = 50
+    if 0 < len(prices) < _LOW_HISTORY_THRESHOLD:
+        logger.warning(
+            "[CHART] %s: only %d valid price rows — below minimum %d. "
+            "Flagging for remediation.",
+            ticker_full, len(prices), _LOW_HISTORY_THRESHOLD,
+        )
+        try:
+            await db.tracked_tickers.update_one(
+                {"ticker": ticker_full},
+                {"$set": {
+                    "price_history_complete": False,
+                    "price_history_status": "insufficient_history_chart_guard",
+                    "needs_price_redownload": True,
+                    "updated_at": datetime.now(timezone.utc),
+                }},
+            )
+        except Exception as _remed_err:
+            logger.warning(
+                "[CHART] %s: remediation flag write failed: %s",
+                ticker_full, _remed_err,
+            )
+
     # Downsample for large datasets (keep ~500 points for chart, but all for calculations)
     def downsample(data, target_points=500):
         if len(data) <= target_points:
@@ -5484,6 +5509,11 @@ async def get_ticker_chart_data(
         data_notices.append(
             "Price history for this stock is currently being downloaded. "
             "Please check back shortly."
+        )
+    elif 0 < len(normalized_prices) < _LOW_HISTORY_THRESHOLD and not data_notices:
+        data_notices.append(
+            "Price history for this stock is limited. "
+            "Full history is being downloaded — please check back shortly."
         )
 
     return {

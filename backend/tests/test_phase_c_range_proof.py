@@ -250,11 +250,14 @@ class TestRangeProofInProcessPriceTicker:
         assert set_fields["range_proof"]["pass"] is False
 
     def test_small_but_valid_history_marks_complete(self):
-        """A young stock with only 5 records — but matching provider range → complete.
+        """A young stock with only 5 records matching provider range.
 
-        This proves we're NOT using an arbitrary row-count threshold.
+        Range-proof passes (DB covers provider range), but the minimum-row
+        guard (MINIMUM_VISIBLE_PRICE_ROWS) rejects it because 5 rows are
+        too few for a meaningful chart.  This was the GRTUF.US root cause:
+        Phase C previously allowed 2-point tickers to become visible.
         """
-        from full_sync_service import _process_price_ticker
+        from full_sync_service import _process_price_ticker, MINIMUM_VISIBLE_PRICE_ROWS
 
         db = _FakeDB()
         records = _make_eod_records_range("2026-04-01", "2026-04-05")
@@ -271,12 +274,16 @@ class TestRangeProofInProcessPriceTicker:
                 _process_price_ticker(db, "NEW.US", job_name="test", needs_redownload=False)
             )
 
-        assert result["success"] is True
+        # 5 rows < MINIMUM_VISIBLE_PRICE_ROWS → NOT complete
+        assert result["success"] is False
+        assert result.get("insufficient_history") is True
         last_update = db.tracked_tickers.updates[-1]
         set_fields = last_update["update"]["$set"]
-        assert set_fields["price_history_complete"] is True
-        assert set_fields["range_proof"]["db_row_count"] == 5
+        assert "price_history_complete" not in set_fields or set_fields.get("price_history_complete") is not True
+        assert set_fields["price_history_status"] == "insufficient_history"
+        # Range proof itself still passes (DB covers provider range)
         assert set_fields["range_proof"]["pass"] is True
+        assert set_fields["range_proof"]["min_rows_pass"] is False
 
     def test_proof_fields_persisted_on_failure(self):
         """Even when range-proof fails, proof fields are persisted for auditing."""
