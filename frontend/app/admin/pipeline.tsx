@@ -395,6 +395,14 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const lastPeerMediansResultRef = useRef<Record<string, any>>({});
   const [peerMediansElapsed, setPeerMediansElapsed] = useState(0);
   const peerMediansTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Gate: prevent the polling effect from treating an old completed run as
+  // terminal before the POST /run has actually created the new running doc.
+  // The polling useEffect fires as soon as isPeerMediansRunning goes true,
+  // which can happen *before* the POST completes. Without this gate, the
+  // first poll can receive the previous completed run, see its terminal
+  // status, and immediately call setPeerMediansRunning(false) — reverting
+  // the button to "Run Now" even though the new job is about to start.
+  const peerMediansSeenRunningRef = useRef(false);
 
   // ── Peer pool ticker list modal ───────────────────────────────────────────
   const [poolModalVisible, setPoolModalVisible] = useState(false);
@@ -826,6 +834,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
   const handleRunPeerMedians = async () => {
     setPeerMediansRunning(true);
+    peerMediansSeenRunningRef.current = false; // reset gate for new run
     try {
       const res = await authenticatedFetch(
         `${API_URL}/api/admin/job/peer_medians/run`,
@@ -836,7 +845,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       // 409 = already running — treat as non-fatal: the job is in progress,
       // polling will pick up its terminal state.
       if (res.status === 409 && payload?.status === 'already_running') {
-        // Leave isPeerMediansRunning=true so the polling effect keeps checking
+        // Leave isPeerMediansRunning=true so the polling effect keeps checking.
+        // Open the gate since the backend confirmed a run is active.
+        peerMediansSeenRunningRef.current = true;
         return;
       }
       if (!res.ok) {
@@ -1241,6 +1252,12 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       }
       return;
     }
+    // If the polling is starting because the overview already showed a
+    // running job (page load / refresh), pre-open the gate so the first
+    // poll that sees a terminal status can transition correctly.
+    if (!peerMediansRunning && peerMediansBackendStatus === 'running') {
+      peerMediansSeenRunningRef.current = true;
+    }
     let cancelled = false;
     const poll = async () => {
       try {
@@ -1263,9 +1280,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
             if (prevResult && typeof prevResult === 'object' && Object.keys(prevResult).length > 0) {
               lastPeerMediansResultRef.current = prevResult;
             }
-            // Clear local running flag once the backend reports a terminal state
+            // Track when we first see the running state from the backend.
+            // The polling effect can fire before the POST /run creates the
+            // new document, so the first response may be an OLD completed
+            // run.  Only transition to terminal after we've confirmed the
+            // new run exists (status === 'running').
+            if (lr.status === 'running') {
+              peerMediansSeenRunningRef.current = true;
+            }
+            // Clear local running flag once the backend reports a terminal state,
+            // but ONLY after we've seen the new run's 'running' status at least
+            // once.  This prevents the old completed run from prematurely
+            // reverting the button.
             const terminalStatuses = ['completed', 'success', 'failed', 'error', 'cancelled', 'timeout'];
-            if (terminalStatuses.includes(lr.status)) {
+            if (peerMediansSeenRunningRef.current && terminalStatuses.includes(lr.status)) {
               setPeerMediansRunning(false);
             }
           }
