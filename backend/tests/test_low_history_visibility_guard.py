@@ -15,7 +15,7 @@ Three invariants are tested:
 import asyncio
 import sys
 import os
-from datetime import datetime, timezone
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
