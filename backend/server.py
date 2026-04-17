@@ -2013,6 +2013,8 @@ from dividend_history_service import (
     get_dividend_stats,
 )
 
+from canonical_dividend import compute_canonical_dividend_yield
+
 from ttm_calculations_service import (
     calculate_ttm_metrics,
     calculate_local_pe_ratio,
@@ -3471,7 +3473,7 @@ async def get_ticker_dividends(ticker: str):
 async def admin_dividend_yield_debug(ticker: str):
     """
     Admin debug endpoint: Show all inputs used to compute dividend_yield_ttm
-    and explain why Earnings & Dividends may disagree with Key Metrics.
+    via the canonical function, and explain any mismatch between sources.
     """
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
@@ -3492,7 +3494,7 @@ async def admin_dividend_yield_debug(ticker: str):
     shares = tracked.get("shares_outstanding")
     market_cap = (last_price * shares) if last_price and shares else None
 
-    # 3. Last 4 quarterly dividends_paid from company_financials (Key Metrics source)
+    # 3. Last 4 quarterly dividends_paid from company_financials (cashflow source)
     quarterly_rows = await db.company_financials.find(
         {"ticker": ticker_full, "period_type": "quarterly"},
         {"_id": 0, "period_date": 1, "dividends_paid": 1},
@@ -3510,58 +3512,45 @@ async def admin_dividend_yield_debug(ticker: str):
         {"period_date": q["period_date"], "dividends_paid": _sf(q.get("dividends_paid"))}
         for q in quarterly_rows
     ]
+    cf_vals = [d["dividends_paid"] for d in quarterly_dividends]
 
-    div_vals = [d["dividends_paid"] for d in quarterly_dividends]
-    dividends_paid_ttm = sum(abs(v) for v in div_vals if v is not None) if not all(v is None for v in div_vals) else None
-    computed_yield = (dividends_paid_ttm / market_cap * 100) if dividends_paid_ttm and market_cap and market_cap > 0 else None
-
-    # 4. dividend_history (Earnings & Dividends source)
+    # 4. dividend_history (per-share payment records)
     one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
     div_hist_cursor = db.dividend_history.find(
         {"ticker": ticker_full, "$or": [{"ex_date": {"$gte": one_year_ago}}, {"date": {"$gte": one_year_ago}}]},
         {"_id": 0},
     ).sort([("ex_date", -1), ("date", -1)])
     div_hist_records = await div_hist_cursor.to_list(length=50)
+    div_hist_count = len(div_hist_records)
+    div_hist_ttm_total = (
+        sum(d.get("amount") or d.get("value") or 0 for d in div_hist_records)
+        if div_hist_count > 0
+        else None
+    )
 
-    # 5. Guardrail evaluation
-    guardrail_triggered = None
-    final_yield = computed_yield
-    if computed_yield is not None and computed_yield > 100:
-        guardrail_triggered = "extreme_outlier (>100%)"
-        final_yield = None
-    if final_yield is not None and final_yield > 0 and len(div_hist_records) == 0:
-        guardrail_triggered = "no_dividend_history_cross_check"
-        final_yield = 0.0
+    # 5. Canonical function with debug_inputs
+    canonical = compute_canonical_dividend_yield(
+        market_cap=market_cap,
+        shares_outstanding=shares,
+        cashflow_dividends_paid_quarterly=cf_vals,
+        dividend_history_ttm_total=div_hist_ttm_total,
+        dividend_history_count=div_hist_count,
+        include_debug=True,
+    )
 
     return {
         "ticker": ticker_full,
-        "inputs": {
-            "market_cap": market_cap,
-            "shares_outstanding": shares,
+        "canonical_result": {
+            "dividend_yield_ttm_value": canonical["dividend_yield_ttm_value"],
+            "source_used": canonical["source_used"],
+            "na_reason": canonical["na_reason"],
+        },
+        "debug_inputs": canonical["debug_inputs"],
+        "raw_data": {
             "last_price": last_price,
-        },
-        "cash_flow_source": {
-            "description": "company_financials.dividends_paid (Key Metrics source)",
             "quarterly_dividends_paid": quarterly_dividends,
-            "dividends_paid_ttm_sum": dividends_paid_ttm,
-            "computed_dividend_yield_ttm": computed_yield,
+            "dividend_history_records_last_12m": div_hist_records[:8],
         },
-        "dividend_history_source": {
-            "description": "dividend_history collection (Earnings & Dividends source)",
-            "records_last_12m": len(div_hist_records),
-            "records": div_hist_records[:8],
-            "shows_no_dividends": len(div_hist_records) == 0,
-        },
-        "guardrail": {
-            "triggered": guardrail_triggered,
-            "final_dividend_yield_ttm": final_yield,
-        },
-        "mismatch_explanation": (
-            "dividend_history has NO records (Earnings & Dividends shows 'No dividends') "
-            "but company_financials.dividends_paid has non-zero values. "
-            "The cash-flow dividendsPaid field likely contains preferred-stock dividends, "
-            "debt repayments, or other non-common-stock items misclassified by the data provider."
-        ) if dividends_paid_ttm and dividends_paid_ttm > 0 and len(div_hist_records) == 0 else None,
     }
 
 
@@ -4851,60 +4840,43 @@ async def get_ticker_detail_mobile(
         net_debt = ttm_debt - ttm_cash
         net_debt_ebitda = net_debt / ebitda_ttm
 
-    # Dividend Yield (TTM) — computed from trailing quarterly dividends_paid
-    # Requires 4 quarterly reporting periods; does NOT assume payment frequency.
-    # EXCEPTION to strict 4/4 TTM rule: None quarters are skipped (not treated
-    # as missing) because companies may pay dividends annually, semi-annually,
-    # or quarterly. Matches compute_peer_benchmarks_v3 logic exactly
-    # (key_metrics_service.py ~L1534-1545).
-    dividend_yield_ttm = None
-    dividend_yield_na = None
+    # Dividend Yield (TTM) — canonical computation
+    # Uses compute_canonical_dividend_yield: dividend_history first, cashflow second,
+    # integrity check between the two sources, extreme outlier guardrail.
     _div_window = _quarterly_rows[:4]  # latest 4 quarterly reporting periods
-    if len(_div_window) >= 4:
-        _div_vals = [_sf(q.get("dividends_paid")) for q in _div_window]
-        if all(v is None for v in _div_vals):
-            # All included quarters have null dividends_paid
-            dividend_yield_ttm = None
-            dividend_yield_na = "not_reported"
-        else:
-            dividends_ttm = sum(abs(v) for v in _div_vals if v is not None)
-            if dividends_ttm == 0.0:
-                dividend_yield_ttm = 0.0
-                dividend_yield_na = "no_dividend"
-            elif market_cap and market_cap > 0:
-                dividend_yield_ttm = (dividends_ttm / market_cap) * 100
-            else:
-                dividend_yield_ttm = None
-                dividend_yield_na = "missing_inputs"
-    else:
-        # Fewer than 4 quarterly rows — TTM window not fully covered
-        dividend_yield_ttm = None
-        dividend_yield_na = "not_reported"
+    _div_cf_vals = [_sf(q.get("dividends_paid")) for q in _div_window] if len(_div_window) >= 4 else []
 
-    # Guardrail: extreme dividend yield (>100%) is almost certainly bad data
-    # (e.g., ONFO.US shows 2.5M% from cash-flow dividendsPaid vs $3.9M market cap).
-    # Keep raw value available via _raw field for admin debug; display N/A.
-    _dividend_yield_ttm_raw = dividend_yield_ttm
-    if dividend_yield_ttm is not None and dividend_yield_ttm > 100:
-        dividend_yield_ttm = None
-        dividend_yield_na = "extreme_outlier"
-
-    # Cross-validate with dividend_history (same source as Earnings & Dividends).
-    # If dividend_history has no payments in the last 12 months but cash-flow
-    # dividendsPaid produced a non-zero yield, override to 0 — the cash-flow
-    # field likely contains preferred-stock or other non-common-dividend items.
-    if dividend_yield_ttm is not None and dividend_yield_ttm > 0:
-        _one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
-        _div_hist_count = await db.dividend_history.count_documents({
+    # Fetch dividend_history TTM data for this ticker
+    _one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    _div_hist_cursor = db.dividend_history.find(
+        {
             "ticker": ticker_full,
             "$or": [
                 {"ex_date": {"$gte": _one_year_ago}},
                 {"date": {"$gte": _one_year_ago}},
             ],
-        })
-        if _div_hist_count == 0:
-            dividend_yield_ttm = 0.0
-            dividend_yield_na = "no_dividend"
+        },
+        {"_id": 0, "amount": 1, "value": 1},
+    )
+    _div_hist_records = await _div_hist_cursor.to_list(length=200)
+    _div_hist_count = len(_div_hist_records)
+    _div_hist_ttm_total = (
+        sum(d.get("amount") or d.get("value") or 0 for d in _div_hist_records)
+        if _div_hist_count > 0
+        else None
+    )
+
+    _canonical = compute_canonical_dividend_yield(
+        market_cap=market_cap,
+        shares_outstanding=shares_outstanding,
+        cashflow_dividends_paid_quarterly=_div_cf_vals,
+        dividend_history_ttm_total=_div_hist_ttm_total,
+        dividend_history_count=_div_hist_count,
+        include_debug=False,
+    )
+    dividend_yield_ttm = _canonical["dividend_yield_ttm_value"]
+    dividend_yield_na = _canonical["na_reason"]
+    _dividend_source_used = _canonical["source_used"]
 
     # FIX-2: Read PRECOMPUTED dividend data from peer_benchmarks
     # All fallback logic is already computed by compute_peer_benchmarks_v3
@@ -5049,7 +5021,7 @@ async def get_ticker_detail_mobile(
             "value": dividend_yield_ttm,
             "formatted": f"{dividend_yield_ttm:.2f}%" if dividend_yield_ttm is not None else None,
             "na_reason": dividend_yield_na,
-            "_raw_value": _dividend_yield_ttm_raw,  # admin debug: pre-guardrail value
+            "source_used": _dividend_source_used,
             "peer_median": _fb_div_yield[0],
             "peer_median_n": _fb_div_yield[1],
             "peer_median_level": _fb_div_yield[2],
