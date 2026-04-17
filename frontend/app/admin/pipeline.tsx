@@ -1314,7 +1314,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setPeerMediansElapsed(0);
       return;
     }
-    const startMs = peerMediansStartStr ? Date.parse(peerMediansStartStr) : NaN;
+    const startMs = peerMediansStartStr ? parseUtcIso(peerMediansStartStr) : NaN;
     // Capture fallback at effect-start so elapsed counts from button-click if
     // the backend hasn't returned started_at yet.
     const fallbackMs = Date.now();
