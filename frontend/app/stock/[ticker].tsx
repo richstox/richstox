@@ -1402,6 +1402,12 @@ export default function StockDetail() {
   const getDividendPill = (): string => {
     // Show neutral loading pill while initial fetch is in progress
     if (dividendsLoading) return 'Verifying…';
+
+    // Canonical na_reason from Key Metrics — takes precedence over local dividend_history
+    const canonicalNaReason = mobileData?.key_metrics?.dividend_yield_ttm?.na_reason;
+    if (canonicalNaReason === 'unreliable') return 'Unreliable data';
+    if (canonicalNaReason === 'extreme_outlier') return 'Unreliable data';
+
     if (!dividendPayments || dividendPayments.length === 0) {
       return 'No dividends';
     }
@@ -1471,7 +1477,7 @@ export default function StockDetail() {
     // Risk & Warning pills (negative/red)
     const negativeLabels = [
       'Unprofitable', 'Overleveraged', 'Burning Cash', 'Revenue Decline', 'Debt: N/A',
-      'No dividends', 'Cutting', 'Revenue down', 'No financials'
+      'No dividends', 'Cutting', 'Revenue down', 'No financials', 'Unreliable data'
     ];
     // Strength & Elite pills (positive/green)
     const positiveLabels = [
@@ -3177,7 +3183,11 @@ export default function StockDetail() {
               
               {/* Dividends - always show */}
               <Text style={[styles.subsectionTitle, { marginTop: 16 }]}>Dividends</Text>
-              {dividendPayments && dividendPayments.length > 0 ? (
+              {mobileData?.key_metrics?.dividend_yield_ttm?.na_reason === 'unreliable' || mobileData?.key_metrics?.dividend_yield_ttm?.na_reason === 'extreme_outlier' ? (
+                <View style={styles.noDataPlaceholder}>
+                  <Text style={styles.noDataText}>Dividend data unreliable — sources disagree</Text>
+                </View>
+              ) : dividendPayments && dividendPayments.length > 0 ? (
                 <View style={styles.dividendsList}>
                   {dividendPayments.slice(0, 4).map((d, i) => (
                     <View key={i} style={styles.dividendRow}>

@@ -55,6 +55,11 @@ def compute_canonical_dividend_yield(
     """
     Canonical dividend yield TTM computation.
 
+    SOURCE POLICY (binding for all call sites):
+      Primary source   = dividend_history (per-share payment records)
+      Secondary source = cashflow/dividends_paid (cash-flow statement validation)
+      If both sources exist and materially disagree (>20%) → na_reason="unreliable"
+
     Parameters
     ----------
     market_cap : float | None
