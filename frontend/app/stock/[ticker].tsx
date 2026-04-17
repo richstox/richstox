@@ -996,6 +996,7 @@ export default function StockDetail() {
         'extreme_outlier': 'N/A (Data unreliable)',
         'missing_inputs': 'N/A (Data missing)',
         'not_reported': 'N/A (Not reported)',
+        'unreliable': 'N/A (Data unreliable)',
       };
       return reasonLabels[metric.na_reason] || 'N/A';
     }
@@ -1053,6 +1054,7 @@ export default function StockDetail() {
       dividend_yield_ttm: {
         'no_dividend': '0.00% (No dividend)',
         'extreme_outlier': 'N/A (Data unreliable)',
+        'unreliable': 'N/A (Data unreliable)',
         'missing_inputs': 'N/A (Data missing)',
         'not_reported': 'N/A (Not reported)',
         'default': '0.00% (No dividend)'
