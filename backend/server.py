@@ -6228,9 +6228,21 @@ async def admin_get_job_status(job_name: str):
         enabled = job_name in _ALWAYS_RUNNABLE_JOBS
 
     def _iso(dt):
+        """Convert a datetime (or string) to ISO-8601 with UTC indicator.
+
+        Motor returns naive datetimes for BSON dates.  Without a timezone
+        suffix, JS ``Date.parse`` treats them as local time — which caused
+        the +120 min elapsed-timer offset (bug B).  Appending ``Z`` for
+        naive datetimes ensures the frontend always interprets them as UTC.
+        """
         if not dt:
             return None
-        return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+        if hasattr(dt, "isoformat"):
+            s = dt.isoformat()
+            if isinstance(dt, datetime) and dt.tzinfo is None:
+                s += "Z"
+            return s
+        return str(dt)
 
     # Get last run (latest by started_at, no status filter)
     raw_last_run = await db.ops_job_runs.find_one(
@@ -6253,7 +6265,10 @@ async def admin_get_job_status(job_name: str):
         phase = raw_last_run.get("phase") or details.get("phase")
         duration_seconds = None
         if started_at and finished_at:
-            duration_seconds = (finished_at - started_at).total_seconds()
+            try:
+                duration_seconds = (finished_at - started_at).total_seconds()
+            except (TypeError, AttributeError):
+                duration_seconds = None
 
         last_run = {
             "audit_id": str(raw_last_run["_id"]),
@@ -6293,7 +6308,10 @@ async def admin_get_job_status(job_name: str):
         prev_finished = raw_prev.get("finished_at")
         prev_duration = None
         if prev_started and prev_finished:
-            prev_duration = (prev_finished - prev_started).total_seconds()
+            try:
+                prev_duration = (prev_finished - prev_started).total_seconds()
+            except (TypeError, AttributeError):
+                prev_duration = None
         previous_completed_run = {
             "status": raw_prev.get("status"),
             "started_at": _iso(prev_started),
@@ -6346,6 +6364,10 @@ async def recover_stale_job_run(database, job_name: str) -> dict | None:
         return None
 
     started = existing.get("started_at")
+    # Motor returns naive datetimes (no tzinfo) for BSON dates. Normalise
+    # to aware-UTC so arithmetic with ``datetime.now(timezone.utc)`` works.
+    if isinstance(started, datetime) and started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
     try:
         age_minutes = (
             (datetime.now(timezone.utc) - started).total_seconds() / 60.0
@@ -6360,7 +6382,10 @@ async def recover_stale_job_run(database, job_name: str) -> dict | None:
         return None  # still within expected runtime
 
     expire_at = datetime.now(timezone.utc)
-    duration_seconds = (expire_at - started).total_seconds() if isinstance(started, datetime) else None
+    try:
+        duration_seconds = (expire_at - started).total_seconds() if isinstance(started, datetime) else None
+    except (TypeError, AttributeError):
+        duration_seconds = None
     error_msg = (
         f"Timeout: job was still 'running' after {int(age_minutes)} min "
         f"(max_runtime={max_minutes} min). Auto-finalized as error."
