@@ -6235,7 +6235,6 @@ async def admin_get_job_status(job_name: str):
     # Get last run (latest by started_at, no status filter)
     raw_last_run = await db.ops_job_runs.find_one(
         {"job_name": job_name},
-        {"_id": 0},
         sort=[("started_at", -1)]
     )
 
@@ -6257,6 +6256,7 @@ async def admin_get_job_status(job_name: str):
             duration_seconds = (finished_at - started_at).total_seconds()
 
         last_run = {
+            "audit_id": str(raw_last_run["_id"]),
             "status": raw_last_run.get("status"),
             "started_at": _iso(started_at),
             "finished_at": _iso(finished_at),

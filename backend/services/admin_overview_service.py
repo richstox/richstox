@@ -215,6 +215,7 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         {"$sort": {"started_at": -1}},
         {"$group": {
             "_id": "$job_name",
+            "doc_id":             {"$first": "$_id"},
             "status":             {"$first": "$status"},
             "started_at":         {"$first": "$started_at"},
             "finished_at":        {"$first": "$finished_at"},
@@ -257,6 +258,7 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         result = doc.get("result") or doc.get("details") or {}
         doc["start_time"] = _to_iso_utc(started)
         doc["end_time"] = _to_iso_utc(finished)
+        doc["audit_id"] = str(doc.pop("doc_id")) if doc.get("doc_id") else None
         doc["started_at_prague"] = doc.get("started_at_prague")
         doc["finished_at_prague"] = doc.get("finished_at_prague") or doc.get("completed_at_prague")
         doc["duration_seconds"] = doc.get("duration_sec") or doc.get("duration_seconds")
