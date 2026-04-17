@@ -29,6 +29,8 @@ interface AuthContextType {
   isLoading: boolean;
   isAuthenticated: boolean;
   isAdmin: boolean;
+  /** True once the initial /api/auth/me revalidation has completed (success or failure). */
+  isSessionValidated: boolean;
   login: () => void;
   logout: () => Promise<void>;
   processSessionId: (sessionId: string) => Promise<boolean>;
@@ -77,6 +79,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // If we restored a cached user, we can render immediately (isLoading=false).
   // The session will be re-validated in the background.
   const [isLoading, setIsLoading] = useState(!cached.user);
+  // True once the initial revalidateSession() call completes (success or failure).
+  // Until then, cached user data may be stale (expired session).
+  const [isSessionValidated, setIsSessionValidated] = useState(false);
 
   useEffect(() => {
     revalidateSession();
@@ -107,6 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error('Error checking session:', error);
     } finally {
       setIsLoading(false);
+      setIsSessionValidated(true);
     }
   };
 
@@ -207,6 +213,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isLoading,
     isAuthenticated: !!user,
     isAdmin: user?.role === 'admin',
+    isSessionValidated,
     login,
     logout,
     processSessionId,

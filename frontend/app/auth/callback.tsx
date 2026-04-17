@@ -50,7 +50,18 @@ export default function AuthCallback() {
     if (success) {
       setStatus('Success!');
       window.history.replaceState(null, '', window.location.pathname);
-      setTimeout(() => router.replace('/(tabs)/dashboard'), 500);
+      // Check for returnTo stored before OAuth redirect
+      let destination = '/(tabs)/dashboard';
+      try {
+        const returnTo = sessionStorage.getItem('richstox_returnTo');
+        if (returnTo) {
+          destination = returnTo;
+          sessionStorage.removeItem('richstox_returnTo');
+        }
+      } catch (e) {
+        console.warn('Could not read returnTo from sessionStorage:', e);
+      }
+      setTimeout(() => router.replace(destination as any), 500);
     } else {
       setStatus('Login failed');
       setTimeout(() => router.replace('/login'), 1500);

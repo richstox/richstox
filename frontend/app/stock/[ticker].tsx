@@ -351,7 +351,7 @@ interface MobileDetailData {
 export default function StockDetail() {
   const { ticker } = useLocalSearchParams();
   const router = useRouter();
-  const { sessionToken, isAuthenticated } = useAuth();
+  const { sessionToken, isAuthenticated, isSessionValidated } = useAuth();
   const dialog = useAppDialog();
   const sp = useLayoutSpacing();
   
@@ -460,14 +460,20 @@ export default function StockDetail() {
   const pagerLabel = `${pagerIndex + 1} of ${pagerTotal}`;
   const pagerClear = hasSearchNav ? clearSearch : clearMyStocks;
 
-  // Safe back navigation: fallback when browser history is unavailable (e.g. hard refresh)
+  // Safe back navigation: fallback when browser history is unavailable (e.g. hard refresh / direct entry)
   const safeBack = useCallback(() => {
-    if (Platform.OS === 'web' && typeof window !== 'undefined' && window.history.length <= 1) {
-      router.replace(isAuthenticated ? '/(tabs)/dashboard' : '/login');
-    } else {
-      router.back();
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      // Detect hard refresh via Performance Navigation Timing API
+      const navEntry = performance?.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined;
+      const isReload = navEntry?.type === 'reload';
+      // Direct URL entry or hard refresh: no meaningful SPA history to go back to
+      if (isReload || window.history.length <= 2) {
+        router.push('/(tabs)/markets' as any);
+        return;
+      }
     }
-  }, [router, isAuthenticated]);
+    router.back();
+  }, [router]);
 
   // Swipe detection for search result navigation
   const swipeRef = useRef({ startX: 0, startY: 0 });
@@ -595,6 +601,14 @@ export default function StockDetail() {
   };
 
   // P25/P26: PAIN data now comes from ticker_pain_cache via /v1/ticker/{ticker}/detail API
+
+  // Auth gating: redirect to login when session validation confirms unauthenticated
+  useEffect(() => {
+    if (isSessionValidated && !isAuthenticated) {
+      const returnTo = `/stock/${ticker}`;
+      router.replace(`/login?returnTo=${encodeURIComponent(returnTo)}` as any);
+    }
+  }, [isSessionValidated, isAuthenticated, ticker, router]);
 
   useEffect(() => {
     if (!ticker) return;
@@ -1246,6 +1260,11 @@ export default function StockDetail() {
       source
     };
   };
+
+  // Auth gating: show loading skeleton while session is being validated (no broken header)
+  if (!isSessionValidated) {
+    return <BrandedLoading message={`Loading ${ticker}...`} />;
+  }
 
   if (loading) {
     return <BrandedLoading message={`Loading ${ticker}...`} />;
