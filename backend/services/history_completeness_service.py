@@ -284,7 +284,6 @@ def _detect_data_loss(
     if not proof_first:
         return False
     try:
-        from datetime import timedelta
         _pf = datetime.strptime(proof_first, "%Y-%m-%d")
         _lf = datetime.strptime(live_first_date, "%Y-%m-%d")
         gap_days = (_lf - _pf).days
