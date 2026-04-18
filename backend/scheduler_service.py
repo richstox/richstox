@@ -826,27 +826,100 @@ async def _remediate_price_redownload(
             if result.get("success"):
                 records_upserted = result.get("records_upserted", 0)
                 if records_upserted > 0:
-                    succeeded += 1
-                    # Derive anchor from backfill result date_range
+                    # ── Range-proof: verify DB state before sealing ───
+                    # Without this, a ticker with only a few bulk-day
+                    # rows (e.g. BODI with 3 rows) gets
+                    # price_history_complete=True and becomes visible
+                    # with a broken chart.  Aligned with Phase C
+                    # range-proof in full_sync_service.py.
+                    from full_sync_service import _check_range_proof
                     _dr = result.get("date_range") or {}
-                    _anchor = _dr.get("to")
-                    _proof_fields: Dict[str, Any] = {
-                        "needs_price_redownload": False,
-                        "price_history_complete": True,
-                        "price_history_complete_as_of": _anchor,
-                        "price_history_status": "complete",
-                        "updated_at": now,
-                        # Strict proof marker — canonical source for history_download_completed
-                        "history_download_proven_at": now,
-                        "history_download_proven_anchor": _anchor,
-                        # Computed fields — kept in sync so dashboard facet reads work
-                        "history_download_completed": True,
-                        "gap_free_since_history_download": True,
-                    }
-                    await db.tracked_tickers.update_one(
-                        {"ticker": ticker_us},
-                        {"$set": _proof_fields},
+                    _provider_first = _dr.get("from")
+                    _provider_last = _dr.get("to")
+                    _anchor = _provider_last
+
+                    # Query actual DB state after write
+                    _agg = await db.stock_prices.aggregate([
+                        {"$match": {"ticker": ticker_us}},
+                        {"$group": {
+                            "_id": None,
+                            "db_first": {"$min": "$date"},
+                            "db_last": {"$max": "$date"},
+                            "db_count": {"$sum": 1},
+                        }},
+                    ]).to_list(1)
+                    _db_first = _agg[0]["db_first"] if _agg else None
+                    _db_last = _agg[0]["db_last"] if _agg else None
+                    _db_count = _agg[0]["db_count"] if _agg else 0
+
+                    _range_ok = _check_range_proof(
+                        _provider_first, _provider_last,
+                        _db_first, _db_last,
                     )
+
+                    if _range_ok:
+                        succeeded += 1
+                        _proof_fields: Dict[str, Any] = {
+                            "needs_price_redownload": False,
+                            "price_history_complete": True,
+                            "price_history_complete_as_of": _anchor,
+                            "price_history_status": "complete",
+                            "updated_at": now,
+                            # Strict proof marker
+                            "history_download_proven_at": now,
+                            "history_download_proven_anchor": _anchor,
+                            # Computed fields
+                            "history_download_completed": True,
+                            "gap_free_since_history_download": True,
+                            "range_proof": {
+                                "provider_first_date": _provider_first,
+                                "provider_last_date": _provider_last,
+                                "db_first_date": _db_first,
+                                "db_last_date": _db_last,
+                                "db_row_count": _db_count,
+                                "pass": True,
+                                "checked_at": now,
+                                "source": "remediate_price_redownload",
+                            },
+                        }
+                        await db.tracked_tickers.update_one(
+                            {"ticker": ticker_us},
+                            {"$set": _proof_fields},
+                        )
+                    else:
+                        # Data written but range-proof failed — leave
+                        # price_history_complete=False so Phase C retries.
+                        failed += 1
+                        _rp_msg = (
+                            f"range_proof_failed: provider=[{_provider_first}..{_provider_last}], "
+                            f"db=[{_db_first}..{_db_last}] ({_db_count} rows)"
+                        )
+                        failures.append(_failure_record(ticker_us, _rp_msg))
+                        logger.warning(
+                            "_remediate_price_redownload: %s — %s. "
+                            "NOT setting price_history_complete=True.",
+                            ticker_us, _rp_msg,
+                        )
+                        await db.tracked_tickers.update_one(
+                            {"ticker": ticker_us},
+                            {"$set": {
+                                "needs_price_redownload": True,
+                                "price_history_complete": False,
+                                "price_history_status": "range_proof_failed",
+                                "history_download_error": _rp_msg,
+                                "updated_at": now,
+                                "range_proof": {
+                                    "provider_first_date": _provider_first,
+                                    "provider_last_date": _provider_last,
+                                    "db_first_date": _db_first,
+                                    "db_last_date": _db_last,
+                                    "db_row_count": _db_count,
+                                    "pass": False,
+                                    "checked_at": now,
+                                    "source": "remediate_price_redownload",
+                                },
+                            }},
+                        )
                 else:
                     failed += 1
                     msg = (
