@@ -263,8 +263,8 @@ class TestProofModeExistingBehavior:
     """Verify that the fix doesn't break non-gap scenarios."""
 
     @pytest.mark.asyncio
-    async def test_consistent_both_present_no_repair(self):
-        """Both bulk and DB have the row → no gap, no repair call."""
+    async def test_consistent_both_present_resolved(self):
+        """Both bulk and DB have the row → gap is resolved, action reflects prior repair."""
         oid = ObjectId()
         bulk_data = [_make_bulk_row("BODI", close=11.0)]
         db = _make_db(

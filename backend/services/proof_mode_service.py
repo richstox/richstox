@@ -13,7 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from price_ingestion_service import _is_zero_or_missing_close
+from price_ingestion_service import _is_zero_or_missing_close, repair_proven_true_gap
 
 logger = logging.getLogger("richstox.proof_mode")
 
@@ -344,8 +344,6 @@ async def run_proof_mode(
                 # Previous behavior left remediation_action=None here,
                 # meaning the gap was identified but never acted upon.
                 try:
-                    from price_ingestion_service import repair_proven_true_gap
-
                     repair_result = await repair_proven_true_gap(
                         db,
                         ticker=normalized_input,
