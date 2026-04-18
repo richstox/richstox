@@ -474,7 +474,11 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     logger.info(f"Cleanup candidates: {len(tickers_to_cleanup)} "
                 f"(pre_invisible={len(pre_invisible)}, still_invisible={len(now_invisible_set)})")
 
-    cleanup_stats: Dict[str, int] = {"stock_prices_deleted": 0, "financials_cache_deleted": 0, "completeness_reset": 0}
+    cleanup_stats: Dict[str, int] = {
+        "stock_prices_deleted": 0,
+        "financials_cache_deleted": 0,
+        "completeness_reset": 0,
+    }
     if tickers_to_cleanup:
         r = await db.stock_prices.delete_many({"ticker": {"$in": tickers_to_cleanup}})
         cleanup_stats["stock_prices_deleted"] = r.deleted_count
