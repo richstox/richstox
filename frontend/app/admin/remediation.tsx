@@ -7,7 +7,7 @@
  *   C) Batch short-history — preview + execute reflag
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
   TextInput, ActivityIndicator, Modal,
@@ -143,6 +143,8 @@ export default function RemediationTab({ sessionToken }: RemediationProps) {
   const [shortPreviewResult, setShortPreviewResult] = useState<any>(null);
   const [shortExecLoading, setShortExecLoading] = useState(false);
   const [shortExecResult, setShortExecResult] = useState<any>(null);
+  // Endpoint availability gate — disabled until probe succeeds
+  const [shortHistoryAvailable, setShortHistoryAvailable] = useState(false);
 
   // ── Confirmation modal ──────────────────────────────────────────────────
   const [confirmModal, setConfirmModal] = useState<{
@@ -170,6 +172,26 @@ export default function RemediationTab({ sessionToken }: RemediationProps) {
       throw new Error(msg || `HTTP ${res.status}`);
     }
     return res.json();
+  }, [sessionToken]);
+
+  // ── Section C: endpoint availability probe ──────────────────────────────
+  // Fires a lightweight dry-run on mount. If the endpoint doesn't exist the
+  // backend returns 404/405 — we keep Section C disabled. No error toast.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/prices/reflag-short-history?dry_run=true`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ min_trading_days: 30, max_tickers: 1 }) },
+          sessionToken,
+        );
+        // Any 2xx means the endpoint exists
+        if (!cancelled && res.ok) setShortHistoryAvailable(true);
+      } catch { /* silently keep disabled */ }
+    })();
+    return () => { cancelled = true; };
   }, [sessionToken]);
 
   // ── Section A handlers ──────────────────────────────────────────────────
@@ -443,73 +465,89 @@ export default function RemediationTab({ sessionToken }: RemediationProps) {
 
         {/* ── Section C: Batch short history ─────────────────────────── */}
         <SectionCard title="Batch Fix Short History" icon="analytics-outline">
-          <Text style={r.hint}>Find and reflag tickers with too few trading days.</Text>
+          {!shortHistoryAvailable ? (
+            <>
+              <View style={r.unavailableBanner}>
+                <Ionicons name="lock-closed-outline" size={14} color="#92400E" />
+                <Text style={r.unavailableBannerText}>
+                  Requires PR4 — not yet available
+                </Text>
+              </View>
+              <Text style={r.hint}>
+                This section will be enabled once the reflag-short-history backend endpoint is deployed (PR4).
+              </Text>
+            </>
+          ) : (
+            <>
+              <Text style={r.hint}>Find and reflag tickers with too few trading days.</Text>
 
-          <View style={r.inputRow}>
-            <View style={r.inputHalf}>
-              <Text style={r.inputLabel}>Min trading days</Text>
-              <TextInput
-                style={r.input}
-                placeholder="30"
-                placeholderTextColor={COLORS.textMuted}
-                value={minDays}
-                onChangeText={setMinDays}
-                keyboardType="numeric"
+              <View style={r.inputRow}>
+                <View style={r.inputHalf}>
+                  <Text style={r.inputLabel}>Min trading days</Text>
+                  <TextInput
+                    style={r.input}
+                    placeholder="30"
+                    placeholderTextColor={COLORS.textMuted}
+                    value={minDays}
+                    onChangeText={setMinDays}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={r.inputHalf}>
+                  <Text style={r.inputLabel}>Max tickers</Text>
+                  <TextInput
+                    style={r.input}
+                    placeholder="500"
+                    placeholderTextColor={COLORS.textMuted}
+                    value={maxTickers}
+                    onChangeText={setMaxTickers}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
+              <ActionButton
+                label="Preview short-history candidates"
+                icon="eye-outline"
+                onPress={handleShortPreview}
+                loading={shortPreviewLoading}
               />
-            </View>
-            <View style={r.inputHalf}>
-              <Text style={r.inputLabel}>Max tickers</Text>
-              <TextInput
-                style={r.input}
-                placeholder="500"
-                placeholderTextColor={COLORS.textMuted}
-                value={maxTickers}
-                onChangeText={setMaxTickers}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
 
-          <ActionButton
-            label="Preview short-history candidates"
-            icon="eye-outline"
-            onPress={handleShortPreview}
-            loading={shortPreviewLoading}
-          />
-
-          {shortPreviewResult && (
-            <ResultBox>
-              <KV label="Candidates" value={shortPreviewResult.candidate_count} />
-              {shortPreviewResult.sample?.length > 0 && (
-                <>
-                  <Text style={r.subHeading}>Sample tickers:</Text>
-                  {shortPreviewResult.sample.slice(0, 10).map((t: any) => (
-                    <Text key={typeof t === 'string' ? t : t.ticker} style={r.listItem}>
-                      {typeof t === 'string' ? t : `${t.ticker} — ${t.trading_days ?? '?'} days`}
-                    </Text>
-                  ))}
-                </>
+              {shortPreviewResult && (
+                <ResultBox>
+                  <KV label="Candidates" value={shortPreviewResult.candidate_count} />
+                  {shortPreviewResult.sample?.length > 0 && (
+                    <>
+                      <Text style={r.subHeading}>Sample tickers:</Text>
+                      {shortPreviewResult.sample.slice(0, 10).map((t: any) => (
+                        <Text key={typeof t === 'string' ? t : t.ticker} style={r.listItem}>
+                          {typeof t === 'string' ? t : `${t.ticker} — ${t.trading_days ?? '?'} days`}
+                        </Text>
+                      ))}
+                    </>
+                  )}
+                  <Text style={r.previewLabel}>Dry run — no changes made</Text>
+                </ResultBox>
               )}
-              <Text style={r.previewLabel}>Dry run — no changes made</Text>
-            </ResultBox>
-          )}
 
-          <View style={r.divider} />
+              <View style={r.divider} />
 
-          <ActionButton
-            label="Execute batch reflag"
-            icon="hammer-outline"
-            onPress={handleShortExecute}
-            loading={shortExecLoading}
-            destructive
-          />
+              <ActionButton
+                label="Execute batch reflag"
+                icon="hammer-outline"
+                onPress={handleShortExecute}
+                loading={shortExecLoading}
+                destructive
+              />
 
-          {shortExecResult && (
-            <ResultBox>
-              <KV label="Updated" value={shortExecResult.updated_count} />
-              <KV label="Already flagged" value={shortExecResult.already_flagged_count} />
-              <Text style={r.timestampText}>{formatPrague(new Date().toISOString())}</Text>
-            </ResultBox>
+              {shortExecResult && (
+                <ResultBox>
+                  <KV label="Updated" value={shortExecResult.updated_count} />
+                  <KV label="Already flagged" value={shortExecResult.already_flagged_count} />
+                  <Text style={r.timestampText}>{formatPrague(new Date().toISOString())}</Text>
+                </ResultBox>
+              )}
+            </>
           )}
         </SectionCard>
       </ScrollView>
@@ -597,6 +635,13 @@ const r = StyleSheet.create({
   },
   previewLabel: { fontSize: 11, color: COLORS.accent, fontStyle: 'italic', marginTop: 6 },
   timestampText: { fontSize: 10, color: COLORS.textMuted, marginTop: 6 },
+  unavailableBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#FEF3C7', borderRadius: 8,
+    padding: 10, marginBottom: 8,
+    borderWidth: 1, borderColor: '#F59E0B',
+  },
+  unavailableBannerText: { fontSize: 12, fontWeight: '600', color: '#92400E' },
 
   // Inputs
   input: {
