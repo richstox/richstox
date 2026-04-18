@@ -251,7 +251,7 @@ class _FakeDB:
 # ── Helper ───────────────────────────────────────────────────────────────────
 
 def _patch_non_gapfill_dependencies(monkeypatch):
-    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None, bulk_date=None):
+    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None, bulk_date=None, bulk_zero_close_tickers=None, bulk_zero_close_data=None):
         return {
             "seeded_total": 2,
             "with_price_data": 2,
