@@ -1,7 +1,7 @@
 /**
  * RICHSTOX Admin Panel
  * ====================
- * 3 tabs: Dashboard · Pipeline · Customers
+ * 4 tabs: Dashboard · Pipeline · Customers · Remediation
  */
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
@@ -18,9 +18,10 @@ import AppHeader from '../../components/AppHeader';
 import BrandedLoading from '../../components/BrandedLoading';
 import PipelineTab from '../admin/pipeline';
 import CustomersTab from '../admin/customers';
+import RemediationTab from '../admin/remediation';
 import { API_URL } from '../../utils/config';
 
-type Tab = 'dashboard' | 'pipeline' | 'customers';
+type Tab = 'dashboard' | 'pipeline' | 'customers' | 'remediation';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1616,6 +1617,7 @@ export default function AdminScreen() {
     { id: 'dashboard', label: 'Dashboard', icon: 'grid-outline' },
     { id: 'pipeline', label: 'Pipeline', icon: 'git-network-outline' },
     { id: 'customers', label: 'Customers', icon: 'people-outline' },
+    { id: 'remediation', label: 'Remediation', icon: 'construct-outline' },
   ];
 
   return (
@@ -1656,6 +1658,11 @@ export default function AdminScreen() {
       {visitedTabs.has('customers') && (
         <View style={activeTab === 'customers' ? a.tabContentVisible : a.tabContentHidden}>
           <CustomersTab sessionToken={sessionToken} />
+        </View>
+      )}
+      {visitedTabs.has('remediation') && (
+        <View style={activeTab === 'remediation' ? a.tabContentVisible : a.tabContentHidden}>
+          <RemediationTab sessionToken={sessionToken} />
         </View>
       )}
     </SafeAreaView>
