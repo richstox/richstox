@@ -96,6 +96,37 @@ def _is_zero_or_missing_close(value: Any) -> bool:
         return True
 
 
+# ---------------------------------------------------------------------------
+# Write-boundary validation for stock_prices
+# ---------------------------------------------------------------------------
+# Every write to stock_prices MUST pass through this gate.  A price row is
+# malformed (and must be rejected) if it is missing any of the three fields
+# that consumers rely on: ticker, date, close.
+#
+# Production incident: malformed documents ({ticker: "..."} only, missing
+# date and close) were discovered for 20+ tickers.  Root cause: likely a
+# historical write path that upserted with an incomplete document; exact
+# origin is not provable from current code artifacts or git history.
+
+REQUIRED_PRICE_FIELDS = ("ticker", "date", "close")
+
+
+def validate_price_row(row: Dict[str, Any]) -> bool:
+    """Return True if *row* has all required fields with truthy values.
+
+    A valid stock_prices document must have:
+    - ``ticker``: non-empty string
+    - ``date``: non-empty string (YYYY-MM-DD)
+    - ``close``: a non-None numeric value (zero IS rejected — use
+      ``_is_zero_or_missing_close`` upstream to filter those first)
+    """
+    for field in REQUIRED_PRICE_FIELDS:
+        val = row.get(field)
+        if val is None or val == "" or val == 0:
+            return False
+    return True
+
+
 async def _read_price_bulk_state(db) -> Optional[Dict[str, Any]]:
     return await db.pipeline_state.find_one({"_id": "price_bulk"})
 

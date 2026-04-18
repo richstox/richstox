@@ -17,6 +17,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 import httpx
 from pymongo import UpdateOne
 
+from price_ingestion_service import validate_price_row
+
 logger = logging.getLogger("richstox.full_sync")
 
 EODHD_BASE_URL = "https://eodhd.com/api"
@@ -148,12 +150,15 @@ async def _process_price_ticker(
             "rate_limited": False,
         }
 
-    # If split: delete old prices first (atomic re-download)
     if needs_redownload:
         if await _should_cancel():
             return await _cancel_result()
-        await db.stock_prices.delete_many({"ticker": {"$in": [ticker_us, ticker_us.replace(".US", "")]}})
 
+    # ── Fetch BEFORE any destructive delete ──────────────────────────
+    # Previous code deleted existing rows first, then fetched.  If the
+    # fetch failed (timeout / 429 / network), all historical price data
+    # was permanently lost and subsequent daily bulk adds produced a
+    # broken 2-point chart.
     url = f"{EODHD_BASE_URL}/eod/{ticker_api}"
     params = {"api_token": EODHD_API_KEY, "fmt": "json"}
     data, http_status, duration_ms, ok = await _fetch_one(url, params)
@@ -167,40 +172,52 @@ async def _process_price_ticker(
     )
 
     if not ok or not isinstance(data, list) or not data:
-        # ── Record failure on the ticker so it's discoverable via DB query ──
         _fail_reason = "rate_limited" if http_status == 429 else "api_error"
         if ok and (not isinstance(data, list) or not data):
             _fail_reason = "api_returned_empty"
         _fail_ts = datetime.now(timezone.utc)
+        # ── Re-flag for retry so Phase C picks this ticker up again ──
+        # Without this, a failed fetch leaves the ticker with no retry path.
+        _error_fields: Dict[str, Any] = {
+            "price_history_status": "error",
+            "history_download_failed_at": _fail_ts,
+            "history_download_error": _fail_reason,
+            "history_download_http_status": http_status,
+        }
+        if needs_redownload:
+            _error_fields["needs_price_redownload"] = True
+            _error_fields["price_history_complete"] = False
         await db.tracked_tickers.update_one(
             {"ticker": ticker_us},
-            {"$set": {
-                "price_history_status": "error",
-                "history_download_failed_at": _fail_ts,
-                "history_download_error": _fail_reason,
-                "history_download_http_status": http_status,
-            }},
+            {"$set": _error_fields},
         )
         return {"ticker": ticker_us, "success": False, "records": 0, "rate_limited": http_status == 429}
 
-    # Bulk upsert
+    # ── Delete old rows ONLY after successful fetch ──────────────────
+    if needs_redownload:
+        await db.stock_prices.delete_many({"ticker": {"$in": [ticker_us, ticker_us.replace(".US", "")]}})
+
+    # ── Build and execute bulk upsert ────────────────────────────────
     ops = []
     for rec in data:
         date = rec.get("date")
         if not date:
             continue
+        row_doc = {
+            "ticker": ticker_us,
+            "date": date,
+            "open": float(rec["open"]) if rec.get("open") else None,
+            "high": float(rec["high"]) if rec.get("high") else None,
+            "low": float(rec["low"]) if rec.get("low") else None,
+            "close": float(rec["close"]) if rec.get("close") else None,
+            "adjusted_close": float(rec["adjusted_close"]) if rec.get("adjusted_close") else None,
+            "volume": int(rec["volume"]) if rec.get("volume") else None,
+        }
+        if not validate_price_row(row_doc):
+            continue
         ops.append(UpdateOne(
             {"ticker": ticker_us, "date": date},
-            {"$set": {
-                "ticker": ticker_us,
-                "date": date,
-                "open": float(rec["open"]) if rec.get("open") else None,
-                "high": float(rec["high"]) if rec.get("high") else None,
-                "low": float(rec["low"]) if rec.get("low") else None,
-                "close": float(rec["close"]) if rec.get("close") else None,
-                "adjusted_close": float(rec["adjusted_close"]) if rec.get("adjusted_close") else None,
-                "volume": int(rec["volume"]) if rec.get("volume") else None,
-            }},
+            {"$set": row_doc},
             upsert=True,
         ))
 
