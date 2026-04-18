@@ -1357,17 +1357,18 @@ async def run_daily_bulk_catchup(
                     bulk_rows_for_t = normalized_bulk_rows.get(
                         _normalize_step2_ticker(t), []
                     )
-                    # Pick the first row with a positive close
+                    # Pick the first row for this date with a positive close
                     eligible_row = next(
                         (r for r in bulk_rows_for_t
-                         if not _is_zero_or_missing_close(r.get("close"))),
+                         if r.get("date") == date_seen
+                         and not _is_zero_or_missing_close(r.get("close"))),
                         None,
                     )
                     if eligible_row is None:
                         continue
                     row_doc = {
                         "ticker": t,
-                        "date": eligible_row.get("date") or date_seen,
+                        "date": date_seen,
                         "open": eligible_row.get("open"),
                         "high": eligible_row.get("high"),
                         "low": eligible_row.get("low"),
@@ -1376,6 +1377,11 @@ async def run_daily_bulk_catchup(
                         "volume": eligible_row.get("volume"),
                     }
                     if not validate_price_row(row_doc):
+                        logger.warning(
+                            "[BULK CATCHUP] Repair row for %s/%s failed "
+                            "validation — skipping",
+                            t, date_seen,
+                        )
                         continue
                     repair_ops.append(
                         UpdateOne(
