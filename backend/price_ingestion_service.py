@@ -96,6 +96,36 @@ def _is_zero_or_missing_close(value: Any) -> bool:
         return True
 
 
+# ---------------------------------------------------------------------------
+# Write-boundary validation for stock_prices
+# ---------------------------------------------------------------------------
+# Every write to stock_prices MUST pass through this gate.  A price row is
+# malformed (and must be rejected) if it is missing any of the three fields
+# that consumers rely on: ticker, date, close.
+#
+# Root cause of production incident: older code paths wrote documents with
+# only {ticker} and no date/close, producing phantom 1-row results that
+# break chart rendering and aggregation queries.
+
+REQUIRED_PRICE_FIELDS = ("ticker", "date", "close")
+
+
+def validate_price_row(row: Dict[str, Any]) -> bool:
+    """Return True if *row* has all required fields with truthy values.
+
+    A valid stock_prices document must have:
+    - ``ticker``: non-empty string
+    - ``date``: non-empty string (YYYY-MM-DD)
+    - ``close``: a non-None numeric value (zero IS rejected — use
+      ``_is_zero_or_missing_close`` upstream to filter those first)
+    """
+    for field in REQUIRED_PRICE_FIELDS:
+        val = row.get(field)
+        if val is None or val == "" or val == 0:
+            return False
+    return True
+
+
 async def _read_price_bulk_state(db) -> Optional[Dict[str, Any]]:
     return await db.pipeline_state.find_one({"_id": "price_bulk"})
 
@@ -281,10 +311,12 @@ async def backfill_ticker_prices(db, ticker: str) -> Dict[str, Any]:
         
         # Parse and upsert records
         upserted = 0
+        skipped_invalid = 0
         for record in eod_data:
             parsed = parse_eod_record(ticker_full, record)
             
-            if not parsed["date"]:
+            if not validate_price_row(parsed):
+                skipped_invalid += 1
                 continue
             
             # Upsert (dedupe on ticker+date)
@@ -294,6 +326,12 @@ async def backfill_ticker_prices(db, ticker: str) -> Dict[str, Any]:
                 upsert=True
             )
             upserted += 1
+        
+        if skipped_invalid:
+            logger.warning(
+                "[BACKFILL] %s: skipped %d invalid rows (missing ticker/date/close)",
+                ticker_full, skipped_invalid,
+            )
         
         result["records_upserted"] = upserted
         result["success"] = True
@@ -468,6 +506,9 @@ async def sync_daily_prices(db) -> Dict[str, Any]:
                 "adjusted_close": float(record.get("adjusted_close", 0)) if record.get("adjusted_close") else None,
                 "volume": int(record.get("volume", 0)) if record.get("volume") else None,
             }
+            
+            if not validate_price_row(parsed):
+                continue
             
             await db.stock_prices.update_one(
                 {"ticker": ticker_full, "date": date},
@@ -750,7 +791,7 @@ async def sync_ticker_prices_delta(db, ticker: str) -> Dict[str, Any]:
     records = []
     for record in eod_data:
         parsed = parse_eod_record(ticker_full, record)
-        if parsed.get("date"):
+        if validate_price_row(parsed):
             records.append(parsed)
     
     inserted = 0
@@ -1066,19 +1107,22 @@ async def run_daily_bulk_catchup(
                 continue
 
             parsed_rows.append({"ticker": canonical_ticker, "date": date})
+            row_doc = {
+                "ticker": canonical_ticker,
+                "date": date,
+                "open": record.get("open"),
+                "high": record.get("high"),
+                "low": record.get("low"),
+                "close": record.get("close"),
+                "adjusted_close": record.get("adjusted_close"),
+                "volume": record.get("volume"),
+            }
+            if not validate_price_row(row_doc):
+                continue
             current_batch_ops.append(
                 UpdateOne(
                     {"ticker": canonical_ticker, "date": date},
-                    {"$set": {
-                        "ticker": canonical_ticker,
-                        "date": date,
-                        "open": record.get("open"),
-                        "high": record.get("high"),
-                        "low": record.get("low"),
-                        "close": record.get("close"),
-                        "adjusted_close": record.get("adjusted_close"),
-                        "volume": record.get("volume"),
-                    }},
+                    {"$set": row_doc},
                     upsert=True,
                 )
             )

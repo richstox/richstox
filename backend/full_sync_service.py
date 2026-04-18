@@ -17,6 +17,8 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 import httpx
 from pymongo import UpdateOne
 
+from price_ingestion_service import validate_price_row
+
 logger = logging.getLogger("richstox.full_sync")
 
 EODHD_BASE_URL = "https://eodhd.com/api"
@@ -223,24 +225,34 @@ async def _process_price_ticker(
 
     # ── Build and execute bulk upsert ────────────────────────────────
     ops = []
+    _skipped_invalid = 0
     for rec in data:
         date = rec.get("date")
         if not date:
             continue
+        row_doc = {
+            "ticker": ticker_us,
+            "date": date,
+            "open": float(rec["open"]) if rec.get("open") else None,
+            "high": float(rec["high"]) if rec.get("high") else None,
+            "low": float(rec["low"]) if rec.get("low") else None,
+            "close": float(rec["close"]) if rec.get("close") else None,
+            "adjusted_close": float(rec["adjusted_close"]) if rec.get("adjusted_close") else None,
+            "volume": int(rec["volume"]) if rec.get("volume") else None,
+        }
+        if not validate_price_row(row_doc):
+            _skipped_invalid += 1
+            continue
         ops.append(UpdateOne(
             {"ticker": ticker_us, "date": date},
-            {"$set": {
-                "ticker": ticker_us,
-                "date": date,
-                "open": float(rec["open"]) if rec.get("open") else None,
-                "high": float(rec["high"]) if rec.get("high") else None,
-                "low": float(rec["low"]) if rec.get("low") else None,
-                "close": float(rec["close"]) if rec.get("close") else None,
-                "adjusted_close": float(rec["adjusted_close"]) if rec.get("adjusted_close") else None,
-                "volume": int(rec["volume"]) if rec.get("volume") else None,
-            }},
+            {"$set": row_doc},
             upsert=True,
         ))
+    if _skipped_invalid:
+        logger.warning(
+            "[Phase C] %s: skipped %d invalid rows (missing ticker/date/close)",
+            ticker_us, _skipped_invalid,
+        )
 
     processed_ops = 0
     for i in range(0, len(ops), BULK_CHUNK):
