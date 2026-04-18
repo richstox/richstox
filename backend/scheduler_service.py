@@ -5167,7 +5167,7 @@ async def run_ticker_gap_remediation(db) -> Dict[str, Any]:
     ingestion (e.g. because they were temporarily un-seeded).
     """
     from services.admin_overview_service import _get_bulk_processed_dates
-    from price_ingestion_service import fetch_eod_history, parse_eod_record
+    from price_ingestion_service import fetch_eod_history, parse_eod_record, validate_price_row
 
     started_at = datetime.now(timezone.utc)
     job_name = "ticker_gap_remediation"
@@ -5280,10 +5280,10 @@ async def run_ticker_gap_remediation(db) -> Dict[str, Any]:
                         pair_had_data = False
                         for record in records:
                             parsed = parse_eod_record(ticker, record)
-                            if not parsed.get("date"):
+                            if not validate_price_row(parsed):
                                 logger.warning(
                                     "[TICKER GAP REMEDIATION] %s %s: "
-                                    "parse_eod_record returned no date",
+                                    "invalid row (missing ticker/date/close)",
                                     ticker, target_date,
                                 )
                                 continue
@@ -5420,6 +5420,7 @@ async def run_single_ticker_gap_remediation(
         fetch_bulk_eod_latest,
         _normalize_step2_ticker,
         _is_zero_or_missing_close,
+        validate_price_row,
     )
 
     started_at = datetime.now(timezone.utc)
@@ -5585,11 +5586,11 @@ async def run_single_ticker_gap_remediation(
                             report["skip_reason"] = "api_returned_zero_price"
                             continue
                         parsed = parse_eod_record(normalized, record)
-                        if not parsed.get("date"):
-                            report["skip_reason"] = "parse_failed_no_date"
+                        if not validate_price_row(parsed):
+                            report["skip_reason"] = "parse_failed_invalid_row"
                             logger.warning(
                                 "[SINGLE TICKER GAP REMEDIATION] %s %s: "
-                                "parse_eod_record returned no date",
+                                "invalid row (missing ticker/date/close)",
                                 normalized, target_date,
                             )
                             continue
@@ -5664,7 +5665,7 @@ async def run_single_ticker_gap_remediation(
                                 )
                                 break
                             parsed = parse_eod_record(normalized, record)
-                            if parsed.get("date"):
+                            if validate_price_row(parsed):
                                 wr = await db.stock_prices.bulk_write(
                                     [UpdateOne(
                                         {"ticker": parsed["ticker"], "date": parsed["date"]},
@@ -5821,6 +5822,7 @@ async def remediate_gap_date(
         fetch_bulk_eod_latest,
         _normalize_step2_ticker,
         _is_zero_or_missing_close,
+        validate_price_row,
     )
     from pymongo import UpdateOne
 
@@ -5976,7 +5978,7 @@ async def remediate_gap_date(
         if row["bulk_found"] is True and bulk_record and not bulk_close_is_zero:
             try:
                 parsed = parse_eod_record(ticker, bulk_record)
-                if parsed.get("date"):
+                if validate_price_row(parsed):
                     wr = await db.stock_prices.bulk_write(
                         [UpdateOne(
                             {"ticker": parsed["ticker"],
@@ -6014,7 +6016,7 @@ async def remediate_gap_date(
                         if _is_zero_or_missing_close(record.get("close")):
                             continue
                         parsed = parse_eod_record(ticker, record)
-                        if parsed.get("date"):
+                        if validate_price_row(parsed):
                             ops.append(
                                 UpdateOne(
                                     {"ticker": parsed["ticker"],

@@ -3814,6 +3814,18 @@ async def admin_purge_malformed_price_docs(
     After purge, sets ``needs_price_redownload=True`` on affected tickers
     so Phase C safely repopulates them.
 
+    Purge safety proof:
+    - A legitimate stock_prices row ALWAYS has ``date`` (YYYY-MM-DD string)
+      and ``close`` (non-zero float) because those are the two fields
+      every consumer relies on: the chart endpoint queries
+      ``{ticker, date >= start_date}`` projecting ``{date, close,
+      adjusted_close, volume}``, and the aggregation for
+      earliest/latest uses ``$min/$max`` on ``date``.
+    - A document missing either field is by definition useless to every
+      read path and can ONLY have been created by a buggy write.
+    - This predicate operates exclusively on the ``stock_prices``
+      collection and cannot affect any other collection.
+
     Deletion predicate (targets ONLY malformed docs):
         {$or: [{date: {$exists: false}}, {date: null},
                {close: {$exists: false}}, {close: null}]}

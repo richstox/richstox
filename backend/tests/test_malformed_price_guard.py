@@ -3,7 +3,9 @@ Tests for stock_prices write-boundary validation.
 
 Production incident: malformed documents ({ticker: "X.US"} with no date/close)
 were found in stock_prices for 20+ tickers.  These phantom 1-row results break
-chart rendering and aggregation queries.
+chart rendering and aggregation queries.  Root cause: likely a historical write
+path that upserted with an incomplete document; exact origin is not provable
+from current code artifacts or git history.
 
 These tests prove:
   1) validate_price_row rejects rows missing ticker, date, or close

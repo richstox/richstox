@@ -103,9 +103,10 @@ def _is_zero_or_missing_close(value: Any) -> bool:
 # malformed (and must be rejected) if it is missing any of the three fields
 # that consumers rely on: ticker, date, close.
 #
-# Root cause of production incident: older code paths wrote documents with
-# only {ticker} and no date/close, producing phantom 1-row results that
-# break chart rendering and aggregation queries.
+# Production incident: malformed documents ({ticker: "..."} only, missing
+# date and close) were discovered for 20+ tickers.  Root cause: likely a
+# historical write path that upserted with an incomplete document; exact
+# origin is not provable from current code artifacts or git history.
 
 REQUIRED_PRICE_FIELDS = ("ticker", "date", "close")
 
