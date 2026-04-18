@@ -311,16 +311,17 @@ async def run_proof_mode(
             skip_reasons["primary_reason"] = "unknown"
 
     # ------------------------------------------------------------------
-    # 4h. Remediation: when a proven true-gap is detected (seeded,
-    #     bulk close > 0, DB row missing), actively repair by writing
-    #     the missing stock_prices row.  This replaces the old
-    #     read-only approach that reported "awaiting_repair" without
-    #     actually fixing anything.
+    # 4h. Remediation evaluation (READ-ONLY).
+    #     Proof-mode is strictly diagnostic — it NEVER writes to
+    #     stock_prices or tracked_tickers.  Actual repair runs only in:
+    #       - Step 2 end-of-run auto-remediation
+    #       - Admin POST /admin/repair-price-gap
+    #     Here we read the persisted remediation outcome from
+    #     tracked_tickers so the report reflects repair done elsewhere.
     # ------------------------------------------------------------------
     remediation_action: Optional[str] = None
     remediation_evaluated_for_date = False
     remediation_reason: Optional[str] = None
-    repair_result: Optional[Dict[str, Any]] = None
 
     if bulk_found and not db_found and skip_reasons:
         remediation_evaluated_for_date = True
@@ -330,40 +331,33 @@ async def run_proof_mode(
         elif not skip_reasons.get("is_currently_seeded", False):
             remediation_reason = "ticker_not_currently_seeded"
         else:
-            # Proven true-gap: seeded, positive bulk close, DB row missing.
-            # Execute deterministic repair using the same canonical upsert
-            # path as Step 2 / admin repair.
-            try:
-                from price_ingestion_service import repair_proven_true_gap
-                repair_result = await repair_proven_true_gap(
-                    db,
-                    ticker=normalized_input,
-                    date=date,
-                    bulk_data_override=bulk_data if _bulk_is_override else None,
+            # Read persisted remediation outcome from tracked_tickers.
+            # The actual repair runs in Step 2 end-of-run remediation or
+            # via the explicit admin POST /admin/repair-price-gap endpoint.
+            # Proof-mode is strictly read-only — it never writes or repairs.
+            if seeded_doc:
+                tt_doc = await db.tracked_tickers.find_one(
+                    {"ticker": normalized_input},
+                    {"_id": 0, "needs_price_redownload": 1,
+                     "price_history_status": 1,
+                     "last_remediation_action": 1,
+                     "last_remediation_reason": 1,
+                     "last_remediation_date": 1},
                 )
-                remediation_action = repair_result.get("remediation_action")
-                remediation_reason = repair_result.get("reason")
-                # Re-check DB after repair to confirm the row now exists
-                if repair_result.get("status") == "repaired":
-                    _recheck = await db.stock_prices.find_one(
-                        {"ticker": normalized_input, "date": date},
-                        {"_id": 1, "ticker": 1, "date": 1, "close": 1},
-                    )
-                    if _recheck:
-                        db_found = True
-                        db_count = 1
-                        db_sample_id = str(_recheck.get("_id"))
-                        db_sample_row = {
-                            k: (str(v) if k == "_id" else v)
-                            for k, v in _recheck.items()
-                        }
-            except Exception as _repair_exc:
-                logger.error(
-                    "Proof mode repair failed for %s/%s: %s",
-                    normalized_input, date, _repair_exc,
-                )
-                remediation_action = "repair_failed"
-                remediation_reason = f"repair_exception: {type(_repair_exc).__name__}"
+                if tt_doc:
+                    _lra = tt_doc.get("last_remediation_action")
+                    _lrr = tt_doc.get("last_remediation_reason")
+                    _phs = tt_doc.get("price_history_status")
+                    _npr = tt_doc.get("needs_price_redownload")
+                    if _lra:
+                        # Persisted outcome from Step 2 or admin repair
+                        remediation_action = _lra
+                        remediation_reason = _lrr or "persisted_from_step2_or_admin"
+                    elif _phs == "auto_reflagged_missing_bulk_row" and _npr is True:
+                        remediation_action = "auto_reflagged_for_redownload"
+                        remediation_reason = "ticker_reflagged_for_phase_c"
+            if not remediation_action:
+                remediation_reason = "proven_true_gap_awaiting_repair"
     elif bulk_found and db_found:
         remediation_evaluated_for_date = True
         remediation_reason = "db_row_exists_no_action_needed"
@@ -398,14 +392,7 @@ async def run_proof_mode(
             "(possible API failure). Cannot determine ticker presence."
         )
     elif bulk_found and db_found:
-        if repair_result and repair_result.get("status") == "repaired":
-            summary = (
-                "REPAIRED: Proven true-gap detected and repaired. "
-                "Missing stock_prices row written from bulk data. "
-                "db_check.found is now true."
-            )
-        else:
-            summary = "CONSISTENT: Ticker present in both EODHD bulk and stock_prices."
+        summary = "CONSISTENT: Ticker present in both EODHD bulk and stock_prices."
     elif not bulk_found and not db_found:
         summary = "CONSISTENT: Ticker absent from both EODHD bulk and stock_prices."
     elif bulk_found and not db_found:
@@ -451,7 +438,6 @@ async def run_proof_mode(
         "remediation_evaluated_for_date": remediation_evaluated_for_date,
         "remediation_reason": remediation_reason,
         "remediation_action": remediation_action,
-        "repair_result": repair_result,
         "gap_check_context": {
             "date_in_expected_dates": date_in_expected,
             "expected_dates_count": len(expected_dates),
