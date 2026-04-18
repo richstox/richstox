@@ -14,8 +14,6 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 # Backend must be on the path so imports resolve
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
