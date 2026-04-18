@@ -326,17 +326,30 @@ async def run_proof_mode(
         elif not skip_reasons.get("is_currently_seeded", False):
             remediation_reason = "ticker_not_currently_seeded"
         else:
-            # Check if tracked_tickers has been flagged by auto-remediation
+            # Read persisted remediation outcome from tracked_tickers.
+            # The actual repair runs in Step 2 end-of-run remediation or
+            # via the explicit admin POST /admin/repair-price-gap endpoint.
+            # Proof-mode is strictly read-only — it never writes or repairs.
             if seeded_doc:
                 tt_doc = await db.tracked_tickers.find_one(
                     {"ticker": normalized_input},
                     {"_id": 0, "needs_price_redownload": 1,
-                     "price_history_status": 1},
+                     "price_history_status": 1,
+                     "last_remediation_action": 1,
+                     "last_remediation_reason": 1,
+                     "last_remediation_date": 1},
                 )
                 if tt_doc:
                     _phs = tt_doc.get("price_history_status")
                     _npr = tt_doc.get("needs_price_redownload")
-                    if _phs == "auto_reflagged_missing_bulk_row" and _npr is True:
+                    _lra = tt_doc.get("last_remediation_action")
+                    _lrr = tt_doc.get("last_remediation_reason")
+                    _lrd = tt_doc.get("last_remediation_date")
+                    if _lra:
+                        # Persisted outcome from Step 2 or admin repair
+                        remediation_action = _lra
+                        remediation_reason = _lrr or "persisted_from_step2_or_admin"
+                    elif _phs == "auto_reflagged_missing_bulk_row" and _npr is True:
                         remediation_action = "auto_reflagged_for_redownload"
                         remediation_reason = "ticker_reflagged_for_phase_c"
             if not remediation_action:
@@ -344,9 +357,20 @@ async def run_proof_mode(
     elif bulk_found and db_found:
         remediation_evaluated_for_date = True
         remediation_reason = "db_row_exists_no_action_needed"
-        # When both bulk and DB have the row, any prior gap has been
-        # resolved — either by normal write or by direct repair.
-        remediation_action = "gap_repaired_from_bulk_row"
+        # Read any persisted remediation outcome — if the row was written
+        # by Step 2 direct repair, tracked_tickers will record it.
+        if seeded_doc:
+            tt_doc = await db.tracked_tickers.find_one(
+                {"ticker": normalized_input},
+                {"_id": 0, "last_remediation_action": 1,
+                 "last_remediation_reason": 1},
+            )
+            if tt_doc and tt_doc.get("last_remediation_action"):
+                remediation_action = tt_doc["last_remediation_action"]
+            else:
+                remediation_action = "no_gap"
+        else:
+            remediation_action = "no_gap"
 
     # ------------------------------------------------------------------
     # 5. Gap-check context: is this date in expected_dates?

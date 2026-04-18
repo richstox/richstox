@@ -162,8 +162,20 @@ def test_remediation_triggers_for_positive_bulk_price_write_skip():
     }
     assert "BODI.US" in repair_tickers
 
-    # No reflag to tracked_tickers — direct repair succeeded
-    assert len(db.tracked_tickers.reflag_writes) == 0
+    # No reflag to tracked_tickers — direct repair succeeded.
+    # There IS a persistence write for last_remediation_action (not a reflag).
+    reflag_writes = [
+        op for op in db.tracked_tickers.reflag_writes
+        if op._doc.get("$set", {}).get("needs_price_redownload") is True
+    ]
+    assert len(reflag_writes) == 0
+
+    # But we DO expect a persistence write for the remediation outcome
+    persist_writes = [
+        op for op in db.tracked_tickers.reflag_writes
+        if op._doc.get("$set", {}).get("last_remediation_action") == "gap_repaired_from_bulk_row"
+    ]
+    assert len(persist_writes) == 1
 
 
 # ---------------------------------------------------------------------------

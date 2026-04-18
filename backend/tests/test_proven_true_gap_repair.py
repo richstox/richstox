@@ -147,8 +147,20 @@ def test_proven_true_gap_repaired_from_bulk():
     assert written["upsert"] is True
     assert written["update"]["$set"]["close"] == 11.0
 
-    # No reflag to tracked_tickers
-    assert len(db.tracked_tickers.update_calls) == 0
+    # No reflag to tracked_tickers (needs_price_redownload not set).
+    # There IS a persistence write for last_remediation_action.
+    reflag_calls = [
+        c for c in db.tracked_tickers.update_calls
+        if c["update"]["$set"].get("needs_price_redownload") is True
+    ]
+    assert len(reflag_calls) == 0
+
+    # But we DO expect a persistence write for the remediation outcome
+    persist_calls = [
+        c for c in db.tracked_tickers.update_calls
+        if c["update"]["$set"].get("last_remediation_action") == "gap_repaired_from_bulk_row"
+    ]
+    assert len(persist_calls) == 1
 
 
 # ---------------------------------------------------------------------------
