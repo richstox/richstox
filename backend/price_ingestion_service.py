@@ -1301,6 +1301,88 @@ async def run_daily_bulk_catchup(
         f"{records_upserted} records, {bulk_writes} bulk_write batches"
     )
 
+    # ── Auto-remediation: detect seeded tickers with positive bulk price ──
+    # but missing DB row after the write phase.  This covers the proven
+    # incident shape where a ticker is seeded, present in bulk with close>0,
+    # yet was skipped (e.g. not in the Step 1 override set at run time).
+    # Remediation: flag for Phase C redownload.
+    remediated_tickers: List[str] = []
+    try:
+        # 1. Query ALL currently-seeded tickers (may differ from step2_tickers
+        #    override if the ticker was added/re-seeded after Step 1 ran).
+        _SEEDED_QUERY = {
+            "exchange": {"$in": ["NYSE", "NASDAQ"]},
+            "asset_type": "Common Stock",
+            "is_seeded": True,
+        }
+        all_seeded_docs = await db.tracked_tickers.find(
+            _SEEDED_QUERY, {"_id": 0, "ticker": 1}
+        ).to_list(None)
+        all_seeded_tickers = {
+            d["ticker"] for d in all_seeded_docs if d.get("ticker")
+        }
+
+        # 2. Find seeded tickers with positive-price bulk rows that were
+        #    NOT written during this run.
+        gap_candidates: List[str] = []
+        for ticker_raw in all_seeded_tickers:
+            norm = _normalize_step2_ticker(ticker_raw)
+            if not norm:
+                continue
+            if ticker_raw in processed_ticker_set or norm in processed_ticker_set:
+                continue
+            if ticker_raw in zero_price_tickers or norm in zero_price_tickers:
+                continue
+            bulk_rows_for_ticker = normalized_bulk_rows.get(norm, [])
+            if not bulk_rows_for_ticker:
+                continue
+            # Check at least one row has a positive close price
+            has_positive = any(
+                not _is_zero_or_missing_close(r.get("close"))
+                for r in bulk_rows_for_ticker
+            )
+            if has_positive:
+                gap_candidates.append(ticker_raw)
+
+        # 3. Verify DB row is actually missing for each candidate
+        if gap_candidates:
+            existing_rows = await db.stock_prices.find(
+                {"ticker": {"$in": gap_candidates}, "date": date_seen},
+                {"_id": 0, "ticker": 1},
+            ).to_list(None)
+            existing_tickers = {r["ticker"] for r in existing_rows}
+            confirmed_missing = [
+                t for t in gap_candidates if t not in existing_tickers
+            ]
+
+            # 4. Flag confirmed missing tickers for Phase C redownload
+            if confirmed_missing:
+                from pymongo import UpdateOne as _RemUpdateOne
+                reflag_ops = [
+                    _RemUpdateOne(
+                        {"ticker": t},
+                        {"$set": {
+                            "needs_price_redownload": True,
+                            "price_history_complete": False,
+                            "price_history_status": "auto_reflagged_missing_bulk_row",
+                            "history_download_error": "auto_reflagged_missing_bulk_row",
+                        }},
+                    )
+                    for t in confirmed_missing
+                ]
+                await db.tracked_tickers.bulk_write(reflag_ops, ordered=False)
+                remediated_tickers = sorted(confirmed_missing)
+                logger.warning(
+                    "[BULK CATCHUP] Auto-remediated %d ticker(s) with positive "
+                    "bulk price but missing DB row: %s",
+                    len(remediated_tickers),
+                    remediated_tickers[:20],
+                )
+    except Exception as _rem_exc:
+        logger.error(
+            "[BULK CATCHUP] Auto-remediation check failed: %s", _rem_exc
+        )
+
     return {
         "status": "success",
         "date": date_seen,
@@ -1321,4 +1403,6 @@ async def run_daily_bulk_catchup(
         "bulk_url_used": bulk_url_used,
         "tickers_with_price": sorted(processed_ticker_set),
         "ticker_samples": ticker_samples,
+        "auto_remediated_tickers_count": len(remediated_tickers),
+        "auto_remediated_tickers": remediated_tickers[:50],
     }

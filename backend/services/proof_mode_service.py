@@ -311,6 +311,25 @@ async def run_proof_mode(
             skip_reasons["primary_reason"] = "unknown"
 
     # ------------------------------------------------------------------
+    # 4h. Remediation action: check if auto-remediation was applied
+    # ------------------------------------------------------------------
+    remediation_action: Optional[str] = None
+    if bulk_found and not db_found and skip_reasons:
+        # Check if tracked_tickers has been flagged by auto-remediation
+        if seeded_doc:
+            tt_doc = await db.tracked_tickers.find_one(
+                {"ticker": normalized_input},
+                {"_id": 0, "needs_price_redownload": 1,
+                 "price_history_status": 1},
+            )
+            if tt_doc:
+                _phs = tt_doc.get("price_history_status")
+                _npr = tt_doc.get("needs_price_redownload")
+                if _phs == "auto_reflagged_missing_bulk_row" and _npr is True:
+                    remediation_action = "auto_reflagged_for_redownload"
+        skip_reasons["remediation_action"] = remediation_action
+
+    # ------------------------------------------------------------------
     # 5. Gap-check context: is this date in expected_dates?
     # ------------------------------------------------------------------
     from services.admin_overview_service import _get_bulk_processed_dates
@@ -369,6 +388,7 @@ async def run_proof_mode(
         },
         "normalization": normalization_audit,
         "skip_reasons": skip_reasons if skip_reasons else None,
+        "remediation_action": remediation_action,
         "gap_check_context": {
             "date_in_expected_dates": date_in_expected,
             "expected_dates_count": len(expected_dates),
