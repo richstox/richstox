@@ -1489,6 +1489,96 @@ async def _get_bounded_bulk_processed_dates_set(
     return dates
 
 
+async def get_history_completeness_summary(db) -> Dict[str, Any]:
+    """
+    Read canonical history-completeness truth fields from tracked_tickers
+    (persisted by history_completeness_sweep ops job) and aggregate a
+    summary for the admin dashboard.
+
+    This does NOT run the verifier — it reads stored fields only.
+    """
+    try:
+        pipeline = [
+            {"$match": {"is_visible": True}},
+            {"$facet": {
+                "total": [{"$count": "n"}],
+                "complete": [
+                    {"$match": {"price_history_complete": True}},
+                    {"$count": "n"},
+                ],
+                "incomplete": [
+                    {"$match": {
+                        "price_history_complete": {"$ne": True},
+                        "price_history_status": "incomplete",
+                    }},
+                    {"$count": "n"},
+                ],
+                "no_proof": [
+                    {"$match": {
+                        "price_history_status": {"$in": [
+                            "no_history_download", "pending", None,
+                        ]},
+                    }},
+                    {"$count": "n"},
+                ],
+                "last_verified": [
+                    {"$match": {
+                        "price_history_last_verified_at": {"$exists": True, "$type": "date"},
+                    }},
+                    {"$sort": {"price_history_last_verified_at": -1}},
+                    {"$limit": 1},
+                    {"$project": {"_id": 0, "price_history_last_verified_at": 1}},
+                ],
+                "sample_incomplete": [
+                    {"$match": {
+                        "price_history_status": "incomplete",
+                        "price_history_missing_days_count": {"$gt": 0},
+                    }},
+                    {"$sort": {"price_history_missing_days_count": -1}},
+                    {"$limit": 10},
+                    {"$project": {
+                        "_id": 0,
+                        "ticker": 1,
+                        "price_history_missing_days_count": 1,
+                        "price_history_first_date": 1,
+                        "price_history_last_date": 1,
+                        "price_history_status": 1,
+                    }},
+                ],
+            }},
+        ]
+        result = await db.tracked_tickers.aggregate(pipeline).to_list(1)
+        ff = result[0] if result else {}
+
+        def _n(key: str) -> int:
+            return (ff.get(key) or [{}])[0].get("n", 0)
+
+        last_verified_docs = ff.get("last_verified") or []
+        last_verified_at = None
+        if last_verified_docs:
+            raw = last_verified_docs[0].get("price_history_last_verified_at")
+            last_verified_at = _to_prague_iso(raw) if raw else None
+
+        return {
+            "total_visible": _n("total"),
+            "complete": _n("complete"),
+            "incomplete": _n("incomplete"),
+            "no_proof": _n("no_proof"),
+            "last_verified_at_prague": last_verified_at,
+            "sample_incomplete": ff.get("sample_incomplete") or [],
+        }
+    except Exception as exc:
+        logger.warning("get_history_completeness_summary failed: %s", exc)
+        return {
+            "total_visible": 0,
+            "complete": 0,
+            "incomplete": 0,
+            "no_proof": 0,
+            "last_verified_at_prague": None,
+            "sample_incomplete": [],
+        }
+
+
 async def get_bulk_completeness_since_baseline(db) -> Dict[str, Any]:
     """
     B) Canonical proof: daily bulk completeness since last full backfill baseline.
@@ -1773,14 +1863,18 @@ async def _compute_admin_overview(db) -> Dict[str, Any]:
     # Visible ticker coverage analysis (prices + fundamentals)
     visible_coverage_task = get_visible_coverage(db)
 
+    # History completeness (canonical truth — reads stored fields only)
+    history_completeness_task = get_history_completeness_summary(db)
+
     results = await asyncio.gather(
         universe_counts_task, scheduler_config_task, latest_price_task,
         job_runs_task, last_universe_seed_task, api_guard_task, job_last_runs_task,
         system_health_task, pipeline_sync_task, price_integrity_task, pipeline_age_task,
-        eodhd_usage_task, bulk_completeness_task, visible_coverage_task
+        eodhd_usage_task, bulk_completeness_task, visible_coverage_task,
+        history_completeness_task
     )
 
-    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age, eodhd_usage, bulk_completeness, visible_coverage = results
+    universe_data, scheduler_config, latest_price, job_runs, last_universe_seed, api_guard_result, job_last_runs, system_health, pipeline_sync_status, price_integrity, pipeline_age, eodhd_usage, bulk_completeness, visible_coverage, history_completeness = results
     
     scheduler_enabled = scheduler_config.get("value", True) if scheduler_config else True
     latest_date = latest_price.get("date") if latest_price else None
@@ -2054,6 +2148,9 @@ async def _compute_admin_overview(db) -> Dict[str, Any]:
 
         # Visible ticker coverage (prices + fundamentals) — separate from bulk proof
         "visible_coverage": visible_coverage,
+
+        # Canonical history completeness (reads stored truth fields only)
+        "history_completeness": history_completeness,
 
         # For Talk compatibility
         "visible_universe_count": universe_data["visible_universe_count"],
