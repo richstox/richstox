@@ -427,7 +427,7 @@ export default function RemediationTab({ sessionToken }: RemediationProps) {
               <KV label="Reason" value={forceResult.reason} />
               {forceResult.results?.map((r: any) => (
                 <Text key={r.ticker} style={[
-                  styles.tickerStatus,
+                  r.tickerStatus,
                   { color: r.status === 'reflagged' ? '#22C55E' : '#EF4444' },
                 ]}>
                   {r.ticker}: {r.status === 'reflagged' ? '✅ reflagged' : `❌ ${r.reason || 'skipped'}`}
@@ -564,12 +564,6 @@ export default function RemediationTab({ sessionToken }: RemediationProps) {
   );
 }
 
-// ─── Additional styles (non-shadowing) ────────────────────────────────────────
-
-const styles = StyleSheet.create({
-  tickerStatus: { fontSize: 12, marginTop: 2 },
-});
-
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const r = StyleSheet.create({
@@ -638,6 +632,7 @@ const r = StyleSheet.create({
   kvValue: { fontSize: 12, fontWeight: '600', color: COLORS.text },
   subHeading: { fontSize: 11, fontWeight: '600', color: COLORS.text, marginTop: 8, marginBottom: 2 },
   listItem: { fontSize: 11, color: COLORS.textLight, marginLeft: 8, lineHeight: 16 },
+  tickerStatus: { fontSize: 12, marginTop: 2 },
 
   // Confirmation modal
   modalOverlay: {
