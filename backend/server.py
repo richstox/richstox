@@ -3876,6 +3876,8 @@ async def admin_purge_malformed_prices(dry_run: bool = Query(True, description="
             "dry_run": dry_run,
             "items": [],
             "totals": {"affected_tickers": 0, "malformed_docs": 0, "visible_affected": 0},
+            "deleted_count": 0,
+            "reflagged_count": 0,
             "markdown_table": "No malformed documents found.",
         }
 

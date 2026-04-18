@@ -396,7 +396,8 @@ def _make_valid_doc(ticker, date="2024-01-02", close=150.0):
 
 
 def _make_malformed_no_date(ticker):
-    return {"_id": ObjectId(), "ticker": ticker, "close": None}
+    """Missing date key entirely; close is present and valid."""
+    return {"_id": ObjectId(), "ticker": ticker, "close": 50.0}
 
 
 def _make_malformed_no_close(ticker):
