@@ -30,7 +30,7 @@ import os
 import time
 import logging
 from datetime import datetime, timezone, timedelta, date
-from typing import Dict, Any, Optional, List, Callable, Awaitable
+from typing import Dict, Any, Optional, List, Callable, Awaitable, Set
 import asyncio
 from zoneinfo import ZoneInfo
 import httpx
@@ -1563,6 +1563,8 @@ async def run_daily_price_sync(
             "sanity_threshold_used": sanity_threshold_used,
         }
         _tickers_with_price_set: set = set()
+        _last_zero_price_tickers: Set[str] = set()
+        _last_zero_price_ticker_data: Dict[str, Dict[str, Any]] = {}
         bulk_attempts = [None] if should_attempt_bulk_fetch else []
         if should_attempt_bulk_fetch:
             await _progress(
@@ -1708,6 +1710,14 @@ async def run_daily_price_sync(
                     result["dates_processed"] += day_result.get("dates_processed", 0)
                     result["records_upserted"] += day_result.get("records_upserted", 0)
                     _tickers_with_price_set.update(day_result.get("tickers_with_price", []))
+                    # Track zero-close tickers from the latest successful day.
+                    # Only the latest day matters: sync_has_price_data_flags writes
+                    # exclusions for bulk_date (= _last_closing_day), which is always
+                    # the most recent trading day.
+                    _day_zero = day_result.get("zero_price_tickers")
+                    if _day_zero is not None:
+                        _last_zero_price_tickers = set(_day_zero)
+                        _last_zero_price_ticker_data = day_result.get("zero_price_ticker_data", {})
                 else:
                     day["status"] = "failed_sanity"
                     day["error"] = (
@@ -1735,6 +1745,8 @@ async def run_daily_price_sync(
                 break
 
         result["tickers_with_price"] = sorted(_tickers_with_price_set)
+        result["zero_price_tickers"] = sorted(_last_zero_price_tickers)
+        result["zero_price_ticker_data"] = _last_zero_price_ticker_data
         result["api_calls"] = 1 if result.get("bulk_fetch_executed") else 0
         result["price_bulk_gapfill_days_count"] = len(days)
 
@@ -1887,10 +1899,14 @@ async def run_daily_price_sync(
 
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
         _bulk_tickers_with_price = result.get("tickers_with_price", None)
+        _bulk_zero_close_tickers = set(result.get("zero_price_tickers", []))
+        _bulk_zero_close_data = result.get("zero_price_ticker_data", {})
         price_flag_summary = await sync_has_price_data_flags(
             db, include_exclusions=True,
             tickers_with_price=_bulk_tickers_with_price,
             bulk_date=_last_closing_day,
+            bulk_zero_close_tickers=_bulk_zero_close_tickers,
+            bulk_zero_close_data=_bulk_zero_close_data,
         )
         seeded_total = price_flag_summary["seeded_total"]
         with_price = price_flag_summary["with_price_data"]
@@ -2198,7 +2214,7 @@ async def run_daily_price_sync(
         await _release_price_sync_resources()
 
 
-async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None, bulk_date: Optional[str] = None) -> Dict[str, Any]:
+async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None, bulk_date: Optional[str] = None, bulk_zero_close_tickers: Optional[Set[str]] = None, bulk_zero_close_data: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """
     Recompute price-related flags for seeded US Common Stock universe.
 
@@ -2282,7 +2298,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             for t in tickers_with_price
             if _normalize_step2_ticker(t)
         } & seeded_set
-        any_price_set = bulk_close_set  # same set when sourced from bulk feed
+        any_price_set = bulk_close_set | (bulk_zero_close_tickers or set())  # zero-close tickers ARE in bulk; include them so the exclusion report says "close=0" not "not present"
         matched_raw = len(bulk_close_set)
 
     elif tickers_with_price is not None and len(tickers_with_price) == 0:
@@ -2429,28 +2445,48 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         # Write exclusion entries so the gap-free metric ignores them and
         # the chart endpoint can show data_notices to customers.
         not_in_bulk = seeded_set - bulk_close_set
+        _zero_set = bulk_zero_close_tickers or set()
+        _zero_data = bulk_zero_close_data or {}
         if not_in_bulk and bulk_date:
             from pymongo import UpdateOne as _ExclUpdateOne
-            _excl_ops = [
-                _ExclUpdateOne(
-                    {"ticker": t, "date": bulk_date},
-                    {"$set": {
-                        "ticker": t,
-                        "date": bulk_date,
-                        "reason": "not_in_bulk_data",
-                        "bulk_found": False,
-                        "updated_at": now_ts,
-                    }},
-                    upsert=True,
-                )
-                for t in not_in_bulk
-            ]
+            _excl_ops = []
+            for t in not_in_bulk:
+                if t in _zero_set:
+                    # Ticker IS in bulk but close=0 — truthful label
+                    _td = _zero_data.get(t, {})
+                    _excl_ops.append(_ExclUpdateOne(
+                        {"ticker": t, "date": bulk_date},
+                        {"$set": {
+                            "ticker": t,
+                            "date": bulk_date,
+                            "reason": "bulk_found_but_close_is_zero",
+                            "bulk_found": True,
+                            "bulk_close": _td.get("close"),
+                            "bulk_adjusted_close": _td.get("adjusted_close"),
+                            "bulk_volume": _td.get("volume"),
+                            "updated_at": now_ts,
+                        }},
+                        upsert=True,
+                    ))
+                else:
+                    # Ticker truly NOT in bulk file
+                    _excl_ops.append(_ExclUpdateOne(
+                        {"ticker": t, "date": bulk_date},
+                        {"$set": {
+                            "ticker": t,
+                            "date": bulk_date,
+                            "reason": "not_in_bulk_data",
+                            "bulk_found": False,
+                            "updated_at": now_ts,
+                        }},
+                        upsert=True,
+                    ))
             try:
                 await db.gap_free_exclusions.bulk_write(_excl_ops, ordered=False)
                 _excl_written = len(_excl_ops)
                 logger.info(
                     "[sync_has_price_data_flags] wrote %d gap_free_exclusions "
-                    "for tickers not in bulk (date=%s)",
+                    "for tickers not in bulk or with zero close (date=%s)",
                     _excl_written, bulk_date,
                 )
             except Exception as _excl_err:

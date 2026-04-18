@@ -236,7 +236,7 @@ class _FakeDB:
 
 
 def _patch_non_gapfill_dependencies(monkeypatch):
-    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
+    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None, **kwargs):
         _ = db, include_exclusions, tickers_with_price
         return {
             "seeded_total": 2,
@@ -731,7 +731,7 @@ def test_step2_run_persists_detector_endpoints_using_bulk_processed_date(monkeyp
         return payload
     monkeypatch.setattr(price_ingestion_service, "fetch_bulk_eod_latest", _fake_fetch_bulk_lcd)
 
-    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
+    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None, **kwargs):
         _ = db, include_exclusions, tickers_with_price
         return {
             "seeded_total": 2,
@@ -1083,7 +1083,7 @@ def test_lcd_uses_calendar_last_closing_day_directly(monkeypatch):
     monkeypatch.setattr("price_ingestion_service.run_daily_bulk_catchup", _fake_bulk)
 
     # ── 4. Remaining non-gapfill mocks ──────────────────────────────────
-    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None):
+    async def _fake_flags(db, include_exclusions=False, tickers_with_price=None, **kwargs):
         return {
             "seeded_total": 2, "with_price_data": 2,
             "without_price_data": 0, "matched_price_tickers_raw": 2,
