@@ -5625,9 +5625,6 @@ async def get_ticker_chart_data(
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     SP500TR_TICKER = "SP500TR.INDX"
-    _DATA_NOTICE_GENERIC = (
-        "Notification: This stock is not traded every day."
-    )
 
     # Calculate start date based on period
     from datetime import datetime, timezone, timedelta
@@ -5770,20 +5767,36 @@ async def get_ticker_chart_data(
                 "volume": p.get("volume")
             })
 
-    # ── Data notices: flag tickers with known missing closes ────────────
+    # ── Data notices: canonical verifier-based warnings ──────────────────
+    # Uses stored truth fields from tracked_tickers (written by the
+    # history_completeness_sweep ops job).  Avoids ad-hoc heuristics.
+    #
+    # Message rules (PR11):
+    #   absent from bulk or close==0 → NOT APPLICABLE (no warning)
+    #   bulk_found + positive price + DB row missing → DATA WARNING
     data_notices = []
     try:
-        exclusions = await db.gap_free_exclusions.find(
+        tt_doc = await db.tracked_tickers.find_one(
             {"ticker": ticker_full},
-            {"_id": 0, "date": 1, "reason": 1},
-        ).sort("date", -1).to_list(length=10)
-        if exclusions:
-            data_notices.append(_DATA_NOTICE_GENERIC)
-            # Specific missing dates (most recent first, up to 5)
-            for edoc in exclusions[:5]:
-                data_notices.append(f"Missing close for {edoc['date']}.")
+            {
+                "_id": 0,
+                "price_history_status": 1,
+                "price_history_missing_days_count": 1,
+                "price_history_complete": 1,
+            },
+        )
+        if tt_doc:
+            status = tt_doc.get("price_history_status")
+            missing_count = tt_doc.get("price_history_missing_days_count") or 0
+
+            if status == "incomplete" and missing_count > 0:
+                day_word = "day" if missing_count == 1 else "days"
+                data_notices.append(
+                    f"Data warning: {missing_count} trading {day_word} "
+                    f"with missing price data for this stock."
+                )
     except Exception:
-        pass  # Collection may not exist yet
+        pass
 
     # Fallback: if no prices at all but ticker exists, notify the customer
     if not normalized_prices and not data_notices:
@@ -7953,7 +7966,7 @@ async def get_visibility_audit():
                 "query": "+ has_price_data == true (bulk or existing stock_prices)",
                 "count": step3_has_price,
                 "lost": step2_common_stock - step3_has_price,
-                "lost_reason": "No price data (not in bulk and no stock_prices history)"
+                "lost_reason": "No price data (absent from latest bulk day and no stock_prices history)"
             },
             {
                 "step": 4,

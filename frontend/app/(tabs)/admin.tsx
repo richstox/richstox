@@ -99,6 +99,21 @@ interface VisibleCoverage {
   fundamentals_complete_pct?: number;
 }
 
+interface HistoryCompleteness {
+  total_visible?: number;
+  complete?: number;
+  incomplete?: number;
+  no_proof?: number;
+  last_verified_at_prague?: string | null;
+  sample_incomplete?: {
+    ticker: string;
+    price_history_missing_days_count: number;
+    price_history_first_date?: string | null;
+    price_history_last_date?: string | null;
+    price_history_status?: string;
+  }[];
+}
+
 interface OverviewData {
   health?: {
     scheduler_active?: boolean;
@@ -124,6 +139,7 @@ interface OverviewData {
   };
   bulk_completeness?: BulkCompleteness;
   visible_coverage?: VisibleCoverage;
+  history_completeness?: HistoryCompleteness;
   job_last_runs?: Record<string, any>;
 }
 
@@ -345,6 +361,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const bcHasBaseline = bc?.has_baseline === true;
   const bcMissing = bc?.missing_count ?? 0;
   const bcGapFree = bc?.gap_free_since_baseline === true;
+
+  // ── History Completeness (canonical truth from stored fields) ──
+  const hc = overview?.history_completeness;
 
   // Build alerts
   const failedJobs: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
@@ -746,11 +765,21 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                     <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
                     <Text style={[d.cpDate, { flex: 1, color: '#9CA3AF' }]}>
                       {item.excluded_dates.map(ed => {
-                        const label = ed.reason.replace(/_/g, ' ');
+                        const reason = ed.reason || 'not_applicable';
+                        let label: string;
+                        if (reason === 'not_in_bulk_data') {
+                          label = `Absent from bulk day (${ed.date})`;
+                        } else if (reason === 'bulk_found_but_close_is_zero') {
+                          label = `Close=0 on ${ed.date}`;
+                        } else if (reason === 'not_in_bulk_not_in_api') {
+                          label = `Absent from bulk & API (${ed.date})`;
+                        } else {
+                          label = reason.replace(/_/g, ' ');
+                        }
                         const debug = ed.bulk_found != null
                           ? ` [bulk_found=${ed.bulk_found}, close=${ed.bulk_close ?? 'n/a'}, adj=${ed.bulk_adjusted_close ?? 'n/a'}, vol=${ed.bulk_volume ?? 'n/a'}]`
                           : '';
-                        return `${ed.date} (${label})${debug}`;
+                        return `${label}${debug}`;
                       }).join(', ')}
                     </Text>
                   </View>
@@ -771,6 +800,49 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                 ))}
               </>
             )}
+          </View>
+        )}
+      </View>
+
+      {/* C2) History Completeness (canonical truth) */}
+      <View style={d.cardCompact}>
+        <Text style={d.sectionTitleSm}>History Completeness</Text>
+        <Text style={d.cpHint}>
+          Canonical range-proof across expected trading days (stored truth — not computed live)
+        </Text>
+        <View style={d.integrityGridCompact}>
+          <IntegrityMetric
+            label="Complete"
+            value={`${hc?.complete ?? 0} / ${hc?.total_visible ?? 0}`}
+            status={(hc?.complete ?? 0) === (hc?.total_visible ?? 0) && (hc?.total_visible ?? 0) > 0 ? 'green' : (hc?.incomplete ?? 0) > 0 ? 'yellow' : undefined}
+          />
+          <IntegrityMetric
+            label="Incomplete"
+            value={String(hc?.incomplete ?? 0)}
+            status={(hc?.incomplete ?? 0) > 0 ? 'yellow' : 'green'}
+          />
+          <IntegrityMetric
+            label="No Proof"
+            value={String(hc?.no_proof ?? 0)}
+            status={(hc?.no_proof ?? 0) > 0 ? 'yellow' : 'green'}
+          />
+        </View>
+        {hc?.last_verified_at_prague && (
+          <Text style={d.cpHint}>Last verified: {hc.last_verified_at_prague}</Text>
+        )}
+        {(hc?.sample_incomplete ?? []).length > 0 && (
+          <View style={{ marginTop: 4 }}>
+            <Text style={[d.subSection, { marginTop: 2 }]}>Sample incomplete tickers</Text>
+            {(hc?.sample_incomplete ?? []).map((item) => (
+              <View key={item.ticker} style={d.cpRow}>
+                <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
+                <Text style={[d.cpDate, { flex: 1, color: '#F59E0B' }]}>
+                  {item.price_history_missing_days_count} missing day{item.price_history_missing_days_count === 1 ? '' : 's'}
+                  {item.price_history_first_date ? ` · ${item.price_history_first_date}` : ''}
+                  {item.price_history_last_date ? `..${item.price_history_last_date}` : ''}
+                </Text>
+              </View>
+            ))}
           </View>
         )}
       </View>

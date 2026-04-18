@@ -4662,6 +4662,22 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         result["phase_c_stats"] = phase_c_stats
         result["step3_telemetry"] = step3_telemetry
 
+        # ── Run canonical history-completeness sweep (PR11) ──────────────
+        # Verifies all visible tickers and persists truth fields so the
+        # admin UI and ticker page read stored values only.
+        try:
+            from services.history_completeness_service import run_history_completeness_sweep
+            hc_summary = await run_history_completeness_sweep(db)
+            result["history_completeness_sweep"] = hc_summary
+            logger.info(
+                "[Step 3] History completeness sweep: %d complete, %d incomplete",
+                hc_summary.get("complete", 0),
+                hc_summary.get("incomplete", 0),
+            )
+        except Exception as _hc_exc:
+            logger.warning("[Step 3] History completeness sweep failed: %s", _hc_exc)
+            result["history_completeness_sweep"] = {"status": "error", "error": str(_hc_exc)}
+
         finished_at = datetime.now(timezone.utc)
         result["finished_at"] = finished_at.isoformat()
         result["started_at_prague"] = _to_prague_iso(started_at)
