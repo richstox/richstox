@@ -68,7 +68,33 @@ ALLOWED_STATUSES = frozenset({
     "malformed_purged",                 # Malformed data purged
     "cleanup_reset",                    # Data deleted by visibility cleanup
     "error",                            # Error during Phase C
+    "history_data_lost",                # Stored proof stale — historical rows missing
 })
+
+# ── Threshold for data-loss detection (days) ──────────────────────────────
+# When the live stock_prices first_date is more than this many days AFTER
+# the stored range_proof.db_first_date, the sweep treats the stored proof
+# as stale (historical data was deleted without clearing the proof fields).
+# 30 days is generous enough to avoid false positives from close=0 gaps.
+_DATA_LOSS_THRESHOLD_DAYS = 30
+
+# ── Fields cleared when data-loss is detected ────────────────────────────
+# These Phase-C-owned proof fields become stale when the underlying
+# stock_prices rows are deleted.  The sweep resets them so Phase C will
+# re-download the full history on its next run.
+STALE_PROOF_RESET_FIELDS = {
+    "range_proof": None,
+    "history_download_records": None,
+    "history_download_proven_at": None,
+    "history_download_proven_anchor": None,
+    "full_history_downloaded_at": None,
+    "full_history_source": None,
+    "full_history_version": None,
+    "history_download_completed": False,
+    "gap_free_since_history_download": False,
+    "price_history_complete_as_of": None,
+    "needs_price_redownload": True,
+}
 
 
 async def _get_bulk_processed_dates(db) -> List[str]:
@@ -136,12 +162,13 @@ async def verify_ticker_history_completeness(
     """
     now = datetime.now(timezone.utc)
 
-    # 1. Read the ticker's proof markers
+    # 1. Read the ticker's proof markers + range_proof for data-loss check
     doc = await db.tracked_tickers.find_one(
         {"ticker": ticker},
         {
             "history_download_proven_at": 1,
             "history_download_proven_anchor": 1,
+            "range_proof": 1,
             "_id": 0,
         },
     )
@@ -211,6 +238,20 @@ async def verify_ticker_history_completeness(
     first_date = agg_result[0]["first_date"] if agg_result else None
     last_date = agg_result[0]["last_date"] if agg_result else None
 
+    # 8. Data-loss cross-check: stored range_proof vs live first_date
+    #    If the live first_date is much later than the stored
+    #    range_proof.db_first_date, historical rows were deleted without
+    #    clearing the proof fields.  Declare data loss so Phase C re-downloads.
+    data_lost = _detect_data_loss(doc.get("range_proof"), first_date)
+    if data_lost:
+        return _result(
+            status="history_data_lost",
+            complete=False,
+            first_date=first_date,
+            last_date=last_date,
+            verified_at=now,
+        )
+
     complete = len(missing_days) == 0
     status = "complete" if complete else "incomplete"
 
@@ -223,6 +264,33 @@ async def verify_ticker_history_completeness(
         missing_days=missing_days,
         verified_at=now,
     )
+
+
+def _detect_data_loss(
+    range_proof: Optional[Dict[str, Any]],
+    live_first_date: Optional[str],
+) -> bool:
+    """Return True when stored range_proof is stale vs live stock_prices.
+
+    Data loss is detected when the live stock_prices first_date is more
+    than ``_DATA_LOSS_THRESHOLD_DAYS`` after the range_proof's
+    db_first_date.  This means the historical rows that the proof
+    originally validated have been deleted (e.g. by visibility cleanup)
+    without clearing the proof fields.
+    """
+    if not range_proof or not live_first_date:
+        return False
+    proof_first = range_proof.get("db_first_date")
+    if not proof_first:
+        return False
+    try:
+        from datetime import timedelta
+        _pf = datetime.strptime(proof_first, "%Y-%m-%d")
+        _lf = datetime.strptime(live_first_date, "%Y-%m-%d")
+        gap_days = (_lf - _pf).days
+        return gap_days > _DATA_LOSS_THRESHOLD_DAYS
+    except (ValueError, TypeError):
+        return False
 
 
 def _result(
@@ -282,13 +350,14 @@ async def run_history_completeness_sweep(
     """
     started_at = datetime.now(timezone.utc)
 
-    # 1. Get all visible tickers with proof markers
+    # 1. Get all visible tickers with proof markers + range_proof
     visible_docs = await db.tracked_tickers.find(
         {"is_visible": True},
         {
             "ticker": 1,
             "history_download_proven_at": 1,
             "history_download_proven_anchor": 1,
+            "range_proof": 1,
             "_id": 0,
         },
     ).to_list(None)
@@ -339,6 +408,7 @@ async def run_history_completeness_sweep(
     complete_count = 0
     incomplete_count = 0
     no_proof_count = 0
+    data_lost_count = 0
     from pymongo import UpdateOne
     ops: List[Any] = []
 
@@ -347,7 +417,45 @@ async def run_history_completeness_sweep(
         has_proof = info.get("history_download_proven_at") is not None
         anchor = info.get("history_download_proven_anchor") if has_proof else None
 
-        if not has_proof or anchor is None:
+        # ── Data-loss cross-check (runs before all other branches) ────
+        # If stored range_proof says first_date=2021-01-15 but live DB
+        # first_date=2026-04-13, the historical rows were deleted without
+        # clearing the proof fields.  Treat as data-loss.
+        fl = first_last_by_ticker.get(ticker, {})
+        live_first = fl.get("first_date")
+        data_lost = _detect_data_loss(info.get("range_proof"), live_first)
+
+        if data_lost:
+            result = _result(
+                status="history_data_lost",
+                complete=False,
+                first_date=live_first,
+                last_date=fl.get("last_date"),
+                verified_at=now,
+            )
+            data_lost_count += 1
+            # For data-loss tickers, clear stale proof fields and flag
+            # for Phase C redownload in addition to the normal fields.
+            set_fields = {
+                "price_history_complete": result["price_history_complete"],
+                "price_history_first_date": result["price_history_first_date"],
+                "price_history_last_date": result["price_history_last_date"],
+                "price_history_missing_days_count": result["price_history_missing_days_count"],
+                "price_history_last_verified_at": result["price_history_last_verified_at"],
+                "price_history_status": result["price_history_status"],
+                **STALE_PROOF_RESET_FIELDS,
+            }
+            ops.append(UpdateOne({"ticker": ticker}, {"$set": set_fields}))
+            if data_lost_count <= 20:
+                logger.warning(
+                    "[history_completeness_sweep] %s: DATA LOSS detected — "
+                    "range_proof.db_first_date=%s but live first_date=%s. "
+                    "Clearing stale proof fields, flagging for redownload.",
+                    ticker,
+                    (info.get("range_proof") or {}).get("db_first_date"),
+                    live_first,
+                )
+        elif not has_proof or anchor is None:
             result = _result(
                 status="no_history_download",
                 complete=False,
@@ -387,17 +495,18 @@ async def run_history_completeness_sweep(
             else:
                 incomplete_count += 1
 
-        ops.append(UpdateOne(
-            {"ticker": ticker},
-            {"$set": {
-                "price_history_complete": result["price_history_complete"],
-                "price_history_first_date": result["price_history_first_date"],
-                "price_history_last_date": result["price_history_last_date"],
-                "price_history_missing_days_count": result["price_history_missing_days_count"],
-                "price_history_last_verified_at": result["price_history_last_verified_at"],
-                "price_history_status": result["price_history_status"],
-            }},
-        ))
+        if not data_lost:
+            ops.append(UpdateOne(
+                {"ticker": ticker},
+                {"$set": {
+                    "price_history_complete": result["price_history_complete"],
+                    "price_history_first_date": result["price_history_first_date"],
+                    "price_history_last_date": result["price_history_last_date"],
+                    "price_history_missing_days_count": result["price_history_missing_days_count"],
+                    "price_history_last_verified_at": result["price_history_last_verified_at"],
+                    "price_history_status": result["price_history_status"],
+                }},
+            ))
 
         if progress_cb and (i + 1) % 500 == 0:
             await progress_cb(i + 1, total, "history_completeness_sweep")
@@ -415,6 +524,7 @@ async def run_history_completeness_sweep(
         "complete": complete_count,
         "incomplete": incomplete_count,
         "no_proof": no_proof_count,
+        "data_lost": data_lost_count,
         "expected_bulk_dates_count": len(expected_dates),
         "duration_seconds": round(duration_s, 2),
         "verified_at": now.isoformat() + "Z",
@@ -435,8 +545,9 @@ async def run_history_completeness_sweep(
 
     logger.info(
         "[history_completeness_sweep] Done: %d total, %d complete, "
-        "%d incomplete, %d no_proof, %.1fs",
-        total, complete_count, incomplete_count, no_proof_count, duration_s,
+        "%d incomplete, %d no_proof, %d data_lost, %.1fs",
+        total, complete_count, incomplete_count, no_proof_count,
+        data_lost_count, duration_s,
     )
 
     return summary
