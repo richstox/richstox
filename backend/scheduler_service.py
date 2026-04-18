@@ -1710,7 +1710,10 @@ async def run_daily_price_sync(
                     result["dates_processed"] += day_result.get("dates_processed", 0)
                     result["records_upserted"] += day_result.get("records_upserted", 0)
                     _tickers_with_price_set.update(day_result.get("tickers_with_price", []))
-                    # Track zero-close tickers from the latest successful day
+                    # Track zero-close tickers from the latest successful day.
+                    # Only the latest day matters: sync_has_price_data_flags writes
+                    # exclusions for bulk_date (= _last_closing_day), which is always
+                    # the most recent trading day.
                     _day_zero = day_result.get("zero_price_tickers")
                     if _day_zero is not None:
                         _last_zero_price_tickers = set(_day_zero)
@@ -2295,7 +2298,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
             for t in tickers_with_price
             if _normalize_step2_ticker(t)
         } & seeded_set
-        any_price_set = bulk_close_set | (bulk_zero_close_tickers or set())  # includes zero-close tickers
+        any_price_set = bulk_close_set | (bulk_zero_close_tickers or set())  # zero-close tickers ARE in bulk; include them so the exclusion report says "close=0" not "not present"
         matched_raw = len(bulk_close_set)
 
     elif tickers_with_price is not None and len(tickers_with_price) == 0:
