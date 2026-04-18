@@ -1421,10 +1421,39 @@ async def run_daily_bulk_catchup(
                             len(remediated_tickers),
                             remediated_tickers[:20],
                         )
+                        # Persist remediation outcome on tracked_tickers so
+                        # proof-mode (read-only) can report it without
+                        # executing any writes itself.
+                        from pymongo import UpdateOne as _PersistUpdateOne
+                        persist_ops = [
+                            _PersistUpdateOne(
+                                {"ticker": t},
+                                {"$set": {
+                                    "last_remediation_action": "gap_repaired_from_bulk_row",
+                                    "last_remediation_reason": "missing_row_written_from_bulk",
+                                    "last_remediation_date": date_seen,
+                                }},
+                            )
+                            for t in repaired_ticker_set
+                        ]
+                        try:
+                            await db.tracked_tickers.bulk_write(
+                                persist_ops, ordered=False,
+                            )
+                        except Exception as _persist_exc:
+                            logger.error(
+                                "[BULK CATCHUP] Failed to persist remediation "
+                                "outcome on tracked_tickers: %s", _persist_exc,
+                            )
                     except Exception as _write_exc:
                         logger.error(
                             "[BULK CATCHUP] Direct repair write failed (%s) "
                             "— falling back to reflag", _write_exc,
+                        )
+                        # Persist failure outcome so proof-mode can read it.
+                        _sanitized_err = (
+                            f"{type(_write_exc).__name__}: "
+                            f"{str(_write_exc)[:200]}"
                         )
                         # Fallback: flag for Phase C redownload
                         from pymongo import UpdateOne as _RemUpdateOne
@@ -1436,6 +1465,9 @@ async def run_daily_bulk_catchup(
                                     "price_history_complete": False,
                                     "price_history_status": "auto_reflagged_missing_bulk_row",
                                     "history_download_error": "auto_reflagged_missing_bulk_row",
+                                    "last_remediation_action": "gap_repair_failed",
+                                    "last_remediation_reason": _sanitized_err,
+                                    "last_remediation_date": date_seen,
                                 }},
                             )
                             for t in confirmed_missing
@@ -1631,6 +1663,9 @@ async def repair_proven_true_gap(
                 "price_history_complete": False,
                 "price_history_status": "auto_reflagged_missing_bulk_row",
                 "history_download_error": "auto_reflagged_missing_bulk_row",
+                "last_remediation_action": "auto_reflagged_for_redownload",
+                "last_remediation_reason": "row_failed_validation_fallback_to_reflag",
+                "last_remediation_date": date,
             }},
         )
         result.update({
@@ -1646,6 +1681,15 @@ async def repair_proven_true_gap(
             {"$set": row_doc},
             upsert=True,
         )
+        # Persist outcome on tracked_tickers so proof-mode can read it.
+        await db.tracked_tickers.update_one(
+            {"ticker": normalized},
+            {"$set": {
+                "last_remediation_action": "gap_repaired_from_bulk_row",
+                "last_remediation_reason": "missing_row_written_from_bulk",
+                "last_remediation_date": date,
+            }},
+        )
         result.update({
             "status": "repaired",
             "remediation_action": "gap_repaired_from_bulk_row",
@@ -1658,6 +1702,7 @@ async def repair_proven_true_gap(
             "[REPAIR] Direct write failed for %s/%s (%s) — falling back to reflag",
             normalized, date, exc,
         )
+        _sanitized = f"direct_write_failed_{type(exc).__name__}: {str(exc)[:200]}"
         await db.tracked_tickers.update_one(
             {"ticker": normalized, "is_seeded": True},
             {"$set": {
@@ -1665,6 +1710,9 @@ async def repair_proven_true_gap(
                 "price_history_complete": False,
                 "price_history_status": "auto_reflagged_missing_bulk_row",
                 "history_download_error": "auto_reflagged_missing_bulk_row",
+                "last_remediation_action": "gap_repair_failed",
+                "last_remediation_reason": _sanitized,
+                "last_remediation_date": date,
             }},
         )
         result.update({
