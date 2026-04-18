@@ -345,6 +345,10 @@ function deriveProgress(run: any) {
 /** Extract error text from whichever field is present on a run object. */
 function extractErrorText(run: any): string | null {
   if (!run) return null;
+  // Show a clear message when a stale run was auto-finalized by timeout recovery
+  if (run.details?.stale_auto_finalized || run.details?.timeout_recovery) {
+    return run.error_message || 'Stale run auto-finalized (timeout) — job was stuck with no heartbeat.';
+  }
   if (run.error_message) return run.error_message;
   if (run.result?.error) return run.result.error;
   if (run.details?.error_message) return run.details.error_message;

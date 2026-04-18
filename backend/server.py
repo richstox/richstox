@@ -6543,6 +6543,9 @@ async def admin_get_job_status(job_name: str):
     # Auto-recover any stale running job before reading status
     await recover_stale_job_run(db, job_name)
 
+    # Resolve the DB job_name (handles API↔DB name mismatches).
+    db_job_name = _resolve_db_job_name(job_name)
+
     config_key = f"job_{job_name}_enabled"
     config = await db.ops_config.find_one({"key": config_key}, {"_id": 0})
 
@@ -6577,7 +6580,7 @@ async def admin_get_job_status(job_name: str):
 
     # Get last run (latest by started_at, no status filter)
     raw_last_run = await db.ops_job_runs.find_one(
-        {"job_name": job_name},
+        {"job_name": db_job_name},
         sort=[("started_at", -1)]
     )
 
@@ -6630,7 +6633,7 @@ async def admin_get_job_status(job_name: str):
     # Get previous completed run (most recent successful/completed run)
     previous_completed_run = None
     raw_prev = await db.ops_job_runs.find_one(
-        {"job_name": job_name, "status": {"$in": ["success", "completed"]}},
+        {"job_name": db_job_name, "status": {"$in": ["success", "completed"]}},
         {"_id": 0},
         sort=[("finished_at", -1)],
     )
@@ -6664,11 +6667,24 @@ async def admin_get_job_status(job_name: str):
 # ---------------------------------------------------------------------------
 # Stale-run recovery helper (shared by status + run endpoints)
 # ---------------------------------------------------------------------------
+# Some jobs write a different ``job_name`` into ``ops_job_runs`` than the
+# API-facing key used by JOB_RUNNERS.  This map resolves the discrepancy.
+_JOB_NAME_DB_MAP: dict[str, str] = {
+    "recompute_visibility_all": "compute_visible_universe",
+}
+
+
+def _resolve_db_job_name(api_job_name: str) -> str:
+    """Return the ``ops_job_runs.job_name`` for a given API-facing job name."""
+    return _JOB_NAME_DB_MAP.get(api_job_name, api_job_name)
+
+
 # Per-job maximum expected runtime in minutes. If a run stays "running"
 # longer than this, it is auto-finalized as a timeout error so the system
 # self-heals and manual re-runs are unblocked.
 _JOB_MAX_RUNTIME_MINUTES: dict[str, int] = {
     "peer_medians": 20,
+    "compute_visible_universe": 20,
 }
 _DEFAULT_MAX_RUNTIME_MINUTES = 120
 
@@ -6682,34 +6698,49 @@ async def recover_stale_job_run(database, job_name: str) -> dict | None:
     This is the **single** timeout-recovery code-path; both the status and run
     endpoints call it so the system self-heals regardless of which API is hit
     first.
+
+    Staleness is measured from ``updated_at`` (heartbeat) when available,
+    falling back to ``started_at``.  This lets heartbeat-emitting jobs like
+    ``compute_visible_universe`` be detected as hung within minutes rather
+    than waiting for the full started_at-based timeout.
     """
     from zoneinfo import ZoneInfo as _RecoverZI
 
-    max_minutes = _JOB_MAX_RUNTIME_MINUTES.get(job_name, _DEFAULT_MAX_RUNTIME_MINUTES)
+    # Resolve API-facing name → DB job_name (handles mismatches like
+    # ``recompute_visibility_all`` → ``compute_visible_universe``).
+    db_job_name = _resolve_db_job_name(job_name)
+    max_minutes = _JOB_MAX_RUNTIME_MINUTES.get(db_job_name,
+                  _JOB_MAX_RUNTIME_MINUTES.get(job_name, _DEFAULT_MAX_RUNTIME_MINUTES))
 
     existing = await database.ops_job_runs.find_one(
-        {"job_name": job_name, "status": "running"},
+        {"job_name": db_job_name, "status": "running"},
         sort=[("started_at", -1)],
     )
     if not existing:
         return None
 
-    started = existing.get("started_at")
-    # Motor returns naive datetimes (no tzinfo) for BSON dates. Normalise
-    # to aware-UTC so arithmetic with ``datetime.now(timezone.utc)`` works.
-    if isinstance(started, datetime) and started.tzinfo is None:
-        started = started.replace(tzinfo=timezone.utc)
+    def _ensure_utc(dt):
+        if isinstance(dt, datetime) and dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+
+    started = _ensure_utc(existing.get("started_at"))
+    updated = _ensure_utc(existing.get("updated_at"))
+
+    # Prefer updated_at (heartbeat) over started_at for staleness.
+    freshness_ref = updated or started
+
     try:
-        age_minutes = (
-            (datetime.now(timezone.utc) - started).total_seconds() / 60.0
-            if isinstance(started, datetime)
+        stale_minutes = (
+            (datetime.now(timezone.utc) - freshness_ref).total_seconds() / 60.0
+            if isinstance(freshness_ref, datetime)
             else float("inf")
         )
     except Exception as _age_err:
-        logger.debug(f"recover_stale_job_run: could not compute age for {job_name}: {_age_err}")
-        age_minutes = float("inf")
+        logger.debug(f"recover_stale_job_run: could not compute age for {db_job_name}: {_age_err}")
+        stale_minutes = float("inf")
 
-    if age_minutes <= max_minutes:
+    if stale_minutes <= max_minutes:
         return None  # still within expected runtime
 
     expire_at = datetime.now(timezone.utc)
@@ -6717,13 +6748,18 @@ async def recover_stale_job_run(database, job_name: str) -> dict | None:
         duration_seconds = (expire_at - started).total_seconds() if isinstance(started, datetime) else None
     except (TypeError, AttributeError):
         duration_seconds = None
+
+    started_iso = started.isoformat() if isinstance(started, datetime) else str(started)
+    updated_iso = updated.isoformat() if isinstance(updated, datetime) else str(updated)
     error_msg = (
-        f"Timeout: job was still 'running' after {int(age_minutes)} min "
-        f"(max_runtime={max_minutes} min). Auto-finalized as error."
+        f"Stale run auto-finalized (timeout). No heartbeat for {int(stale_minutes)} min "
+        f"(threshold={max_minutes} min). "
+        f"started_at={started_iso}, last updated_at={updated_iso}."
     )
 
     update_fields: dict = {
         "status": "error",
+        "error_code": "timeout",
         "finished_at": expire_at,
         "finished_at_prague": expire_at.astimezone(_RecoverZI("Europe/Prague")).isoformat(),
         "error_message": error_msg,
@@ -6733,14 +6769,15 @@ async def recover_stale_job_run(database, job_name: str) -> dict | None:
         update_fields["duration_seconds"] = round(duration_seconds, 1)
     update_fields["details.timeout_recovery"] = True
     update_fields["details.timeout_recovered_at"] = expire_at.isoformat()
+    update_fields["details.stale_auto_finalized"] = True
 
     await database.ops_job_runs.update_one(
         {"_id": existing["_id"]},
         {"$set": update_fields},
     )
     logger.warning(
-        f"recover_stale_job_run: auto-finalized stale '{job_name}' run "
-        f"{existing['_id']} (running for {int(age_minutes)} min, max={max_minutes})"
+        f"recover_stale_job_run: auto-finalized stale '{db_job_name}' run "
+        f"{existing['_id']} (stale for {int(stale_minutes)} min, max={max_minutes})"
     )
 
     existing.update(update_fields)
@@ -6938,11 +6975,14 @@ async def admin_run_job_now(
     # are consistent between the status and run endpoints.
     recovered = await recover_stale_job_run(db, job_name)
 
+    # Resolve API-facing name → DB job_name for the concurrency check.
+    db_job_name = _resolve_db_job_name(job_name)
+
     # Even after recovery, re-check: there may still be a legitimately
     # running job (different doc, or recovery returned None).
     if not recovered:
         still_running = await db.ops_job_runs.find_one(
-            {"job_name": job_name, "status": "running"},
+            {"job_name": db_job_name, "status": "running"},
             sort=[("started_at", -1)],
         )
         if still_running:
@@ -7359,8 +7399,11 @@ async def admin_job_status(job_name: str):
     # Auto-recover any stale running job before reading status
     await recover_stale_job_run(db, job_name)
 
+    # Resolve the DB job_name (handles API↔DB name mismatches).
+    db_job_name = _resolve_db_job_name(job_name)
+
     run = await db.ops_job_runs.find_one(
-        {"job_name": job_name},
+        {"job_name": db_job_name},
         {"_id": 0, "status": 1, "started_at": 1, "finished_at": 1,
          "details": 1, "records_upserted": 1, "progress": 1,
          "progress_processed": 1, "progress_total": 1, "progress_pct": 1,
