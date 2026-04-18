@@ -1570,8 +1570,7 @@ async def repair_proven_true_gap(
     # 1. Check seeded status
     tt_doc = await db.tracked_tickers.find_one(
         {"ticker": normalized, "is_seeded": True},
-        {"_id": 0, "ticker": 1, "is_seeded": 1,
-         "price_history_complete": 1},
+        {"_id": 0, "ticker": 1, "is_seeded": 1, "price_history_complete": 1},
     )
     if not tt_doc:
         result.update({
