@@ -5626,6 +5626,18 @@ async def get_ticker_chart_data(
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     SP500TR_TICKER = "SP500TR.INDX"
 
+    # ── Visibility guard: only serve chart data for visible tickers ───
+    # Aligned with /v1/ticker/{ticker}/detail which also gates on is_visible.
+    # Without this, tickers that fail visibility (e.g. missing fundamentals,
+    # incomplete price history) still show broken charts with only a few
+    # bulk-day data points — confusing users.
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker} is not available")
+
     # Calculate start date based on period
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
