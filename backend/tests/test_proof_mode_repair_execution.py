@@ -1,11 +1,14 @@
 """
-PR13 NEOK — Tests proving proof-mode is read-only and Step 2 persists
-remediation outcome that proof-mode can read.
+Tests for proof-mode repair execution and Step 2 remediation persistence.
+
+Proof-mode now ACTIVELY repairs proven true-gaps (seeded, bulk close > 0,
+DB row missing) by calling repair_proven_true_gap().  After repair,
+db_check.found must be True.
 
 Tests:
-  1. Proof-mode does NOT write to stock_prices or tracked_tickers (read-only).
+  1. Proof-mode repairs a proven true-gap (writes stock_prices row).
   2. Step 2 direct repair persists last_remediation_action on tracked_tickers.
-  3. After Step 2 repair, proof-mode reads persisted action (not null).
+  3. After Step 2 repair, proof-mode reads persisted action (no re-repair).
   4. Step 2 repair failure persists "gap_repair_failed" on tracked_tickers.
   5. Zero-close and not-seeded gaps remain unrepaired (correct behavior).
 """
@@ -183,21 +186,57 @@ def _run(coro):
 
 
 # ===========================================================================
-# Test 1: Proof-mode is strictly read-only — no writes
+# Test 1: Proof-mode actively repairs proven true-gap
 # ===========================================================================
-class TestProofModeReadOnly:
-    """Proof-mode must never write to stock_prices or tracked_tickers."""
+class TestProofModeRepairsGap:
+    """Proof-mode must repair proven true-gaps and show db_check.found=True."""
 
     @pytest.mark.asyncio
-    async def test_proof_mode_does_not_write_for_proven_gap(self):
+    async def test_proof_mode_repairs_proven_gap(self):
         """
         Scenario: proven true gap (bulk_found, !db_found, seeded, close>0).
-        Proof-mode must NOT call any write operations.
+        Proof-mode must call repair_proven_true_gap and show db_check.found=True.
         """
         bulk_data = [_make_bulk_row("BODI", close=11.0)]
+
+        # Build a mock DB that supports both reads and writes.
+        # Initially no stock_prices row — after repair, one should exist.
+        _written_rows: List[Dict[str, Any]] = []
+
         db = _make_proof_db(
             tracked_tickers_doc=SEEDED_DOC,
             ops_job_runs_doc=OPS_DOC,
+        )
+
+        # Make stock_prices.find_one return the written row after repair
+        async def _sp_find_one(filt, projection=None):
+            for row in _written_rows:
+                if all(row.get(k) == v for k, v in filt.items() if k != "_id"):
+                    return row
+            return None
+
+        db.stock_prices.find_one = _sp_find_one
+
+        # Make stock_prices.update_one actually record the write
+        async def _sp_update_one(filt, update, upsert=False):
+            row = {**filt, **update.get("$set", {})}
+            row["_id"] = ObjectId()
+            _written_rows.append(row)
+            return SimpleNamespace(upserted_count=1 if upsert else 0, modified_count=0)
+
+        db.stock_prices.update_one = _sp_update_one
+
+        # Make tracked_tickers.find_one support seeded check + remediation reads
+        async def _tt_find_one(filt, projection=None):
+            if filt.get("ticker") == "BODI.US":
+                return dict(SEEDED_DOC)
+            return None
+
+        db.tracked_tickers.find_one = _tt_find_one
+
+        # Make tracked_tickers.update_one a no-op that succeeds
+        db.tracked_tickers.update_one = AsyncMock(
+            return_value=SimpleNamespace(modified_count=1),
         )
 
         result = await run_proof_mode(
@@ -205,24 +244,17 @@ class TestProofModeReadOnly:
             bulk_data_override=bulk_data,
         )
 
-        # Assert no write methods called on stock_prices
-        db.stock_prices.update_one.assert_not_awaited()
-        db.stock_prices.bulk_write.assert_not_awaited()
-        db.stock_prices.insert_one.assert_not_awaited()
-
-        # Assert no write methods called on tracked_tickers
-        db.tracked_tickers.update_one.assert_not_awaited()
-        db.tracked_tickers.bulk_write.assert_not_awaited()
-
-        # Report should still show gap awaiting repair
-        assert result["bulk_check"]["found"] is True
-        assert result["db_check"]["found"] is False
+        # Acceptance: db_check.found must be True after repair
+        assert result["db_check"]["found"] is True
         assert result["remediation_evaluated_for_date"] is True
-        assert result["remediation_reason"] == "proven_true_gap_awaiting_repair"
+        assert result["remediation_action"] == "gap_repaired_from_bulk_row"
+        assert result["repair_result"] is not None
+        assert result["repair_result"]["status"] == "repaired"
+        assert "REPAIRED" in result["summary"]
 
     @pytest.mark.asyncio
     async def test_proof_mode_does_not_write_when_both_present(self):
-        """When bulk and DB both have the row, proof-mode still doesn't write."""
+        """When bulk and DB both have the row, proof-mode doesn't write."""
         oid = ObjectId()
         bulk_data = [_make_bulk_row("BODI", close=11.0)]
         db = _make_proof_db(
@@ -239,8 +271,6 @@ class TestProofModeReadOnly:
 
         db.stock_prices.update_one.assert_not_awaited()
         db.stock_prices.bulk_write.assert_not_awaited()
-        db.tracked_tickers.update_one.assert_not_awaited()
-        db.tracked_tickers.bulk_write.assert_not_awaited()
         assert result["db_check"]["found"] is True
         assert "CONSISTENT" in result["summary"]
 

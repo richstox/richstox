@@ -1422,8 +1422,10 @@ async def run_daily_bulk_catchup(
                             remediated_tickers[:20],
                         )
                         # Persist remediation outcome on tracked_tickers so
-                        # proof-mode (read-only) can report it without
-                        # executing any writes itself.
+                        # proof-mode can report it.  Also flag for Phase C
+                        # full history download — a direct-repaired ticker
+                        # has the missing bulk-day row but may still lack
+                        # full IPO-to-present history.
                         from pymongo import UpdateOne as _PersistUpdateOne
                         persist_ops = [
                             _PersistUpdateOne(
@@ -1432,6 +1434,8 @@ async def run_daily_bulk_catchup(
                                     "last_remediation_action": "gap_repaired_from_bulk_row",
                                     "last_remediation_reason": "missing_row_written_from_bulk",
                                     "last_remediation_date": date_seen,
+                                    "needs_price_redownload": True,
+                                    "price_history_complete": False,
                                 }},
                             )
                             for t in repaired_ticker_set
@@ -1566,7 +1570,8 @@ async def repair_proven_true_gap(
     # 1. Check seeded status
     tt_doc = await db.tracked_tickers.find_one(
         {"ticker": normalized, "is_seeded": True},
-        {"_id": 0, "ticker": 1, "is_seeded": 1},
+        {"_id": 0, "ticker": 1, "is_seeded": 1,
+         "price_history_complete": 1},
     )
     if not tt_doc:
         result.update({
@@ -1682,19 +1687,29 @@ async def repair_proven_true_gap(
             upsert=True,
         )
         # Persist outcome on tracked_tickers so proof-mode can read it.
+        # Also flag for Phase C full history download if the ticker does
+        # not yet have price_history_complete=True — without this the
+        # ticker only accumulates individual bulk-day rows and never gets
+        # full IPO-to-present history from the per-ticker EODHD API.
+        _persist_fields = {
+            "last_remediation_action": "gap_repaired_from_bulk_row",
+            "last_remediation_reason": "missing_row_written_from_bulk",
+            "last_remediation_date": date,
+        }
+        _history_complete = tt_doc.get("price_history_complete") is True
+        if not _history_complete:
+            _persist_fields["needs_price_redownload"] = True
+            _persist_fields["price_history_complete"] = False
         await db.tracked_tickers.update_one(
             {"ticker": normalized},
-            {"$set": {
-                "last_remediation_action": "gap_repaired_from_bulk_row",
-                "last_remediation_reason": "missing_row_written_from_bulk",
-                "last_remediation_date": date,
-            }},
+            {"$set": _persist_fields},
         )
         result.update({
             "status": "repaired",
             "remediation_action": "gap_repaired_from_bulk_row",
             "reason": "missing_row_written_from_bulk",
             "written_row": row_doc,
+            "phase_c_flagged": not _history_complete,
         })
     except Exception as exc:
         # Fallback: reflag for Phase C redownload
