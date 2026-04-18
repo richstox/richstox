@@ -249,9 +249,10 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     now = datetime.now(timezone.utc)
 
     # ------------------------------------------------------------------
-    # 1) Stuck-finalize: mark any running run older than 15 min as failed
+    # 1) Stuck-finalize: mark any running run older than 20 min as error
     # ------------------------------------------------------------------
-    stale_cutoff = now - timedelta(minutes=15)
+    STALE_THRESHOLD_MINUTES = 20
+    stale_cutoff = now - timedelta(minutes=STALE_THRESHOLD_MINUTES)
     stale_query = {
         "job_name": job_name,
         "status":   "running",
@@ -261,11 +262,21 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
         ],
     }
     async for stale_run in db.ops_job_runs.find(stale_query):
+        stale_started = stale_run.get("started_at")
+        stale_updated = stale_run.get("updated_at")
+        stale_started_iso = stale_started.isoformat() if hasattr(stale_started, "isoformat") else str(stale_started)
+        stale_updated_iso = stale_updated.isoformat() if hasattr(stale_updated, "isoformat") else str(stale_updated)
         await db.ops_job_runs.update_one(
             {"_id": stale_run["_id"], "status": "running"},
             {"$set": {
-                "status":                        "failed",
+                "status":                        "error",
+                "error_code":                    "timeout",
                 "error":                         "stuck_run_timeout",
+                "error_message":                 (
+                    f"Stale run auto-finalized (timeout). No heartbeat for "
+                    f">{STALE_THRESHOLD_MINUTES} min. "
+                    f"started_at={stale_started_iso}, last updated_at={stale_updated_iso}."
+                ),
                 "finished_at":                   now,
                 "end_time":                      now,
                 "finished_at_prague":            now.astimezone(PRAGUE).isoformat(),
@@ -273,7 +284,9 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
                 "updated_at_prague":             now.astimezone(PRAGUE).isoformat(),
                 "log_timezone":                  "Europe/Prague",
                 "details.error":                 "stuck_run_timeout",
-                "details.stuck_timeout_minutes": 15,
+                "details.stuck_timeout_minutes": STALE_THRESHOLD_MINUTES,
+                "details.timeout_recovery":      True,
+                "details.stale_auto_finalized":  True,
                 "details.last_progress": {
                     "progress":           stale_run.get("progress"),
                     "progress_processed": stale_run.get("progress_processed"),
@@ -283,7 +296,8 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
             }},
         )
         logger.warning(
-            f"Finalized stuck run {stale_run['_id']} as failed (stuck_run_timeout)"
+            f"Finalized stuck run {stale_run['_id']} as error (stuck_run_timeout, "
+            f"threshold={STALE_THRESHOLD_MINUTES}min)"
         )
 
     # ------------------------------------------------------------------

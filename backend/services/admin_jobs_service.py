@@ -3,7 +3,7 @@ from typing import Any, Dict, Optional
 from zoneinfo import ZoneInfo
 
 
-VALID_CANCEL_RUNNING_JOB_NAMES = {"fundamentals_sync", "price_sync"}
+VALID_CANCEL_RUNNING_JOB_NAMES = {"fundamentals_sync", "price_sync", "compute_visible_universe"}
 PRAGUE_TZ = ZoneInfo("Europe/Prague")
 
 
