@@ -334,6 +334,10 @@ class StockPrice(BaseModel):
     adjusted_close: float
     volume: int
 
+class ForceRedownloadRequest(BaseModel):
+    tickers: List[str] = Field(..., min_length=1, max_length=200, description="Tickers to force-redownload (max 200)")
+    reason: str = Field(..., min_length=1, max_length=200, description="Audit reason for the force redownload")
+
 class PortfolioCreate(BaseModel):
     name: str
 
@@ -3957,6 +3961,102 @@ async def admin_purge_malformed_prices(dry_run: bool = Query(True, description="
         "deleted_count": deleted_count,
         "reflagged_count": reflagged_count,
         "markdown_table": "\n".join(md_lines),
+    }
+
+
+# ----- Force Full Price-History Redownload Endpoint -----
+
+FORCE_REDOWNLOAD_MAX_TICKERS = 200
+
+
+@api_router.post("/admin/prices/force-redownload")
+async def admin_force_price_redownload(body: ForceRedownloadRequest):
+    """
+    Reflag tickers for a full-history redownload (pure reflag, no deletes).
+
+    For each requested ticker that exists in tracked_tickers, sets:
+      - needs_price_redownload = true
+      - price_history_complete = false
+      - price_history_status = "admin_forced_redownload"
+      - history_download_error = "admin_forced_redownload"
+      - force_redownload_reason = <free-text reason from request body>
+
+    Phase C will pick up the reflagged tickers on the next scheduler run
+    and perform a full EODHD history download.
+
+    Safety: Ticker list is capped at 200 per request to prevent accidental
+    mass operations.
+    """
+    raw_tickers = body.tickers
+    reason = body.reason.strip()
+
+    if not reason:
+        raise HTTPException(400, "reason must be a non-empty string")
+
+    # Deduplicate and normalise
+    seen: set[str] = set()
+    tickers: list[str] = []
+    for t in raw_tickers:
+        t_clean = t.strip()
+        if not t_clean:
+            continue
+        if t_clean not in seen:
+            seen.add(t_clean)
+            tickers.append(t_clean)
+
+    if not tickers:
+        raise HTTPException(400, "tickers list must contain at least one non-empty ticker")
+
+    if len(tickers) > FORCE_REDOWNLOAD_MAX_TICKERS:
+        raise HTTPException(
+            400,
+            f"Too many tickers ({len(tickers)}). Maximum is {FORCE_REDOWNLOAD_MAX_TICKERS} per request.",
+        )
+
+    # Verify which tickers actually exist in tracked_tickers
+    tt_cursor = db.tracked_tickers.find(
+        {"ticker": {"$in": tickers}},
+        {"_id": 0, "ticker": 1, "is_visible": 1},
+    )
+    tt_map: dict[str, dict] = {doc["ticker"]: doc async for doc in tt_cursor}
+
+    results: list[dict] = []
+    total_reflagged = 0
+
+    for ticker in tickers:
+        if ticker not in tt_map:
+            results.append({
+                "ticker": ticker,
+                "status": "skipped",
+                "reason": "ticker_not_found",
+            })
+            continue
+
+        # Reflag tracked_ticker for Phase C redownload (no deletes)
+        await db.tracked_tickers.update_one(
+            {"ticker": ticker},
+            {"$set": {
+                "needs_price_redownload": True,
+                "price_history_complete": False,
+                "price_history_status": "admin_forced_redownload",
+                "history_download_error": "admin_forced_redownload",
+                "force_redownload_reason": reason,
+            }},
+        )
+
+        total_reflagged += 1
+        results.append({
+            "ticker": ticker,
+            "status": "reflagged",
+            "is_visible": tt_map[ticker].get("is_visible", False),
+        })
+
+    return {
+        "tickers_requested": len(tickers),
+        "tickers_reflagged": total_reflagged,
+        "tickers_skipped": len(tickers) - total_reflagged,
+        "reason": reason,
+        "results": results,
     }
 
 
