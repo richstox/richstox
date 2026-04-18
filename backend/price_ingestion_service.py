@@ -1076,6 +1076,10 @@ async def run_daily_bulk_catchup(
     # missing" is an exclusion filter).  They *are* counted in the overlap
     # (matched_seeded_tickers) but do NOT generate UpdateOne ops.
     zero_price_tickers: Set[str] = set()
+    # Normalized-form mirrors for consistent gap-candidate detection.
+    # canonical forms go into the main sets; normalized forms go here.
+    zero_price_tickers_normalized: Set[str] = set()
+    processed_ticker_set_normalized: Set[str] = set()
     # Audit data for zero-close tickers: canonical_ticker → bulk row fields.
     # Returned so sync_has_price_data_flags can write truthful gap_free_exclusions.
     zero_price_ticker_data: Dict[str, Dict[str, Any]] = {}
@@ -1097,6 +1101,7 @@ async def run_daily_bulk_catchup(
             raw_close = record.get("close")
             if _is_zero_or_missing_close(raw_close):
                 zero_price_tickers.add(canonical_ticker)
+                zero_price_tickers_normalized.add(normalized_ticker)
                 if canonical_ticker not in zero_price_ticker_data:
                     zero_price_ticker_data[canonical_ticker] = {
                         "close": record.get("close"),
@@ -1124,6 +1129,8 @@ async def run_daily_bulk_catchup(
             )
             current_batch_tickers.add(canonical_ticker)
             matched_seeded_tickers.add(canonical_ticker)
+            # Also track the normalized form for consistent gap-candidate detection
+            processed_ticker_set_normalized.add(normalized_ticker)
 
             if len(current_batch_ops) == BULK_WRITE_BATCH_SIZE:
                 batched_operations_with_tickers.append(
@@ -1325,10 +1332,12 @@ async def run_daily_bulk_catchup(
             if not norm_ticker:
                 continue
             # Already written this run — no gap
-            if norm_ticker in processed_ticker_set:
+            # Use normalized set for consistent comparison (canonical may
+            # differ from normalized form, e.g. "BODI" vs "BODI.US").
+            if norm_ticker in processed_ticker_set_normalized:
                 continue
             # Already identified as zero-price exclusion this run
-            if norm_ticker in zero_price_tickers:
+            if norm_ticker in zero_price_tickers_normalized:
                 continue
             # Check at least one row has a positive close price
             has_positive = any(
@@ -1431,15 +1440,21 @@ async def run_daily_bulk_catchup(
                             )
                             for t in confirmed_missing
                         ]
-                        await db.tracked_tickers.bulk_write(
-                            reflag_ops, ordered=False,
-                        )
-                        reflagged_tickers = sorted(confirmed_missing)
-                        logger.warning(
-                            "[BULK CATCHUP] Fallback-reflagged %d ticker(s): %s",
-                            len(reflagged_tickers),
-                            reflagged_tickers[:20],
-                        )
+                        try:
+                            await db.tracked_tickers.bulk_write(
+                                reflag_ops, ordered=False,
+                            )
+                            reflagged_tickers = sorted(confirmed_missing)
+                            logger.warning(
+                                "[BULK CATCHUP] Fallback-reflagged %d ticker(s): %s",
+                                len(reflagged_tickers),
+                                reflagged_tickers[:20],
+                            )
+                        except Exception as _reflag_exc:
+                            logger.error(
+                                "[BULK CATCHUP] Fallback reflag also failed (%s)",
+                                _reflag_exc,
+                            )
     except Exception as _rem_exc:
         logger.error(
             "[BULK CATCHUP] Auto-remediation check failed: %s", _rem_exc

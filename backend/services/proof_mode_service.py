@@ -340,7 +340,37 @@ async def run_proof_mode(
                         remediation_action = "auto_reflagged_for_redownload"
                         remediation_reason = "ticker_reflagged_for_phase_c"
             if not remediation_action:
-                remediation_reason = "proven_true_gap_awaiting_repair"
+                # Proven true gap detected — execute repair directly.
+                # Previous behavior left remediation_action=None here,
+                # meaning the gap was identified but never acted upon.
+                try:
+                    from price_ingestion_service import repair_proven_true_gap
+
+                    repair_result = await repair_proven_true_gap(
+                        db,
+                        ticker=normalized_input,
+                        date=date,
+                        bulk_data_override=bulk_data if _bulk_is_override else None,
+                    )
+                    remediation_action = repair_result.get("remediation_action")
+                    remediation_reason = repair_result.get(
+                        "reason", "proven_true_gap_repair_executed"
+                    )
+                    # If the repair function returned no action (should not
+                    # happen for this code path), mark it explicitly.
+                    if not remediation_action:
+                        remediation_action = "gap_repair_failed"
+                        remediation_reason = (
+                            f"repair_returned_no_action: "
+                            f"{repair_result.get('status', 'unknown')}"
+                        )
+                except Exception as _repair_exc:
+                    remediation_action = "gap_repair_failed"
+                    _exc_class = type(_repair_exc).__name__
+                    _exc_msg = str(_repair_exc)[:200]
+                    remediation_reason = (
+                        f"repair_exception_{_exc_class}: {_exc_msg}"
+                    )
     elif bulk_found and db_found:
         remediation_evaluated_for_date = True
         remediation_reason = "db_row_exists_no_action_needed"
