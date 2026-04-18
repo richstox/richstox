@@ -42,8 +42,6 @@ import httpx
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Any, List, Optional
 
-from price_ingestion_service import validate_price_row
-
 logger = logging.getLogger("richstox.benchmark_service")
 
 EODHD_API_KEY = os.environ.get("EODHD_API_KEY", "")
@@ -251,22 +249,18 @@ async def update_benchmark(
                 message=f"Writing {total_rows} price rows to stock_prices",
             )
         for row in data:
-            row_doc = {
-                "ticker": symbol,
-                "date": row["date"],
-                "open": row.get("open"),
-                "high": row.get("high"),
-                "low": row.get("low"),
-                "close": row.get("close"),
-                "adjusted_close": row.get("close"),
-                "volume": row.get("volume", 0),
-            }
-            # Skip malformed rows (missing ticker/date/close)
-            if not validate_price_row(row_doc):
-                continue
             await db.stock_prices.update_one(
                 {"ticker": symbol, "date": row["date"]},
-                {"$set": row_doc},
+                {"$set": {
+                    "ticker": symbol,
+                    "date": row["date"],
+                    "open": row.get("open"),
+                    "high": row.get("high"),
+                    "low": row.get("low"),
+                    "close": row.get("close"),
+                    "adjusted_close": row.get("close"),
+                    "volume": row.get("volume", 0),
+                }},
                 upsert=True,
             )
             upserted += 1

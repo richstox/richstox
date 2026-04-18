@@ -246,7 +246,6 @@ async def process_ticker_prices(db, ticker: str) -> TickerResult:
         
         # Prepare documents for bulk upsert
         from pymongo import UpdateOne
-        from price_ingestion_service import validate_price_row
         operations = []
         
         for record in prices:
@@ -265,9 +264,6 @@ async def process_ticker_prices(db, ticker: str) -> TickerResult:
                 "adjusted_close": float(record.get("adjusted_close", 0)) if record.get("adjusted_close") else None,
                 "volume": int(record.get("volume", 0)) if record.get("volume") else None,
             }
-            
-            if not validate_price_row(parsed):
-                continue
             
             operations.append(UpdateOne(
                 {"ticker": ticker_api, "date": date},

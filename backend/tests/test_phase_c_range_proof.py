@@ -36,7 +36,6 @@ class _FakeStockPrices:
         self.deleted = []
         self.written = []
         self._agg_result = []  # Set per-test for aggregate() calls
-        self._agg_queue = None  # Optional: list of results returned in order
 
     async def delete_many(self, filt):
         self.deleted.append(filt)
@@ -47,9 +46,6 @@ class _FakeStockPrices:
         return SimpleNamespace(upserted_count=len(ops), modified_count=0)
 
     def aggregate(self, pipeline):
-        # If a queue is set, pop from it; otherwise fall back to _agg_result.
-        if self._agg_queue:
-            return _FakeAggCursor(self._agg_queue.pop(0))
         return _FakeAggCursor(self._agg_result)
 
 
@@ -193,13 +189,13 @@ class TestRangeProofInProcessPriceTicker:
 
         db = _FakeDB()
         records = _make_eod_records_range("1984-11-07", "2026-04-08", freq_days=7)
-        # Queue: [pre-write state, post-write state]
-        db.stock_prices._agg_queue = [
-            # Pre-write: first Phase C run, DB is empty
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            # Post-write: full history landed
-            [{"_id": None, "db_first_date": "1984-11-07", "db_last_date": "2026-04-08", "db_row_count": len(records)}],
-        ]
+        # Set up aggregate to return matching DB stats
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "1984-11-07",
+            "db_last_date": "2026-04-08",
+            "db_row_count": len(records),
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
@@ -229,12 +225,13 @@ class TestRangeProofInProcessPriceTicker:
 
         db = _FakeDB()
         records = _make_eod_records_range("1984-11-07", "2026-04-08", freq_days=7)
-        # Queue: [pre-write state, post-write state]
-        db.stock_prices._agg_queue = [
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            # Post-write: DB only has 2 rows — simulating the truncated scenario
-            [{"_id": None, "db_first_date": "2026-04-07", "db_last_date": "2026-04-08", "db_row_count": 2}],
-        ]
+        # DB only has 2 rows — simulating the truncated scenario
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2026-04-07",
+            "db_last_date": "2026-04-08",
+            "db_row_count": 2,
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
@@ -261,10 +258,12 @@ class TestRangeProofInProcessPriceTicker:
 
         db = _FakeDB()
         records = _make_eod_records_range("2026-04-01", "2026-04-05")
-        db.stock_prices._agg_queue = [
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            [{"_id": None, "db_first_date": "2026-04-01", "db_last_date": "2026-04-05", "db_row_count": 5}],
-        ]
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2026-04-01",
+            "db_last_date": "2026-04-05",
+            "db_row_count": 5,
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
@@ -285,10 +284,12 @@ class TestRangeProofInProcessPriceTicker:
 
         db = _FakeDB()
         records = _make_eod_records_range("1984-11-07", "2026-04-08", freq_days=7)
-        db.stock_prices._agg_queue = [
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            [{"_id": None, "db_first_date": "2026-04-07", "db_last_date": "2026-04-08", "db_row_count": 2}],
-        ]
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2026-04-07",
+            "db_last_date": "2026-04-08",
+            "db_row_count": 2,
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
@@ -323,24 +324,17 @@ class TestRangeProofInProcessPriceTicker:
         assert result.get("range_proof_failed") is True
 
     def test_redownload_with_range_proof_fail_clears_flag(self):
-        """needs_redownload=True + range-proof fail → needs_price_redownload=False.
-
-        Note: when needs_redownload=True and fetch succeeds, old rows are
-        deleted and new ones written.  If the post-write DB state shows fewer
-        rows than pre-write, the ingestion regression guard fires first.
-        This test uses pre_count=0 to avoid the regression guard and test
-        the range-proof failure path in isolation.
-        """
+        """needs_redownload=True + range-proof fail → needs_price_redownload=False."""
         from full_sync_service import _process_price_ticker
 
         db = _FakeDB()
         records = _make_eod_records_range("1984-11-07", "2026-04-08", freq_days=7)
-        db.stock_prices._agg_queue = [
-            # Pre-write: no existing rows (first download)
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            # Post-write: only 2 rows landed (range-proof will fail)
-            [{"_id": None, "db_first_date": "2026-04-07", "db_last_date": "2026-04-08", "db_row_count": 2}],
-        ]
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2026-04-07",
+            "db_last_date": "2026-04-08",
+            "db_row_count": 2,
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)

@@ -154,20 +154,6 @@ async def _process_price_ticker(
         if await _should_cancel():
             return await _cancel_result()
 
-    # ── Capture pre-write DB state for structured audit logging ──────
-    _pre_agg = await db.stock_prices.aggregate([
-        {"$match": {"ticker": ticker_us}},
-        {"$group": {
-            "_id": None,
-            "count": {"$sum": 1},
-            "earliest": {"$min": "$date"},
-            "latest": {"$max": "$date"},
-        }},
-    ]).to_list(1)
-    _pre_count = _pre_agg[0]["count"] if _pre_agg else 0
-    _pre_earliest = _pre_agg[0]["earliest"] if _pre_agg else None
-    _pre_latest = _pre_agg[0]["latest"] if _pre_agg else None
-
     # ── Fetch BEFORE any destructive delete ──────────────────────────
     # Previous code deleted existing rows first, then fetched.  If the
     # fetch failed (timeout / 429 / network), all historical price data
@@ -185,16 +171,13 @@ async def _process_price_ticker(
         duration_ms=duration_ms,
     )
 
-    _fetched_count = len(data) if isinstance(data, list) else 0
-
     if not ok or not isinstance(data, list) or not data:
         _fail_reason = "rate_limited" if http_status == 429 else "api_error"
         if ok and (not isinstance(data, list) or not data):
             _fail_reason = "api_returned_empty"
         _fail_ts = datetime.now(timezone.utc)
         # ── Re-flag for retry so Phase C picks this ticker up again ──
-        # Without this, a failed fetch after a delete leaves the ticker
-        # with no history and no retry path.
+        # Without this, a failed fetch leaves the ticker with no retry path.
         _error_fields: Dict[str, Any] = {
             "price_history_status": "error",
             "history_download_failed_at": _fail_ts,
@@ -208,24 +191,14 @@ async def _process_price_ticker(
             {"ticker": ticker_us},
             {"$set": _error_fields},
         )
-        logger.warning(
-            "[Phase C] %s: fetch FAILED (reason=%s, http=%s, "
-            "needs_redownload=%s). Existing DB rows preserved "
-            "(pre_count=%d). needs_price_redownload re-flagged=%s.",
-            ticker_us, _fail_reason, http_status,
-            needs_redownload, _pre_count, needs_redownload,
-        )
         return {"ticker": ticker_us, "success": False, "records": 0, "rate_limited": http_status == 429}
 
     # ── Delete old rows ONLY after successful fetch ──────────────────
-    # This is the critical ordering fix: we now have the replacement
-    # data in memory before destroying existing rows.
     if needs_redownload:
         await db.stock_prices.delete_many({"ticker": {"$in": [ticker_us, ticker_us.replace(".US", "")]}})
 
     # ── Build and execute bulk upsert ────────────────────────────────
     ops = []
-    _skipped_invalid = 0
     for rec in data:
         date = rec.get("date")
         if not date:
@@ -241,18 +214,12 @@ async def _process_price_ticker(
             "volume": int(rec["volume"]) if rec.get("volume") else None,
         }
         if not validate_price_row(row_doc):
-            _skipped_invalid += 1
             continue
         ops.append(UpdateOne(
             {"ticker": ticker_us, "date": date},
             {"$set": row_doc},
             upsert=True,
         ))
-    if _skipped_invalid:
-        logger.warning(
-            "[Phase C] %s: skipped %d invalid rows (missing ticker/date/close)",
-            ticker_us, _skipped_invalid,
-        )
 
     processed_ops = 0
     for i in range(0, len(ops), BULK_CHUNK):
@@ -290,62 +257,6 @@ async def _process_price_ticker(
         db_last_date = None
         db_row_count = 0
 
-    # ── Structured ingestion audit log ───────────────────────────────
-    logger.info(
-        "[Phase C] %s: ingestion_audit "
-        "fetched_count=%d ops_count=%d "
-        "pre_db=[count=%d, earliest=%s, latest=%s] "
-        "post_db=[count=%d, earliest=%s, latest=%s] "
-        "needs_redownload=%s",
-        ticker_us, _fetched_count, len(ops),
-        _pre_count, _pre_earliest, _pre_latest,
-        db_row_count, db_first_date, db_last_date,
-        needs_redownload,
-    )
-
-    # ── Row-count regression guard ───────────────────────────────────
-    # A successful Phase C run must NEVER reduce row_count or move
-    # earliest_date forward.  If this happened, it indicates a write-path
-    # bug (e.g. the old delete-before-fetch issue).  Log a critical
-    # warning and re-flag for retry rather than marking complete.
-    _row_count_regressed = (
-        _pre_count > 0
-        and db_row_count < _pre_count
-    )
-    _earliest_regressed = (
-        _pre_earliest is not None
-        and db_first_date is not None
-        and db_first_date > _pre_earliest
-    )
-    if _row_count_regressed or _earliest_regressed:
-        logger.error(
-            "[Phase C] %s: INGESTION REGRESSION DETECTED — "
-            "pre=[count=%d, earliest=%s] → post=[count=%d, earliest=%s]. "
-            "Re-flagging needs_price_redownload=True for retry.",
-            ticker_us, _pre_count, _pre_earliest,
-            db_row_count, db_first_date,
-        )
-        await db.tracked_tickers.update_one(
-            {"ticker": ticker_us},
-            {"$set": {
-                "needs_price_redownload": True,
-                "price_history_complete": False,
-                "price_history_status": "ingestion_regression",
-                "history_download_error": (
-                    f"ingestion_regression:pre=[{_pre_count},{_pre_earliest}],"
-                    f"post=[{db_row_count},{db_first_date}]"
-                ),
-                "updated_at": datetime.now(timezone.utc),
-            }},
-        )
-        return {
-            "ticker": ticker_us,
-            "success": False,
-            "records": len(ops),
-            "rate_limited": False,
-            "ingestion_regression": True,
-        }
-
     # ── Range-proof validation ───────────────────────────────────────
     # Mark complete ONLY if the DB date range covers the provider's
     # date range within tolerance.  This replaces the old arbitrary
@@ -370,18 +281,6 @@ async def _process_price_ticker(
             "tolerance_days": _RANGE_PROOF_TOLERANCE_DAYS,
             "pass": range_proof_pass,
             "checked_at": datetime.now(timezone.utc),
-        },
-        # Ingestion audit trail — proves what was fetched vs written
-        "ingestion_audit": {
-            "fetched_count": _fetched_count,
-            "ops_count": len(ops),
-            "pre_db_count": _pre_count,
-            "pre_db_earliest": _pre_earliest,
-            "pre_db_latest": _pre_latest,
-            "post_db_count": db_row_count,
-            "post_db_earliest": db_first_date,
-            "post_db_latest": db_last_date,
-            "needs_redownload": needs_redownload,
         },
     }
 

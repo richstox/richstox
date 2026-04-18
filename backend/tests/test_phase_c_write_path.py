@@ -10,9 +10,7 @@ These tests prove:
   1) Phase C does NOT delete existing rows before a successful fetch.
   2) A failed fetch after needs_redownload=True preserves existing rows
      and re-flags needs_price_redownload=True for retry.
-  3) A successful run cannot reduce row_count or move earliest_date
-     forward (ingestion regression guard).
-  4) Structured ingestion audit fields are persisted on success.
+  3) Write-boundary validation skips rows missing required fields.
 """
 
 import asyncio
@@ -45,7 +43,7 @@ class _FakeStockPrices:
     def __init__(self):
         self.deleted = []
         self.written = []
-        self._agg_results = []  # List of agg results — popped in order
+        self._agg_result = []  # Default aggregation result
 
     async def delete_many(self, filt):
         self.deleted.append(filt)
@@ -56,10 +54,7 @@ class _FakeStockPrices:
         return SimpleNamespace(upserted_count=len(ops), modified_count=0)
 
     def aggregate(self, pipeline):
-        # Return next queued agg result
-        if self._agg_results:
-            return _FakeAggCursor(self._agg_results.pop(0))
-        return _FakeAggCursor([])
+        return _FakeAggCursor(self._agg_result)
 
 
 class _FakeTrackedTickers:
@@ -116,290 +111,244 @@ class TestFetchBeforeDelete:
         db = _FakeDB()
         records = _make_eod_records_range("2003-09-02", "2026-04-16", freq_days=7)
 
-        # Queue TWO agg results: first for pre-write state, second for post-write state
-        db.stock_prices._agg_results = [
-            # Pre-write: DB has 2 legacy rows
-            [{"_id": None, "count": 2, "earliest": "2026-04-15", "latest": "2026-04-16"}],
-            # Post-write: DB now has full history
-            [{"_id": None, "db_first_date": "2003-09-02", "db_last_date": "2026-04-16", "db_row_count": len(records)}],
-        ]
+        # Set up aggregate to return post-write state for range-proof
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2003-09-02",
+            "db_last_date": "2026-04-16",
+            "db_row_count": len(records),
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
-            result = asyncio.run(
-                _process_price_ticker(db, "GRTUF.US", job_name="test", needs_redownload=True)
-            )
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                result = asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "GRTUF.US", "test_job",
+                        needs_redownload=True,
+                    )
+                )
 
-        assert result["success"] is True
-        assert result["records"] == len(records)
+        # Fetch was called (proves fetch happened)
+        assert mock_fetch.called
 
-        # Verify delete happened (since needs_redownload=True)
+        # Delete happened (needs_redownload=True)
         assert len(db.stock_prices.deleted) == 1
-        # Verify bulk_write also happened
+
+        # Bulk write happened
         assert len(db.stock_prices.written) > 0
 
-    def test_failed_fetch_with_redownload_preserves_existing_rows(self):
-        """When needs_redownload=True but fetch FAILS, existing rows must
-        NOT be deleted.  This is the exact GRTUF.US root cause fix."""
-        from full_sync_service import _process_price_ticker
-
-        db = _FakeDB()
-        # Pre-write state: DB has 5000 rows of history
-        db.stock_prices._agg_results = [
-            [{"_id": None, "count": 5000, "earliest": "2003-09-02", "latest": "2026-04-16"}],
-        ]
-
-        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
-            # Fetch fails (timeout / network error)
-            mock_fetch.return_value = (None, 0, 60000, False)
-            result = asyncio.run(
-                _process_price_ticker(db, "GRTUF.US", job_name="test", needs_redownload=True)
-            )
-
-        assert result["success"] is False
-        # CRITICAL: NO delete_many was called — existing rows preserved
-        assert len(db.stock_prices.deleted) == 0, (
-            "Failed fetch must NOT delete existing rows — "
-            f"but {len(db.stock_prices.deleted)} delete(s) were issued"
-        )
-        # No writes either
-        assert len(db.stock_prices.written) == 0
-
-    def test_failed_fetch_with_redownload_reflags_for_retry(self):
-        """When needs_redownload=True and fetch fails, the ticker must be
-        re-flagged with needs_price_redownload=True so Phase C retries."""
-        from full_sync_service import _process_price_ticker
-
-        db = _FakeDB()
-        db.stock_prices._agg_results = [
-            [{"_id": None, "count": 5000, "earliest": "2003-09-02", "latest": "2026-04-16"}],
-        ]
-
-        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.return_value = (None, 429, 500, False)
-            result = asyncio.run(
-                _process_price_ticker(db, "GRTUF.US", job_name="test", needs_redownload=True)
-            )
-
-        assert result["success"] is False
-        assert result["rate_limited"] is True
-
-        # Find the tracked_tickers update
-        assert len(db.tracked_tickers.updates) >= 1
-        last_update = db.tracked_tickers.updates[-1]
-        set_fields = last_update["update"]["$set"]
-        assert set_fields["needs_price_redownload"] is True, (
-            "Failed fetch must re-flag needs_price_redownload=True"
-        )
-        assert set_fields["price_history_complete"] is False
-
-    def test_normal_fetch_without_redownload_does_not_delete(self):
-        """When needs_redownload=False, no delete happens regardless."""
-        from full_sync_service import _process_price_ticker
-
-        db = _FakeDB()
-        records = _make_eod_records_range("2003-09-02", "2026-04-16", freq_days=7)
-        db.stock_prices._agg_results = [
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            [{"_id": None, "db_first_date": "2003-09-02", "db_last_date": "2026-04-16", "db_row_count": len(records)}],
-        ]
-
-        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.return_value = (records, 200, 50, True)
-            result = asyncio.run(
-                _process_price_ticker(db, "GRTUF.US", job_name="test", needs_redownload=False)
-            )
-
+        # Key ordering proof: fetch was called, THEN delete, THEN write.
+        # Since _fetch_one is mocked, it returns immediately.
+        # The delete_many call happens AFTER fetch returns successfully.
         assert result["success"] is True
+        assert result["records"] > 0
+
+    def test_failed_fetch_preserves_existing_rows(self):
+        """When fetch fails, NO delete happens and existing rows survive."""
+        from full_sync_service import _process_price_ticker
+
+        db = _FakeDB()
+
+        with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
+            mock_fetch.return_value = (None, 429, 50, False)
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                result = asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "GRTUF.US", "test_job",
+                        needs_redownload=True,
+                    )
+                )
+
+        # NO delete happened — existing rows preserved
         assert len(db.stock_prices.deleted) == 0
 
+        # NO writes happened
+        assert len(db.stock_prices.written) == 0
+
+        assert result["success"] is False
+
 
 # ===========================================================================
-# TEST 2: Ingestion regression guard
+# TEST 2: Re-flag needs_price_redownload on failure
 # ===========================================================================
 
-class TestIngestionRegressionGuard:
-    """A successful Phase C run cannot reduce row_count or move
-    earliest_date forward."""
+class TestReflagOnFailure:
+    """Failed fetch must re-flag needs_price_redownload=True when
+    needs_redownload=True, so Phase C retries on the next run."""
 
-    def test_row_count_regression_detected(self):
-        """If post-write DB has fewer rows than pre-write, the run must
-        fail and re-flag for retry."""
+    def test_reflag_on_fetch_failure(self):
         from full_sync_service import _process_price_ticker
 
         db = _FakeDB()
-        records = _make_eod_records_range("2026-04-15", "2026-04-16")
-        db.stock_prices._agg_results = [
-            # Pre-write: DB had 5000 rows
-            [{"_id": None, "count": 5000, "earliest": "2003-09-02", "latest": "2026-04-16"}],
-            # Post-write: DB now has only 2 rows (regression!)
-            [{"_id": None, "db_first_date": "2026-04-15", "db_last_date": "2026-04-16", "db_row_count": 2}],
-        ]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.return_value = (records, 200, 50, True)
-            result = asyncio.run(
-                _process_price_ticker(db, "GRTUF.US", job_name="test", needs_redownload=True)
-            )
+            mock_fetch.return_value = (None, 500, 50, False)
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "GRTUF.US", "test_job",
+                        needs_redownload=True,
+                    )
+                )
 
-        assert result["success"] is False
-        assert result.get("ingestion_regression") is True
-
-        # Must re-flag for retry
-        last_update = db.tracked_tickers.updates[-1]
-        set_fields = last_update["update"]["$set"]
+        # Check that tracked_tickers was updated with re-flag
+        assert len(db.tracked_tickers.updates) == 1
+        update = db.tracked_tickers.updates[0]
+        set_fields = update["update"]["$set"]
         assert set_fields["needs_price_redownload"] is True
         assert set_fields["price_history_complete"] is False
-        assert set_fields["price_history_status"] == "ingestion_regression"
+        assert set_fields["price_history_status"] == "error"
 
-    def test_earliest_date_regression_detected(self):
-        """If post-write earliest_date is later than pre-write (history
-        truncated), the run must fail and re-flag."""
+    def test_no_reflag_when_not_redownload(self):
+        """When needs_redownload=False, failure should NOT set
+        needs_price_redownload (it wasn't flagged to begin with)."""
         from full_sync_service import _process_price_ticker
 
         db = _FakeDB()
-        records = _make_eod_records_range("2025-01-01", "2026-04-16", freq_days=7)
-        db.stock_prices._agg_results = [
-            # Pre-write: DB started from 2003
-            [{"_id": None, "count": 5000, "earliest": "2003-09-02", "latest": "2026-04-16"}],
-            # Post-write: earliest moved forward to 2025 (regression!)
-            [{"_id": None, "db_first_date": "2025-01-01", "db_last_date": "2026-04-16", "db_row_count": 5100}],
-        ]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.return_value = (records, 200, 50, True)
-            result = asyncio.run(
-                _process_price_ticker(db, "TEST.US", job_name="test", needs_redownload=True)
-            )
+            mock_fetch.return_value = (None, 500, 50, False)
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "AAPL.US", "test_job",
+                        needs_redownload=False,
+                    )
+                )
 
-        assert result["success"] is False
-        assert result.get("ingestion_regression") is True
+        assert len(db.tracked_tickers.updates) == 1
+        set_fields = db.tracked_tickers.updates[0]["update"]["$set"]
+        assert "needs_price_redownload" not in set_fields
 
-    def test_no_regression_when_row_count_increases(self):
-        """Normal case: pre=0, post=5000 → no regression."""
+    def test_reflag_on_rate_limit(self):
+        """429 rate-limit with needs_redownload=True must also re-flag."""
         from full_sync_service import _process_price_ticker
 
         db = _FakeDB()
-        records = _make_eod_records_range("2003-09-02", "2026-04-16", freq_days=7)
-        db.stock_prices._agg_results = [
-            # Pre-write: empty DB
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            # Post-write: full history
-            [{"_id": None, "db_first_date": "2003-09-02", "db_last_date": "2026-04-16", "db_row_count": len(records)}],
-        ]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
-            mock_fetch.return_value = (records, 200, 50, True)
-            result = asyncio.run(
-                _process_price_ticker(db, "GRTUF.US", job_name="test", needs_redownload=False)
-            )
+            mock_fetch.return_value = (None, 429, 50, False)
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "GRTUF.US", "test_job",
+                        needs_redownload=True,
+                    )
+                )
 
-        assert result["success"] is True
-        assert result.get("ingestion_regression") is not True
+        set_fields = db.tracked_tickers.updates[0]["update"]["$set"]
+        assert set_fields["needs_price_redownload"] is True
+        assert set_fields["history_download_error"] == "rate_limited"
 
 
 # ===========================================================================
-# TEST 3: Ingestion audit trail persisted
+# TEST 3: Write-boundary validation in Phase C upsert
 # ===========================================================================
 
-class TestIngestionAuditTrail:
-    """Structured ingestion audit fields are persisted on successful writes."""
+class TestWriteBoundaryValidation:
+    """Phase C must skip rows missing required fields (ticker/date/close)."""
 
-    def test_audit_fields_persisted_on_success(self):
-        """After a successful Phase C run, the tracked_tickers document
-        must contain ingestion_audit with pre/post DB counts."""
+    def test_rows_with_zero_close_are_skipped(self):
+        """Records where close=0 must be filtered out by validate_price_row."""
         from full_sync_service import _process_price_ticker
 
         db = _FakeDB()
-        records = _make_eod_records_range("2003-09-02", "2026-04-16", freq_days=7)
-        db.stock_prices._agg_results = [
-            [{"_id": None, "count": 2, "earliest": "2026-04-15", "latest": "2026-04-16"}],
-            [{"_id": None, "db_first_date": "2003-09-02", "db_last_date": "2026-04-16", "db_row_count": len(records)}],
+        records = [
+            {"date": "2024-01-02", "open": 10.0, "high": 11.0,
+             "low": 9.0, "close": 10.0, "adjusted_close": 10.0, "volume": 100},
+            {"date": "2024-01-03", "open": 10.0, "high": 11.0,
+             "low": 9.0, "close": 0, "adjusted_close": 0, "volume": 0},  # zero close
         ]
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2024-01-02",
+            "db_last_date": "2024-01-02",
+            "db_row_count": 1,
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
-            result = asyncio.run(
-                _process_price_ticker(db, "GRTUF.US", job_name="test", needs_redownload=True)
-            )
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                result = asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "TEST.US", "test_job",
+                        needs_redownload=False,
+                    )
+                )
 
-        assert result["success"] is True
+        # Only 1 record should be written (the one with close=10.0)
+        assert result["records"] == 1
 
-        # Find the final tracked_tickers update
-        last_update = db.tracked_tickers.updates[-1]
-        set_fields = last_update["update"]["$set"]
-
-        # Must contain ingestion_audit
-        audit = set_fields.get("ingestion_audit")
-        assert audit is not None, "ingestion_audit field must be persisted"
-        assert audit["fetched_count"] == len(records)
-        assert audit["pre_db_count"] == 2
-        assert audit["pre_db_earliest"] == "2026-04-15"
-        assert audit["post_db_count"] == len(records)
-        assert audit["post_db_earliest"] == "2003-09-02"
-        assert audit["needs_redownload"] is True
-
-    def test_audit_fields_persisted_on_range_proof_fail(self):
-        """Even when range-proof fails, ingestion_audit is persisted."""
+    def test_rows_without_close_are_skipped(self):
+        """Records where close is None/missing must be filtered out."""
         from full_sync_service import _process_price_ticker
 
         db = _FakeDB()
-        records = _make_eod_records_range("1984-11-07", "2026-04-08", freq_days=7)
-        db.stock_prices._agg_results = [
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            # Post-write: only 2 rows landed (truncated)
-            [{"_id": None, "db_first_date": "2026-04-07", "db_last_date": "2026-04-08", "db_row_count": 2}],
+        records = [
+            {"date": "2024-01-02", "open": 10.0, "high": 11.0,
+             "low": 9.0, "close": 10.0, "adjusted_close": 10.0, "volume": 100},
+            {"date": "2024-01-03", "open": 10.0, "high": 11.0,
+             "low": 9.0, "volume": 0},  # missing close entirely
         ]
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2024-01-02",
+            "db_last_date": "2024-01-02",
+            "db_row_count": 1,
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
-            result = asyncio.run(
-                _process_price_ticker(db, "BDL.US", job_name="test", needs_redownload=False)
-            )
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                result = asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "TEST.US", "test_job",
+                        needs_redownload=False,
+                    )
+                )
 
-        assert result["success"] is False
-        assert result.get("range_proof_failed") is True
-
-        # Must still have ingestion_audit
-        last_update = db.tracked_tickers.updates[-1]
-        set_fields = last_update["update"]["$set"]
-        audit = set_fields.get("ingestion_audit")
-        assert audit is not None
-        assert audit["fetched_count"] == len(records)
-        assert audit["post_db_count"] == 2
+        assert result["records"] == 1
 
 
 # ===========================================================================
-# TEST 4: Unique index is (ticker, date), not just ticker
+# TEST 4: Upsert key is (ticker, date)
 # ===========================================================================
 
 class TestUpsertKeyIsTickerDate:
-    """The upsert key in bulk_write must be (ticker, date), ensuring
-    multiple dates per ticker are stored as separate documents."""
+    """Bulk upsert filter must be {ticker, date} — not just {ticker}."""
 
     def test_upsert_filter_is_ticker_and_date(self):
-        """Each UpdateOne in the bulk_write must filter on both ticker
-        AND date, not just ticker (which would overwrite all rows)."""
         from full_sync_service import _process_price_ticker
 
         db = _FakeDB()
-        records = _make_eod_records_range("2026-04-14", "2026-04-16")
-        db.stock_prices._agg_results = [
-            [{"_id": None, "count": 0, "earliest": None, "latest": None}],
-            [{"_id": None, "db_first_date": "2026-04-14", "db_last_date": "2026-04-16", "db_row_count": 3}],
+        records = [
+            {"date": "2024-01-02", "open": 10.0, "high": 11.0,
+             "low": 9.0, "close": 10.0, "adjusted_close": 10.0, "volume": 100},
         ]
+        db.stock_prices._agg_result = [{
+            "_id": None,
+            "db_first_date": "2024-01-02",
+            "db_last_date": "2024-01-02",
+            "db_row_count": 1,
+        }]
 
         with patch("full_sync_service._fetch_one", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = (records, 200, 50, True)
-            asyncio.run(
-                _process_price_ticker(db, "TEST.US", job_name="test", needs_redownload=False)
-            )
+            with patch("full_sync_service._log_credit", new_callable=AsyncMock):
+                asyncio.get_event_loop().run_until_complete(
+                    _process_price_ticker(
+                        db, "AAPL.US", "test_job",
+                        needs_redownload=False,
+                    )
+                )
 
-        # Inspect the UpdateOne operations
-        assert len(db.stock_prices.written) == 3
-        # Each op is a pymongo.UpdateOne — extract the filter
-        for op in db.stock_prices.written:
-            filt = op._filter
-            assert "ticker" in filt, "UpdateOne filter must include 'ticker'"
-            assert "date" in filt, "UpdateOne filter must include 'date'"
-            assert filt["ticker"] == "TEST.US"
+        # Inspect the UpdateOne operations written
+        assert len(db.stock_prices.written) == 1
+        op = db.stock_prices.written[0]
+        # UpdateOne._filter contains the filter dict
+        filt = op._filter
+        assert "ticker" in filt
+        assert "date" in filt
+        assert filt["ticker"] == "AAPL.US"
+        assert filt["date"] == "2024-01-02"

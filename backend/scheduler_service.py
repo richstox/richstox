@@ -4504,22 +4504,17 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                             }
                         except Exception as ph_err:
                             logger.warning(f"{job_name}: Phase C failed for {ticker}: {ph_err}")
-                            # Record failure on the ticker document and re-flag
-                            # for retry so Phase C picks it up on the next run.
+                            # Record failure on the ticker document
                             try:
                                 _ticker_us = ticker if ticker.endswith(".US") else f"{ticker}.US"
                                 _fail_ts = datetime.now(timezone.utc)
-                                _err_set: Dict[str, Any] = {
-                                    "price_history_status": "error",
-                                    "history_download_failed_at": _fail_ts,
-                                    "history_download_error": f"exception: {ph_err}",
-                                }
-                                if needs_redownload:
-                                    _err_set["needs_price_redownload"] = True
-                                    _err_set["price_history_complete"] = False
                                 await db.tracked_tickers.update_one(
                                     {"ticker": _ticker_us},
-                                    {"$set": _err_set},
+                                    {"$set": {
+                                        "price_history_status": "error",
+                                        "history_download_failed_at": _fail_ts,
+                                        "history_download_error": f"exception: {ph_err}",
+                                    }},
                                 )
                             except Exception:
                                 pass  # Best-effort — don't mask the original error
@@ -5167,7 +5162,7 @@ async def run_ticker_gap_remediation(db) -> Dict[str, Any]:
     ingestion (e.g. because they were temporarily un-seeded).
     """
     from services.admin_overview_service import _get_bulk_processed_dates
-    from price_ingestion_service import fetch_eod_history, parse_eod_record, validate_price_row
+    from price_ingestion_service import fetch_eod_history, parse_eod_record
 
     started_at = datetime.now(timezone.utc)
     job_name = "ticker_gap_remediation"
@@ -5280,10 +5275,10 @@ async def run_ticker_gap_remediation(db) -> Dict[str, Any]:
                         pair_had_data = False
                         for record in records:
                             parsed = parse_eod_record(ticker, record)
-                            if not validate_price_row(parsed):
+                            if not parsed.get("date"):
                                 logger.warning(
                                     "[TICKER GAP REMEDIATION] %s %s: "
-                                    "invalid row (missing ticker/date/close)",
+                                    "parse_eod_record returned no date",
                                     ticker, target_date,
                                 )
                                 continue
@@ -5420,7 +5415,6 @@ async def run_single_ticker_gap_remediation(
         fetch_bulk_eod_latest,
         _normalize_step2_ticker,
         _is_zero_or_missing_close,
-        validate_price_row,
     )
 
     started_at = datetime.now(timezone.utc)
@@ -5586,11 +5580,11 @@ async def run_single_ticker_gap_remediation(
                             report["skip_reason"] = "api_returned_zero_price"
                             continue
                         parsed = parse_eod_record(normalized, record)
-                        if not validate_price_row(parsed):
-                            report["skip_reason"] = "parse_failed_invalid_row"
+                        if not parsed.get("date"):
+                            report["skip_reason"] = "parse_failed_no_date"
                             logger.warning(
                                 "[SINGLE TICKER GAP REMEDIATION] %s %s: "
-                                "invalid row (missing ticker/date/close)",
+                                "parse_eod_record returned no date",
                                 normalized, target_date,
                             )
                             continue
@@ -5665,7 +5659,7 @@ async def run_single_ticker_gap_remediation(
                                 )
                                 break
                             parsed = parse_eod_record(normalized, record)
-                            if validate_price_row(parsed):
+                            if parsed.get("date"):
                                 wr = await db.stock_prices.bulk_write(
                                     [UpdateOne(
                                         {"ticker": parsed["ticker"], "date": parsed["date"]},
@@ -5822,7 +5816,6 @@ async def remediate_gap_date(
         fetch_bulk_eod_latest,
         _normalize_step2_ticker,
         _is_zero_or_missing_close,
-        validate_price_row,
     )
     from pymongo import UpdateOne
 
@@ -5978,7 +5971,7 @@ async def remediate_gap_date(
         if row["bulk_found"] is True and bulk_record and not bulk_close_is_zero:
             try:
                 parsed = parse_eod_record(ticker, bulk_record)
-                if validate_price_row(parsed):
+                if parsed.get("date"):
                     wr = await db.stock_prices.bulk_write(
                         [UpdateOne(
                             {"ticker": parsed["ticker"],
@@ -6016,7 +6009,7 @@ async def remediate_gap_date(
                         if _is_zero_or_missing_close(record.get("close")):
                             continue
                         parsed = parse_eod_record(ticker, record)
-                        if validate_price_row(parsed):
+                        if parsed.get("date"):
                             ops.append(
                                 UpdateOne(
                                     {"ticker": parsed["ticker"],

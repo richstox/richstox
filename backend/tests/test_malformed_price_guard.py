@@ -11,10 +11,6 @@ These tests prove:
   1) validate_price_row rejects rows missing ticker, date, or close
   2) validate_price_row accepts valid rows
   3) parse_eod_record output is rejected when EODHD returns empty records
-  4) Phase C skips invalid rows (no malformed docs written)
-  5) backfill_ticker_prices skips invalid rows
-  6) Bulk catchup (Step 2) inline build skips invalid rows
-  7) Purge-malformed predicate targets only malformed docs
 """
 
 import sys
@@ -85,18 +81,17 @@ class TestValidatePriceRow:
         assert validate_price_row(row) is False
 
     def test_zero_close_rejected(self):
-        """close=0 is a garbage price (halted/delisted) and must be rejected."""
         row = {"ticker": "AAPL.US", "date": "2024-01-02", "close": 0}
         assert validate_price_row(row) is False
 
     def test_ticker_only_doc_rejected(self):
-        """The exact malformed shape found in production."""
+        """Exact production malformed shape: {ticker: "ALOT.US"} only."""
         row = {"ticker": "ALOT.US"}
         assert validate_price_row(row) is False
 
 
 # ---------------------------------------------------------------------------
-# parse_eod_record + validate_price_row integration
+# parse_eod_record → validate_price_row integration
 # ---------------------------------------------------------------------------
 
 class TestParseEodRecordValidation:
@@ -134,63 +129,3 @@ class TestParseEodRecordValidation:
             "close": 0,
         })
         assert validate_price_row(parsed) is False
-
-
-# ---------------------------------------------------------------------------
-# Purge predicate correctness
-# ---------------------------------------------------------------------------
-
-class TestPurgePredicate:
-    """The malformed-doc purge predicate must target exactly the right docs."""
-
-    # The predicate used in admin_purge_malformed_price_docs
-    PREDICATE_FIELDS = [
-        {"date": {"$exists": False}},
-        {"date": None},
-        {"close": {"$exists": False}},
-        {"close": None},
-    ]
-
-    def _matches_predicate(self, doc):
-        """Simulate MongoDB $or match on the predicate."""
-        for cond in self.PREDICATE_FIELDS:
-            for field, constraint in cond.items():
-                if isinstance(constraint, dict):
-                    # $exists: False
-                    if "$exists" in constraint and not constraint["$exists"]:
-                        if field not in doc:
-                            return True
-                elif constraint is None:
-                    if doc.get(field) is None:
-                        return True
-        return False
-
-    def test_ticker_only_doc_matches(self):
-        """Production malformed doc: {ticker: "ALOT.US"} only."""
-        assert self._matches_predicate({"ticker": "ALOT.US"}) is True
-
-    def test_doc_with_null_date_matches(self):
-        assert self._matches_predicate({"ticker": "X.US", "date": None, "close": 10.0}) is True
-
-    def test_doc_with_null_close_matches(self):
-        assert self._matches_predicate({"ticker": "X.US", "date": "2024-01-02", "close": None}) is True
-
-    def test_valid_doc_does_not_match(self):
-        """A properly formed doc must NOT be targeted by the predicate."""
-        assert self._matches_predicate({
-            "ticker": "AAPL.US",
-            "date": "2024-01-02",
-            "close": 150.0,
-        }) is False
-
-    def test_doc_with_all_fields_does_not_match(self):
-        assert self._matches_predicate({
-            "ticker": "AAPL.US",
-            "date": "2024-01-02",
-            "open": 148.0,
-            "high": 151.0,
-            "low": 147.5,
-            "close": 150.0,
-            "adjusted_close": 149.8,
-            "volume": 1000000,
-        }) is False

@@ -312,12 +312,10 @@ async def backfill_ticker_prices(db, ticker: str) -> Dict[str, Any]:
         
         # Parse and upsert records
         upserted = 0
-        skipped_invalid = 0
         for record in eod_data:
             parsed = parse_eod_record(ticker_full, record)
             
-            if not validate_price_row(parsed):
-                skipped_invalid += 1
+            if not parsed["date"]:
                 continue
             
             # Upsert (dedupe on ticker+date)
@@ -327,12 +325,6 @@ async def backfill_ticker_prices(db, ticker: str) -> Dict[str, Any]:
                 upsert=True
             )
             upserted += 1
-        
-        if skipped_invalid:
-            logger.warning(
-                "[BACKFILL] %s: skipped %d invalid rows (missing ticker/date/close)",
-                ticker_full, skipped_invalid,
-            )
         
         result["records_upserted"] = upserted
         result["success"] = True
@@ -507,9 +499,6 @@ async def sync_daily_prices(db) -> Dict[str, Any]:
                 "adjusted_close": float(record.get("adjusted_close", 0)) if record.get("adjusted_close") else None,
                 "volume": int(record.get("volume", 0)) if record.get("volume") else None,
             }
-            
-            if not validate_price_row(parsed):
-                continue
             
             await db.stock_prices.update_one(
                 {"ticker": ticker_full, "date": date},
@@ -792,7 +781,7 @@ async def sync_ticker_prices_delta(db, ticker: str) -> Dict[str, Any]:
     records = []
     for record in eod_data:
         parsed = parse_eod_record(ticker_full, record)
-        if validate_price_row(parsed):
+        if parsed.get("date"):
             records.append(parsed)
     
     inserted = 0
@@ -1108,22 +1097,19 @@ async def run_daily_bulk_catchup(
                 continue
 
             parsed_rows.append({"ticker": canonical_ticker, "date": date})
-            row_doc = {
-                "ticker": canonical_ticker,
-                "date": date,
-                "open": record.get("open"),
-                "high": record.get("high"),
-                "low": record.get("low"),
-                "close": record.get("close"),
-                "adjusted_close": record.get("adjusted_close"),
-                "volume": record.get("volume"),
-            }
-            if not validate_price_row(row_doc):
-                continue
             current_batch_ops.append(
                 UpdateOne(
                     {"ticker": canonical_ticker, "date": date},
-                    {"$set": row_doc},
+                    {"$set": {
+                        "ticker": canonical_ticker,
+                        "date": date,
+                        "open": record.get("open"),
+                        "high": record.get("high"),
+                        "low": record.get("low"),
+                        "close": record.get("close"),
+                        "adjusted_close": record.get("adjusted_close"),
+                        "volume": record.get("volume"),
+                    }},
                     upsert=True,
                 )
             )
