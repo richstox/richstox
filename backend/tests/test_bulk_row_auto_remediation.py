@@ -47,27 +47,15 @@ class _FakeCursor:
 
 
 class _FakeTrackedTickers:
-    """Supports distinct() for Step 2 universe AND find()/bulk_write() for remediation."""
+    """Supports distinct() for Step 2 universe AND bulk_write() for remediation reflag."""
 
-    def __init__(
-        self,
-        step2_tickers: Set[str],
-        all_seeded_tickers: Optional[Set[str]] = None,
-    ):
+    def __init__(self, step2_tickers: Set[str]):
         # step2_tickers: passed via seeded_tickers_override (Step 1 set).
-        # all_seeded_tickers: full tracked_tickers set that the remediation
-        #   queries — may include tickers NOT in step2_tickers.
         self._step2 = set(step2_tickers)
-        self._all_seeded = set(all_seeded_tickers or step2_tickers)
         self.reflag_writes: List[Any] = []
 
     async def distinct(self, field, query):
         return list(self._step2)
-
-    def find(self, query, projection=None):
-        """Return a cursor over all seeded ticker docs."""
-        docs = [{"ticker": t} for t in sorted(self._all_seeded)]
-        return _FakeCursor(docs)
 
     async def bulk_write(self, ops, ordered=False):
         self.reflag_writes.extend(ops)
@@ -103,13 +91,10 @@ class _FakeDB:
     def __init__(
         self,
         step2_tickers: Set[str],
-        all_seeded_tickers: Optional[Set[str]] = None,
         existing_stock_prices: Optional[List[Dict[str, Any]]] = None,
     ):
         self.ops_config = _FakeOpsConfig()
-        self.tracked_tickers = _FakeTrackedTickers(
-            step2_tickers, all_seeded_tickers,
-        )
+        self.tracked_tickers = _FakeTrackedTickers(step2_tickers)
         self.stock_prices = _FakeStockPrices(existing_stock_prices)
 
 
@@ -141,17 +126,17 @@ def _run(coro):
 # ---------------------------------------------------------------------------
 def test_remediation_triggers_for_positive_bulk_price_write_skip():
     """
-    BODI.US is seeded (all_seeded) and present in bulk with close > 0,
-    but NOT in the Step 1 override set → not written.
+    BODI.US is present in this run's bulk with close > 0, but NOT in the
+    Step 1 override set → not written during normal write phase.
     After the write phase, the DB row is missing → remediation MUST trigger.
+    Candidate set is derived from bulk data only (not a tracked_tickers sweep).
     """
     bulk = [
         _make_bulk_row("AAPL", close=150.0),
-        _make_bulk_row("BODI", close=3.25),  # positive price
+        _make_bulk_row("BODI", close=3.25),  # positive price, in bulk
     ]
     db = _FakeDB(
         step2_tickers={"AAPL.US"},          # Step 1 only has AAPL
-        all_seeded_tickers={"AAPL.US", "BODI.US"},  # BODI is also seeded
     )
 
     result = _run(
@@ -176,7 +161,7 @@ def test_remediation_triggers_for_positive_bulk_price_write_skip():
 # ---------------------------------------------------------------------------
 def test_no_remediation_when_bulk_price_is_zero():
     """
-    BODI.US is seeded and in bulk, but close=0 (halted/delisted).
+    BODI.US is in this run's bulk but close=0 (halted/delisted).
     Remediation must NOT trigger — zero-price is an expected exclusion.
     """
     bulk = [
@@ -185,7 +170,6 @@ def test_no_remediation_when_bulk_price_is_zero():
     ]
     db = _FakeDB(
         step2_tickers={"AAPL.US"},
-        all_seeded_tickers={"AAPL.US", "BODI.US"},
     )
 
     result = _run(
@@ -208,7 +192,7 @@ def test_no_remediation_when_bulk_price_is_zero():
 # ---------------------------------------------------------------------------
 def test_no_remediation_when_bulk_row_absent():
     """
-    BODI.US is seeded but NOT present in the bulk payload at all.
+    BODI.US is NOT present in this run's bulk payload at all.
     Remediation must NOT trigger — no bulk evidence means no gap.
     """
     bulk = [
@@ -217,7 +201,6 @@ def test_no_remediation_when_bulk_row_absent():
     ]
     db = _FakeDB(
         step2_tickers={"AAPL.US"},
-        all_seeded_tickers={"AAPL.US", "BODI.US"},
     )
 
     result = _run(
@@ -240,9 +223,9 @@ def test_no_remediation_when_bulk_row_absent():
 # ---------------------------------------------------------------------------
 def test_no_remediation_when_db_row_exists():
     """
-    BODI.US is seeded and present in bulk with close > 0, was NOT in the
-    Step 1 override, BUT a stock_prices row already exists (from a prior
-    backfill or Phase C run).  Remediation must NOT trigger.
+    BODI.US is in this run's bulk with close > 0, was NOT in the Step 1
+    override, BUT a stock_prices row already exists (from a prior backfill
+    or Phase C run).  Remediation must NOT trigger.
     """
     bulk = [
         _make_bulk_row("AAPL", close=150.0),
@@ -250,7 +233,6 @@ def test_no_remediation_when_db_row_exists():
     ]
     db = _FakeDB(
         step2_tickers={"AAPL.US"},
-        all_seeded_tickers={"AAPL.US", "BODI.US"},
         existing_stock_prices=[
             {"ticker": "BODI.US", "date": DATE, "close": 3.25},
         ],

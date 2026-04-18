@@ -1301,40 +1301,28 @@ async def run_daily_bulk_catchup(
         f"{records_upserted} records, {bulk_writes} bulk_write batches"
     )
 
-    # ── Auto-remediation: detect seeded tickers with positive bulk price ──
-    # but missing DB row after the write phase.  This covers the proven
-    # incident shape where a ticker is seeded, present in bulk with close>0,
-    # yet was skipped (e.g. not in the Step 1 override set at run time).
-    # Remediation: flag for Phase C redownload.
+    # ── Auto-remediation: detect tickers in THIS RUN's bulk dataset with ──
+    # positive price but missing DB row after the write phase.  This covers
+    # the proven incident shape where a ticker is seeded, present in bulk
+    # with close>0, yet was skipped (e.g. not in the Step 1 override set
+    # at run time).  Remediation: flag for Phase C redownload.
+    #
+    # SCOPE: candidate set is derived ONLY from normalized_bulk_rows (this
+    # run's parsed bulk payload).  We never query tracked_tickers for "all
+    # seeded" — that would turn this into a general reconciliation sweep.
     remediated_tickers: List[str] = []
     try:
-        # 1. Query ALL currently-seeded tickers (may differ from step2_tickers
-        #    override if the ticker was added/re-seeded after Step 1 ran).
-        _SEEDED_QUERY = {
-            "exchange": {"$in": ["NYSE", "NASDAQ"]},
-            "asset_type": "Common Stock",
-            "is_seeded": True,
-        }
-        all_seeded_docs = await db.tracked_tickers.find(
-            _SEEDED_QUERY, {"_id": 0, "ticker": 1}
-        ).to_list(None)
-        all_seeded_tickers = {
-            d["ticker"] for d in all_seeded_docs if d.get("ticker")
-        }
-
-        # 2. Find seeded tickers with positive-price bulk rows that were
-        #    NOT written during this run.
+        # 1. From the current run's bulk data, find tickers with positive
+        #    close that were NOT written during this run.
         gap_candidates: List[str] = []
-        for ticker_raw in all_seeded_tickers:
-            norm = _normalize_step2_ticker(ticker_raw)
-            if not norm:
+        for norm_ticker, bulk_rows_for_ticker in normalized_bulk_rows.items():
+            if not norm_ticker:
                 continue
-            if ticker_raw in processed_ticker_set or norm in processed_ticker_set:
+            # Already written this run — no gap
+            if norm_ticker in processed_ticker_set:
                 continue
-            if ticker_raw in zero_price_tickers or norm in zero_price_tickers:
-                continue
-            bulk_rows_for_ticker = normalized_bulk_rows.get(norm, [])
-            if not bulk_rows_for_ticker:
+            # Already identified as zero-price exclusion this run
+            if norm_ticker in zero_price_tickers:
                 continue
             # Check at least one row has a positive close price
             has_positive = any(
@@ -1342,9 +1330,9 @@ async def run_daily_bulk_catchup(
                 for r in bulk_rows_for_ticker
             )
             if has_positive:
-                gap_candidates.append(ticker_raw)
+                gap_candidates.append(norm_ticker)
 
-        # 3. Verify DB row is actually missing for each candidate
+        # 2. Verify DB row is actually missing for each candidate
         if gap_candidates:
             existing_rows = await db.stock_prices.find(
                 {"ticker": {"$in": gap_candidates}, "date": date_seen},
@@ -1355,12 +1343,14 @@ async def run_daily_bulk_catchup(
                 t for t in gap_candidates if t not in existing_tickers
             ]
 
-            # 4. Flag confirmed missing tickers for Phase C redownload
+            # 3. Flag confirmed missing tickers for Phase C redownload.
+            #    Filter includes is_seeded:True so only seeded tickers are
+            #    reflagged (non-seeded bulk tickers are ignored).
             if confirmed_missing:
                 from pymongo import UpdateOne as _RemUpdateOne
                 reflag_ops = [
                     _RemUpdateOne(
-                        {"ticker": t},
+                        {"ticker": t, "is_seeded": True},
                         {"$set": {
                             "needs_price_redownload": True,
                             "price_history_complete": False,

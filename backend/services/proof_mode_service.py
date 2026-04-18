@@ -327,7 +327,6 @@ async def run_proof_mode(
                 _npr = tt_doc.get("needs_price_redownload")
                 if _phs == "auto_reflagged_missing_bulk_row" and _npr is True:
                     remediation_action = "auto_reflagged_for_redownload"
-        skip_reasons["remediation_action"] = remediation_action
 
     # ------------------------------------------------------------------
     # 5. Gap-check context: is this date in expected_dates?
