@@ -122,7 +122,10 @@ async def cleanup_invisible_ticker_data(db) -> Dict[str, Any]:
     # price_history_complete=True.  If it later returns to bulk,
     # visibility Gate 8 passes and the ticker shows a broken chart
     # with only a few bulk-day rows.
+    # Also clear stale Phase-C proof fields so the completeness sweep
+    # doesn't trust them when the underlying data is gone.
     if deleted.get("stock_prices", 0) > 0:
+        from services.history_completeness_service import STALE_PROOF_RESET_FIELDS
         await db.tracked_tickers.update_many(
             {"ticker": {"$in": all_variants}},
             {"$set": {
@@ -130,6 +133,7 @@ async def cleanup_invisible_ticker_data(db) -> Dict[str, Any]:
                 "needs_price_redownload": True,
                 "price_history_status": "cleanup_reset",
                 "updated_at": datetime.now(timezone.utc),
+                **STALE_PROOF_RESET_FIELDS,
             }},
         )
 

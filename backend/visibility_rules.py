@@ -490,6 +490,9 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
         # price_history_complete=True.  If it later returns to bulk,
         # visibility Gate 8 passes and the ticker shows a broken chart
         # with only a few bulk-day rows (the BODI bug).
+        # Also clear stale Phase-C proof fields so the completeness sweep
+        # doesn't trust them when the underlying data is gone.
+        from services.history_completeness_service import STALE_PROOF_RESET_FIELDS
         _reset_result = await db.tracked_tickers.update_many(
             {"ticker": {"$in": tickers_to_cleanup}},
             {"$set": {
@@ -497,6 +500,7 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
                 "needs_price_redownload": True,
                 "price_history_status": "cleanup_reset",
                 "updated_at": datetime.now(timezone.utc),
+                **STALE_PROOF_RESET_FIELDS,
             }},
         )
         cleanup_stats["completeness_reset"] = _reset_result.modified_count
