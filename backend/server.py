@@ -335,7 +335,7 @@ class StockPrice(BaseModel):
     volume: int
 
 class ForceRedownloadRequest(BaseModel):
-    tickers: List[str] = Field(..., min_length=1, max_length=50, description="Tickers to force-redownload (max 50)")
+    tickers: List[str] = Field(..., min_length=1, max_length=200, description="Tickers to force-redownload (max 200)")
     reason: str = Field(..., min_length=1, max_length=200, description="Audit reason for the force redownload")
 
 class PortfolioCreate(BaseModel):
@@ -3966,26 +3966,25 @@ async def admin_purge_malformed_prices(dry_run: bool = Query(True, description="
 
 # ----- Force Full Price-History Redownload Endpoint -----
 
-FORCE_REDOWNLOAD_MAX_TICKERS = 50
+FORCE_REDOWNLOAD_MAX_TICKERS = 200
 
 
 @api_router.post("/admin/prices/force-redownload")
 async def admin_force_price_redownload(body: ForceRedownloadRequest):
     """
-    Force a safe full-history redownload for explicit tickers.
+    Reflag tickers for a full-history redownload (pure reflag, no deletes).
 
-    For each requested ticker that exists in tracked_tickers:
-      1. Delete ALL existing stock_prices rows for the ticker.
-      2. Reflag the ticker document:
-         - needs_price_redownload = true
-         - price_history_complete = false
-         - price_history_status = "admin_force_redownload"
-         - history_download_error = <reason from request body>
+    For each requested ticker that exists in tracked_tickers, sets:
+      - needs_price_redownload = true
+      - price_history_complete = false
+      - price_history_status = "admin_forced_redownload"
+      - history_download_error = "admin_forced_redownload"
+      - force_redownload_reason = <free-text reason from request body>
 
     Phase C will pick up the reflagged tickers on the next scheduler run
     and perform a full EODHD history download.
 
-    Safety: Ticker list is capped at 50 per request to prevent accidental
+    Safety: Ticker list is capped at 200 per request to prevent accidental
     mass operations.
     """
     raw_tickers = body.tickers
@@ -4022,7 +4021,6 @@ async def admin_force_price_redownload(body: ForceRedownloadRequest):
     tt_map: dict[str, dict] = {doc["ticker"]: doc async for doc in tt_cursor}
 
     results: list[dict] = []
-    total_deleted = 0
     total_reflagged = 0
 
     for ticker in tickers:
@@ -4031,31 +4029,25 @@ async def admin_force_price_redownload(body: ForceRedownloadRequest):
                 "ticker": ticker,
                 "status": "skipped",
                 "reason": "ticker_not_found",
-                "deleted_prices": 0,
             })
             continue
 
-        # Step 1: Delete all existing stock_prices for this ticker
-        del_result = await db.stock_prices.delete_many({"ticker": ticker})
-        deleted_count = del_result.deleted_count
-
-        # Step 2: Reflag tracked_ticker for Phase C redownload
+        # Reflag tracked_ticker for Phase C redownload (no deletes)
         await db.tracked_tickers.update_one(
             {"ticker": ticker},
             {"$set": {
                 "needs_price_redownload": True,
                 "price_history_complete": False,
-                "price_history_status": "admin_force_redownload",
-                "history_download_error": reason,
+                "price_history_status": "admin_forced_redownload",
+                "history_download_error": "admin_forced_redownload",
+                "force_redownload_reason": reason,
             }},
         )
 
-        total_deleted += deleted_count
         total_reflagged += 1
         results.append({
             "ticker": ticker,
             "status": "reflagged",
-            "deleted_prices": deleted_count,
             "is_visible": tt_map[ticker].get("is_visible", False),
         })
 
@@ -4063,7 +4055,6 @@ async def admin_force_price_redownload(body: ForceRedownloadRequest):
         "tickers_requested": len(tickers),
         "tickers_reflagged": total_reflagged,
         "tickers_skipped": len(tickers) - total_reflagged,
-        "total_prices_deleted": total_deleted,
         "reason": reason,
         "results": results,
     }
