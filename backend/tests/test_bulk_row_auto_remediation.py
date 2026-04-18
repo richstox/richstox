@@ -152,8 +152,18 @@ def test_remediation_triggers_for_positive_bulk_price_write_skip():
     assert result["auto_remediated_tickers_count"] == 1
     assert "BODI.US" in result["auto_remediated_tickers"]
 
-    # Verify the reflag update was sent to tracked_tickers
-    assert len(db.tracked_tickers.reflag_writes) == 1
+    # Direct repair writes the missing row to stock_prices (not reflag).
+    # The stock_prices.writes list contains both the normal AAPL write and
+    # the BODI repair write.
+    repair_tickers = {
+        op._filter["ticker"]
+        for op in db.stock_prices.writes
+        if op._filter.get("ticker") == "BODI.US"
+    }
+    assert "BODI.US" in repair_tickers
+
+    # No reflag to tracked_tickers — direct repair succeeded
+    assert len(db.tracked_tickers.reflag_writes) == 0
 
 
 # ---------------------------------------------------------------------------

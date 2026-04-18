@@ -5626,6 +5626,18 @@ async def get_ticker_chart_data(
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
     SP500TR_TICKER = "SP500TR.INDX"
 
+    # ── Visibility guard: only serve chart data for visible tickers ───
+    # Aligned with /v1/ticker/{ticker}/detail which also gates on is_visible.
+    # Without this, tickers that fail visibility (e.g. missing fundamentals,
+    # incomplete price history) still show broken charts with only a few
+    # bulk-day data points — confusing users.
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker} is not available")
+
     # Calculate start date based on period
     from datetime import datetime, timezone, timedelta
     now = datetime.now(timezone.utc)
@@ -7759,6 +7771,30 @@ async def admin_proof_mode(
 
     from services.proof_mode_service import run_proof_mode
     result = await run_proof_mode(db, ticker=ticker, date=date)
+    return result
+
+
+@api_router.post("/admin/repair-price-gap")
+async def admin_repair_price_gap(
+    ticker: str = Query(..., description="Ticker symbol, e.g. BODI.US"),
+    date: str = Query(..., description="Date in YYYY-MM-DD format, e.g. 2026-04-15"),
+):
+    """
+    Deterministic repair for a single proven true-gap:
+    bulk row exists with positive price, but DB row is missing.
+
+    Performs the full proven-gap check before writing anything.
+    Does NOT fabricate rows when bulk row is absent or bulk price is zero.
+    No deletes. Idempotent.
+
+    Auth: AdminAuthMiddleware.
+    """
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD format")
+
+    from price_ingestion_service import repair_proven_true_gap
+    result = await repair_proven_true_gap(db, ticker=ticker, date=date)
     return result
 
 

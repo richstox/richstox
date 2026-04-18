@@ -311,22 +311,42 @@ async def run_proof_mode(
             skip_reasons["primary_reason"] = "unknown"
 
     # ------------------------------------------------------------------
-    # 4h. Remediation action: check if auto-remediation was applied
+    # 4h. Remediation evaluation: determine what remediation was or should
+    #     be applied for this proven gap shape.
     # ------------------------------------------------------------------
     remediation_action: Optional[str] = None
+    remediation_evaluated_for_date = False
+    remediation_reason: Optional[str] = None
+
     if bulk_found and not db_found and skip_reasons:
-        # Check if tracked_tickers has been flagged by auto-remediation
-        if seeded_doc:
-            tt_doc = await db.tracked_tickers.find_one(
-                {"ticker": normalized_input},
-                {"_id": 0, "needs_price_redownload": 1,
-                 "price_history_status": 1},
-            )
-            if tt_doc:
-                _phs = tt_doc.get("price_history_status")
-                _npr = tt_doc.get("needs_price_redownload")
-                if _phs == "auto_reflagged_missing_bulk_row" and _npr is True:
-                    remediation_action = "auto_reflagged_for_redownload"
+        remediation_evaluated_for_date = True
+        bulk_close_zero = skip_reasons.get("bulk_close_is_zero", False)
+        if bulk_close_zero:
+            remediation_reason = "bulk_close_is_zero_no_repair"
+        elif not skip_reasons.get("is_currently_seeded", False):
+            remediation_reason = "ticker_not_currently_seeded"
+        else:
+            # Check if tracked_tickers has been flagged by auto-remediation
+            if seeded_doc:
+                tt_doc = await db.tracked_tickers.find_one(
+                    {"ticker": normalized_input},
+                    {"_id": 0, "needs_price_redownload": 1,
+                     "price_history_status": 1},
+                )
+                if tt_doc:
+                    _phs = tt_doc.get("price_history_status")
+                    _npr = tt_doc.get("needs_price_redownload")
+                    if _phs == "auto_reflagged_missing_bulk_row" and _npr is True:
+                        remediation_action = "auto_reflagged_for_redownload"
+                        remediation_reason = "ticker_reflagged_for_phase_c"
+            if not remediation_action:
+                remediation_reason = "proven_true_gap_awaiting_repair"
+    elif bulk_found and db_found:
+        remediation_evaluated_for_date = True
+        remediation_reason = "db_row_exists_no_action_needed"
+        # When both bulk and DB have the row, any prior gap has been
+        # resolved — either by normal write or by direct repair.
+        remediation_action = "gap_repaired_from_bulk_row"
 
     # ------------------------------------------------------------------
     # 5. Gap-check context: is this date in expected_dates?
@@ -387,6 +407,8 @@ async def run_proof_mode(
         },
         "normalization": normalization_audit,
         "skip_reasons": skip_reasons if skip_reasons else None,
+        "remediation_evaluated_for_date": remediation_evaluated_for_date,
+        "remediation_reason": remediation_reason,
         "remediation_action": remediation_action,
         "gap_check_context": {
             "date_in_expected_dates": date_in_expected,

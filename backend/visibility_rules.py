@@ -474,14 +474,36 @@ async def recompute_visibility_all(db, parent_run_id: Optional[str] = None) -> D
     logger.info(f"Cleanup candidates: {len(tickers_to_cleanup)} "
                 f"(pre_invisible={len(pre_invisible)}, still_invisible={len(now_invisible_set)})")
 
-    cleanup_stats: Dict[str, int] = {"stock_prices_deleted": 0, "financials_cache_deleted": 0}
+    cleanup_stats: Dict[str, int] = {
+        "stock_prices_deleted": 0,
+        "financials_cache_deleted": 0,
+        "completeness_reset": 0,
+    }
     if tickers_to_cleanup:
         r = await db.stock_prices.delete_many({"ticker": {"$in": tickers_to_cleanup}})
         cleanup_stats["stock_prices_deleted"] = r.deleted_count
         r = await db.financials_cache.delete_many({"ticker": {"$in": tickers_to_cleanup}})
         cleanup_stats["financials_cache_deleted"] = r.deleted_count
+
+        # ── Reset completeness flags when stock_prices are deleted ────
+        # Without this, a ticker whose data is cleaned up retains
+        # price_history_complete=True.  If it later returns to bulk,
+        # visibility Gate 8 passes and the ticker shows a broken chart
+        # with only a few bulk-day rows (the BODI bug).
+        _reset_result = await db.tracked_tickers.update_many(
+            {"ticker": {"$in": tickers_to_cleanup}},
+            {"$set": {
+                "price_history_complete": False,
+                "needs_price_redownload": True,
+                "price_history_status": "cleanup_reset",
+                "updated_at": datetime.now(timezone.utc),
+            }},
+        )
+        cleanup_stats["completeness_reset"] = _reset_result.modified_count
+
         logger.info(f"Deleted {cleanup_stats['stock_prices_deleted']} prices, "
-                    f"{cleanup_stats['financials_cache_deleted']} financials")
+                    f"{cleanup_stats['financials_cache_deleted']} financials, "
+                    f"reset {cleanup_stats['completeness_reset']} completeness flags")
 
     # Snapshot AFTER
     after = {
