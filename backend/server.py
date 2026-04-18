@@ -3754,6 +3754,210 @@ async def admin_price_stats():
     stats = await get_price_stats(db)
     return stats
 
+# ----- Malformed Price Document Remediation Endpoints -----
+
+MALFORMED_PRICE_PREDICATE = {
+    "$or": [
+        {"date": {"$exists": False}},
+        {"date": None},
+        {"close": {"$exists": False}},
+        {"close": None},
+    ]
+}
+
+
+@api_router.get("/admin/prices/malformed")
+async def admin_get_malformed_prices():
+    """
+    Detect malformed stock_prices documents (missing/null date OR missing/null close).
+
+    Returns per-ticker breakdown with sample IDs, visibility, and redownload flag,
+    plus totals and an optional markdown table for copy/paste.
+    """
+    pipeline = [
+        {"$match": MALFORMED_PRICE_PREDICATE},
+        {"$group": {
+            "_id": "$ticker",
+            "malformed_count": {"$sum": 1},
+            "sample_ids": {"$push": {"$toString": "$_id"}},
+        }},
+        {"$sort": {"malformed_count": -1}},
+    ]
+    groups = await db.stock_prices.aggregate(pipeline).to_list(None)
+
+    if not groups:
+        return {
+            "items": [],
+            "totals": {"affected_tickers": 0, "malformed_docs": 0, "visible_affected": 0},
+            "markdown_table": "No malformed documents found.",
+        }
+
+    # Fetch tracked_ticker metadata for affected tickers
+    ticker_list = [g["_id"] for g in groups if g["_id"]]
+    tt_cursor = db.tracked_tickers.find(
+        {"ticker": {"$in": ticker_list}},
+        {"_id": 0, "ticker": 1, "is_visible": 1, "needs_price_redownload": 1},
+    )
+    tt_map = {doc["ticker"]: doc async for doc in tt_cursor}
+
+    items = []
+    total_malformed = 0
+    visible_affected = 0
+    for g in groups:
+        ticker = g["_id"] or "(no ticker)"
+        count = g["malformed_count"]
+        total_malformed += count
+        sample = g["sample_ids"][:5]
+        tt = tt_map.get(ticker, {})
+        is_vis = tt.get("is_visible", False)
+        needs_re = tt.get("needs_price_redownload", False)
+        if is_vis:
+            visible_affected += 1
+        items.append({
+            "ticker": ticker,
+            "malformed_count": count,
+            "sample_ids": sample,
+            "is_visible": is_vis,
+            "needs_price_redownload": needs_re,
+        })
+
+    totals = {
+        "affected_tickers": len(items),
+        "malformed_docs": total_malformed,
+        "visible_affected": visible_affected,
+    }
+
+    # Markdown table
+    md_lines = ["| Ticker | Malformed | Visible | Needs Redownload |",
+                "|--------|-----------|---------|------------------|"]
+    for it in items:
+        md_lines.append(
+            f"| {it['ticker']} | {it['malformed_count']} "
+            f"| {'✅' if it['is_visible'] else '❌'} "
+            f"| {'✅' if it['needs_price_redownload'] else '❌'} |"
+        )
+    md_lines.append(f"| **TOTAL** | **{total_malformed}** | **{visible_affected} visible** | |")
+
+    return {
+        "items": items,
+        "totals": totals,
+        "markdown_table": "\n".join(md_lines),
+    }
+
+
+@api_router.post("/admin/prices/purge-malformed")
+async def admin_purge_malformed_prices(dry_run: bool = Query(True, description="Preview only (true) or execute (false)")):
+    """
+    Purge malformed stock_prices documents and reflag affected tickers.
+
+    Malformed = missing/null date OR missing/null close.
+
+    dry_run=true:  preview — no writes
+    dry_run=false: delete malformed docs, then set on each affected ticker:
+      - needs_price_redownload = true
+      - price_history_complete = false
+      - price_history_status = "malformed_purged"
+      - history_download_error = "malformed_docs_purged"
+    """
+    # Identify malformed docs grouped by ticker
+    pipeline = [
+        {"$match": MALFORMED_PRICE_PREDICATE},
+        {"$group": {
+            "_id": "$ticker",
+            "malformed_count": {"$sum": 1},
+            "doc_ids": {"$push": "$_id"},
+        }},
+        {"$sort": {"malformed_count": -1}},
+    ]
+    groups = await db.stock_prices.aggregate(pipeline).to_list(None)
+
+    if not groups:
+        return {
+            "dry_run": dry_run,
+            "items": [],
+            "totals": {"affected_tickers": 0, "malformed_docs": 0, "visible_affected": 0},
+            "markdown_table": "No malformed documents found.",
+        }
+
+    # Collect ticker metadata
+    ticker_list = [g["_id"] for g in groups if g["_id"]]
+    tt_cursor = db.tracked_tickers.find(
+        {"ticker": {"$in": ticker_list}},
+        {"_id": 0, "ticker": 1, "is_visible": 1},
+    )
+    tt_map = {doc["ticker"]: doc async for doc in tt_cursor}
+
+    items = []
+    total_malformed = 0
+    all_doc_ids = []
+    visible_affected = 0
+    for g in groups:
+        ticker = g["_id"] or "(no ticker)"
+        count = g["malformed_count"]
+        total_malformed += count
+        all_doc_ids.extend(g["doc_ids"])
+        tt = tt_map.get(ticker, {})
+        is_vis = tt.get("is_visible", False)
+        if is_vis:
+            visible_affected += 1
+        items.append({
+            "ticker": ticker,
+            "malformed_count": count,
+            "sample_ids": [str(oid) for oid in g["doc_ids"][:5]],
+            "is_visible": is_vis,
+        })
+
+    totals = {
+        "affected_tickers": len(items),
+        "malformed_docs": total_malformed,
+        "visible_affected": visible_affected,
+    }
+
+    deleted_count = 0
+    reflagged_count = 0
+
+    if not dry_run:
+        # Delete all malformed docs in one operation
+        del_result = await db.stock_prices.delete_many({"_id": {"$in": all_doc_ids}})
+        deleted_count = del_result.deleted_count
+
+        # Reflag only affected tickers (derived from the malformed docs)
+        if ticker_list:
+            reflag_result = await db.tracked_tickers.update_many(
+                {"ticker": {"$in": ticker_list}},
+                {"$set": {
+                    "needs_price_redownload": True,
+                    "price_history_complete": False,
+                    "price_history_status": "malformed_purged",
+                    "history_download_error": "malformed_docs_purged",
+                }},
+            )
+            reflagged_count = reflag_result.modified_count
+
+    # Markdown table
+    md_lines = ["| Ticker | Malformed | Visible |",
+                "|--------|-----------|---------|"]
+    for it in items:
+        md_lines.append(
+            f"| {it['ticker']} | {it['malformed_count']} "
+            f"| {'✅' if it['is_visible'] else '❌'} |"
+        )
+    action = "PREVIEW" if dry_run else "PURGED"
+    md_lines.append(f"| **TOTAL** | **{total_malformed}** | **{visible_affected} visible** |")
+    md_lines.append(f"\n**Action:** {action}")
+    if not dry_run:
+        md_lines.append(f"**Deleted:** {deleted_count} docs | **Reflagged:** {reflagged_count} tickers")
+
+    return {
+        "dry_run": dry_run,
+        "items": items,
+        "totals": totals,
+        "deleted_count": deleted_count,
+        "reflagged_count": reflagged_count,
+        "markdown_table": "\n".join(md_lines),
+    }
+
+
 @api_router.get("/prices/{ticker}/52w")
 async def get_ticker_52w(ticker: str):
     """
