@@ -1301,6 +1301,78 @@ async def run_daily_bulk_catchup(
         f"{records_upserted} records, {bulk_writes} bulk_write batches"
     )
 
+    # ── Auto-remediation: detect tickers in THIS RUN's bulk dataset with ──
+    # positive price but missing DB row after the write phase.  This covers
+    # the proven incident shape where a ticker is seeded, present in bulk
+    # with close>0, yet was skipped (e.g. not in the Step 1 override set
+    # at run time).  Remediation: flag for Phase C redownload.
+    #
+    # SCOPE: candidate set is derived ONLY from normalized_bulk_rows (this
+    # run's parsed bulk payload).  We never query tracked_tickers for "all
+    # seeded" — that would turn this into a general reconciliation sweep.
+    remediated_tickers: List[str] = []
+    try:
+        # 1. From the current run's bulk data, find tickers with positive
+        #    close that were NOT written during this run.
+        gap_candidates: List[str] = []
+        for norm_ticker, bulk_rows_for_ticker in normalized_bulk_rows.items():
+            if not norm_ticker:
+                continue
+            # Already written this run — no gap
+            if norm_ticker in processed_ticker_set:
+                continue
+            # Already identified as zero-price exclusion this run
+            if norm_ticker in zero_price_tickers:
+                continue
+            # Check at least one row has a positive close price
+            has_positive = any(
+                not _is_zero_or_missing_close(r.get("close"))
+                for r in bulk_rows_for_ticker
+            )
+            if has_positive:
+                gap_candidates.append(norm_ticker)
+
+        # 2. Verify DB row is actually missing for each candidate
+        if gap_candidates:
+            existing_rows = await db.stock_prices.find(
+                {"ticker": {"$in": gap_candidates}, "date": date_seen},
+                {"_id": 0, "ticker": 1},
+            ).to_list(None)
+            existing_tickers = {r["ticker"] for r in existing_rows}
+            confirmed_missing = [
+                t for t in gap_candidates if t not in existing_tickers
+            ]
+
+            # 3. Flag confirmed missing tickers for Phase C redownload.
+            #    Filter includes is_seeded:True so only seeded tickers are
+            #    reflagged (non-seeded bulk tickers are ignored).
+            if confirmed_missing:
+                from pymongo import UpdateOne as _RemUpdateOne
+                reflag_ops = [
+                    _RemUpdateOne(
+                        {"ticker": t, "is_seeded": True},
+                        {"$set": {
+                            "needs_price_redownload": True,
+                            "price_history_complete": False,
+                            "price_history_status": "auto_reflagged_missing_bulk_row",
+                            "history_download_error": "auto_reflagged_missing_bulk_row",
+                        }},
+                    )
+                    for t in confirmed_missing
+                ]
+                await db.tracked_tickers.bulk_write(reflag_ops, ordered=False)
+                remediated_tickers = sorted(confirmed_missing)
+                logger.warning(
+                    "[BULK CATCHUP] Auto-remediated %d ticker(s) with positive "
+                    "bulk price but missing DB row: %s",
+                    len(remediated_tickers),
+                    remediated_tickers[:20],
+                )
+    except Exception as _rem_exc:
+        logger.error(
+            "[BULK CATCHUP] Auto-remediation check failed: %s", _rem_exc
+        )
+
     return {
         "status": "success",
         "date": date_seen,
@@ -1321,4 +1393,6 @@ async def run_daily_bulk_catchup(
         "bulk_url_used": bulk_url_used,
         "tickers_with_price": sorted(processed_ticker_set),
         "ticker_samples": ticker_samples,
+        "auto_remediated_tickers_count": len(remediated_tickers),
+        "auto_remediated_tickers": remediated_tickers[:50],
     }
