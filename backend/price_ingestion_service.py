@@ -1076,6 +1076,9 @@ async def run_daily_bulk_catchup(
     # missing" is an exclusion filter).  They *are* counted in the overlap
     # (matched_seeded_tickers) but do NOT generate UpdateOne ops.
     zero_price_tickers: Set[str] = set()
+    # Audit data for zero-close tickers: canonical_ticker → bulk row fields.
+    # Returned so sync_has_price_data_flags can write truthful gap_free_exclusions.
+    zero_price_ticker_data: Dict[str, Dict[str, Any]] = {}
 
     normalized_overlap = (
         set(normalized_seeded_to_canonical.keys()) & set(normalized_bulk_rows.keys())
@@ -1094,6 +1097,12 @@ async def run_daily_bulk_catchup(
             raw_close = record.get("close")
             if _is_zero_or_missing_close(raw_close):
                 zero_price_tickers.add(canonical_ticker)
+                if canonical_ticker not in zero_price_ticker_data:
+                    zero_price_ticker_data[canonical_ticker] = {
+                        "close": record.get("close"),
+                        "adjusted_close": record.get("adjusted_close"),
+                        "volume": record.get("volume"),
+                    }
                 continue
 
             parsed_rows.append({"ticker": canonical_ticker, "date": date})
@@ -1303,6 +1312,8 @@ async def run_daily_bulk_catchup(
         "matched_price_tickers_raw": len(matched_seeded_tickers),
         "tickers_with_price_data": len(matched_seeded_tickers),
         "zero_price_tickers_count": len(zero_price_tickers),
+        "zero_price_tickers": sorted(zero_price_tickers),
+        "zero_price_ticker_data": zero_price_ticker_data,
         "api_calls": 1 if bulk_fetch_executed else 0,
         "bulk_fetch_executed": bulk_fetch_executed,
         "raw_row_count": raw_row_count,

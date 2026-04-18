@@ -991,15 +991,24 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
             # Tickers absent from bulk or with close=0 are not true gaps.
             exclusion_set: set = set()  # (ticker, date) pairs
             exclusion_reasons: Dict[tuple, str] = {}
+            exclusion_bulk_debug: Dict[tuple, Dict[str, Any]] = {}
             try:
                 excl_cursor = db.gap_free_exclusions.find(
                     {"date": {"$in": expected_dates}},
-                    {"_id": 0, "ticker": 1, "date": 1, "reason": 1},
+                    {"_id": 0, "ticker": 1, "date": 1, "reason": 1,
+                     "bulk_found": 1, "bulk_close": 1,
+                     "bulk_adjusted_close": 1, "bulk_volume": 1},
                 )
                 async for edoc in excl_cursor:
                     key = (edoc["ticker"], edoc["date"])
                     exclusion_set.add(key)
                     exclusion_reasons[key] = edoc.get("reason", "not_applicable")
+                    exclusion_bulk_debug[key] = {
+                        "bulk_found": edoc.get("bulk_found"),
+                        "bulk_close": edoc.get("bulk_close"),
+                        "bulk_adjusted_close": edoc.get("bulk_adjusted_close"),
+                        "bulk_volume": edoc.get("bulk_volume"),
+                    }
             except Exception:
                 pass  # Collection may not exist yet
 
@@ -1029,7 +1038,11 @@ async def get_price_integrity_metrics(db) -> Dict[str, Any]:
                     if (ticker, d) not in exclusion_set
                 ]
                 excluded = [
-                    {"date": d, "reason": exclusion_reasons.get((ticker, d), "not_applicable")}
+                    {
+                        "date": d,
+                        "reason": exclusion_reasons.get((ticker, d), "not_applicable"),
+                        **exclusion_bulk_debug.get((ticker, d), {}),
+                    }
                     for d in missing
                     if (ticker, d) in exclusion_set
                 ]

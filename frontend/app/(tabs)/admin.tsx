@@ -56,7 +56,7 @@ interface PriceIntegrity {
   history_download_completed_count?: number;
   gap_free_since_history_download_count?: number;
   non_gap_free_sample?: { ticker: string; missing_dates: string[]; classification?: string }[];
-  gap_excluded_sample?: { ticker: string; excluded_dates: { date: string; reason: string }[]; classification?: string }[];
+  gap_excluded_sample?: { ticker: string; excluded_dates: { date: string; reason: string; bulk_found?: boolean | null; bulk_close?: number | null; bulk_adjusted_close?: number | null; bulk_volume?: number | null }[]; classification?: string }[];
   top_missing_dates?: { date: string; missing_ticker_count: number }[];
   fundamentals_complete_count?: number;
   completed_trading_days_health?: CompletedTradingDayHealth | null;
@@ -745,7 +745,13 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                   <View key={item.ticker} style={d.cpRow}>
                     <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
                     <Text style={[d.cpDate, { flex: 1, color: '#9CA3AF' }]}>
-                      {item.excluded_dates.map(ed => `${ed.date} (${ed.reason.replace(/_/g, ' ')})`).join(', ')}
+                      {item.excluded_dates.map(ed => {
+                        const label = ed.reason.replace(/_/g, ' ');
+                        const debug = ed.bulk_found != null
+                          ? ` [bulk_found=${ed.bulk_found}, close=${ed.bulk_close ?? 'n/a'}, adj=${ed.bulk_adjusted_close ?? 'n/a'}, vol=${ed.bulk_volume ?? 'n/a'}]`
+                          : '';
+                        return `${ed.date} (${label})${debug}`;
+                      }).join(', ')}
                     </Text>
                   </View>
                 ))}
