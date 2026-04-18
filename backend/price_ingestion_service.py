@@ -1305,12 +1305,18 @@ async def run_daily_bulk_catchup(
     # positive price but missing DB row after the write phase.  This covers
     # the proven incident shape where a ticker is seeded, present in bulk
     # with close>0, yet was skipped (e.g. not in the Step 1 override set
-    # at run time).  Remediation: flag for Phase C redownload.
+    # at run time).
+    #
+    # PRIMARY action: write the missing stock_prices row directly from the
+    # proven bulk data using the same canonical upsert shape as the normal
+    # write path.  FALLBACK: if direct write fails, flag for Phase C
+    # redownload.
     #
     # SCOPE: candidate set is derived ONLY from normalized_bulk_rows (this
     # run's parsed bulk payload).  We never query tracked_tickers for "all
     # seeded" — that would turn this into a general reconciliation sweep.
     remediated_tickers: List[str] = []
+    reflagged_tickers: List[str] = []
     try:
         # 1. From the current run's bulk data, find tickers with positive
         #    close that were NOT written during this run.
@@ -1343,31 +1349,91 @@ async def run_daily_bulk_catchup(
                 t for t in gap_candidates if t not in existing_tickers
             ]
 
-            # 3. Flag confirmed missing tickers for Phase C redownload.
-            #    Filter includes is_seeded:True so only seeded tickers are
-            #    reflagged (non-seeded bulk tickers are ignored).
+            # 3. Direct repair: write the missing stock_prices row from
+            #    the proven bulk data using the canonical upsert shape.
             if confirmed_missing:
-                from pymongo import UpdateOne as _RemUpdateOne
-                reflag_ops = [
-                    _RemUpdateOne(
-                        {"ticker": t, "is_seeded": True},
-                        {"$set": {
-                            "needs_price_redownload": True,
-                            "price_history_complete": False,
-                            "price_history_status": "auto_reflagged_missing_bulk_row",
-                            "history_download_error": "auto_reflagged_missing_bulk_row",
-                        }},
+                repair_ops: List[UpdateOne] = []
+                for t in confirmed_missing:
+                    bulk_rows_for_t = normalized_bulk_rows.get(
+                        _normalize_step2_ticker(t), []
                     )
-                    for t in confirmed_missing
-                ]
-                await db.tracked_tickers.bulk_write(reflag_ops, ordered=False)
-                remediated_tickers = sorted(confirmed_missing)
-                logger.warning(
-                    "[BULK CATCHUP] Auto-remediated %d ticker(s) with positive "
-                    "bulk price but missing DB row: %s",
-                    len(remediated_tickers),
-                    remediated_tickers[:20],
-                )
+                    # Pick the first row with a positive close
+                    eligible_row = next(
+                        (r for r in bulk_rows_for_t
+                         if not _is_zero_or_missing_close(r.get("close"))),
+                        None,
+                    )
+                    if eligible_row is None:
+                        continue
+                    row_doc = {
+                        "ticker": t,
+                        "date": eligible_row.get("date") or date_seen,
+                        "open": eligible_row.get("open"),
+                        "high": eligible_row.get("high"),
+                        "low": eligible_row.get("low"),
+                        "close": eligible_row.get("close"),
+                        "adjusted_close": eligible_row.get("adjusted_close"),
+                        "volume": eligible_row.get("volume"),
+                    }
+                    if not validate_price_row(row_doc):
+                        continue
+                    repair_ops.append(
+                        UpdateOne(
+                            {"ticker": t, "date": row_doc["date"]},
+                            {"$set": row_doc},
+                            upsert=True,
+                        )
+                    )
+
+                # Execute direct repair writes
+                if repair_ops:
+                    try:
+                        repair_result = await db.stock_prices.bulk_write(
+                            repair_ops, ordered=False,
+                        )
+                        written = (
+                            repair_result.upserted_count
+                            + repair_result.modified_count
+                        )
+                        records_upserted += written
+                        repaired_ticker_set = {
+                            op._filter["ticker"] for op in repair_ops
+                        }
+                        remediated_tickers = sorted(repaired_ticker_set)
+                        logger.warning(
+                            "[BULK CATCHUP] Direct-repaired %d ticker(s) with "
+                            "positive bulk price but missing DB row: %s",
+                            len(remediated_tickers),
+                            remediated_tickers[:20],
+                        )
+                    except Exception as _write_exc:
+                        logger.error(
+                            "[BULK CATCHUP] Direct repair write failed (%s) "
+                            "— falling back to reflag", _write_exc,
+                        )
+                        # Fallback: flag for Phase C redownload
+                        from pymongo import UpdateOne as _RemUpdateOne
+                        reflag_ops = [
+                            _RemUpdateOne(
+                                {"ticker": t, "is_seeded": True},
+                                {"$set": {
+                                    "needs_price_redownload": True,
+                                    "price_history_complete": False,
+                                    "price_history_status": "auto_reflagged_missing_bulk_row",
+                                    "history_download_error": "auto_reflagged_missing_bulk_row",
+                                }},
+                            )
+                            for t in confirmed_missing
+                        ]
+                        await db.tracked_tickers.bulk_write(
+                            reflag_ops, ordered=False,
+                        )
+                        reflagged_tickers = sorted(confirmed_missing)
+                        logger.warning(
+                            "[BULK CATCHUP] Fallback-reflagged %d ticker(s): %s",
+                            len(reflagged_tickers),
+                            reflagged_tickers[:20],
+                        )
     except Exception as _rem_exc:
         logger.error(
             "[BULK CATCHUP] Auto-remediation check failed: %s", _rem_exc
@@ -1395,4 +1461,195 @@ async def run_daily_bulk_catchup(
         "ticker_samples": ticker_samples,
         "auto_remediated_tickers_count": len(remediated_tickers),
         "auto_remediated_tickers": remediated_tickers[:50],
+        "auto_reflagged_tickers_count": len(reflagged_tickers),
+        "auto_reflagged_tickers": reflagged_tickers[:50],
     }
+
+
+# ---------------------------------------------------------------------------
+# Standalone proven true-gap repair for a single (ticker, date) pair.
+# ---------------------------------------------------------------------------
+async def repair_proven_true_gap(
+    db,
+    ticker: str,
+    date: str,
+    *,
+    bulk_data_override: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Deterministic repair for a single proven true-gap:
+      - seeded = true
+      - bulk row exists with canonical close > 0
+      - stock_prices row for (ticker, date) is missing
+
+    Returns a structured report with the action taken.
+
+    If the gap conditions are met, the missing stock_prices row is written
+    directly from the bulk data using the same canonical upsert shape as the
+    normal write path.  If the direct write fails, the ticker is reflagged
+    for Phase C redownload.
+
+    This function is idempotent — calling it multiple times for a (ticker, date)
+    that already has a stock_prices row is a safe no-op.
+    """
+    from pymongo import UpdateOne
+
+    normalized = _normalize_step2_ticker(ticker)
+    if not normalized:
+        return {
+            "status": "error",
+            "ticker": ticker,
+            "date": date,
+            "error": "invalid_ticker_after_normalization",
+        }
+
+    result: Dict[str, Any] = {
+        "ticker": ticker,
+        "normalized_ticker": normalized,
+        "date": date,
+        "remediation_evaluated_for_date": True,
+    }
+
+    # 1. Check seeded status
+    tt_doc = await db.tracked_tickers.find_one(
+        {"ticker": normalized, "is_seeded": True},
+        {"_id": 0, "ticker": 1, "is_seeded": 1},
+    )
+    if not tt_doc:
+        result.update({
+            "status": "skipped",
+            "remediation_action": None,
+            "reason": "ticker_not_seeded",
+        })
+        return result
+
+    # 2. Check bulk data for this ticker/date
+    if bulk_data_override is not None:
+        bulk_data = bulk_data_override
+    else:
+        bulk_data, _ = await fetch_bulk_eod_latest(
+            "US", include_meta=True, for_date=date,
+        )
+
+    # Determine ticker field
+    bulk_ticker_field: Optional[str] = None
+    if bulk_data:
+        sample = bulk_data[0]
+        if isinstance(sample, dict):
+            if "code" in sample:
+                bulk_ticker_field = "code"
+            elif "symbol" in sample:
+                bulk_ticker_field = "symbol"
+
+    bulk_row: Optional[Dict[str, Any]] = None
+    if bulk_ticker_field:
+        for record in bulk_data:
+            raw_sym = record.get(bulk_ticker_field)
+            if raw_sym is None:
+                continue
+            norm = _normalize_step2_ticker(str(raw_sym))
+            if norm == normalized:
+                bulk_row = record
+                break
+
+    if bulk_row is None:
+        result.update({
+            "status": "skipped",
+            "remediation_action": None,
+            "reason": "bulk_row_not_found",
+            "bulk_found": False,
+        })
+        return result
+
+    result["bulk_found"] = True
+
+    # 3. Check canonical close > 0
+    bulk_close = bulk_row.get("close")
+    if _is_zero_or_missing_close(bulk_close):
+        result.update({
+            "status": "skipped",
+            "remediation_action": None,
+            "reason": "bulk_close_is_zero_or_missing",
+            "bulk_close": bulk_close,
+        })
+        return result
+
+    result["bulk_close"] = bulk_close
+
+    # 4. Check if stock_prices row already exists
+    existing = await db.stock_prices.find_one(
+        {"ticker": normalized, "date": date},
+        {"_id": 1},
+    )
+    if existing:
+        result.update({
+            "status": "no_op",
+            "remediation_action": None,
+            "reason": "db_row_already_exists",
+            "db_found": True,
+        })
+        return result
+
+    # 5. Build and write the missing row using canonical upsert shape
+    row_doc = {
+        "ticker": normalized,
+        "date": bulk_row.get("date") or date,
+        "open": bulk_row.get("open"),
+        "high": bulk_row.get("high"),
+        "low": bulk_row.get("low"),
+        "close": bulk_row.get("close"),
+        "adjusted_close": bulk_row.get("adjusted_close"),
+        "volume": bulk_row.get("volume"),
+    }
+    if not validate_price_row(row_doc):
+        # Fallback: reflag for Phase C redownload
+        await db.tracked_tickers.update_one(
+            {"ticker": normalized, "is_seeded": True},
+            {"$set": {
+                "needs_price_redownload": True,
+                "price_history_complete": False,
+                "price_history_status": "auto_reflagged_missing_bulk_row",
+                "history_download_error": "auto_reflagged_missing_bulk_row",
+            }},
+        )
+        result.update({
+            "status": "reflagged",
+            "remediation_action": "auto_reflagged_for_redownload",
+            "reason": "row_failed_validation_fallback_to_reflag",
+        })
+        return result
+
+    try:
+        await db.stock_prices.update_one(
+            {"ticker": normalized, "date": row_doc["date"]},
+            {"$set": row_doc},
+            upsert=True,
+        )
+        result.update({
+            "status": "repaired",
+            "remediation_action": "gap_repaired_from_bulk_row",
+            "reason": "missing_row_written_from_bulk",
+            "written_row": row_doc,
+        })
+    except Exception as exc:
+        # Fallback: reflag for Phase C redownload
+        logger.error(
+            "[REPAIR] Direct write failed for %s/%s (%s) — falling back to reflag",
+            normalized, date, exc,
+        )
+        await db.tracked_tickers.update_one(
+            {"ticker": normalized, "is_seeded": True},
+            {"$set": {
+                "needs_price_redownload": True,
+                "price_history_complete": False,
+                "price_history_status": "auto_reflagged_missing_bulk_row",
+                "history_download_error": "auto_reflagged_missing_bulk_row",
+            }},
+        )
+        result.update({
+            "status": "reflagged",
+            "remediation_action": "auto_reflagged_for_redownload",
+            "reason": f"direct_write_failed_{type(exc).__name__}",
+        })
+
+    return result

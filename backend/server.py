@@ -7762,6 +7762,30 @@ async def admin_proof_mode(
     return result
 
 
+@api_router.post("/admin/repair-price-gap")
+async def admin_repair_price_gap(
+    ticker: str = Query(..., description="Ticker symbol, e.g. BODI.US"),
+    date: str = Query(..., description="Date in YYYY-MM-DD format, e.g. 2026-04-15"),
+):
+    """
+    Deterministic repair for a single proven true-gap:
+    bulk row exists with positive price, but DB row is missing.
+
+    Performs the full proven-gap check before writing anything.
+    Does NOT fabricate rows when bulk row is absent or bulk price is zero.
+    No deletes. Idempotent.
+
+    Auth: AdminAuthMiddleware.
+    """
+    import re
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD format")
+
+    from price_ingestion_service import repair_proven_true_gap
+    result = await repair_proven_true_gap(db, ticker=ticker, date=date)
+    return result
+
+
 @api_router.post("/admin/ticker-gap-remediation")
 async def admin_ticker_gap_remediation(
     ticker: Optional[str] = Query(
