@@ -1,6 +1,9 @@
 """
-PR13 NEOK — Tests proving proof-mode is read-only and Step 2 persists
-remediation outcome that proof-mode can read.
+Tests for proof-mode read-only behavior and Step 2 remediation persistence.
+
+Proof-mode is strictly diagnostic/read-only — it NEVER writes to stock_prices
+or tracked_tickers.  It reads persisted remediation outcomes from tracked_tickers
+so it can report whether repair was done (by Step 2 or admin endpoint).
 
 Tests:
   1. Proof-mode does NOT write to stock_prices or tracked_tickers (read-only).
@@ -193,6 +196,7 @@ class TestProofModeReadOnly:
         """
         Scenario: proven true gap (bulk_found, !db_found, seeded, close>0).
         Proof-mode must NOT call any write operations.
+        It reports the gap and awaiting_repair status.
         """
         bulk_data = [_make_bulk_row("BODI", close=11.0)]
         db = _make_proof_db(
@@ -214,15 +218,16 @@ class TestProofModeReadOnly:
         db.tracked_tickers.update_one.assert_not_awaited()
         db.tracked_tickers.bulk_write.assert_not_awaited()
 
-        # Report should still show gap awaiting repair
+        # Report should show gap awaiting repair (not performed by proof-mode)
         assert result["bulk_check"]["found"] is True
         assert result["db_check"]["found"] is False
         assert result["remediation_evaluated_for_date"] is True
         assert result["remediation_reason"] == "proven_true_gap_awaiting_repair"
+        assert "repair_result" not in result
 
     @pytest.mark.asyncio
     async def test_proof_mode_does_not_write_when_both_present(self):
-        """When bulk and DB both have the row, proof-mode still doesn't write."""
+        """When bulk and DB both have the row, proof-mode doesn't write."""
         oid = ObjectId()
         bulk_data = [_make_bulk_row("BODI", close=11.0)]
         db = _make_proof_db(
@@ -243,6 +248,7 @@ class TestProofModeReadOnly:
         db.tracked_tickers.bulk_write.assert_not_awaited()
         assert result["db_check"]["found"] is True
         assert "CONSISTENT" in result["summary"]
+        assert "repair_result" not in result
 
 
 # ===========================================================================

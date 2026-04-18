@@ -311,8 +311,13 @@ async def run_proof_mode(
             skip_reasons["primary_reason"] = "unknown"
 
     # ------------------------------------------------------------------
-    # 4h. Remediation evaluation: determine what remediation was or should
-    #     be applied for this proven gap shape.
+    # 4h. Remediation evaluation (READ-ONLY).
+    #     Proof-mode is strictly diagnostic — it NEVER writes to
+    #     stock_prices or tracked_tickers.  Actual repair runs only in:
+    #       - Step 2 end-of-run auto-remediation
+    #       - Admin POST /admin/repair-price-gap
+    #     Here we read the persisted remediation outcome from
+    #     tracked_tickers so the report reflects repair done elsewhere.
     # ------------------------------------------------------------------
     remediation_action: Optional[str] = None
     remediation_evaluated_for_date = False
@@ -340,11 +345,10 @@ async def run_proof_mode(
                      "last_remediation_date": 1},
                 )
                 if tt_doc:
-                    _phs = tt_doc.get("price_history_status")
-                    _npr = tt_doc.get("needs_price_redownload")
                     _lra = tt_doc.get("last_remediation_action")
                     _lrr = tt_doc.get("last_remediation_reason")
-                    _lrd = tt_doc.get("last_remediation_date")
+                    _phs = tt_doc.get("price_history_status")
+                    _npr = tt_doc.get("needs_price_redownload")
                     if _lra:
                         # Persisted outcome from Step 2 or admin repair
                         remediation_action = _lra

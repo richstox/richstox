@@ -138,6 +138,7 @@ def test_proven_true_gap_repaired_from_bulk():
     assert result["remediation_evaluated_for_date"] is True
     assert result["bulk_found"] is True
     assert result["bulk_close"] == 11.0
+    assert result["phase_c_flagged"] is True  # history not yet complete
 
     # Verify the stock_prices upsert was called
     assert len(db.stock_prices.upsert_calls) == 1
@@ -147,15 +148,15 @@ def test_proven_true_gap_repaired_from_bulk():
     assert written["upsert"] is True
     assert written["update"]["$set"]["close"] == 11.0
 
-    # No reflag to tracked_tickers (needs_price_redownload not set).
-    # There IS a persistence write for last_remediation_action.
+    # After repair, tracked_tickers MUST have needs_price_redownload=True
+    # so Phase C downloads full IPO-to-present history.
     reflag_calls = [
         c for c in db.tracked_tickers.update_calls
         if c["update"]["$set"].get("needs_price_redownload") is True
     ]
-    assert len(reflag_calls) == 0
+    assert len(reflag_calls) == 1
 
-    # But we DO expect a persistence write for the remediation outcome
+    # We also expect a persistence write for the remediation outcome
     persist_calls = [
         c for c in db.tracked_tickers.update_calls
         if c["update"]["$set"].get("last_remediation_action") == "gap_repaired_from_bulk_row"
