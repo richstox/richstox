@@ -66,6 +66,7 @@ ALLOWED_STATUSES = frozenset({
     "auto_reflagged_missing_bulk_row",  # Auto-remediation reflagged
     "admin_forced_redownload",          # Admin forced redownload
     "malformed_purged",                 # Malformed data purged
+    "cleanup_reset",                    # Data deleted by visibility cleanup
     "error",                            # Error during Phase C
 })
 
