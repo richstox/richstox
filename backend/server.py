@@ -5790,10 +5790,10 @@ async def get_ticker_chart_data(
             missing_count = tt_doc.get("price_history_missing_days_count") or 0
 
             if status == "incomplete" and missing_count > 0:
+                day_word = "day" if missing_count == 1 else "days"
                 data_notices.append(
-                    f"Data warning: {missing_count} trading "
-                    f"{'day has' if missing_count == 1 else 'days have'} "
-                    f"missing price data for this stock."
+                    f"Data warning: {missing_count} trading {day_word} "
+                    f"with missing price data for this stock."
                 )
     except Exception:
         pass

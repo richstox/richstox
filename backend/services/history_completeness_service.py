@@ -75,6 +75,10 @@ async def _get_bulk_processed_dates(db) -> List[str]:
 
     Delegates to the shared implementation in admin_overview_service so
     there is exactly ONE definition of "which bulk dates count".
+
+    NOTE: uses a deferred import to avoid a circular import at module
+    load time.  This is the standard pattern used across the codebase
+    (see full_sync_service.py, credit_log_service.py, etc.).
     """
     from services.admin_overview_service import _get_bulk_processed_dates as _impl
     return await _impl(db)
