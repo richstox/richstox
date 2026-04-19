@@ -485,3 +485,196 @@ class TestSweep:
             assert result["complete"] == 0
         finally:
             svc._get_bulk_processed_dates = original
+
+
+# ── Test: not-in-bulk excluded dates trigger redownload ────────────────────────
+
+class TestNotInBulkRedownload:
+    """Verify that dates excluded with bulk_found=False (not in bulk) still
+    trigger ``needs_price_redownload=True`` when stock_prices row is missing
+    and the date is after the anchor (not yet verified by full history)."""
+
+    def test_not_in_bulk_excluded_single_ticker(self):
+        """verify_ticker_history_completeness returns not_in_bulk_excluded_count."""
+        expected = ["2025-04-14", "2025-04-15", "2025-04-16", "2025-04-17"]
+        db = _make_db(
+            tracked_ticker_doc={
+                "history_download_proven_at": datetime(2025, 4, 11, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2025-04-11",
+            },
+            # Has data for 14 and 17, missing 15 and 16
+            price_dates=["2025-04-14", "2025-04-17"],
+            first_last={"first_date": "2020-01-02", "last_date": "2025-04-17"},
+            # 15 is excluded as not_in_bulk_data; 16 is excluded as close=0
+            exclusions=[
+                {"ticker": "CEV.US", "date": "2025-04-15", "bulk_found": False},
+                {"ticker": "CEV.US", "date": "2025-04-16", "bulk_found": True},
+            ],
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            verify_ticker_history_completeness(db, "CEV.US", expected_dates=expected)
+        )
+        # Both dates are excluded → no missing days → "complete"
+        assert result["price_history_complete"] is True
+        assert result["price_history_missing_days_count"] == 0
+        # But 1 date is not-in-bulk excluded (needs history verification)
+        assert result["not_in_bulk_excluded_count"] == 1
+
+    def test_not_in_bulk_zero_when_all_close_zero(self):
+        """Exclusions with bulk_found=True (close=0) should NOT count."""
+        expected = ["2025-04-14", "2025-04-15"]
+        db = _make_db(
+            tracked_ticker_doc={
+                "history_download_proven_at": datetime(2025, 4, 11, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2025-04-11",
+            },
+            price_dates=["2025-04-14"],
+            first_last={"first_date": "2020-01-02", "last_date": "2025-04-14"},
+            exclusions=[
+                {"ticker": "TEST.US", "date": "2025-04-15", "bulk_found": True},
+            ],
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            verify_ticker_history_completeness(db, "TEST.US", expected_dates=expected)
+        )
+        assert result["price_history_complete"] is True
+        assert result["not_in_bulk_excluded_count"] == 0
+
+    def test_not_in_bulk_zero_when_price_exists(self):
+        """If stock_prices row exists for the excluded date, no redownload."""
+        expected = ["2025-04-14", "2025-04-15"]
+        db = _make_db(
+            tracked_ticker_doc={
+                "history_download_proven_at": datetime(2025, 4, 11, tzinfo=timezone.utc),
+                "history_download_proven_anchor": "2025-04-11",
+            },
+            # Has data for BOTH dates
+            price_dates=["2025-04-14", "2025-04-15"],
+            first_last={"first_date": "2020-01-02", "last_date": "2025-04-15"},
+            exclusions=[
+                {"ticker": "OK.US", "date": "2025-04-15", "bulk_found": False},
+            ],
+        )
+        result = asyncio.get_event_loop().run_until_complete(
+            verify_ticker_history_completeness(db, "OK.US", expected_dates=expected)
+        )
+        assert result["price_history_complete"] is True
+        # Even though exclusion has bulk_found=False, price row exists → no issue
+        assert result["not_in_bulk_excluded_count"] == 0
+
+    def test_sweep_flags_redownload_for_not_in_bulk(self):
+        """Sweep sets needs_price_redownload=True for not-in-bulk excluded tickers."""
+        now = datetime.now(timezone.utc)
+        visible = [
+            {
+                "ticker": "CEV.US",
+                "history_download_proven_at": now,
+                "history_download_proven_anchor": "2025-04-11",
+            },
+        ]
+        expected = ["2025-04-14", "2025-04-15"]
+
+        db = _make_db(visible_docs=visible)
+
+        import services.history_completeness_service as svc
+        original = svc._get_bulk_processed_dates
+
+        async def _mock_bpd(db):
+            return expected
+        svc._get_bulk_processed_dates = _mock_bpd
+
+        # stock_prices: has 2025-04-14 but NOT 2025-04-15
+        def _mock_agg(pipeline):
+            for stage in pipeline:
+                if "$group" in stage:
+                    group = stage["$group"]
+                    if "dates" in group:
+                        return _Cursor([{"_id": "CEV.US", "dates": ["2025-04-14"]}])
+                    if "first_date" in group:
+                        return _Cursor([{
+                            "_id": "CEV.US",
+                            "first_date": "2020-01-02",
+                            "last_date": "2025-04-14",
+                        }])
+            return _Cursor([])
+        db.stock_prices.aggregate = _mock_agg
+
+        # gap_free_exclusions: 2025-04-15 excluded as not_in_bulk_data
+        db.gap_free_exclusions.find.return_value = _Cursor([
+            {"ticker": "CEV.US", "date": "2025-04-15", "bulk_found": False},
+        ])
+
+        try:
+            result = asyncio.get_event_loop().run_until_complete(
+                run_history_completeness_sweep(db)
+            )
+            assert result["status"] == "success"
+            assert result["complete"] == 1  # No gaps → complete
+            assert result["not_in_bulk_redownload"] == 1
+
+            # Verify bulk_write was called and includes needs_price_redownload
+            db.tracked_tickers.bulk_write.assert_called_once()
+            call_args = db.tracked_tickers.bulk_write.call_args
+            ops = call_args[0][0]
+            assert len(ops) == 1
+            update_doc = ops[0]._doc["$set"]
+            assert update_doc["needs_price_redownload"] is True
+            assert update_doc["price_history_status"] == "complete"
+        finally:
+            svc._get_bulk_processed_dates = original
+
+    def test_sweep_no_redownload_when_bulk_found_true(self):
+        """Sweep does NOT set needs_price_redownload for close=0 exclusions."""
+        now = datetime.now(timezone.utc)
+        visible = [
+            {
+                "ticker": "HALT.US",
+                "history_download_proven_at": now,
+                "history_download_proven_anchor": "2025-04-11",
+            },
+        ]
+        expected = ["2025-04-14", "2025-04-15"]
+
+        db = _make_db(visible_docs=visible)
+
+        import services.history_completeness_service as svc
+        original = svc._get_bulk_processed_dates
+
+        async def _mock_bpd(db):
+            return expected
+        svc._get_bulk_processed_dates = _mock_bpd
+
+        def _mock_agg(pipeline):
+            for stage in pipeline:
+                if "$group" in stage:
+                    group = stage["$group"]
+                    if "dates" in group:
+                        return _Cursor([{"_id": "HALT.US", "dates": ["2025-04-14"]}])
+                    if "first_date" in group:
+                        return _Cursor([{
+                            "_id": "HALT.US",
+                            "first_date": "2020-01-02",
+                            "last_date": "2025-04-14",
+                        }])
+            return _Cursor([])
+        db.stock_prices.aggregate = _mock_agg
+
+        # Exclusion with bulk_found=True (close=0, legitimate)
+        db.gap_free_exclusions.find.return_value = _Cursor([
+            {"ticker": "HALT.US", "date": "2025-04-15", "bulk_found": True},
+        ])
+
+        try:
+            result = asyncio.get_event_loop().run_until_complete(
+                run_history_completeness_sweep(db)
+            )
+            assert result["not_in_bulk_redownload"] == 0
+
+            # Verify bulk_write was called but WITHOUT needs_price_redownload
+            db.tracked_tickers.bulk_write.assert_called_once()
+            call_args = db.tracked_tickers.bulk_write.call_args
+            ops = call_args[0][0]
+            update_doc = ops[0]._doc["$set"]
+            assert "needs_price_redownload" not in update_doc
+        finally:
+            svc._get_bulk_processed_dates = original

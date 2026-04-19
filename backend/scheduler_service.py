@@ -1972,11 +1972,17 @@ async def run_daily_price_sync(
 
         # Canonical Step 2 behavior: update has_price_data flags after bulk ingest
         _bulk_tickers_with_price = result.get("tickers_with_price", None)
+        # tickers_in_bulk reflects ALL tickers in the raw EODHD bulk file
+        # with close > 0 (regardless of write success).  Use it for exclusion
+        # logic so gap_free_exclusions are only written for tickers truly
+        # absent from the bulk file, never for tickers that were present but
+        # whose write failed.
+        _bulk_tickers_in_bulk = result.get("tickers_in_bulk", None)
         _bulk_zero_close_tickers = set(result.get("zero_price_tickers", []))
         _bulk_zero_close_data = result.get("zero_price_ticker_data", {})
         price_flag_summary = await sync_has_price_data_flags(
             db, include_exclusions=True,
-            tickers_with_price=_bulk_tickers_with_price,
+            tickers_with_price=_bulk_tickers_in_bulk or _bulk_tickers_with_price,
             bulk_date=_last_closing_day,
             bulk_zero_close_tickers=_bulk_zero_close_tickers,
             bulk_zero_close_data=_bulk_zero_close_data,

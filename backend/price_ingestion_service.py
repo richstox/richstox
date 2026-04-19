@@ -1014,6 +1014,7 @@ async def run_daily_bulk_catchup(
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "tickers_in_bulk": [],
             "ticker_samples": {
                 "bulk_rows_sample": [],
                 "bulk_rows_normalized_sample": [],
@@ -1164,6 +1165,7 @@ async def run_daily_bulk_catchup(
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "tickers_in_bulk": sorted(matched_seeded_tickers),
             "ticker_samples": ticker_samples,
         }
     date_seen = unique_dates[0]
@@ -1210,6 +1212,7 @@ async def run_daily_bulk_catchup(
                 "bulk_writes": 0,
                 "bulk_url_used": bulk_url_used,
                 "tickers_with_price": [],
+                "tickers_in_bulk": sorted(matched_seeded_tickers),
                 "ticker_samples": ticker_samples,
                 "skipped_reason": "non_trading_day",
                 "holiday_name": _holiday_label,
@@ -1256,6 +1259,7 @@ async def run_daily_bulk_catchup(
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "tickers_in_bulk": [],
             "ticker_samples": ticker_samples,
         }
 
@@ -1288,6 +1292,7 @@ async def run_daily_bulk_catchup(
                 "bulk_writes": bulk_writes,
                 "bulk_url_used": bulk_url_used,
                 "tickers_with_price": sorted(processed_ticker_set),
+                "tickers_in_bulk": sorted(matched_seeded_tickers),
                 "ticker_samples": ticker_samples,
             }
 
@@ -1515,6 +1520,7 @@ async def run_daily_bulk_catchup(
         "bulk_writes": bulk_writes,
         "bulk_url_used": bulk_url_used,
         "tickers_with_price": sorted(processed_ticker_set),
+        "tickers_in_bulk": sorted(matched_seeded_tickers),
         "ticker_samples": ticker_samples,
         "auto_remediated_tickers_count": len(remediated_tickers),
         "auto_remediated_tickers": remediated_tickers[:50],
