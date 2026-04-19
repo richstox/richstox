@@ -233,9 +233,9 @@ class TestLargeSectorDividendMedian:
             if dy is not None and dy >= 0:
                 dividend_yields.append(dy)
 
-        median_all = statistics.median(sorted(dividend_yields))
+        median_all = statistics.median(dividend_yields)
         payers_only = [y for y in dividend_yields if y > 0]
-        median_payers = statistics.median(sorted(payers_only)) if len(payers_only) >= MIN_DIVIDEND_PAYERS else None
+        median_payers = statistics.median(payers_only) if len(payers_only) >= MIN_DIVIDEND_PAYERS else None
 
         # median_all should be 0.0 (majority are non-payers)
         assert median_all == 0.0, f"Expected median_all=0.0, got {median_all}"
