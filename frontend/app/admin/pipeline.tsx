@@ -1522,7 +1522,17 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     <BrandedLoading message="Loading Pipeline..." subtitle="Fetching universe status." />
   );
 
-  const isRunDisabled = runMode === 'AUTO' || chainRunning;
+  // Disable "Run" when ANY pipeline step has a running (non-stale) job,
+  // even if it was triggered by the scheduler (no chain_run_id).  This
+  // prevents launching a new pipeline while a standalone step is in progress.
+  const anyStepRunning = ['universe_seed', 'price_sync', 'fundamentals_sync'].some(
+    (job) => {
+      const r = jobRuns[job];
+      return r?.status === 'running' && !r?.finished_at;
+    },
+  );
+
+  const isRunDisabled = runMode === 'AUTO' || chainRunning || anyStepRunning;
   const isChainFailed = chainStatus === 'failed' || chainStatus === 'error';
   const isChainCancelled = chainStatus === 'cancelled';
 

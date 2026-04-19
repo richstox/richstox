@@ -196,7 +196,7 @@ class TestSelfHealGracePeriod:
     stale success completions after the grace period."""
 
     @staticmethod
-    def _should_heal(job_status, job_finished_at, now=None):
+    def _should_heal(job_status, job_finished_at, now=None, zombie_finalized=False):
         """Replicate the self-heal logic from the chain-status endpoint."""
         _FAILURE_JOB_STATUSES = {"failed", "error", "cancelled", "skipped"}
         _SUCCESS_JOB_STATUSES = {"completed", "success"}
@@ -205,6 +205,8 @@ class TestSelfHealGracePeriod:
         if job_status in _FAILURE_JOB_STATUSES and job_finished_at is not None:
             return True
         if job_status in _SUCCESS_JOB_STATUSES and job_finished_at is not None:
+            if zombie_finalized:
+                return True
             _now = now or datetime.now(timezone.utc)
             _fin = job_finished_at
             if isinstance(_fin, str):
@@ -270,6 +272,21 @@ class TestSelfHealGracePeriod:
         now = datetime.now(timezone.utc)
         finished = now - timedelta(minutes=10, seconds=1)
         assert self._should_heal("completed", finished, now=now) is True
+
+    def test_zombie_finalized_completed_healed_immediately(self):
+        """A zombie-finalized job that was marked 'completed' (100% progress)
+        just now should be healed immediately — no grace period because the
+        orchestrator is confirmed dead (zombie detection already proved this)."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        # With zombie_finalized=True, this should heal immediately
+        assert self._should_heal("completed", finished, now=now, zombie_finalized=True) is True
+
+    def test_zombie_finalized_false_still_uses_grace_period(self):
+        """A recently completed job without zombie flag should NOT heal immediately."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("completed", finished, now=now, zombie_finalized=False) is False
 
 class TestManualPathChainLifecycle:
     """Test that the manual path (run-full-now) keeps status='running' throughout."""
