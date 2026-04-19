@@ -2951,29 +2951,38 @@ async def admin_peer_medians_csv(
 
 @api_router.get("/admin/peer-medians/constituents/csv")
 async def admin_peer_medians_constituents_csv(
-    level: str = Query(..., regex="^(industry|sector)$"),
-    group_name: str = Query(..., min_length=1),
+    level: str = Query(..., regex="^(industry|sector|market)$"),
+    group_name: str = Query("", min_length=0),
 ):
     """
-    Export per-ticker constituent values for a single Benchmark Medians group.
+    Evidence-based per-ticker constituent CSV for a Benchmark Medians group.
 
-    Reads from the **peer_benchmarks_constituents** collection (admin-only audit
-    artifact written alongside peer_benchmarks during Step 4).
+    Computes dividend diagnostics from **canonical sources** (tracked_tickers,
+    stock_prices, company_financials, dividend_history) using the SAME
+    ``compute_canonical_dividend_yield`` function used in Step 4.
 
-    Each row is one ticker.  Columns: ticker, then for each of the 7 Key Metrics
-    the value that ticker contributed to the median (empty if the ticker was not
-    in the pool for that metric).
+    Per-ticker columns include 7 metric values (from peer_benchmarks_constituents),
+    visibility/price data, dividend inputs, canonical dividend result, and
+    peer-pool inclusion status with exclusion reason.
 
-    Query params:
-        level      — "industry" or "sector"
-        group_name — the exact industry or sector name
+    Footer rows summarise total_in_group, visible_in_group,
+    dividend_included_count, and dividend_excluded_count_by_reason.
+
+    Query params
+    ------------
+    level      — "industry", "sector", or "market"
+    group_name — exact industry/sector name (ignored for market level)
     """
     from fastapi.responses import StreamingResponse
+    from canonical_dividend import compute_canonical_dividend_yield
     import io
     import csv
     import zoneinfo as _zi
 
     prague = _zi.ZoneInfo("Europe/Prague")
+
+    if level != "market" and not group_name:
+        raise HTTPException(400, "group_name is required for industry/sector level")
 
     metric_spec = [
         ("net_margin_ttm", "Net Margin (TTM)"),
@@ -2985,49 +2994,215 @@ async def admin_peer_medians_constituents_csv(
         ("roe", "ROE"),
     ]
 
-    # ── 1. Fetch constituents doc ──────────────────────────────────────────
-    cons_doc = await db.peer_benchmarks_constituents.find_one(
-        {"level": level, "group": group_name},
-        {"_id": 0},
-    )
-    if not cons_doc:
-        raise HTTPException(
-            404,
-            f"No constituents data for level={level}, group_name={group_name}. "
-            "Re-run Step 4 (peer_medians) to populate.",
-        )
+    # ── 1. Fetch per-metric values from constituents (for 7-metric columns) ──
+    if level == "market":
+        cons_query = {"level": "market", "group": "market"}
+    else:
+        cons_query = {"level": level, "group": group_name}
+    cons_doc = await db.peer_benchmarks_constituents.find_one(cons_query, {"_id": 0})
+    cons_metrics = (cons_doc or {}).get("metrics") or {}
 
-    metrics = cons_doc.get("metrics") or {}
-
-    # ── 2. Build per-ticker value map ──────────────────────────────────────
-    # ticker → {metric_key: value, ...}
-    ticker_values: dict[str, dict[str, float | None]] = {}
+    # ticker → {metric_key: value}
+    ticker_metric_values: dict[str, dict[str, float | None]] = {}
     for mk, _ in metric_spec:
-        entry = metrics.get(mk)
+        entry = cons_metrics.get(mk)
         if not entry:
             continue
-        tickers = entry.get("tickers", [])
-        values = entry.get("values", [])
-        for t, v in zip(tickers, values):
-            ticker_values.setdefault(t, {})[mk] = v
+        for t, v in zip(entry.get("tickers", []), entry.get("values", [])):
+            ticker_metric_values.setdefault(t, {})[mk] = v
 
-    sorted_tickers = sorted(ticker_values.keys())
-
-    # ── 3. Fetch medians from peer_benchmarks for the summary row ─────────
-    if level == "sector":
+    # ── 2. Fetch medians from peer_benchmarks (for __MEDIAN__ row) ────────
+    if level == "market":
+        pb_query = {"sector": None, "industry": None}
+    elif level == "sector":
         pb_query = {"sector": group_name, "industry": None}
     else:
         pb_query = {"industry": group_name}
     pb_doc = await db.peer_benchmarks.find_one(pb_query, {"_id": 0, "step4_medians": 1})
     s4 = (pb_doc or {}).get("step4_medians") or {}
 
-    # ── 4. Build CSV ──────────────────────────────────────────────────────
+    # ── 3. Fetch ALL tickers in the group from tracked_tickers ────────────
+    if level == "market":
+        tt_query = {}  # all tickers
+    elif level == "sector":
+        tt_query = {"sector": group_name}
+    else:
+        tt_query = {"industry": group_name}
+
+    tt_docs = await db.tracked_tickers.find(
+        tt_query,
+        {"_id": 0, "ticker": 1, "is_visible": 1, "has_price_data": 1,
+         "sector": 1, "industry": 1, "financial_currency": 1,
+         "shares_outstanding": 1, "fundamentals_status": 1},
+    ).to_list(length=50000)
+
+    all_tickers = [d["ticker"] for d in tt_docs]
+    tt_map = {d["ticker"]: d for d in tt_docs}
+
+    if not all_tickers:
+        raise HTTPException(
+            404,
+            f"No tickers found in tracked_tickers for level={level}"
+            + (f", group_name={group_name}" if level != "market" else "")
+            + ".",
+        )
+
+    # ── 4. Fetch last close price + date from stock_prices ────────────────
+    last_close_map: dict[str, dict] = {}  # ticker → {price, date}
+    sp_cursor = db.stock_prices.aggregate([
+        {"$match": {"ticker": {"$in": all_tickers}}},
+        {"$sort": {"date": -1}},
+        {"$group": {
+            "_id": "$ticker",
+            "price": {"$first": "$adjusted_close"},
+            "date": {"$first": "$date"},
+        }},
+    ])
+    async for doc in sp_cursor:
+        last_close_map[doc["_id"]] = {
+            "price": doc.get("price"),
+            "date": doc.get("date"),
+        }
+
+    # ── 5. Fetch dividend_history TTM aggregates ──────────────────────────
+    _one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    div_hist_map: dict[str, dict] = {}  # ticker → {total, count}
+    dh_pipeline = [
+        {"$match": {
+            "ticker": {"$in": all_tickers},
+            "$or": [
+                {"ex_date": {"$gte": _one_year_ago}},
+                {"date": {"$gte": _one_year_ago}},
+            ],
+        }},
+        {"$group": {
+            "_id": "$ticker",
+            "total_amount": {"$sum": {"$ifNull": ["$amount", {"$ifNull": ["$value", 0]}]}},
+            "count": {"$sum": 1},
+        }},
+    ]
+    async for doc in db.dividend_history.aggregate(dh_pipeline):
+        div_hist_map[doc["_id"]] = {
+            "total": doc["total_amount"],
+            "count": doc["count"],
+        }
+
+    # ── 6. Fetch cashflow dividendsPaid from company_financials ───────────
+    # We need last 4 quarterly cashflow records per ticker
+    cf_batch: dict[str, list] = {}  # ticker → [{period_date, dividendsPaid}, ...]
+    cf_cursor = db.company_financials.find(
+        {"ticker": {"$in": all_tickers}, "period_type": "quarterly"},
+        {"_id": 0, "ticker": 1, "period_date": 1, "dividends_paid": 1},
+    ).sort("period_date", -1)
+    async for doc in cf_cursor:
+        t = doc["ticker"]
+        if t not in cf_batch:
+            cf_batch[t] = []
+        if len(cf_batch[t]) < 4:
+            cf_batch[t].append(doc)
+
+    # ── 7. Compute canonical dividend yield per ticker + build rows ───────
+    def _safe_float(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    ticker_rows_data = []
+    dividend_included_count = 0
+    excluded_reason_counts: dict[str, int] = {}
+    total_in_group = len(tt_docs)
+    visible_in_group = sum(1 for d in tt_docs if d.get("is_visible"))
+
+    for ticker in sorted(all_tickers):
+        tt = tt_map[ticker]
+        is_visible = tt.get("is_visible", False)
+        has_price_data = tt.get("has_price_data", False)
+        fundamentals_status = tt.get("fundamentals_status", "")
+
+        lc = last_close_map.get(ticker, {})
+        last_close = lc.get("price")
+        last_close_date = lc.get("date", "")
+
+        # Dividend history inputs
+        dh = div_hist_map.get(ticker, {})
+        dh_count = dh.get("count", 0)
+        dh_sum = dh.get("total", 0.0) if dh else 0.0
+
+        # Cashflow dividendsPaid inputs
+        cf_records = cf_batch.get(ticker, [])
+        cf_vals_raw = [_safe_float(r.get("dividends_paid")) for r in cf_records]
+        cf_non_null_quarters = sum(1 for v in cf_vals_raw if v is not None)
+        cf_sum = sum(abs(v) for v in cf_vals_raw if v is not None)
+
+        # Market cap for canonical dividend
+        shares = _safe_float(tt.get("shares_outstanding"))
+        market_cap = (last_close * shares) if (last_close and shares) else None
+
+        # Canonical dividend yield
+        _div_canonical = compute_canonical_dividend_yield(
+            market_cap=market_cap,
+            shares_outstanding=shares,
+            cashflow_dividends_paid_quarterly=cf_vals_raw if len(cf_vals_raw) >= 4 else [],
+            dividend_history_ttm_total=dh.get("total") if dh else None,
+            dividend_history_count=dh_count,
+            include_debug=False,
+        )
+        div_value = _div_canonical["dividend_yield_ttm_value"]
+        div_na_reason = _div_canonical["na_reason"]
+
+        # Determine peer-pool inclusion using SAME logic as _capture_step4_constituents:
+        # Ticker must be visible, fundamentals_status=complete, have known currency,
+        # and dividend_yield value must be not None and >= 0.
+        included_in_pool = False
+        excluded_reason = ""
+
+        if not is_visible:
+            excluded_reason = "not_visible"
+        elif fundamentals_status != "complete":
+            excluded_reason = "fundamentals_incomplete"
+        elif not tt.get("financial_currency"):
+            excluded_reason = "null_currency"
+        elif div_value is None:
+            excluded_reason = f"na:{div_na_reason}" if div_na_reason else "na:unknown"
+        elif div_value < 0:
+            excluded_reason = "negative_yield"
+        else:
+            included_in_pool = True
+
+        if included_in_pool:
+            dividend_included_count += 1
+        else:
+            excluded_reason_counts[excluded_reason] = excluded_reason_counts.get(excluded_reason, 0) + 1
+
+        # Metric values from constituents collection
+        mv = ticker_metric_values.get(ticker, {})
+
+        ticker_rows_data.append({
+            "ticker": ticker,
+            "is_visible": is_visible,
+            "has_price_data": has_price_data,
+            "last_close_date": last_close_date,
+            "last_close": last_close,
+            "dividend_history_count_365d": dh_count,
+            "dividends_365d_sum": round(dh_sum, 4) if dh_sum else 0,
+            "cashflow_dividendsPaid_non_null_quarters": cf_non_null_quarters,
+            "cashflow_dividendsPaid_sum": round(cf_sum, 2) if cf_sum else 0,
+            "dividend_yield_ttm_value": round(div_value, 4) if div_value is not None else "",
+            "dividend_yield_na_reason": div_na_reason or "",
+            "included_in_dividend_peer_pool": included_in_pool,
+            "excluded_reason": excluded_reason,
+            "metric_values": mv,
+        })
+
+    # ── 8. Build CSV ──────────────────────────────────────────────────────
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # Header comments
     _now_prague = datetime.now(timezone.utc).astimezone(prague).isoformat()
-    computed_at_raw = cons_doc.get("computed_at")
+    computed_at_raw = (cons_doc or {}).get("computed_at")
     computed_at_prague = ""
     if computed_at_raw:
         try:
@@ -3039,39 +3214,75 @@ async def admin_peer_medians_constituents_csv(
         except Exception:
             computed_at_prague = str(computed_at_raw)
 
+    display_group = group_name if level != "market" else "US Market"
     writer.writerow([f"# exported_at_prague: {_now_prague}"])
     writer.writerow([f"# level: {level}"])
-    writer.writerow([f"# group_name: {group_name}"])
+    writer.writerow([f"# group_name: {display_group}"])
     writer.writerow([f"# computed_at_prague: {computed_at_prague}"])
-    writer.writerow([f"# total_tickers: {len(sorted_tickers)}"])
+    writer.writerow([f"# total_in_group: {total_in_group}"])
+    writer.writerow([f"# visible_in_group: {visible_in_group}"])
+    writer.writerow([f"# dividend_included_count: {dividend_included_count}"])
+    for reason, cnt in sorted(excluded_reason_counts.items()):
+        writer.writerow([f"# dividend_excluded_{reason}: {cnt}"])
 
     # Column headers
     header = ["ticker"]
     for mk, _ in metric_spec:
         header.append(mk)
+    header.extend([
+        "is_visible", "has_price_data", "last_close_date", "last_close",
+        "dividend_history_count_365d", "dividends_365d_sum",
+        "cashflow_dividendsPaid_non_null_quarters", "cashflow_dividendsPaid_sum",
+        "dividend_yield_ttm_value", "dividend_yield_na_reason",
+        "included_in_dividend_peer_pool", "excluded_reason",
+    ])
     writer.writerow(header)
 
-    # Median summary row
+    # Median summary row (metrics only)
     median_row = ["__MEDIAN__"]
     for mk, _ in metric_spec:
         entry = s4.get(mk)
         median_row.append(round(entry.get("median"), 4) if entry and entry.get("median") is not None else "")
+    # Pad diagnostic columns with empty
+    median_row.extend([""] * 12)
     writer.writerow(median_row)
 
     # Per-ticker rows
-    for ticker in sorted_tickers:
-        vals = ticker_values[ticker]
-        row = [ticker]
+    for rd in ticker_rows_data:
+        row = [rd["ticker"]]
         for mk, _ in metric_spec:
-            v = vals.get(mk)
+            v = rd["metric_values"].get(mk)
             try:
                 row.append(round(v, 4) if v is not None else "")
             except (TypeError, ValueError):
                 row.append("")
+        row.extend([
+            rd["is_visible"],
+            rd["has_price_data"],
+            rd["last_close_date"],
+            round(rd["last_close"], 2) if rd["last_close"] is not None else "",
+            rd["dividend_history_count_365d"],
+            rd["dividends_365d_sum"],
+            rd["cashflow_dividendsPaid_non_null_quarters"],
+            rd["cashflow_dividendsPaid_sum"],
+            rd["dividend_yield_ttm_value"],
+            rd["dividend_yield_na_reason"],
+            rd["included_in_dividend_peer_pool"],
+            rd["excluded_reason"],
+        ])
         writer.writerow(row)
 
+    # Footer totals
+    writer.writerow([])
+    writer.writerow(["__FOOTER__"])
+    writer.writerow(["total_in_group", total_in_group])
+    writer.writerow(["visible_in_group", visible_in_group])
+    writer.writerow(["dividend_included_count", dividend_included_count])
+    for reason, cnt in sorted(excluded_reason_counts.items()):
+        writer.writerow([f"dividend_excluded_{reason}", cnt])
+
     output.seek(0)
-    safe_group = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in group_name)
+    safe_group = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in display_group)
     filename = f"constituents_{level}_{safe_group}.csv"
     return StreamingResponse(
         iter([output.getvalue()]),
