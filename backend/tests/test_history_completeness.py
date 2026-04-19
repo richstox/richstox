@@ -678,3 +678,127 @@ class TestNotInBulkRedownload:
             assert "needs_price_redownload" not in update_doc
         finally:
             svc._get_bulk_processed_dates = original
+
+
+# ── Test: persist clears missing_days_sample when complete ─────────────────────
+
+class TestPersistClearsMissingSample:
+    """Verify persist_ticker_completeness clears price_history_missing_days_sample
+    when the ticker passes verification (no calendar gaps)."""
+
+    def test_persist_clears_sample_when_complete(self):
+        """When calendar_gap_missing_sample is empty, missing_days_sample
+        should be set to [] to clear any stale value."""
+        db = _make_db()
+        now = datetime.now(timezone.utc)
+        result = _result(
+            status="complete",
+            complete=True,
+            first_date="2020-01-02",
+            last_date="2025-04-17",
+            verified_at=now,
+        )
+        # Simulate no calendar gaps → empty sample
+        result["calendar_gap_missing_sample"] = []
+        asyncio.get_event_loop().run_until_complete(
+            persist_ticker_completeness(db, "CEV.US", result)
+        )
+        call_args = db.tracked_tickers.update_one.call_args
+        set_fields = call_args[0][1]["$set"]
+        assert set_fields["price_history_missing_days_sample"] == []
+        assert set_fields["price_history_missing_days_count"] == 0
+
+    def test_persist_sets_sample_when_incomplete(self):
+        """When calendar_gap_missing_sample has entries, they are persisted."""
+        db = _make_db()
+        now = datetime.now(timezone.utc)
+        result = _result(
+            status="missing_trading_days",
+            complete=False,
+            first_date="2020-01-02",
+            last_date="2025-04-17",
+            missing_days_count=1,
+            missing_days=["2025-04-15"],
+            verified_at=now,
+        )
+        result["calendar_gap_missing_sample"] = ["2025-04-15"]
+        asyncio.get_event_loop().run_until_complete(
+            persist_ticker_completeness(db, "CEV.US", result)
+        )
+        call_args = db.tracked_tickers.update_one.call_args
+        set_fields = call_args[0][1]["$set"]
+        assert set_fields["price_history_missing_days_sample"] == ["2025-04-15"]
+        assert set_fields["needs_price_redownload"] is True
+
+    def test_persist_clears_sample_when_none(self):
+        """When calendar_gap_missing_sample is absent (None), sample is cleared."""
+        db = _make_db()
+        now = datetime.now(timezone.utc)
+        result = _result(
+            status="complete",
+            complete=True,
+            first_date="2020-01-02",
+            last_date="2025-04-17",
+            verified_at=now,
+        )
+        # No calendar_gap_missing_sample key at all
+        asyncio.get_event_loop().run_until_complete(
+            persist_ticker_completeness(db, "CEV.US", result)
+        )
+        call_args = db.tracked_tickers.update_one.call_args
+        set_fields = call_args[0][1]["$set"]
+        assert set_fields["price_history_missing_days_sample"] == []
+
+
+# ── Test: sweep clears missing_days_sample when complete ───────────────────────
+
+class TestSweepClearsMissingSample:
+    """Verify run_history_completeness_sweep clears price_history_missing_days_sample
+    for tickers that become complete (e.g. after Phase C backfilled a gap)."""
+
+    def test_sweep_clears_sample_for_complete_ticker(self):
+        """Complete ticker in sweep → price_history_missing_days_sample=[]."""
+        now = datetime.now(timezone.utc)
+        visible = [
+            {
+                "ticker": "CEV.US",
+                "history_download_proven_at": now,
+                "history_download_proven_anchor": "2025-04-11",
+            },
+        ]
+        expected = ["2025-04-14", "2025-04-15"]
+
+        db = _make_db(visible_docs=visible)
+
+        import services.history_completeness_service as svc
+        original = svc._get_bulk_processed_dates
+
+        async def _mock_bpd(db):
+            return expected
+        svc._get_bulk_processed_dates = _mock_bpd
+
+        def _mock_agg(pipeline):
+            for stage in pipeline:
+                if "$group" in stage:
+                    group = stage["$group"]
+                    if "dates" in group:
+                        return _Cursor([{"_id": "CEV.US", "dates": expected}])
+                    if "first_date" in group:
+                        return _Cursor([{"_id": "CEV.US", "first_date": "1999-01-27", "last_date": "2025-04-15"}])
+            return _Cursor([])
+        db.stock_prices.aggregate = _mock_agg
+
+        try:
+            result = asyncio.get_event_loop().run_until_complete(
+                run_history_completeness_sweep(db)
+            )
+            assert result["complete"] == 1
+            # Verify bulk_write includes clearing the sample
+            db.tracked_tickers.bulk_write.assert_called_once()
+            call_args = db.tracked_tickers.bulk_write.call_args
+            ops = call_args[0][0]
+            update_doc = ops[0]._doc["$set"]
+            assert update_doc["price_history_missing_days_sample"] == []
+            assert update_doc["price_history_missing_days_count"] == 0
+        finally:
+            svc._get_bulk_processed_dates = original

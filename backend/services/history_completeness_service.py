@@ -458,6 +458,9 @@ async def persist_ticker_completeness(
     cal_sample = result.get("calendar_gap_missing_sample")
     if cal_sample:
         set_fields["price_history_missing_days_sample"] = cal_sample
+    else:
+        # Clear stale sample when the ticker is now complete
+        set_fields["price_history_missing_days_sample"] = []
     # If missing_trading_days status, flag for immediate redownload
     if result.get("price_history_status") == "missing_trading_days":
         set_fields["needs_price_redownload"] = True
@@ -717,6 +720,10 @@ async def run_history_completeness_sweep(
                         len(_cal_missing),
                         _cal_missing[:5],
                     )
+            elif result.get("price_history_complete"):
+                # Clear stale missing-days sample when the ticker is now
+                # complete (e.g. after Phase C backfilled the gap).
+                set_fields["price_history_missing_days_sample"] = []
             ops.append(UpdateOne({"ticker": ticker}, {"$set": set_fields}))
 
         if progress_cb and (i + 1) % 500 == 0:

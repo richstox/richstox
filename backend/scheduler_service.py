@@ -4736,6 +4736,8 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                                 "records": 0,
                             }
 
+                _phase_c_succeeded_tickers: List[str] = []
+
                 done_c = 0
                 try:
                     _phase_c_batch_size = int(
@@ -4782,6 +4784,7 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
                         if ticker_result.get("success"):
                             phase_c_stats["tickers_succeeded"] += 1
                             phase_c_stats["total_records"] += int(ticker_result.get("records") or 0)
+                            _phase_c_succeeded_tickers.append(ticker_result["ticker"])
                         else:
                             phase_c_stats["tickers_failed"] += 1
 
@@ -4843,6 +4846,55 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         # Without this, the window between Phase C "done" and the final
         # terminal status write shows a misleading "Price history sync
         # completed" at progress_pct=100 while status="running".
+
+        # ── Re-verify completeness for Phase-C-remediated tickers ─────────
+        # The main completeness sweep only checks is_visible=True tickers.
+        # Tickers that just completed Phase C may still be invisible with
+        # stale INCOMPLETE_HISTORY.  Re-verify them individually so their
+        # price_history_complete / missing_days_* fields reflect the new
+        # data, then the visibility recompute below can flip them visible.
+        if _phase_c_succeeded_tickers:
+            await _progress(
+                f"Finalizing — re-verifying {len(_phase_c_succeeded_tickers)} "
+                f"Phase C remediated ticker(s)…"
+            )
+            try:
+                from services.history_completeness_service import (
+                    verify_ticker_history_completeness,
+                    persist_ticker_completeness,
+                )
+                _reverify_ok = 0
+                for _rc_ticker in _phase_c_succeeded_tickers:
+                    _rc_ticker_us = (
+                        _rc_ticker
+                        if _rc_ticker.endswith(".US")
+                        else f"{_rc_ticker}.US"
+                    )
+                    try:
+                        _rc_result = await verify_ticker_history_completeness(
+                            db, _rc_ticker_us,
+                        )
+                        await persist_ticker_completeness(
+                            db, _rc_ticker_us, _rc_result,
+                        )
+                        _reverify_ok += 1
+                    except Exception as _rc_exc:
+                        logger.warning(
+                            "[Step 3] Phase C re-verify failed for %s: %s",
+                            _rc_ticker_us, _rc_exc,
+                        )
+                logger.info(
+                    "[Step 3] Phase C re-verification: %d/%d succeeded",
+                    _reverify_ok, len(_phase_c_succeeded_tickers),
+                )
+                result["phase_c_reverified"] = {
+                    "total": len(_phase_c_succeeded_tickers),
+                    "succeeded": _reverify_ok,
+                }
+            except Exception as _rv_exc:
+                logger.warning("[Step 3] Phase C re-verification failed: %s", _rv_exc)
+                result["phase_c_reverified"] = {"status": "error", "error": str(_rv_exc)}
+
         await _progress("Finalizing — running completeness sweep…")
 
         # ── Run canonical history-completeness sweep (PR11) ──────────────
@@ -4860,6 +4912,26 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         except Exception as _hc_exc:
             logger.warning("[Step 3] History completeness sweep failed: %s", _hc_exc)
             result["history_completeness_sweep"] = {"status": "error", "error": str(_hc_exc)}
+
+        # ── Recompute visibility after completeness sweep ────────────────
+        # Phase C may have fixed INCOMPLETE_HISTORY for previously invisible
+        # tickers.  Recompute visibility so they become visible now that
+        # price_history_complete=True.
+        await _progress("Finalizing — recomputing visibility…")
+        try:
+            visibility_result = await recompute_visibility_all(db, parent_run_id=_s3_excl_run_id)
+            result["post_phase_c_visibility"] = {
+                "visible": visibility_result.get("visible", 0),
+                "not_visible": visibility_result.get("not_visible", 0),
+            }
+            logger.info(
+                "[Step 3] Post-Phase-C visibility recompute: %d visible, %d not visible",
+                visibility_result.get("visible", 0),
+                visibility_result.get("not_visible", 0),
+            )
+        except Exception as _vis_exc:
+            logger.warning("[Step 3] Post-Phase-C visibility recompute failed: %s", _vis_exc)
+            result["post_phase_c_visibility"] = {"status": "error", "error": str(_vis_exc)}
 
         # Post-sweep heartbeat so zombie detection doesn't trigger during
         # the finalization window (sweep can take several minutes).
