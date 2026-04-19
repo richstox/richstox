@@ -3932,8 +3932,7 @@ async def admin_dividend_coverage_report():
       - total visible tickers (with fundamentals)
       - dividend_yield_ttm n_used from latest peer_benchmarks
       - coverage_pct
-      - excluded_by_reason breakdown
-      - dividends_synced counts (how many tickers have dividends_synced_at)
+      - coverage_warning
     """
 
     # 1. Total visible tickers with fundamentals
@@ -3941,26 +3940,7 @@ async def admin_dividend_coverage_report():
         {"is_visible": True, "fundamentals_status": "complete"}
     )
 
-    # 2. Dividend sync coverage
-    synced_total = await db.tracked_tickers.count_documents(
-        {"is_visible": True, "fundamentals_status": "complete",
-         "dividends_synced_at": {"$exists": True, "$ne": None}}
-    )
-    synced_complete = await db.tracked_tickers.count_documents(
-        {"is_visible": True, "fundamentals_status": "complete",
-         "dividends_sync_status": "complete"}
-    )
-    synced_no_dividends = await db.tracked_tickers.count_documents(
-        {"is_visible": True, "fundamentals_status": "complete",
-         "dividends_sync_status": "no_dividends"}
-    )
-    synced_error = await db.tracked_tickers.count_documents(
-        {"is_visible": True, "fundamentals_status": "complete",
-         "dividends_sync_status": "error"}
-    )
-    never_synced = total_visible - synced_total
-
-    # 3. Latest market-level peer_benchmarks for dividend_yield
+    # 2. Latest market-level peer_benchmarks for dividend_yield
     market_doc = await db.peer_benchmarks.find_one(
         {"level": "market"},
         {"_id": 0, "step4_medians": 1, "dividend_peer_count": 1,
@@ -3979,17 +3959,7 @@ async def admin_dividend_coverage_report():
     ))
     coverage_warning = div_step4.get("coverage_warning", coverage_pct < 30)
 
-    # 4. Excluded-by-reason breakdown from constituents CSV footer data
-    # We query dividend_history and company_financials to compute the breakdown
-    # (mirrors the constituents CSV logic but summarized)
-    excluded_reasons = {
-        "missing_inputs": 0,
-        "unreliable": 0,
-        "extreme_outlier": 0,
-        "no_dividend_included": 0,
-    }
-
-    # Use the peer_benchmarks_constituents for market if available
+    # 3. Constituents data if available
     cons_doc = await db.peer_benchmarks_constituents.find_one(
         {"level": "market", "group": "market"},
         {"_id": 0, "metrics": 1}
@@ -4000,14 +3970,6 @@ async def admin_dividend_coverage_report():
 
     return {
         "total_visible_with_fundamentals": total_visible,
-        "dividend_sync_coverage": {
-            "synced_total": synced_total,
-            "synced_complete": synced_complete,
-            "synced_no_dividends": synced_no_dividends,
-            "synced_error": synced_error,
-            "never_synced": never_synced,
-            "sync_pct": round(synced_total / total_visible * 100, 1) if total_visible > 0 else 0,
-        },
         "dividend_yield_benchmark": {
             "n_used": n_used,
             "total_company_count": pool_total,

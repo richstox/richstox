@@ -1302,8 +1302,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
     ticker_list = await db.tracked_tickers.find(
         {"is_visible": True, "fundamentals_status": "complete"},
         {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
-         "financial_currency": 1, "shares_outstanding": 1,
-         "dividends_synced_at": 1}
+         "financial_currency": 1, "shares_outstanding": 1}
     ).to_list(length=10000)
     
     # Separate USD and non-USD tickers upfront (P1 Policy)
@@ -1571,22 +1570,19 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 if len(_div_q_keys) >= 4 else []
             )
             _div_hist_info = _div_hist_batch.get(ticker, {})
-            _div_synced = t.get("dividends_synced_at") is not None
             _div_canonical = compute_canonical_dividend_yield(
                 market_cap=market_cap,
                 shares_outstanding=shares,
                 cashflow_dividends_paid_quarterly=_div_cf_vals,
                 dividend_history_ttm_total=_div_hist_info.get("total"),
                 dividend_history_count=_div_hist_info.get("count", 0),
-                dividends_synced=_div_synced,
                 include_debug=False,
             )
             if _div_canonical["dividend_yield_ttm_value"] is not None:
                 metrics["dividend_yield"] = _div_canonical["dividend_yield_ttm_value"]
-            # NOTE: When na_reason="missing_inputs" and dividends_synced=False,
-            # this ticker is EXCLUDED from the dividend yield peer pool because
-            # we have no evidence of dividends OR non-payment.
-            # When dividends_synced=True and no records → proven non-payer (0%).
+            # NOTE: When na_reason="missing_inputs", this ticker is EXCLUDED
+            # from the dividend yield peer pool (no evidence of dividends).
+            # When cashflow has data, it's used as a fallback source.
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
@@ -1933,7 +1929,10 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 # Phase 2A: recompute dividend median using expanded pool for safe metrics
                 div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
-                if len(div_pairs) >= MIN_PEER_COUNT:
+                n_dv = len(div_pairs)
+                _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
+                _cov_warn = _cov < MIN_COVERAGE_PCT
+                if n_dv >= MIN_PEER_COUNT:
                     div_pairs = winsorize_values(div_pairs)
                     div_pairs.sort()
                     n_dv = len(div_pairs)
@@ -1941,12 +1940,12 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                         d_med = round(div_pairs[n_dv // 2], 2)
                     else:
                         d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
-                    _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
                     step4["dividend_yield_ttm"] = {
-                        "median": d_med, "n_used": n_dv,
+                        "median": None if _cov_warn else d_med,
+                        "n_used": n_dv,
                         "total_company_count": _pool_total,
                         "coverage_pct": _cov,
-                        "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                        "coverage_warning": _cov_warn,
                     }
                 continue
             if mk in step4_allow_negative:
@@ -2159,7 +2158,10 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             if mk == "dividend_yield":
                 div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
-                if len(div_pairs) >= MIN_PEER_COUNT:
+                n_dv = len(div_pairs)
+                _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
+                _cov_warn = _cov < MIN_COVERAGE_PCT
+                if n_dv >= MIN_PEER_COUNT:
                     div_pairs = winsorize_values(div_pairs)
                     div_pairs.sort()
                     n_dv = len(div_pairs)
@@ -2167,12 +2169,12 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                         d_med = round(div_pairs[n_dv // 2], 2)
                     else:
                         d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
-                    _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
                     step4["dividend_yield_ttm"] = {
-                        "median": d_med, "n_used": n_dv,
+                        "median": None if _cov_warn else d_med,
+                        "n_used": n_dv,
                         "total_company_count": _pool_total,
                         "coverage_pct": _cov,
-                        "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                        "coverage_warning": _cov_warn,
                     }
                 continue
             if mk in step4_allow_negative:
@@ -2357,7 +2359,10 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             if mk == "dividend_yield":
                 div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
-                if len(div_pairs) >= MIN_PEER_COUNT:
+                n_dv = len(div_pairs)
+                _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
+                _cov_warn = _cov < MIN_COVERAGE_PCT
+                if n_dv >= MIN_PEER_COUNT:
                     div_pairs = winsorize_values(div_pairs)
                     div_pairs.sort()
                     n_dv = len(div_pairs)
@@ -2365,12 +2370,12 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                         d_med = round(div_pairs[n_dv // 2], 2)
                     else:
                         d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
-                    _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
                     step4["dividend_yield_ttm"] = {
-                        "median": d_med, "n_used": n_dv,
+                        "median": None if _cov_warn else d_med,
+                        "n_used": n_dv,
                         "total_company_count": _pool_total,
                         "coverage_pct": _cov,
-                        "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                        "coverage_warning": _cov_warn,
                     }
                 continue
             if mk in step4_allow_negative:
