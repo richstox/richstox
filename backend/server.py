@@ -3935,8 +3935,6 @@ async def admin_dividend_coverage_report():
       - excluded_by_reason breakdown
       - dividends_synced counts (how many tickers have dividends_synced_at)
     """
-    from canonical_dividend import compute_canonical_dividend_yield
-    from datetime import timedelta
 
     # 1. Total visible tickers with fundamentals
     total_visible = await db.tracked_tickers.count_documents(
@@ -6064,6 +6062,7 @@ async def get_ticker_detail_mobile(
         return None, None, None, None, None
 
     # Pre-compute fallback results for each metric (avoid redundant calls)
+    # Each returns (median, n_used, level, coverage_pct, coverage_warning)
     _fb_net_margin = _s4_median_with_fallback("net_margin_ttm")
     _fb_fcf_yield = _s4_median_with_fallback("fcf_yield")
     _fb_net_debt = _s4_median_with_fallback("net_debt_ebitda")
@@ -6166,13 +6165,14 @@ async def get_ticker_detail_mobile(
             "dividend_yield_ttm": _fb_div_yield,
         }
         _fb = _fb_key_map[_mk]
+        _fb_med, _fb_n, _fb_level, _fb_cov_pct, _fb_cov_warn = _fb
         key_metrics[_mk]["benchmark_metadata"] = {
             "benchmark_value": _bv,
             "benchmark_level": _bl,
             "benchmark_n": _bn,
             "statistic_type": "median",
-            "coverage_pct": _fb[3] if len(_fb) > 3 else None,
-            "coverage_warning": _fb[4] if len(_fb) > 4 else None,
+            "coverage_pct": _fb_cov_pct,
+            "coverage_warning": _fb_cov_warn,
         }
 
     # Determine has_benchmark: True if ANY step4 metric has a valid benchmark

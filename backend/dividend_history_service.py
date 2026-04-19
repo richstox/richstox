@@ -20,6 +20,7 @@ Used for:
 """
 
 import os
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
@@ -171,7 +172,6 @@ async def sync_batch_dividends(
     Returns:
         Summary of batch operation.
     """
-    import asyncio
     
     result = {
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -432,7 +432,6 @@ async def sync_dividends_for_visible_tickers(
 
     Returns a summary dict suitable for ops_job_runs.
     """
-    import asyncio
 
     started_at = datetime.now(timezone.utc)
     resync_cutoff = started_at - timedelta(days=DIVIDEND_RESYNC_INTERVAL_DAYS)

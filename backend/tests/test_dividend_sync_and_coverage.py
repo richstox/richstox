@@ -7,7 +7,7 @@ Covers:
 3. Proven non-payer detection when dividends are synced
 
 Run:
-    cd /app/backend && python -m pytest tests/test_dividend_sync_and_coverage.py -v
+    cd backend && python -m pytest tests/test_dividend_sync_and_coverage.py -v
 """
 
 import sys
