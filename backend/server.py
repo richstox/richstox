@@ -2949,6 +2949,134 @@ async def admin_peer_medians_csv(
     )
 
 
+@api_router.get("/admin/peer-medians/constituents/csv")
+async def admin_peer_medians_constituents_csv(
+    level: str = Query(..., regex="^(industry|sector)$"),
+    group_name: str = Query(..., min_length=1),
+):
+    """
+    Export per-ticker constituent values for a single Benchmark Medians group.
+
+    Reads from the **peer_benchmarks_constituents** collection (admin-only audit
+    artifact written alongside peer_benchmarks during Step 4).
+
+    Each row is one ticker.  Columns: ticker, then for each of the 7 Key Metrics
+    the value that ticker contributed to the median (empty if the ticker was not
+    in the pool for that metric).
+
+    Query params:
+        level      — "industry" or "sector"
+        group_name — the exact industry or sector name
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+    import zoneinfo as _zi
+
+    prague = _zi.ZoneInfo("Europe/Prague")
+
+    metric_spec = [
+        ("net_margin_ttm", "Net Margin (TTM)"),
+        ("fcf_yield", "Free Cash Flow Yield"),
+        ("net_debt_ebitda", "Net Debt / EBITDA"),
+        ("revenue_growth_3y", "Revenue Growth (3Y CAGR)"),
+        ("dividend_yield_ttm", "Dividend Yield (TTM)"),
+        ("pe_ttm", "P/E (TTM)"),
+        ("roe", "ROE"),
+    ]
+
+    # ── 1. Fetch constituents doc ──────────────────────────────────────────
+    cons_doc = await db.peer_benchmarks_constituents.find_one(
+        {"level": level, "group": group_name},
+        {"_id": 0},
+    )
+    if not cons_doc:
+        raise HTTPException(
+            404,
+            f"No constituents data for level={level}, group_name={group_name}. "
+            "Re-run Step 4 (peer_medians) to populate.",
+        )
+
+    metrics = cons_doc.get("metrics") or {}
+
+    # ── 2. Build per-ticker value map ──────────────────────────────────────
+    # ticker → {metric_key: value, ...}
+    ticker_values: dict[str, dict[str, float | None]] = {}
+    for mk, _ in metric_spec:
+        entry = metrics.get(mk)
+        if not entry:
+            continue
+        tickers = entry.get("tickers", [])
+        values = entry.get("values", [])
+        for t, v in zip(tickers, values):
+            ticker_values.setdefault(t, {})[mk] = v
+
+    sorted_tickers = sorted(ticker_values.keys())
+
+    # ── 3. Fetch medians from peer_benchmarks for the summary row ─────────
+    if level == "sector":
+        pb_query = {"sector": group_name, "industry": None}
+    else:
+        pb_query = {"industry": group_name}
+    pb_doc = await db.peer_benchmarks.find_one(pb_query, {"_id": 0, "step4_medians": 1})
+    s4 = (pb_doc or {}).get("step4_medians") or {}
+
+    # ── 4. Build CSV ──────────────────────────────────────────────────────
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header comments
+    _now_prague = datetime.now(timezone.utc).astimezone(prague).isoformat()
+    computed_at_raw = cons_doc.get("computed_at")
+    computed_at_prague = ""
+    if computed_at_raw:
+        try:
+            if isinstance(computed_at_raw, str):
+                _utc = datetime.fromisoformat(computed_at_raw.replace("Z", "+00:00"))
+            else:
+                _utc = computed_at_raw if computed_at_raw.tzinfo else computed_at_raw.replace(tzinfo=timezone.utc)
+            computed_at_prague = _utc.astimezone(prague).isoformat()
+        except Exception:
+            computed_at_prague = str(computed_at_raw)
+
+    writer.writerow([f"# exported_at_prague: {_now_prague}"])
+    writer.writerow([f"# level: {level}"])
+    writer.writerow([f"# group_name: {group_name}"])
+    writer.writerow([f"# computed_at_prague: {computed_at_prague}"])
+    writer.writerow([f"# total_tickers: {len(sorted_tickers)}"])
+
+    # Column headers
+    header = ["ticker"]
+    for mk, _ in metric_spec:
+        header.append(mk)
+    writer.writerow(header)
+
+    # Median summary row
+    median_row = ["__MEDIAN__"]
+    for mk, _ in metric_spec:
+        entry = s4.get(mk)
+        median_row.append(round(entry["median"], 4) if entry and entry.get("median") is not None else "")
+    writer.writerow(median_row)
+
+    # Per-ticker rows
+    for ticker in sorted_tickers:
+        vals = ticker_values[ticker]
+        row = [ticker]
+        for mk, _ in metric_spec:
+            v = vals.get(mk)
+            row.append(round(v, 4) if v is not None else "")
+        writer.writerow(row)
+
+    output.seek(0)
+    safe_group = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in group_name)
+    filename = f"constituents_{level}_{safe_group}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @api_router.get("/admin/benchmark-debug/industry")
 async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
     """
