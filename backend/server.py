@@ -6545,8 +6545,8 @@ async def admin_get_job_status(job_name: str):
     # For pipeline jobs with heartbeat-based zombie detection, also run the
     # heartbeat-aware finalizer so a stale heartbeat run gets cleaned up.
     if job_name in ("price_sync", "fundamentals_sync"):
-        from scheduler_service import finalize_stuck_admin_job_runs as _fsajr2
-        await _fsajr2(db, job_names=[job_name])
+        from scheduler_service import finalize_stuck_admin_job_runs as _finalize_stuck
+        await _finalize_stuck(db, job_names=[job_name])
 
     # Resolve the DB job_name (handles API↔DB name mismatches).
     db_job_name = _resolve_db_job_name(job_name)
@@ -7407,8 +7407,8 @@ async def admin_job_status(job_name: str):
     # stuck at 100% with a stale heartbeat gets cleaned up on poll.
     await recover_stale_job_run(db, job_name)
     if job_name in ("price_sync", "fundamentals_sync"):
-        from scheduler_service import finalize_stuck_admin_job_runs as _fsajr
-        await _fsajr(db, job_names=[job_name])
+        from scheduler_service import finalize_stuck_admin_job_runs as _finalize_stuck
+        await _finalize_stuck(db, job_names=[job_name])
 
     # Resolve the DB job_name (handles API↔DB name mismatches).
     db_job_name = _resolve_db_job_name(job_name)
@@ -9941,7 +9941,7 @@ async def admin_pipeline_chain_status(chain_run_id: str):
                     doc["finished_at"] = _heal_at.isoformat()
                 logger.warning(
                     f"[chain-status] Auto-healed chain {chain_run_id}: "
-                    f"step {_current_step or 3} ({_job_name}) was {_job_status!r} "
+                    f"step {_current_step if _current_step is not None else 3} ({_job_name}) was {_job_status!r} "
                     f"→ chain healed as {_healed_status!r}"
                 )
 
