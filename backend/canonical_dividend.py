@@ -9,7 +9,7 @@ Call sites:
   3. Step 4 peer benchmarks → dividend_yield_ttm
 
 Source priority (best available):
----------------------------------
+----------------------------------
 1. dividend_history (EODHD /div/ API — per-share payment records in last 365 days)
 2. company_financials cashflow dividendsPaid (last 4 quarterly cash-flow statements)
 
