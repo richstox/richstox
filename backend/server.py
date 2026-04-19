@@ -3055,7 +3055,7 @@ async def admin_peer_medians_constituents_csv(
     median_row = ["__MEDIAN__"]
     for mk, _ in metric_spec:
         entry = s4.get(mk)
-        median_row.append(round(entry["median"], 4) if entry and entry.get("median") is not None else "")
+        median_row.append(round(entry.get("median"), 4) if entry and entry.get("median") is not None else "")
     writer.writerow(median_row)
 
     # Per-ticker rows
@@ -3064,7 +3064,10 @@ async def admin_peer_medians_constituents_csv(
         row = [ticker]
         for mk, _ in metric_spec:
             v = vals.get(mk)
-            row.append(round(v, 4) if v is not None else "")
+            try:
+                row.append(round(v, 4) if v is not None else "")
+            except (TypeError, ValueError):
+                row.append("")
         writer.writerow(row)
 
     output.seek(0)
