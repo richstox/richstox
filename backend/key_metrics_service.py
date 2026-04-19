@@ -1576,16 +1576,13 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             )
             if _div_canonical["dividend_yield_ttm_value"] is not None:
                 metrics["dividend_yield"] = _div_canonical["dividend_yield_ttm_value"]
-            elif (
-                _div_canonical["na_reason"] == "missing_inputs"
-                and _div_hist_info.get("count", 0) == 0
-            ):
-                # PEER BENCHMARKING FIX: Visible tickers with complete
-                # fundamentals that have zero dividend_history records in
-                # the last 365 days are non-dividend-payers.  Treat as 0%
-                # yield so they remain in the peer pool.  Without this,
-                # the pool shrinks to single digits even for large sectors.
-                metrics["dividend_yield"] = 0.0
+            # NOTE: When na_reason="missing_inputs", this ticker is EXCLUDED
+            # from the dividend yield peer pool.  We do NOT coerce to 0.0
+            # because missing_inputs means we have no evidence of dividends
+            # OR non-payment:
+            #   - All 4 cashflow dividendsPaid are null (field not reported)
+            #   - No dividend_history records in DB (may never have been synced)
+            # Coercing to 0.0 without proof would pollute the peer median.
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
@@ -1666,8 +1663,8 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
     _div_missing = len(ticker_metrics) - _div_has_value
     logger.info(
         f"Dividend yield pool: {_div_has_value} with value "
-        f"(positive={_div_positive}, zero={_div_zero}), "
-        f"{_div_missing} excluded (unreliable/extreme_outlier)"
+        f"(positive={_div_positive}, proven_non_payer_zero={_div_zero}), "
+        f"{_div_missing} excluded (missing_dividend_data/unreliable/extreme_outlier)"
     )
 
     await _hb("computing_metrics", processed=len(ticker_metrics), total=len(ticker_list))
