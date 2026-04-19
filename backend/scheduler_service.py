@@ -1783,6 +1783,14 @@ async def run_daily_price_sync(
                     result["dates_processed"] += day_result.get("dates_processed", 0)
                     result["records_upserted"] += day_result.get("records_upserted", 0)
                     _tickers_with_price_set.update(day_result.get("tickers_with_price", []))
+                    # Propagate bulk_parse_complete and tickers_in_bulk so
+                    # downstream sync_has_price_data_flags gets the correct
+                    # guard value and ops_job_runs records the true status.
+                    if day_result.get("bulk_parse_complete"):
+                        result["bulk_parse_complete"] = True
+                    _day_tickers_in_bulk = day_result.get("tickers_in_bulk")
+                    if _day_tickers_in_bulk is not None:
+                        result["tickers_in_bulk"] = _day_tickers_in_bulk
                     # Track zero-close tickers from the latest successful day.
                     # Only the latest day matters: sync_has_price_data_flags writes
                     # exclusions for bulk_date (= _last_closing_day), which is always
