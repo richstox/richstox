@@ -195,27 +195,23 @@ class TestSelfHealGracePeriod:
     window), but DOES heal for actual failure statuses immediately and for
     stale success completions after the grace period."""
 
-    _FAILURE_JOB_STATUSES = {"failed", "error", "cancelled", "skipped"}
-    _SUCCESS_JOB_STATUSES = {"completed", "success"}
-    _SUCCESS_GRACE_PERIOD = timedelta(minutes=10)
-
     @staticmethod
     def _should_heal(job_status, job_finished_at, now=None):
         """Replicate the self-heal logic from the chain-status endpoint."""
-        _FAILURE = {"failed", "error", "cancelled", "skipped"}
-        _SUCCESS = {"completed", "success"}
-        _GRACE = timedelta(minutes=10)
+        _FAILURE_JOB_STATUSES = {"failed", "error", "cancelled", "skipped"}
+        _SUCCESS_JOB_STATUSES = {"completed", "success"}
+        _SUCCESS_GRACE_PERIOD = timedelta(minutes=10)
 
-        if job_status in _FAILURE and job_finished_at is not None:
+        if job_status in _FAILURE_JOB_STATUSES and job_finished_at is not None:
             return True
-        if job_status in _SUCCESS and job_finished_at is not None:
+        if job_status in _SUCCESS_JOB_STATUSES and job_finished_at is not None:
             _now = now or datetime.now(timezone.utc)
             _fin = job_finished_at
             if isinstance(_fin, str):
                 _fin = datetime.fromisoformat(_fin)
             if getattr(_fin, "tzinfo", None) is None:
                 _fin = _fin.replace(tzinfo=timezone.utc)
-            if (_now - _fin) > _GRACE:
+            if (_now - _fin) > _SUCCESS_GRACE_PERIOD:
                 return True
         return False
 
