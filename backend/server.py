@@ -2837,6 +2837,118 @@ async def admin_peer_medians(
     }
 
 
+@api_router.get("/admin/peer-medians/csv")
+async def admin_peer_medians_csv(
+    level: str = Query(..., regex="^(industry|sector|market)$"),
+):
+    """
+    Export benchmark medians as CSV for all groups at the requested level.
+    Uses the exact same peer_benchmarks collection as the UI.
+
+    Columns: group_level, group_name, total_company_count,
+             then for each of the 7 Key Metrics: <metric>_median, <metric>_n_used
+    Header comment rows include computed_at_prague for reproducibility.
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+    import zoneinfo as _zi
+
+    prague = _zi.ZoneInfo("Europe/Prague")
+
+    metric_spec = [
+        ("net_margin_ttm", "Net Margin (TTM)"),
+        ("fcf_yield", "Free Cash Flow Yield"),
+        ("net_debt_ebitda", "Net Debt / EBITDA"),
+        ("revenue_growth_3y", "Revenue Growth (3Y CAGR)"),
+        ("dividend_yield_ttm", "Dividend Yield (TTM)"),
+        ("pe_ttm", "P/E (TTM)"),
+        ("roe", "ROE"),
+    ]
+
+    # Query peer_benchmarks for the requested level
+    if level == "industry":
+        query = {"industry": {"$ne": None}}
+        sort_key = "industry"
+    elif level == "sector":
+        query = {"industry": None, "sector": {"$ne": None}}
+        sort_key = "sector"
+    else:
+        query = {"sector": None, "industry": None}
+        sort_key = None
+
+    projection = {
+        "_id": 0, "industry": 1, "sector": 1,
+        "peer_count_used": 1, "peer_count": 1, "peer_count_total": 1,
+        "step4_medians": 1, "computed_at": 1,
+    }
+
+    cursor = db.peer_benchmarks.find(query, projection)
+    if sort_key:
+        cursor = cursor.sort(sort_key, 1)
+    docs = await cursor.to_list(length=10000)
+
+    # Build CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header comment rows for reproducibility
+    _now_prague = datetime.now(timezone.utc).astimezone(prague).isoformat()
+    writer.writerow([f"# exported_at_prague: {_now_prague}"])
+    writer.writerow([f"# level: {level}"])
+    writer.writerow([f"# total_groups: {len(docs)}"])
+
+    # Column headers
+    header = ["group_level", "group_name", "total_company_count", "computed_at_prague"]
+    for mk, _ in metric_spec:
+        header.append(f"{mk}_median")
+        header.append(f"{mk}_n_used")
+    writer.writerow(header)
+
+    for doc in docs:
+        if level == "industry":
+            group_name = doc.get("industry", "")
+        elif level == "sector":
+            group_name = doc.get("sector", "")
+        else:
+            group_name = "US Market"
+
+        ticker_count = doc.get("peer_count_used") or doc.get("peer_count") or doc.get("peer_count_total") or 0
+        s4 = doc.get("step4_medians", {})
+
+        # Convert computed_at to Prague time
+        computed_at_prague = ""
+        raw_ca = doc.get("computed_at")
+        if raw_ca:
+            try:
+                if isinstance(raw_ca, str):
+                    _utc = datetime.fromisoformat(raw_ca.replace("Z", "+00:00"))
+                else:
+                    _utc = raw_ca if raw_ca.tzinfo else raw_ca.replace(tzinfo=timezone.utc)
+                computed_at_prague = _utc.astimezone(prague).isoformat()
+            except Exception:
+                computed_at_prague = str(raw_ca)
+
+        row = [level, group_name, ticker_count, computed_at_prague]
+        for mk, _ in metric_spec:
+            entry = s4.get(mk)
+            if entry:
+                row.append(entry.get("median", ""))
+                row.append(entry.get("n_used", ""))
+            else:
+                row.append("")
+                row.append("")
+        writer.writerow(row)
+
+    output.seek(0)
+    filename = f"benchmark_medians_{level}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @api_router.get("/admin/benchmark-debug/industry")
 async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
     """

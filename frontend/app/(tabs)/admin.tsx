@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, TextInput, Modal,
+  RefreshControl, ActivityIndicator, TextInput, Modal, Platform, Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -20,6 +20,7 @@ import PipelineTab from '../admin/pipeline';
 import CustomersTab from '../admin/customers';
 import RemediationTab from '../admin/remediation';
 import { API_URL } from '../../utils/config';
+import { authenticatedFetch } from '../../utils/api_client';
 
 type Tab = 'dashboard' | 'pipeline' | 'customers' | 'remediation';
 
@@ -1209,6 +1210,7 @@ interface BmData {
 }
 
 function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null }) {
+  const dialog = useAppDialog();
   const [level, setLevel] = useState<BmLevel>('industry');
   const [groups, setGroups] = useState<string[]>([]);
   const [search, setSearch] = useState('');
@@ -1217,6 +1219,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
   const [loading, setLoading] = useState(false);
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [csvDownloading, setCsvDownloading] = useState(false);
 
   // Pool ticker list modal
   const [poolModalVisible, setPoolModalVisible] = useState(false);
@@ -1232,6 +1235,33 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
   } | null>(null);
 
   const headers: Record<string, string> = sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {};
+
+  const handleExportCsv = async () => {
+    if (csvDownloading) return;
+    setCsvDownloading(true);
+    try {
+      const url = `${API_URL}/api/admin/peer-medians/csv?level=${level}`;
+      if (Platform.OS === 'web' && typeof window !== 'undefined') {
+        const response = await authenticatedFetch(url, {}, sessionToken);
+        if (!response.ok) throw new Error(`Download failed (${response.status})`);
+        const blob = await response.blob();
+        const objectUrl = window.URL.createObjectURL(blob);
+        const link = window.document.createElement('a');
+        link.href = objectUrl;
+        link.download = `benchmark_medians_${level}.csv`;
+        window.document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(objectUrl);
+      } else {
+        await Linking.openURL(url);
+      }
+    } catch (e: any) {
+      dialog.alert('Export failed', e?.message || 'Could not download CSV');
+    } finally {
+      setCsvDownloading(false);
+    }
+  };
 
   const openPoolModal = async (bmLevel: string, metric: string, group?: string) => {
     setPoolModalVisible(true);
@@ -1335,17 +1365,28 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     <View style={d.card}>
       <Text style={d.sectionTitle}>Benchmark Medians</Text>
 
-      {/* Level tabs */}
-      <View style={bm.tabRow}>
-        {tabs.map(t => (
-          <TouchableOpacity
-            key={t.id}
-            style={[bm.tab, level === t.id && bm.tabActive]}
-            onPress={() => setLevel(t.id)}
-          >
-            <Text style={[bm.tabText, level === t.id && bm.tabTextActive]}>{t.label}</Text>
-          </TouchableOpacity>
-        ))}
+      {/* Level tabs + Export CSV */}
+      <View style={bm.tabExportRow}>
+        <View style={bm.tabRow}>
+          {tabs.map(t => (
+            <TouchableOpacity
+              key={t.id}
+              style={[bm.tab, level === t.id && bm.tabActive]}
+              onPress={() => setLevel(t.id)}
+            >
+              <Text style={[bm.tabText, level === t.id && bm.tabTextActive]}>{t.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <TouchableOpacity style={bm.exportBtn} onPress={handleExportCsv} disabled={csvDownloading}>
+          {csvDownloading
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <>
+                <Ionicons name="download-outline" size={12} color="#fff" />
+                <Text style={bm.exportBtnText}>CSV</Text>
+              </>
+          }
+        </TouchableOpacity>
       </View>
 
       {/* Searchable dropdown (not for market) */}
@@ -1513,8 +1554,11 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
 }
 
 const bm = StyleSheet.create({
-  tabRow: { flexDirection: 'row', gap: 4, marginBottom: 10 },
+  tabExportRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  tabRow: { flexDirection: 'row', gap: 4, flex: 1 },
   tab: { flex: 1, paddingVertical: 6, borderRadius: 6, backgroundColor: COLORS.background, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: COLORS.primary, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6 },
+  exportBtnText: { fontSize: 10, fontWeight: '700', color: '#fff' },
   tabActive: { backgroundColor: COLORS.primary, borderColor: COLORS.primary },
   tabText: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted },
   tabTextActive: { color: '#fff' },
