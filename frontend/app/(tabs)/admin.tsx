@@ -1220,6 +1220,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
   const [groupsLoading, setGroupsLoading] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [csvDownloading, setCsvDownloading] = useState(false);
+  const [constituentsCsvDownloading, setConstituentsCsvDownloading] = useState(false);
 
   // Pool ticker list modal
   const [poolModalVisible, setPoolModalVisible] = useState(false);
@@ -1260,6 +1261,37 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
       dialog.alert('Export failed', e?.message || 'Could not download CSV');
     } finally {
       setCsvDownloading(false);
+    }
+  };
+
+  const handleExportConstituentsCsv = async () => {
+    if (constituentsCsvDownloading) return;
+    if (Platform.OS !== 'web' || typeof window === 'undefined') {
+      dialog.alert('Export CSV', 'CSV export is only available in the web browser.');
+      return;
+    }
+    if (level !== 'market' && !selectedKey) return;
+    setConstituentsCsvDownloading(true);
+    try {
+      const params = new URLSearchParams({ level });
+      if (level !== 'market') params.set('group_name', selectedKey!);
+      const url = `${API_URL}/api/admin/peer-medians/constituents/csv?${params}`;
+      const response = await authenticatedFetch(url, {}, sessionToken);
+      if (!response.ok) throw new Error(`Download failed (${response.status})`);
+      const blob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = objectUrl;
+      const suffix = level === 'market' ? 'market' : selectedKey!;
+      link.download = `benchmark_constituents_${suffix}.csv`;
+      window.document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(objectUrl);
+    } catch (e: any) {
+      dialog.alert('Export failed', e?.message || 'Could not download CSV');
+    } finally {
+      setConstituentsCsvDownloading(false);
     }
   };
 
@@ -1384,6 +1416,19 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
             : <>
                 <Ionicons name="download-outline" size={12} color="#fff" />
                 <Text style={bm.exportBtnText}>CSV</Text>
+              </>
+          }
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[bm.exportBtn, (level !== 'market' && !selectedKey) && { opacity: 0.5 }]}
+          onPress={handleExportConstituentsCsv}
+          disabled={constituentsCsvDownloading || (level !== 'market' && !selectedKey)}
+        >
+          {constituentsCsvDownloading
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <>
+                <Ionicons name="download-outline" size={12} color="#fff" />
+                <Text style={bm.exportBtnText}>Constituents CSV</Text>
               </>
           }
         </TouchableOpacity>
