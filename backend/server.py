@@ -9819,8 +9819,17 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     # terminal in ops_job_runs, force the chain to "failed".  This covers
     # edge cases where the chain orchestrator crashed before updating the
     # chain document (e.g. OOM, process kill).
+    #
+    # IMPORTANT: Only auto-heal immediately for actual *failure* statuses.
+    # For "completed"/"success", the scheduler orchestrator may simply not
+    # have advanced the chain document yet (normal race window).  We only
+    # auto-heal successful completions after a 10-minute grace period to
+    # distinguish a real orchestrator crash from the normal gap between
+    # the job finishing and the scheduler updating the chain doc.
     _STEP_JOB_NAMES = {1: "universe_seed", 2: "price_sync", 3: "fundamentals_sync"}
-    _TERMINAL_JOB_STATUSES = {"completed", "success", "failed", "error", "cancelled", "skipped"}
+    _FAILURE_JOB_STATUSES = {"failed", "error", "cancelled", "skipped"}
+    _SUCCESS_JOB_STATUSES = {"completed", "success"}
+    _SUCCESS_GRACE_PERIOD = timedelta(minutes=10)
     if _status == "running" and _current_step in _STEP_JOB_NAMES:
         _job_name = _STEP_JOB_NAMES[_current_step]
         _job_doc = await db.ops_job_runs.find_one(
@@ -9831,10 +9840,24 @@ async def admin_pipeline_chain_status(chain_run_id: str):
         if _job_doc:
             _job_status = _job_doc.get("status")
             _job_finished = _job_doc.get("finished_at")
-            if (
-                _job_status in _TERMINAL_JOB_STATUSES
-                and _job_finished is not None
-            ):
+            _should_heal = False
+            if _job_status in _FAILURE_JOB_STATUSES and _job_finished is not None:
+                # Step actually failed → heal immediately.
+                _should_heal = True
+            elif _job_status in _SUCCESS_JOB_STATUSES and _job_finished is not None:
+                # Step succeeded but chain not advanced yet.  Only heal if
+                # the job finished more than 10 minutes ago (orchestrator
+                # likely crashed).  Within the grace period the scheduler
+                # will advance the chain doc on its own.
+                _heal_now = datetime.now(timezone.utc)
+                _fin_dt = _job_finished
+                if isinstance(_fin_dt, str):
+                    _fin_dt = datetime.fromisoformat(_fin_dt)
+                if getattr(_fin_dt, "tzinfo", None) is None:
+                    _fin_dt = _fin_dt.replace(tzinfo=timezone.utc)
+                if (_heal_now - _fin_dt) > _SUCCESS_GRACE_PERIOD:
+                    _should_heal = True
+            if _should_heal:
                 # The step's job finished but the chain doc is still "running".
                 # Auto-heal: mark the chain as "failed" so the UI stops showing
                 # "Running" with an ever-increasing timer.

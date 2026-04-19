@@ -12,7 +12,7 @@ Validates that:
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -186,8 +186,94 @@ class TestChainStatusEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# Tests for pipeline_chain_runs lifecycle (manual path)
+# Tests for self-heal race condition fix
 # ---------------------------------------------------------------------------
+
+class TestSelfHealGracePeriod:
+    """Test that the self-heal logic does NOT mark a chain as failed when a
+    step completed successfully within the grace period (normal scheduler race
+    window), but DOES heal for actual failure statuses immediately and for
+    stale success completions after the grace period."""
+
+    _FAILURE_JOB_STATUSES = {"failed", "error", "cancelled", "skipped"}
+    _SUCCESS_JOB_STATUSES = {"completed", "success"}
+    _SUCCESS_GRACE_PERIOD = timedelta(minutes=10)
+
+    @staticmethod
+    def _should_heal(job_status, job_finished_at, now=None):
+        """Replicate the self-heal logic from the chain-status endpoint."""
+        _FAILURE = {"failed", "error", "cancelled", "skipped"}
+        _SUCCESS = {"completed", "success"}
+        _GRACE = timedelta(minutes=10)
+
+        if job_status in _FAILURE and job_finished_at is not None:
+            return True
+        if job_status in _SUCCESS and job_finished_at is not None:
+            _now = now or datetime.now(timezone.utc)
+            _fin = job_finished_at
+            if isinstance(_fin, str):
+                _fin = datetime.fromisoformat(_fin)
+            if getattr(_fin, "tzinfo", None) is None:
+                _fin = _fin.replace(tzinfo=timezone.utc)
+            if (_now - _fin) > _GRACE:
+                return True
+        return False
+
+    def test_recently_completed_step_not_healed(self):
+        """A step that completed 30 seconds ago must NOT trigger self-heal.
+        This is the normal race window where the scheduler hasn't advanced
+        the chain doc yet."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=30)
+        assert self._should_heal("completed", finished, now=now) is False
+
+    def test_recently_succeeded_step_not_healed(self):
+        """Same as above but with status='success'."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=30)
+        assert self._should_heal("success", finished, now=now) is False
+
+    def test_stale_completed_step_healed(self):
+        """A step that completed 15 minutes ago and the chain is still stuck
+        should be healed (orchestrator likely crashed)."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(minutes=15)
+        assert self._should_heal("completed", finished, now=now) is True
+
+    def test_failed_step_healed_immediately(self):
+        """A step that failed just now must trigger immediate self-heal."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("failed", finished, now=now) is True
+
+    def test_error_step_healed_immediately(self):
+        """A step with status='error' must trigger immediate self-heal."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("error", finished, now=now) is True
+
+    def test_cancelled_step_healed_immediately(self):
+        """A step with status='cancelled' must trigger immediate self-heal."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("cancelled", finished, now=now) is True
+
+    def test_running_step_not_healed(self):
+        """A step that is still running must NOT trigger self-heal."""
+        assert self._should_heal("running", None) is False
+
+    def test_completed_exactly_at_boundary_not_healed(self):
+        """A step that completed exactly 10 minutes ago is at the boundary
+        and should NOT be healed (> not >=)."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(minutes=10)
+        assert self._should_heal("completed", finished, now=now) is False
+
+    def test_completed_just_past_boundary_healed(self):
+        """A step that completed 10 minutes and 1 second ago should be healed."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(minutes=10, seconds=1)
+        assert self._should_heal("completed", finished, now=now) is True
 
 class TestManualPathChainLifecycle:
     """Test that the manual path (run-full-now) keeps status='running' throughout."""
