@@ -1576,6 +1576,16 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             )
             if _div_canonical["dividend_yield_ttm_value"] is not None:
                 metrics["dividend_yield"] = _div_canonical["dividend_yield_ttm_value"]
+            elif (
+                _div_canonical["na_reason"] == "missing_inputs"
+                and _div_hist_info.get("count", 0) == 0
+            ):
+                # PEER BENCHMARKING FIX: Visible tickers with complete
+                # fundamentals that have zero dividend_history records in
+                # the last 365 days are non-dividend-payers.  Treat as 0%
+                # yield so they remain in the peer pool.  Without this,
+                # the pool shrinks to single digits even for large sectors.
+                metrics["dividend_yield"] = 0.0
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
@@ -1648,6 +1658,17 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
     
     logger.info(f"Computed metrics for {len(ticker_metrics)} tickers (input: {len(ticker_list)})")
     logger.info(f"P1 Policy: {len(excluded_currency_mismatch)} non-USD tickers excluded from peer medians")
+
+    # ── Dividend yield pool diagnostics ─────────────────────────────────
+    _div_has_value = sum(1 for m in ticker_metrics if m.get("dividend_yield") is not None)
+    _div_positive = sum(1 for m in ticker_metrics if (m.get("dividend_yield") or 0) > 0)
+    _div_zero = sum(1 for m in ticker_metrics if m.get("dividend_yield") is not None and m.get("dividend_yield") == 0.0)
+    _div_missing = len(ticker_metrics) - _div_has_value
+    logger.info(
+        f"Dividend yield pool: {_div_has_value} with value "
+        f"(positive={_div_positive}, zero={_div_zero}), "
+        f"{_div_missing} excluded (unreliable/extreme_outlier)"
+    )
 
     await _hb("computing_metrics", processed=len(ticker_metrics), total=len(ticker_list))
     
