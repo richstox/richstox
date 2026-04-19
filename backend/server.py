@@ -2837,6 +2837,118 @@ async def admin_peer_medians(
     }
 
 
+@api_router.get("/admin/peer-medians/csv")
+async def admin_peer_medians_csv(
+    level: str = Query(..., regex="^(industry|sector|market)$"),
+):
+    """
+    Export benchmark medians as CSV for all groups at the requested level.
+    Uses the exact same peer_benchmarks collection as the UI.
+
+    Columns: group_level, group_name, total_company_count,
+             then for each of the 7 Key Metrics: <metric>_median, <metric>_n_used
+    Header comment rows include computed_at_prague for reproducibility.
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+    import zoneinfo as _zi
+
+    prague = _zi.ZoneInfo("Europe/Prague")
+
+    metric_spec = [
+        ("net_margin_ttm", "Net Margin (TTM)"),
+        ("fcf_yield", "Free Cash Flow Yield"),
+        ("net_debt_ebitda", "Net Debt / EBITDA"),
+        ("revenue_growth_3y", "Revenue Growth (3Y CAGR)"),
+        ("dividend_yield_ttm", "Dividend Yield (TTM)"),
+        ("pe_ttm", "P/E (TTM)"),
+        ("roe", "ROE"),
+    ]
+
+    # Query peer_benchmarks for the requested level
+    if level == "industry":
+        query = {"industry": {"$ne": None}}
+        sort_key = "industry"
+    elif level == "sector":
+        query = {"industry": None, "sector": {"$ne": None}}
+        sort_key = "sector"
+    else:
+        query = {"sector": None, "industry": None}
+        sort_key = None
+
+    projection = {
+        "_id": 0, "industry": 1, "sector": 1,
+        "peer_count_used": 1, "peer_count": 1, "peer_count_total": 1,
+        "step4_medians": 1, "computed_at": 1,
+    }
+
+    cursor = db.peer_benchmarks.find(query, projection)
+    if sort_key:
+        cursor = cursor.sort(sort_key, 1)
+    docs = await cursor.to_list(length=10000)
+
+    # Build CSV
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header comment rows for reproducibility
+    _now_prague = datetime.now(timezone.utc).astimezone(prague).isoformat()
+    writer.writerow([f"# exported_at_prague: {_now_prague}"])
+    writer.writerow([f"# level: {level}"])
+    writer.writerow([f"# total_groups: {len(docs)}"])
+
+    # Column headers
+    header = ["group_level", "group_name", "total_company_count", "computed_at_prague"]
+    for mk, _ in metric_spec:
+        header.append(f"{mk}_median")
+        header.append(f"{mk}_n_used")
+    writer.writerow(header)
+
+    for doc in docs:
+        if level == "industry":
+            group_name = doc.get("industry", "")
+        elif level == "sector":
+            group_name = doc.get("sector", "")
+        else:
+            group_name = "US Market"
+
+        ticker_count = doc.get("peer_count_used") or doc.get("peer_count") or doc.get("peer_count_total") or 0
+        s4 = doc.get("step4_medians", {})
+
+        # Convert computed_at to Prague time
+        computed_at_prague = ""
+        raw_ca = doc.get("computed_at")
+        if raw_ca:
+            try:
+                if isinstance(raw_ca, str):
+                    _utc = datetime.fromisoformat(raw_ca.replace("Z", "+00:00"))
+                else:
+                    _utc = raw_ca if raw_ca.tzinfo else raw_ca.replace(tzinfo=timezone.utc)
+                computed_at_prague = _utc.astimezone(prague).isoformat()
+            except Exception:
+                computed_at_prague = str(raw_ca)
+
+        row = [level, group_name, ticker_count, computed_at_prague]
+        for mk, _ in metric_spec:
+            entry = s4.get(mk)
+            if entry:
+                row.append(entry.get("median", ""))
+                row.append(entry.get("n_used", ""))
+            else:
+                row.append("")
+                row.append("")
+        writer.writerow(row)
+
+    output.seek(0)
+    filename = f"benchmark_medians_{level}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 @api_router.get("/admin/benchmark-debug/industry")
 async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
     """
@@ -3556,6 +3668,249 @@ async def admin_dividend_yield_debug(ticker: str):
             "dividend_history_records_last_12m": div_hist_records[:8],
         },
     }
+
+
+@api_router.get("/admin/audit/dividend-yield-pool/csv")
+async def admin_audit_dividend_yield_pool_csv(
+    sector: str = Query("Financial Services", description="Sector filter"),
+    industry: str = Query(None, description="Industry filter (optional)"),
+):
+    """
+    Audit CSV: dividend yield peer pool evidence for a sector/industry.
+
+    Shows every ticker's dividend data completeness and whether it is included
+    in or excluded from the dividend yield peer pool, with the exact reason.
+
+    Columns:
+      ticker, is_visible, fundamentals_status, last_close_date, last_close,
+      shares_outstanding, market_cap, dividend_history_count_365d,
+      dividends_365d_sum, cashflow_dividendsPaid_non_null_quarters,
+      cashflow_dividendsPaid_sum, dividend_yield_ttm_value, source_used,
+      na_reason, included_in_peer_pool, excluded_reason
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+
+    # ── 1. Ticker universe ──────────────────────────────────────────────
+    tt_query = {"is_visible": True, "fundamentals_status": "complete"}
+    if sector:
+        tt_query["sector"] = sector
+    if industry:
+        tt_query["industry"] = industry
+
+    all_tickers = await db.tracked_tickers.find(
+        tt_query,
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
+         "is_visible": 1, "fundamentals_status": 1,
+         "shares_outstanding": 1, "financial_currency": 1},
+    ).sort("ticker", 1).to_list(length=10000)
+
+    # Also grab non-visible tickers in the same sector/industry for completeness
+    non_visible_query = {"is_visible": {"$ne": True}}
+    if sector:
+        non_visible_query["sector"] = sector
+    if industry:
+        non_visible_query["industry"] = industry
+
+    non_visible_tickers = await db.tracked_tickers.find(
+        non_visible_query,
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
+         "is_visible": 1, "fundamentals_status": 1,
+         "shares_outstanding": 1, "financial_currency": 1},
+    ).sort("ticker", 1).to_list(length=10000)
+
+    all_universe = all_tickers + non_visible_tickers
+    ticker_names = [t["ticker"] for t in all_universe]
+
+    if not ticker_names:
+        return {"error": "No tickers found for the given sector/industry filter"}
+
+    # ── 2. Latest prices ────────────────────────────────────────────────
+    latest_prices = {}
+    latest_dates = {}
+    price_cursor = db.stock_prices.aggregate([
+        {"$match": {"ticker": {"$in": ticker_names}}},
+        {"$sort": {"date": -1}},
+        {"$group": {
+            "_id": "$ticker",
+            "price": {"$first": "$adjusted_close"},
+            "date": {"$first": "$date"},
+        }},
+    ])
+    async for doc in price_cursor:
+        if doc.get("price"):
+            latest_prices[doc["_id"]] = doc["price"]
+            latest_dates[doc["_id"]] = doc.get("date", "")
+
+    # ── 3. Quarterly cashflow dividends_paid ─────────────────────────────
+    cf_batch = {}  # ticker -> [{period_date, dividends_paid}, ...]
+    cf_cursor = db.company_financials.find(
+        {"ticker": {"$in": ticker_names}, "period_type": "quarterly"},
+        {"_id": 0, "ticker": 1, "period_date": 1, "dividends_paid": 1},
+    ).sort("period_date", -1)
+    async for row in cf_cursor:
+        tk = row["ticker"]
+        cf_batch.setdefault(tk, [])
+        if len(cf_batch[tk]) < 4:
+            cf_batch[tk].append(row)
+
+    # ── 4. Dividend history (last 365 days) ──────────────────────────────
+    one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    div_hist_batch = {}  # ticker -> {"total": float, "count": int}
+    div_hist_pipeline = [
+        {"$match": {
+            "ticker": {"$in": ticker_names},
+            "$or": [
+                {"ex_date": {"$gte": one_year_ago}},
+                {"date": {"$gte": one_year_ago}},
+            ],
+        }},
+        {"$group": {
+            "_id": "$ticker",
+            "total_amount": {"$sum": {"$ifNull": ["$amount", {"$ifNull": ["$value", 0]}]}},
+            "count": {"$sum": 1},
+        }},
+    ]
+    async for doc in db.dividend_history.aggregate(div_hist_pipeline):
+        div_hist_batch[doc["_id"]] = {
+            "total": doc["total_amount"],
+            "count": doc["count"],
+        }
+
+    # ── 5. Build CSV rows ────────────────────────────────────────────────
+    def _sf(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "ticker", "is_visible", "fundamentals_status",
+        "last_close_date", "last_close", "shares_outstanding", "market_cap",
+        "dividend_history_count_365d", "dividends_365d_sum",
+        "cashflow_dividendsPaid_non_null_quarters", "cashflow_dividendsPaid_sum",
+        "dividend_yield_ttm_value", "source_used", "na_reason",
+        "included_in_peer_pool", "excluded_reason",
+    ])
+
+    # Counters
+    total_in_group = len(all_universe)
+    visible_in_group = sum(1 for t in all_universe if t.get("is_visible"))
+    included_count = 0
+    excluded_reasons = {}
+
+    for t in all_universe:
+        ticker = t["ticker"]
+        is_visible = t.get("is_visible", False)
+        fund_status = t.get("fundamentals_status", "")
+        shares = _sf(t.get("shares_outstanding"))
+        last_close = latest_prices.get(ticker)
+        last_close_date = latest_dates.get(ticker, "")
+        market_cap = (last_close * shares) if last_close and shares else None
+
+        # Cashflow data
+        cf_rows = cf_batch.get(ticker, [])
+        cf_vals = [_sf(r.get("dividends_paid")) for r in cf_rows[:4]]
+        cf_non_null_count = sum(1 for v in cf_vals if v is not None)
+        cf_sum = sum(abs(v) for v in cf_vals if v is not None) if cf_non_null_count > 0 else None
+
+        # Pad to 4 elements for canonical function
+        while len(cf_vals) < 4:
+            cf_vals.append(None)
+
+        # Dividend history
+        dh_info = div_hist_batch.get(ticker, {})
+        dh_count = dh_info.get("count", 0)
+        dh_sum = dh_info.get("total") if dh_count > 0 else None
+
+        # Canonical computation
+        canonical = compute_canonical_dividend_yield(
+            market_cap=market_cap,
+            shares_outstanding=shares,
+            cashflow_dividends_paid_quarterly=cf_vals,
+            dividend_history_ttm_total=dh_sum,
+            dividend_history_count=dh_count,
+        )
+        dy_value = canonical["dividend_yield_ttm_value"]
+        source_used = canonical["source_used"]
+        na_reason = canonical["na_reason"]
+
+        # Peer pool inclusion logic (matches compute_peer_benchmarks_v3)
+        included_in_pool = False
+        excluded_reason = ""
+
+        if not is_visible:
+            excluded_reason = "not_visible"
+        elif fund_status != "complete":
+            excluded_reason = "fundamentals_incomplete"
+        elif not last_close:
+            excluded_reason = "no_price_data"
+        elif not shares or shares <= 0:
+            excluded_reason = "no_shares_outstanding"
+        elif dy_value is not None:
+            included_in_pool = True
+        elif na_reason == "missing_inputs":
+            excluded_reason = "missing_dividend_data"
+        elif na_reason == "unreliable":
+            excluded_reason = "unreliable_sources_disagree"
+        elif na_reason == "extreme_outlier":
+            excluded_reason = "extreme_outlier_gt_100pct"
+        else:
+            excluded_reason = f"na_reason={na_reason}"
+
+        if included_in_pool:
+            included_count += 1
+        else:
+            excluded_reasons[excluded_reason] = excluded_reasons.get(excluded_reason, 0) + 1
+
+        writer.writerow([
+            ticker,
+            is_visible,
+            fund_status,
+            last_close_date,
+            f"{last_close:.4f}" if last_close else "",
+            f"{shares:.0f}" if shares else "",
+            f"{market_cap:.0f}" if market_cap else "",
+            dh_count,
+            f"{dh_sum:.6f}" if dh_sum is not None else "",
+            cf_non_null_count,
+            f"{cf_sum:.2f}" if cf_sum is not None else "",
+            f"{dy_value:.4f}" if dy_value is not None else "",
+            source_used,
+            na_reason or "",
+            included_in_pool,
+            excluded_reason,
+        ])
+
+    # ── 6. Summary rows ─────────────────────────────────────────────────
+    writer.writerow([])
+    writer.writerow(["# SUMMARY"])
+    writer.writerow(["total_in_group", total_in_group])
+    writer.writerow(["visible_in_group", visible_in_group])
+    writer.writerow(["included_in_peer_pool", included_count])
+    writer.writerow(["excluded_total", total_in_group - included_count])
+    for reason, count in sorted(excluded_reasons.items(), key=lambda x: -x[1]):
+        writer.writerow([f"excluded_{reason}", count])
+
+    output.seek(0)
+
+    # Sanitize filename: keep only alphanumeric + underscore
+    _sanitize = lambda s: re.sub(r"[^a-zA-Z0-9_]", "_", s) if s else ""
+    filename = f"dividend_yield_audit_{_sanitize(sector)}"
+    if industry:
+        filename += f"_{_sanitize(industry)}"
+    filename += ".csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
 
 
 # ----- TTM Calculations Endpoints -----
