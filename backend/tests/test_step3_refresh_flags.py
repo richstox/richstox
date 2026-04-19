@@ -589,6 +589,40 @@ def test_finalize_zombie_step3_runs_completes_100pct_progress():
     assert db.ops_job_runs.docs[1]["finished_at"] is not None
 
 
+def test_finalization_progress_text_never_says_completed():
+    """Verify that the backend writes 'Finalizing' progress messages between
+    Phase C completion and the terminal status write. The progress text must
+    never show 'completed' while status is still 'running'."""
+    import pathlib
+
+    svc_path = pathlib.Path(__file__).resolve().parent.parent / "scheduler_service.py"
+    source = svc_path.read_text()
+
+    # Find the run_fundamentals_changes_sync function
+    fn_start = source.index("async def run_fundamentals_changes_sync")
+    fn_end = source.index("\nasync def ", fn_start + 1)
+    fn_source = source[fn_start:fn_end]
+
+    # After Phase C "done" and before the final status write, there must be a
+    # "Finalizing" progress update.
+    phase_c_done_idx = fn_source.index('"Price history sync completed"')
+    finalize_msg_idx = fn_source.index('"Finalizing')
+    terminal_write_idx = fn_source.index('"status": result["status"]')
+
+    assert phase_c_done_idx < finalize_msg_idx < terminal_write_idx, (
+        "A 'Finalizing...' progress message must appear between Phase C "
+        "completion and the terminal status write"
+    )
+
+    # There should also be a heartbeat update after the completeness sweep
+    # to prevent zombie detection during long sweeps
+    sweep_idx = fn_source.index("run_history_completeness_sweep")
+    post_sweep_msg_idx = fn_source.index("Finalizing", sweep_idx)
+    assert sweep_idx < post_sweep_msg_idx, (
+        "A post-sweep heartbeat update must appear after the completeness sweep"
+    )
+
+
 class _TrackedTickersForSyncStatus:
     def __init__(self, docs):
         self._docs = list(docs)

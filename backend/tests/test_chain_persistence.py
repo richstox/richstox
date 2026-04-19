@@ -556,6 +556,109 @@ class TestCanonicalReportTimestamp:
 
 
 # ---------------------------------------------------------------------------
+# Tests for chain-status step_runs: UI counts must match chain-specific data
+# ---------------------------------------------------------------------------
+
+class TestChainStatusStepRuns:
+    """Verify that the chain-status endpoint includes step_runs data that
+    the frontend can use to display chain-specific funnel counts.
+
+    The step_runs dict is keyed by job_name and contains the ops_job_runs
+    doc for each step from the CURRENT chain (matched by details.chain_run_id),
+    NOT the latest run for that job_name (which may be from a different chain).
+    """
+
+    def test_step_runs_source_code_queries_by_chain_run_id(self):
+        """chain-status endpoint must query ops_job_runs by details.chain_run_id
+        to ensure it returns data from the current chain, not a stale run."""
+        import pathlib
+
+        server_path = pathlib.Path(__file__).resolve().parent.parent / "server.py"
+        source = server_path.read_text()
+
+        # Find the chain-status endpoint
+        fn_start = source.index("async def admin_pipeline_chain_status")
+        fn_end = source.index("\n@", fn_start + 1)
+        fn_source = source[fn_start:fn_end]
+
+        # Must query by chain_run_id, not just job_name
+        assert "details.chain_run_id" in fn_source, (
+            "chain-status must query ops_job_runs by details.chain_run_id "
+            "to get the correct run for THIS chain, not a stale run"
+        )
+
+        # Must return step_runs in response
+        assert "step_runs" in fn_source, (
+            "chain-status must include step_runs in the response"
+        )
+
+    def test_step_runs_includes_key_count_fields(self):
+        """Verify the projection includes fields needed for funnel counts:
+        progress_processed, progress_total, raw_rows_total, seeded_total,
+        tickers_with_price_data."""
+        import pathlib
+
+        server_path = pathlib.Path(__file__).resolve().parent.parent / "server.py"
+        source = server_path.read_text()
+
+        fn_start = source.index("async def admin_pipeline_chain_status")
+        fn_end = source.index("\n@", fn_start + 1)
+        fn_source = source[fn_start:fn_end]
+
+        for field in [
+            "progress_processed",
+            "progress_total",
+            "raw_rows_total",
+            "details.seeded_total",
+            "details.tickers_with_price_data",
+        ]:
+            assert field in fn_source, (
+                f"chain-status step_runs projection must include {field}"
+            )
+
+    def test_frontend_prefers_chain_step_runs_for_counts(self):
+        """Verify the frontend pipeline.tsx prefers chainStepRuns data
+        for funnel counts over overview live-DB counts."""
+        import pathlib
+
+        pipeline_path = pathlib.Path(__file__).resolve().parent.parent.parent / "frontend" / "app" / "admin" / "pipeline.tsx"
+        source = pipeline_path.read_text()
+
+        # Step 1: seeded count should come from chainStepRuns
+        assert "chainStepRuns" in source, (
+            "pipeline.tsx must use chainStepRuns state"
+        )
+        assert "_cs1?.details?.seeded_total" in source, (
+            "pipeline.tsx must prefer chain step_runs seeded_total for Step 1"
+        )
+        # Step 2: withPrice count should come from chainStepRuns
+        assert "_cs2?.progress_processed" in source, (
+            "pipeline.tsx must prefer chain step_runs progress_processed for Step 2"
+        )
+
+    def test_funnel_count_priority_order(self):
+        """Verify the priority order: canonicalReport > chainStepRuns > overview.
+        The raw/seeded/withPrice variables must check chain data before counts."""
+        import pathlib
+
+        pipeline_path = pathlib.Path(__file__).resolve().parent.parent.parent / "frontend" / "app" / "admin" / "pipeline.tsx"
+        source = pipeline_path.read_text()
+
+        # Find the seeded variable declaration
+        seeded_idx = source.index("const seeded = canonicalReport")
+        # chainStepRuns should appear before counts.seeded in the fallback chain
+        seeded_section = source[seeded_idx:seeded_idx + 300]
+        cs1_pos = seeded_section.find("_cs1?")
+        counts_pos = seeded_section.find("counts.seeded")
+        assert cs1_pos != -1 and counts_pos != -1, (
+            "seeded must check both chainStepRuns and counts"
+        )
+        assert cs1_pos < counts_pos, (
+            "seeded must prefer chainStepRuns (_cs1) before overview counts"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Tests for should_run midnight catch-up logic
 # ---------------------------------------------------------------------------
 
