@@ -75,6 +75,7 @@ Schedule (Europe/Prague timezone):
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
 - MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day, gated by ops_config)
 - MON-SAT 05:00: Key metrics
+- MON-SAT 05:15: Dividend history sync (all visible tickers)
 - MON-SAT 05:30: Peer medians
 - MON-SAT 06:00: Admin report
 - MON-SAT 13:00: News & sentiment refresh (followed/watchlisted tickers)
@@ -143,6 +144,10 @@ MARKET_CALENDAR_MINUTE = 0
 KEY_METRICS_HOUR = 5
 KEY_METRICS_MINUTE = 0
 
+# DIVIDEND SYNC: Daily sync of dividend_history at 05:15 (before peer medians)
+DIVIDEND_SYNC_HOUR = 5
+DIVIDEND_SYNC_MINUTE = 15
+
 # PEER MEDIANS: Job B - compute peer medians at 05:30 (after Job A)
 PEER_MEDIANS_HOUR = 5
 PEER_MEDIANS_MINUTE = 30
@@ -166,6 +171,7 @@ KNOWN_JOBS = sorted([
     "backfill_all",
     "benchmark_update",
     "bulk_gapfill_remediation",
+    "dividend_sync",
     "fundamentals_sync",
     "key_metrics",
     "market_calendar",
@@ -672,6 +678,7 @@ async def scheduler_loop():
     logger.info(f"  {BENCHMARK_UPDATE_HOUR:02d}:{BENCHMARK_UPDATE_MINUTE:02d} - Benchmark update (SP500TR + future benchmarks)")
     logger.info(f"  {KEY_METRICS_HOUR:02d}:{KEY_METRICS_MINUTE:02d} - Key Metrics")
     logger.info(f"  {PAIN_CACHE_HOUR:02d}:{PAIN_CACHE_MINUTE:02d} - PAIN cache refresh")
+    logger.info(f"  {DIVIDEND_SYNC_HOUR:02d}:{DIVIDEND_SYNC_MINUTE:02d} - Dividend history sync")
     logger.info(f"  {PEER_MEDIANS_HOUR:02d}:{PEER_MEDIANS_MINUTE:02d} - Peer Medians")
     logger.info(f"  {ADMIN_REPORT_HOUR:02d}:{ADMIN_REPORT_MINUTE:02d} - Admin Report")
     logger.info(f"  {NEWS_REFRESH_HOUR:02d}:{NEWS_REFRESH_MINUTE:02d} - Daily news refresh")
@@ -1234,6 +1241,17 @@ async def scheduler_loop():
                     await set_last_run_state(last_run)
                 except Exception as exc:
                     logger.error(f"[scheduler] key_metrics unhandled error (will retry next minute): {exc}")
+            
+            # DIVIDEND SYNC at 05:15 (catch-up enabled, runs before peer medians)
+            if should_run("dividend_sync", DIVIDEND_SYNC_HOUR, DIVIDEND_SYNC_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering dividend_sync (hour={current_hour}, scheduled={DIVIDEND_SYNC_HOUR}:{DIVIDEND_SYNC_MINUTE:02d})")
+                try:
+                    from dividend_history_service import sync_dividends_for_visible_tickers
+                    await run_job_with_retry("dividend_sync", sync_dividends_for_visible_tickers, db)
+                    last_run["dividend_sync"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] dividend_sync unhandled error (will retry next minute): {exc}")
             
             # PEER MEDIANS at 05:30 (catch-up enabled)
             if should_run("peer_medians", PEER_MEDIANS_HOUR, PEER_MEDIANS_MINUTE, last_run, today_str, current_hour, current_minute):

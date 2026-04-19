@@ -47,6 +47,10 @@ MIN_PEER_COUNT = 5
 # FIX-2: Minimum dividend payers required for median_payers calculation
 MIN_DIVIDEND_PAYERS = 5
 
+# Coverage threshold: if n_used / total_company_count < this, warn about low coverage.
+# Configurable via ops_config if needed; default = 30%.
+MIN_COVERAGE_PCT = 30
+
 # REMOVED: MIN_MARKET_CAP filter - now using all peers with winsorization
 # MIN_MARKET_CAP = 100_000_000  # No longer used
 
@@ -1298,7 +1302,8 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
     ticker_list = await db.tracked_tickers.find(
         {"is_visible": True, "fundamentals_status": "complete"},
         {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
-         "financial_currency": 1, "shares_outstanding": 1}
+         "financial_currency": 1, "shares_outstanding": 1,
+         "dividends_synced_at": 1}
     ).to_list(length=10000)
     
     # Separate USD and non-USD tickers upfront (P1 Policy)
@@ -1566,23 +1571,22 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 if len(_div_q_keys) >= 4 else []
             )
             _div_hist_info = _div_hist_batch.get(ticker, {})
+            _div_synced = t.get("dividends_synced_at") is not None
             _div_canonical = compute_canonical_dividend_yield(
                 market_cap=market_cap,
                 shares_outstanding=shares,
                 cashflow_dividends_paid_quarterly=_div_cf_vals,
                 dividend_history_ttm_total=_div_hist_info.get("total"),
                 dividend_history_count=_div_hist_info.get("count", 0),
+                dividends_synced=_div_synced,
                 include_debug=False,
             )
             if _div_canonical["dividend_yield_ttm_value"] is not None:
                 metrics["dividend_yield"] = _div_canonical["dividend_yield_ttm_value"]
-            # NOTE: When na_reason="missing_inputs", this ticker is EXCLUDED
-            # from the dividend yield peer pool.  We do NOT coerce to 0.0
-            # because missing_inputs means we have no evidence of dividends
-            # OR non-payment:
-            #   - All 4 cashflow dividendsPaid are null (field not reported)
-            #   - No dividend_history records in DB (may never have been synced)
-            # Coercing to 0.0 without proof would pollute the peer median.
+            # NOTE: When na_reason="missing_inputs" and dividends_synced=False,
+            # this ticker is EXCLUDED from the dividend yield peer pool because
+            # we have no evidence of dividends OR non-payment.
+            # When dividends_synced=True and no records → proven non-payer (0%).
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
@@ -1924,6 +1928,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
         for mk in step4_metric_keys:
             # Phase 2A: select per-metric peer pool
             pool = known_currency_tickers if mk in step4_all_currency_eligible else tickers_data
+            _pool_total = len(pool)
             if mk == "dividend_yield":
                 # Phase 2A: recompute dividend median using expanded pool for safe metrics
                 div_pairs = [t["dividend_yield"] for t in pool
@@ -1936,7 +1941,13 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                         d_med = round(div_pairs[n_dv // 2], 2)
                     else:
                         d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
-                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
+                    _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
+                    step4["dividend_yield_ttm"] = {
+                        "median": d_med, "n_used": n_dv,
+                        "total_company_count": _pool_total,
+                        "coverage_pct": _cov,
+                        "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                    }
                 continue
             if mk in step4_allow_negative:
                 pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
@@ -1952,7 +1963,13 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                     med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
                 # Map key to spec name (pe -> pe_ttm)
                 out_key = "pe_ttm" if mk == "pe" else mk
-                step4[out_key] = {"median": med, "n_used": n_s4}
+                _cov = round(n_s4 / _pool_total * 100, 1) if _pool_total > 0 else 0
+                step4[out_key] = {
+                    "median": med, "n_used": n_s4,
+                    "total_company_count": _pool_total,
+                    "coverage_pct": _cov,
+                    "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                }
         
         # ── Admin audit: capture Step 4 constituent ticker lists ──
         # Written to a separate collection (peer_benchmarks_constituents),
@@ -2138,6 +2155,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
         for mk in step4_metric_keys:
             # Phase 2A: select per-metric peer pool
             pool = sector_known_currency if mk in step4_all_currency_eligible else usd_tickers
+            _pool_total = len(pool)
             if mk == "dividend_yield":
                 div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
@@ -2149,7 +2167,13 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                         d_med = round(div_pairs[n_dv // 2], 2)
                     else:
                         d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
-                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
+                    _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
+                    step4["dividend_yield_ttm"] = {
+                        "median": d_med, "n_used": n_dv,
+                        "total_company_count": _pool_total,
+                        "coverage_pct": _cov,
+                        "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                    }
                 continue
             if mk in step4_allow_negative:
                 pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
@@ -2164,7 +2188,13 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 else:
                     med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
                 out_key = "pe_ttm" if mk == "pe" else mk
-                step4[out_key] = {"median": med, "n_used": n_s4}
+                _cov = round(n_s4 / _pool_total * 100, 1) if _pool_total > 0 else 0
+                step4[out_key] = {
+                    "median": med, "n_used": n_s4,
+                    "total_company_count": _pool_total,
+                    "coverage_pct": _cov,
+                    "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                }
         
         # ── Admin audit: capture Step 4 constituent ticker lists (sector) ──
         _constituents = _capture_step4_constituents(
@@ -2323,6 +2353,7 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
         for mk in step4_metric_keys:
             # Phase 2A: select per-metric peer pool
             pool = all_known_currency_tickers if mk in step4_all_currency_eligible else all_usd_tickers
+            _pool_total = len(pool)
             if mk == "dividend_yield":
                 div_pairs = [t["dividend_yield"] for t in pool
                              if t.get("dividend_yield") is not None and t.get("dividend_yield") >= 0]
@@ -2334,7 +2365,13 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                         d_med = round(div_pairs[n_dv // 2], 2)
                     else:
                         d_med = round((div_pairs[n_dv // 2 - 1] + div_pairs[n_dv // 2]) / 2, 2)
-                    step4["dividend_yield_ttm"] = {"median": d_med, "n_used": n_dv}
+                    _cov = round(n_dv / _pool_total * 100, 1) if _pool_total > 0 else 0
+                    step4["dividend_yield_ttm"] = {
+                        "median": d_med, "n_used": n_dv,
+                        "total_company_count": _pool_total,
+                        "coverage_pct": _cov,
+                        "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                    }
                 continue
             if mk in step4_allow_negative:
                 pairs_s4 = [t[mk] for t in pool if t.get(mk) is not None]
@@ -2349,7 +2386,13 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 else:
                     med = round((pairs_s4[n_s4 // 2 - 1] + pairs_s4[n_s4 // 2]) / 2, 2)
                 out_key = "pe_ttm" if mk == "pe" else mk
-                step4[out_key] = {"median": med, "n_used": n_s4}
+                _cov = round(n_s4 / _pool_total * 100, 1) if _pool_total > 0 else 0
+                step4[out_key] = {
+                    "median": med, "n_used": n_s4,
+                    "total_company_count": _pool_total,
+                    "coverage_pct": _cov,
+                    "coverage_warning": _cov < MIN_COVERAGE_PCT,
+                }
         
         # ── Admin audit: capture Step 4 constituent ticker lists (market) ──
         _constituents = _capture_step4_constituents(

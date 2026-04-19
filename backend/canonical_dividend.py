@@ -50,6 +50,7 @@ def compute_canonical_dividend_yield(
     cashflow_dividends_paid_quarterly: List[Optional[float]],
     dividend_history_ttm_total: Optional[float],
     dividend_history_count: int = 0,
+    dividends_synced: bool = False,
     include_debug: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -76,6 +77,12 @@ def compute_canonical_dividend_yield(
         None if no records exist.
     dividend_history_count : int
         Number of ``dividend_history`` records in the last 365 days.
+    dividends_synced : bool
+        When True, the dividend_history for this ticker has been explicitly
+        synced (dividends_synced_at is set on tracked_tickers).  Zero
+        dividend_history records then means "proven non-payer" rather than
+        "never checked".  When False (legacy default), zero records + all-null
+        cashflow remains "missing_inputs".
     include_debug : bool
         When True, attach ``debug_inputs`` dict (admin/debug only).
 
@@ -185,12 +192,25 @@ def compute_canonical_dividend_yield(
         if market_cap is None or market_cap <= 0:
             result["na_reason"] = "missing_inputs"
         elif len(cf_vals) < 4:
-            result["na_reason"] = "missing_inputs"
+            # Fewer than 4 cashflow quarters — but if dividends are explicitly
+            # synced and no records exist, that's a proven non-payer.
+            if dividends_synced and dividend_history_count == 0:
+                result["dividend_yield_ttm_value"] = 0.0
+                result["source_used"] = "dividend_history"
+                result["na_reason"] = "no_dividend"
+            else:
+                result["na_reason"] = "missing_inputs"
         else:
             # Have data but all zeros / all None
             all_none = all(v is None for v in cf_vals)
             if all_none and dividend_history_count == 0:
-                result["na_reason"] = "missing_inputs"
+                if dividends_synced:
+                    # Dividends explicitly synced + zero records → proven non-payer
+                    result["dividend_yield_ttm_value"] = 0.0
+                    result["source_used"] = "dividend_history"
+                    result["na_reason"] = "no_dividend"
+                else:
+                    result["na_reason"] = "missing_inputs"
             else:
                 result["dividend_yield_ttm_value"] = 0.0
                 result["source_used"] = "cashflow"
@@ -229,6 +249,7 @@ def compute_canonical_dividend_yield(
             "dividend_history_ttm_total_dollars": hist_ttm_dollars,
             "dividend_history_yield_pct": hist_yield,
             "dividend_history_count": dividend_history_count,
+            "dividends_synced": dividends_synced,
             "integrity_threshold": INTEGRITY_THRESHOLD,
         }
 

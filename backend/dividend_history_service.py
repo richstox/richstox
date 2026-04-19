@@ -398,3 +398,148 @@ async def get_dividend_stats(db) -> Dict[str, Any]:
         "unique_tickers": len(unique_tickers),
         "sample_tickers": unique_tickers[:10] if unique_tickers else [],
     }
+
+
+# ── Daily dividend sync for visible tickers ─────────────────────────────
+
+# How often to re-sync a ticker's dividend_history (days).
+DIVIDEND_RESYNC_INTERVAL_DAYS = 7
+
+# Per-batch concurrency for the EODHD /div/ API during daily sync.
+DIVIDEND_DAILY_SYNC_CONCURRENCY = 10
+
+# Safety limits for the daily dividend sync job.
+DIVIDEND_DAILY_SYNC_MAX_TICKERS = 6000
+DIVIDEND_DAILY_SYNC_MAX_RUNTIME_SECONDS = 3600  # 1 hour
+
+
+async def sync_dividends_for_visible_tickers(
+    db,
+    *,
+    heartbeat_cb=None,
+    max_tickers: int = DIVIDEND_DAILY_SYNC_MAX_TICKERS,
+) -> Dict[str, Any]:
+    """
+    Daily dividend sync: ensure every visible ticker has dividend_history
+    data and a ``dividends_synced_at`` timestamp on tracked_tickers.
+
+    Targets tickers where dividends_synced_at is missing or older than
+    DIVIDEND_RESYNC_INTERVAL_DAYS.
+
+    Sets per-ticker:
+      - dividends_synced_at (datetime UTC)
+      - dividends_sync_status: "complete" | "no_dividends" | "error"
+
+    Returns a summary dict suitable for ops_job_runs.
+    """
+    import asyncio
+
+    started_at = datetime.now(timezone.utc)
+    resync_cutoff = started_at - timedelta(days=DIVIDEND_RESYNC_INTERVAL_DAYS)
+
+    # Eligible tickers: visible + seeded + either never synced or stale.
+    query = {
+        "is_visible": True,
+        "is_seeded": True,
+        "exchange": {"$in": ["NYSE", "NASDAQ"]},
+        "asset_type": "Common Stock",
+        "$or": [
+            {"dividends_synced_at": {"$exists": False}},
+            {"dividends_synced_at": None},
+            {"dividends_synced_at": {"$lt": resync_cutoff}},
+        ],
+    }
+    cursor = db.tracked_tickers.find(
+        query, {"_id": 0, "ticker": 1}
+    ).limit(max_tickers)
+    pending_tickers = [doc["ticker"] async for doc in cursor]
+
+    total_pending = len(pending_tickers)
+    logger.info(f"Dividend daily sync: {total_pending} tickers need sync")
+
+    result = {
+        "started_at": started_at.isoformat(),
+        "total_pending": total_pending,
+        "synced": 0,
+        "no_dividends": 0,
+        "errors": 0,
+        "api_calls": 0,
+        "total_records_written": 0,
+    }
+
+    if total_pending == 0:
+        result["finished_at"] = datetime.now(timezone.utc).isoformat()
+        return result
+
+    semaphore = asyncio.Semaphore(DIVIDEND_DAILY_SYNC_CONCURRENCY)
+    processed = 0
+
+    async def _sync_one(ticker: str):
+        nonlocal processed
+        async with semaphore:
+            now = datetime.now(timezone.utc)
+            elapsed = (now - started_at).total_seconds()
+            if elapsed > DIVIDEND_DAILY_SYNC_MAX_RUNTIME_SECONDS:
+                return  # safety stop
+
+            ticker_result = await sync_ticker_dividends(db, ticker)
+            result["api_calls"] += 1
+
+            status = "error"
+            if ticker_result.get("success"):
+                synced_count = ticker_result.get("dividends_synced", 0)
+                if synced_count > 0:
+                    status = "complete"
+                    result["synced"] += 1
+                    result["total_records_written"] += synced_count
+                else:
+                    status = "no_dividends"
+                    result["no_dividends"] += 1
+            else:
+                result["errors"] += 1
+
+            # Persist per-ticker flag
+            await db.tracked_tickers.update_one(
+                {"ticker": ticker},
+                {"$set": {
+                    "dividends_synced_at": now,
+                    "dividends_sync_status": status,
+                }},
+            )
+
+            processed += 1
+            if heartbeat_cb and processed % 50 == 0:
+                await heartbeat_cb(
+                    "dividend_sync",
+                    processed=processed,
+                    total=total_pending,
+                )
+
+    # Process in batches to allow for controlled concurrency
+    batch_size = DIVIDEND_DAILY_SYNC_CONCURRENCY * 5
+    for i in range(0, total_pending, batch_size):
+        batch = pending_tickers[i:i + batch_size]
+        await asyncio.gather(*[_sync_one(t) for t in batch])
+
+        elapsed = (datetime.now(timezone.utc) - started_at).total_seconds()
+        if elapsed > DIVIDEND_DAILY_SYNC_MAX_RUNTIME_SECONDS:
+            logger.warning(
+                f"Dividend daily sync: safety stop at {processed}/{total_pending} "
+                f"after {elapsed:.0f}s"
+            )
+            break
+
+        # Small pause between batches to avoid hammering the API
+        await asyncio.sleep(0.1)
+
+    # Ensure indexes exist
+    await db.dividend_history.create_index([("ticker", 1), ("ex_date", -1)])
+    await db.dividend_history.create_index("ex_date")
+
+    result["finished_at"] = datetime.now(timezone.utc).isoformat()
+    logger.info(
+        f"Dividend daily sync complete: synced={result['synced']}, "
+        f"no_dividends={result['no_dividends']}, errors={result['errors']}, "
+        f"api_calls={result['api_calls']}"
+    )
+    return result

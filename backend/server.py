@@ -3922,6 +3922,107 @@ async def admin_dividend_stats():
     stats = await get_dividend_stats(db)
     return stats
 
+
+@api_router.get("/admin/dividends/coverage-report")
+async def admin_dividend_coverage_report():
+    """
+    Admin report: dividend yield coverage at the market level.
+
+    Returns:
+      - total visible tickers (with fundamentals)
+      - dividend_yield_ttm n_used from latest peer_benchmarks
+      - coverage_pct
+      - excluded_by_reason breakdown
+      - dividends_synced counts (how many tickers have dividends_synced_at)
+    """
+    from canonical_dividend import compute_canonical_dividend_yield
+    from datetime import timedelta
+
+    # 1. Total visible tickers with fundamentals
+    total_visible = await db.tracked_tickers.count_documents(
+        {"is_visible": True, "fundamentals_status": "complete"}
+    )
+
+    # 2. Dividend sync coverage
+    synced_total = await db.tracked_tickers.count_documents(
+        {"is_visible": True, "fundamentals_status": "complete",
+         "dividends_synced_at": {"$exists": True, "$ne": None}}
+    )
+    synced_complete = await db.tracked_tickers.count_documents(
+        {"is_visible": True, "fundamentals_status": "complete",
+         "dividends_sync_status": "complete"}
+    )
+    synced_no_dividends = await db.tracked_tickers.count_documents(
+        {"is_visible": True, "fundamentals_status": "complete",
+         "dividends_sync_status": "no_dividends"}
+    )
+    synced_error = await db.tracked_tickers.count_documents(
+        {"is_visible": True, "fundamentals_status": "complete",
+         "dividends_sync_status": "error"}
+    )
+    never_synced = total_visible - synced_total
+
+    # 3. Latest market-level peer_benchmarks for dividend_yield
+    market_doc = await db.peer_benchmarks.find_one(
+        {"level": "market"},
+        {"_id": 0, "step4_medians": 1, "dividend_peer_count": 1,
+         "dividend_payers_count": 1, "computed_at": 1,
+         "peer_count": 1, "peer_count_known_currency": 1}
+    )
+
+    div_step4 = {}
+    if market_doc:
+        div_step4 = (market_doc.get("step4_medians") or {}).get("dividend_yield_ttm", {})
+
+    n_used = div_step4.get("n_used", 0)
+    pool_total = div_step4.get("total_company_count", total_visible)
+    coverage_pct = div_step4.get("coverage_pct", (
+        round(n_used / pool_total * 100, 1) if pool_total > 0 else 0
+    ))
+    coverage_warning = div_step4.get("coverage_warning", coverage_pct < 30)
+
+    # 4. Excluded-by-reason breakdown from constituents CSV footer data
+    # We query dividend_history and company_financials to compute the breakdown
+    # (mirrors the constituents CSV logic but summarized)
+    excluded_reasons = {
+        "missing_inputs": 0,
+        "unreliable": 0,
+        "extreme_outlier": 0,
+        "no_dividend_included": 0,
+    }
+
+    # Use the peer_benchmarks_constituents for market if available
+    cons_doc = await db.peer_benchmarks_constituents.find_one(
+        {"level": "market", "group": "market"},
+        {"_id": 0, "metrics": 1}
+    )
+    div_constituents_n = 0
+    if cons_doc and cons_doc.get("metrics", {}).get("dividend_yield_ttm"):
+        div_constituents_n = cons_doc["metrics"]["dividend_yield_ttm"].get("n_records", 0)
+
+    return {
+        "total_visible_with_fundamentals": total_visible,
+        "dividend_sync_coverage": {
+            "synced_total": synced_total,
+            "synced_complete": synced_complete,
+            "synced_no_dividends": synced_no_dividends,
+            "synced_error": synced_error,
+            "never_synced": never_synced,
+            "sync_pct": round(synced_total / total_visible * 100, 1) if total_visible > 0 else 0,
+        },
+        "dividend_yield_benchmark": {
+            "n_used": n_used,
+            "total_company_count": pool_total,
+            "coverage_pct": coverage_pct,
+            "coverage_warning": coverage_warning,
+            "median": div_step4.get("median"),
+            "dividend_peer_count": market_doc.get("dividend_peer_count") if market_doc else None,
+            "dividend_payers_count": market_doc.get("dividend_payers_count") if market_doc else None,
+            "computed_at": market_doc.get("computed_at") if market_doc else None,
+        },
+        "constituents_n_records": div_constituents_n,
+    }
+
 @api_router.get("/dividends/{ticker}")
 async def get_ticker_dividends(ticker: str):
     """Get dividend history for a ticker with annual aggregation."""
@@ -5947,15 +6048,20 @@ async def get_ticker_detail_mobile(
     def _s4_median_with_fallback(key: str):
         """
         Per-metric fallback: Industry → Sector → Market.
-        Returns (median, n_used, level) where level is 'industry'/'sector'/'market'/None.
+        Returns (median, n_used, level, coverage_pct, coverage_warning)
+        where level is 'industry'/'sector'/'market'/None.
         """
         for s4_data, level in _s4_fallback_chain:
             entry = s4_data.get(key) or {}
             n = entry.get("n_used")
             med = entry.get("median")
             if med is not None and n is not None and n >= _MIN_BENCHMARK_N:
-                return med, n, level
-        return None, None, None
+                return (
+                    med, n, level,
+                    entry.get("coverage_pct"),
+                    entry.get("coverage_warning"),
+                )
+        return None, None, None, None, None
 
     # Pre-compute fallback results for each metric (avoid redundant calls)
     _fb_net_margin = _s4_median_with_fallback("net_margin_ttm")
@@ -6051,11 +6157,22 @@ async def get_ticker_detail_mobile(
         _bv = _km.get("peer_median")
         _bl = _km.get("peer_median_level")
         _bn = _km.get("peer_median_n")
+        # Look up coverage info from fallback result
+        _fb_key_map = {
+            "net_margin_ttm": _fb_net_margin,
+            "fcf_yield": _fb_fcf_yield,
+            "net_debt_ebitda": _fb_net_debt,
+            "revenue_growth_3y": _fb_rev_growth,
+            "dividend_yield_ttm": _fb_div_yield,
+        }
+        _fb = _fb_key_map[_mk]
         key_metrics[_mk]["benchmark_metadata"] = {
             "benchmark_value": _bv,
             "benchmark_level": _bl,
             "benchmark_n": _bn,
             "statistic_type": "median",
+            "coverage_pct": _fb[3] if len(_fb) > 3 else None,
+            "coverage_warning": _fb[4] if len(_fb) > 4 else None,
         }
 
     # Determine has_benchmark: True if ANY step4 metric has a valid benchmark
