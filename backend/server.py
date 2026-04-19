@@ -6542,6 +6542,11 @@ async def admin_get_job_status(job_name: str):
     """
     # Auto-recover any stale running job before reading status
     await recover_stale_job_run(db, job_name)
+    # For pipeline jobs with heartbeat-based zombie detection, also run the
+    # heartbeat-aware finalizer so a stale heartbeat run gets cleaned up.
+    if job_name in ("price_sync", "fundamentals_sync"):
+        from scheduler_service import finalize_stuck_admin_job_runs as _finalize_stuck
+        await _finalize_stuck(db, job_names=[job_name])
 
     # Resolve the DB job_name (handles API↔DB name mismatches).
     db_job_name = _resolve_db_job_name(job_name)
@@ -7396,8 +7401,14 @@ async def admin_job_status(job_name: str):
     """Get the latest run status for a specific job.
     Also auto-recovers stale running jobs (shared helper).
     """
-    # Auto-recover any stale running job before reading status
+    # Auto-recover any stale running job before reading status.
+    # For pipeline jobs with heartbeat-based zombie detection (price_sync,
+    # fundamentals_sync), also run the heartbeat-aware finalizer so a run
+    # stuck at 100% with a stale heartbeat gets cleaned up on poll.
     await recover_stale_job_run(db, job_name)
+    if job_name in ("price_sync", "fundamentals_sync"):
+        from scheduler_service import finalize_stuck_admin_job_runs as _finalize_stuck
+        await _finalize_stuck(db, job_names=[job_name])
 
     # Resolve the DB job_name (handles API↔DB name mismatches).
     db_job_name = _resolve_db_job_name(job_name)
@@ -9815,34 +9826,90 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     _current_step = doc.get("current_step")
     _failed_step: Optional[int] = None
 
+    # ── Stale-heartbeat recovery: if the current step's job is still
+    # "running" but its heartbeat is stale, finalize it as a zombie so the
+    # self-heal logic below can detect the terminal status and advance/fail
+    # the chain.  Without this, a fundamentals_sync at 100% progress with
+    # an hours-old heartbeat would keep the chain stuck at "running" and
+    # the frontend Run button permanently disabled.
+    _STEP_JOB_NAMES = {1: "universe_seed", 2: "price_sync", 3: "fundamentals_sync"}
+    if _status == "running" and _current_step in _STEP_JOB_NAMES:
+        from scheduler_service import finalize_stuck_admin_job_runs as _finalize_stuck
+        _step_job = _STEP_JOB_NAMES[_current_step]
+        await _finalize_stuck(db, job_names=[_step_job])
+
     # ── Self-heal: if chain claims "running" but the current step's job is
     # terminal in ops_job_runs, force the chain to "failed".  This covers
     # edge cases where the chain orchestrator crashed before updating the
     # chain document (e.g. OOM, process kill).
-    _STEP_JOB_NAMES = {1: "universe_seed", 2: "price_sync", 3: "fundamentals_sync"}
-    _TERMINAL_JOB_STATUSES = {"completed", "success", "failed", "error", "cancelled", "skipped"}
+    #
+    # IMPORTANT: Only auto-heal immediately for actual *failure* statuses.
+    # For "completed"/"success", the scheduler orchestrator may simply not
+    # have advanced the chain document yet (normal race window).  We only
+    # auto-heal successful completions after a 10-minute grace period to
+    # distinguish a real orchestrator crash from the normal gap between
+    # the job finishing and the scheduler updating the chain doc.
+    _FAILURE_JOB_STATUSES = {"failed", "error", "cancelled", "skipped"}
+    _SUCCESS_JOB_STATUSES = {"completed", "success"}
+    _SUCCESS_GRACE_PERIOD = timedelta(minutes=10)
     if _status == "running" and _current_step in _STEP_JOB_NAMES:
         _job_name = _STEP_JOB_NAMES[_current_step]
         _job_doc = await db.ops_job_runs.find_one(
             {"job_name": _job_name, "details.chain_run_id": chain_run_id},
-            {"status": 1, "finished_at": 1},
+            {"status": 1, "finished_at": 1, "details.zombie_finalized": 1},
             sort=[("started_at", -1)],
         )
         if _job_doc:
             _job_status = _job_doc.get("status")
             _job_finished = _job_doc.get("finished_at")
-            if (
-                _job_status in _TERMINAL_JOB_STATUSES
-                and _job_finished is not None
-            ):
+            _zombie_finalized = (_job_doc.get("details") or {}).get("zombie_finalized", False)
+            _should_heal = False
+            if _job_status in _FAILURE_JOB_STATUSES and _job_finished is not None:
+                # Step actually failed → heal immediately.
+                _should_heal = True
+            elif _job_status in _SUCCESS_JOB_STATUSES and _job_finished is not None:
+                if _zombie_finalized:
+                    # Zombie-finalized as completed (progress_pct=100 but stale
+                    # heartbeat) — the orchestrator is dead, skip the grace
+                    # period and heal immediately.
+                    _should_heal = True
+                else:
+                    # Step succeeded but chain not advanced yet.  Only heal if
+                    # the job finished more than 10 minutes ago (orchestrator
+                    # likely crashed).  Within the grace period the scheduler
+                    # will advance the chain doc on its own.
+                    _heal_now = datetime.now(timezone.utc)
+                    _fin_dt = _job_finished
+                    if isinstance(_fin_dt, str):
+                        _fin_dt = datetime.fromisoformat(_fin_dt)
+                    if getattr(_fin_dt, "tzinfo", None) is None:
+                        _fin_dt = _fin_dt.replace(tzinfo=timezone.utc)
+                    if (_heal_now - _fin_dt) > _SUCCESS_GRACE_PERIOD:
+                        _should_heal = True
+            if _should_heal:
                 # The step's job finished but the chain doc is still "running".
-                # Auto-heal: mark the chain as "failed" so the UI stops showing
-                # "Running" with an ever-increasing timer.
-                _healed_status = "failed"
+                # Determine the correct healed status:
+                # - If the *final* step (3) completed successfully (including
+                #   zombie-finalized at 100%), mark the chain as "completed".
+                # - Otherwise mark as "failed" so the UI stops showing
+                #   "Running" with an ever-increasing timer.
+                _is_final_step_success = (
+                    _current_step == 3
+                    and _job_status in _SUCCESS_JOB_STATUSES
+                )
                 _heal_at = datetime.now(timezone.utc)
-                await db.pipeline_chain_runs.update_one(
-                    {"chain_run_id": chain_run_id, "status": "running"},
-                    {"$set": {
+                if _is_final_step_success:
+                    _healed_status = "completed"
+                    _heal_set: dict = {
+                        "status": _healed_status,
+                        "finished_at": _heal_at,
+                        "finished_at_prague": _sched_to_prague_iso(_heal_at),
+                        "current_step": None,
+                        "steps_done": [1, 2, 3],
+                    }
+                else:
+                    _healed_status = "failed"
+                    _heal_set = {
                         "status": _healed_status,
                         "finished_at": _heal_at,
                         "finished_at_prague": _sched_to_prague_iso(_heal_at),
@@ -9852,22 +9919,30 @@ async def admin_pipeline_chain_status(chain_run_id: str):
                             f"finished with status={_job_status!r} but chain "
                             f"was still 'running'"
                         ),
-                    }},
+                    }
+                await db.pipeline_chain_runs.update_one(
+                    {"chain_run_id": chain_run_id, "status": "running"},
+                    {"$set": _heal_set},
                 )
                 _status = _healed_status
-                _failed_step = _current_step
+                if _is_final_step_success:
+                    _steps_done = [1, 2, 3]
+                    _current_step = None
+                else:
+                    _failed_step = _current_step
                 doc["status"] = _healed_status
-                doc["error"] = (
-                    f"auto-healed: step {_current_step} ({_job_name}) "
-                    f"finished with status={_job_status!r} but chain "
-                    f"was still 'running'"
-                )
+                if not _is_final_step_success:
+                    doc["error"] = (
+                        f"auto-healed: step {_current_step} ({_job_name}) "
+                        f"finished with status={_job_status!r} but chain "
+                        f"was still 'running'"
+                    )
                 if "finished_at" not in doc or doc["finished_at"] is None:
                     doc["finished_at"] = _heal_at.isoformat()
                 logger.warning(
                     f"[chain-status] Auto-healed chain {chain_run_id}: "
-                    f"step {_current_step} ({_job_name}) was {_job_status!r} "
-                    f"but chain was stuck at 'running'"
+                    f"step {_current_step if _current_step is not None else 3} ({_job_name}) was {_job_status!r} "
+                    f"→ chain healed as {_healed_status!r}"
                 )
 
     # Legacy fallback: derive from status string if stored fields are absent
@@ -9891,6 +9966,47 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     doc["current_step"] = _current_step
     doc["steps_done"] = _steps_done
     doc["failed_step"] = _failed_step
+
+    # ── Attach per-step run summaries so the frontend can display counts
+    # strictly from the ops_job_runs docs belonging to THIS chain, avoiding
+    # data from previous runs or live DB counts that may not match.
+    _step_runs: Dict[str, Any] = {}
+    _STEP_JOBS = {1: "universe_seed", 2: "price_sync", 3: "fundamentals_sync"}
+    _STEP_PROJECTION = {
+        "_id": 0,
+        "job_name": 1,
+        "status": 1,
+        "started_at": 1,
+        "finished_at": 1,
+        "progress": 1,
+        "progress_processed": 1,
+        "progress_total": 1,
+        "progress_pct": 1,
+        "raw_rows_total": 1,
+        "details.seeded_total": 1,
+        "details.raw_rows_total": 1,
+        "details.fetched": 1,
+        "details.filtered_out_total_step1": 1,
+        "details.fetched_raw_per_exchange": 1,
+        "details.tickers_with_price_data": 1,
+        "details.tickers_with_price": 1,
+        "details.chain_run_id": 1,
+        "details.step3_telemetry": 1,
+        "phase": 1,
+    }
+    for _sn, _jn in _STEP_JOBS.items():
+        _step_doc = await db.ops_job_runs.find_one(
+            {"job_name": _jn, "details.chain_run_id": chain_run_id},
+            _STEP_PROJECTION,
+            sort=[("started_at", -1)],
+        )
+        if _step_doc:
+            for _tk in ("started_at", "finished_at"):
+                if isinstance(_step_doc.get(_tk), datetime):
+                    _step_doc[_tk] = _step_doc[_tk].isoformat()
+            _step_runs[_jn] = _step_doc
+    doc["step_runs"] = _step_runs
+
     return doc
 
 

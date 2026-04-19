@@ -114,8 +114,13 @@ class _OpsJobRuns:
         for doc_id, doc in self.docs.items():
             if filt.get("job_name") and doc.get("job_name") != filt["job_name"]:
                 continue
-            if filt.get("status") and doc.get("status") != filt["status"]:
-                continue
+            status_filter = filt.get("status")
+            if status_filter:
+                if isinstance(status_filter, dict) and "$in" in status_filter:
+                    if doc.get("status") not in status_filter["$in"]:
+                        continue
+                elif doc.get("status") != status_filter:
+                    continue
             details = doc.get("details") or {}
             if filt.get("details.zombie_finalized") and not details.get("zombie_finalized"):
                 continue
@@ -162,8 +167,19 @@ class _OpsJobRuns:
                 continue
             if doc.get("status") != filt.get("status"):
                 continue
-            if not any(_matches_heartbeat_clause(doc, clause) for clause in filt.get("$or", [])):
+            # Check extra scalar filters (e.g. progress_pct: 100)
+            _skip = False
+            for fk, fv in filt.items():
+                if fk in ("job_name", "status", "$or"):
+                    continue
+                if doc.get(fk) != fv:
+                    _skip = True
+                    break
+            if _skip:
                 continue
+            if "$or" in filt:
+                if not any(_matches_heartbeat_clause(doc, clause) for clause in filt["$or"]):
+                    continue
             for key, value in (update.get("$set", {}) or {}).items():
                 if "." not in key:
                     doc[key] = value
@@ -546,6 +562,65 @@ def test_finalize_zombie_step3_runs_patches_running_phase_telemetry():
     # Phase C must be patched from "running" to "error"
     assert db.ops_job_runs.docs[1]["details"]["step3_telemetry"]["phases"]["C"]["status"] == "error"
     assert "zombie" in db.ops_job_runs.docs[1]["details"]["step3_telemetry"]["phases"]["C"]["message"].lower()
+
+
+def test_finalize_zombie_step3_runs_completes_100pct_progress():
+    """A zombie run at progress_pct=100 (all work done but process died before
+    final status write) should be finalized as 'completed', not 'cancelled'."""
+    from datetime import datetime, timezone, timedelta
+    from scheduler_service import _finalize_zombie_fundamentals_runs
+
+    db = _FakeStep3DB([])
+    stale_started = datetime.now(timezone.utc) - timedelta(days=1)
+    db.ops_job_runs.docs[1] = {
+        "job_name": "fundamentals_sync",
+        "status": "running",
+        "started_at": stale_started,
+        "progress_pct": 100,
+        "progress": "Price history sync completed",
+    }
+
+    finalized = asyncio.run(_finalize_zombie_fundamentals_runs(db, datetime.now(timezone.utc)))
+
+    assert finalized == 1
+    assert db.ops_job_runs.docs[1]["status"] == "completed"
+    assert db.ops_job_runs.docs[1]["details"]["zombie_finalized"] is True
+    assert db.ops_job_runs.docs[1]["details"]["zombie_reason"] == "stale_heartbeat_progress_complete"
+    assert db.ops_job_runs.docs[1]["finished_at"] is not None
+
+
+def test_finalization_progress_text_never_says_completed():
+    """Verify that the backend writes 'Finalizing' progress messages between
+    Phase C completion and the terminal status write. The progress text must
+    never show 'completed' while status is still 'running'."""
+    import pathlib
+
+    svc_path = pathlib.Path(__file__).resolve().parent.parent / "scheduler_service.py"
+    source = svc_path.read_text()
+
+    # Find the run_fundamentals_changes_sync function
+    fn_start = source.index("async def run_fundamentals_changes_sync")
+    fn_end = source.index("\nasync def ", fn_start + 1)
+    fn_source = source[fn_start:fn_end]
+
+    # After Phase C "done" and before the final status write, there must be a
+    # "Finalizing" progress update.
+    phase_c_done_idx = fn_source.index('"Price history sync completed"')
+    finalize_msg_idx = fn_source.index('"Finalizing')
+    terminal_write_idx = fn_source.index('"status": result["status"]')
+
+    assert phase_c_done_idx < finalize_msg_idx < terminal_write_idx, (
+        "A 'Finalizing...' progress message must appear between Phase C "
+        "completion and the terminal status write"
+    )
+
+    # There should also be a heartbeat update after the completeness sweep
+    # to prevent zombie detection during long sweeps
+    sweep_idx = fn_source.index("run_history_completeness_sweep")
+    post_sweep_msg_idx = fn_source.index("Finalizing", sweep_idx)
+    assert sweep_idx < post_sweep_msg_idx, (
+        "A post-sweep heartbeat update must appear after the completeness sweep"
+    )
 
 
 class _TrackedTickersForSyncStatus:

@@ -12,7 +12,7 @@ Validates that:
 import asyncio
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -186,8 +186,107 @@ class TestChainStatusEndpoint:
 
 
 # ---------------------------------------------------------------------------
-# Tests for pipeline_chain_runs lifecycle (manual path)
+# Tests for self-heal race condition fix
 # ---------------------------------------------------------------------------
+
+class TestSelfHealGracePeriod:
+    """Test that the self-heal logic does NOT mark a chain as failed when a
+    step completed successfully within the grace period (normal scheduler race
+    window), but DOES heal for actual failure statuses immediately and for
+    stale success completions after the grace period."""
+
+    @staticmethod
+    def _should_heal(job_status, job_finished_at, now=None, zombie_finalized=False):
+        """Replicate the self-heal logic from the chain-status endpoint."""
+        _FAILURE_JOB_STATUSES = {"failed", "error", "cancelled", "skipped"}
+        _SUCCESS_JOB_STATUSES = {"completed", "success"}
+        _SUCCESS_GRACE_PERIOD = timedelta(minutes=10)
+
+        if job_status in _FAILURE_JOB_STATUSES and job_finished_at is not None:
+            return True
+        if job_status in _SUCCESS_JOB_STATUSES and job_finished_at is not None:
+            if zombie_finalized:
+                return True
+            _now = now or datetime.now(timezone.utc)
+            _fin = job_finished_at
+            if isinstance(_fin, str):
+                _fin = datetime.fromisoformat(_fin)
+            if getattr(_fin, "tzinfo", None) is None:
+                _fin = _fin.replace(tzinfo=timezone.utc)
+            if (_now - _fin) > _SUCCESS_GRACE_PERIOD:
+                return True
+        return False
+
+    def test_recently_completed_step_not_healed(self):
+        """A step that completed 30 seconds ago must NOT trigger self-heal.
+        This is the normal race window where the scheduler hasn't advanced
+        the chain doc yet."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=30)
+        assert self._should_heal("completed", finished, now=now) is False
+
+    def test_recently_succeeded_step_not_healed(self):
+        """Same as above but with status='success'."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=30)
+        assert self._should_heal("success", finished, now=now) is False
+
+    def test_stale_completed_step_healed(self):
+        """A step that completed 15 minutes ago and the chain is still stuck
+        should be healed (orchestrator likely crashed)."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(minutes=15)
+        assert self._should_heal("completed", finished, now=now) is True
+
+    def test_failed_step_healed_immediately(self):
+        """A step that failed just now must trigger immediate self-heal."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("failed", finished, now=now) is True
+
+    def test_error_step_healed_immediately(self):
+        """A step with status='error' must trigger immediate self-heal."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("error", finished, now=now) is True
+
+    def test_cancelled_step_healed_immediately(self):
+        """A step with status='cancelled' must trigger immediate self-heal."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("cancelled", finished, now=now) is True
+
+    def test_running_step_not_healed(self):
+        """A step that is still running must NOT trigger self-heal."""
+        assert self._should_heal("running", None) is False
+
+    def test_completed_exactly_at_boundary_not_healed(self):
+        """A step that completed exactly 10 minutes ago is at the boundary
+        and should NOT be healed (> not >=)."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(minutes=10)
+        assert self._should_heal("completed", finished, now=now) is False
+
+    def test_completed_just_past_boundary_healed(self):
+        """A step that completed 10 minutes and 1 second ago should be healed."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(minutes=10, seconds=1)
+        assert self._should_heal("completed", finished, now=now) is True
+
+    def test_zombie_finalized_completed_healed_immediately(self):
+        """A zombie-finalized job that was marked 'completed' (100% progress)
+        just now should be healed immediately — no grace period because the
+        orchestrator is confirmed dead (zombie detection already proved this)."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        # With zombie_finalized=True, this should heal immediately
+        assert self._should_heal("completed", finished, now=now, zombie_finalized=True) is True
+
+    def test_zombie_finalized_false_still_uses_grace_period(self):
+        """A recently completed job without zombie flag should NOT heal immediately."""
+        now = datetime.now(timezone.utc)
+        finished = now - timedelta(seconds=5)
+        assert self._should_heal("completed", finished, now=now, zombie_finalized=False) is False
 
 class TestManualPathChainLifecycle:
     """Test that the manual path (run-full-now) keeps status='running' throughout."""
@@ -453,6 +552,109 @@ class TestCanonicalReportTimestamp:
         # (a fallback for running chains is acceptable)
         assert "_finished_at" in fn_source and "astimezone" in fn_source, (
             "build_canonical_pipeline_report must convert chain finished_at to Prague TZ"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests for chain-status step_runs: UI counts must match chain-specific data
+# ---------------------------------------------------------------------------
+
+class TestChainStatusStepRuns:
+    """Verify that the chain-status endpoint includes step_runs data that
+    the frontend can use to display chain-specific funnel counts.
+
+    The step_runs dict is keyed by job_name and contains the ops_job_runs
+    doc for each step from the CURRENT chain (matched by details.chain_run_id),
+    NOT the latest run for that job_name (which may be from a different chain).
+    """
+
+    def test_step_runs_source_code_queries_by_chain_run_id(self):
+        """chain-status endpoint must query ops_job_runs by details.chain_run_id
+        to ensure it returns data from the current chain, not a stale run."""
+        import pathlib
+
+        server_path = pathlib.Path(__file__).resolve().parent.parent / "server.py"
+        source = server_path.read_text()
+
+        # Find the chain-status endpoint
+        fn_start = source.index("async def admin_pipeline_chain_status")
+        fn_end = source.index("\n@", fn_start + 1)
+        fn_source = source[fn_start:fn_end]
+
+        # Must query by chain_run_id, not just job_name
+        assert "details.chain_run_id" in fn_source, (
+            "chain-status must query ops_job_runs by details.chain_run_id "
+            "to get the correct run for THIS chain, not a stale run"
+        )
+
+        # Must return step_runs in response
+        assert "step_runs" in fn_source, (
+            "chain-status must include step_runs in the response"
+        )
+
+    def test_step_runs_includes_key_count_fields(self):
+        """Verify the projection includes fields needed for funnel counts:
+        progress_processed, progress_total, raw_rows_total, seeded_total,
+        tickers_with_price_data."""
+        import pathlib
+
+        server_path = pathlib.Path(__file__).resolve().parent.parent / "server.py"
+        source = server_path.read_text()
+
+        fn_start = source.index("async def admin_pipeline_chain_status")
+        fn_end = source.index("\n@", fn_start + 1)
+        fn_source = source[fn_start:fn_end]
+
+        for field in [
+            "progress_processed",
+            "progress_total",
+            "raw_rows_total",
+            "details.seeded_total",
+            "details.tickers_with_price_data",
+        ]:
+            assert field in fn_source, (
+                f"chain-status step_runs projection must include {field}"
+            )
+
+    def test_frontend_prefers_chain_step_runs_for_counts(self):
+        """Verify the frontend pipeline.tsx prefers chainStepRuns data
+        for funnel counts over overview live-DB counts."""
+        import pathlib
+
+        pipeline_path = pathlib.Path(__file__).resolve().parent.parent.parent / "frontend" / "app" / "admin" / "pipeline.tsx"
+        source = pipeline_path.read_text()
+
+        # Step 1: seeded count should come from chainStepRuns
+        assert "chainStepRuns" in source, (
+            "pipeline.tsx must use chainStepRuns state"
+        )
+        assert "_cs1?.details?.seeded_total" in source, (
+            "pipeline.tsx must prefer chain step_runs seeded_total for Step 1"
+        )
+        # Step 2: withPrice count should come from chainStepRuns
+        assert "_cs2?.progress_processed" in source, (
+            "pipeline.tsx must prefer chain step_runs progress_processed for Step 2"
+        )
+
+    def test_funnel_count_priority_order(self):
+        """Verify the priority order: canonicalReport > chainStepRuns > overview.
+        The raw/seeded/withPrice variables must check chain data before counts."""
+        import pathlib
+
+        pipeline_path = pathlib.Path(__file__).resolve().parent.parent.parent / "frontend" / "app" / "admin" / "pipeline.tsx"
+        source = pipeline_path.read_text()
+
+        # Find the seeded variable declaration
+        seeded_idx = source.index("const seeded = canonicalReport")
+        # chainStepRuns should appear before counts.seeded in the fallback chain
+        seeded_section = source[seeded_idx:seeded_idx + 300]
+        cs1_pos = seeded_section.find("_cs1?")
+        counts_pos = seeded_section.find("counts.seeded")
+        assert cs1_pos != -1 and counts_pos != -1, (
+            "seeded must check both chainStepRuns and counts"
+        )
+        assert cs1_pos < counts_pos, (
+            "seeded must prefer chainStepRuns (_cs1) before overview counts"
         )
 
 

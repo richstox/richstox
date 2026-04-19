@@ -3208,18 +3208,45 @@ async def purge_orphaned_fundamentals_events(db) -> Dict[str, Any]:
 
 
 async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
-    """Finalize stale fundamentals_sync runs so they do not stay running forever."""
+    """Finalize stale fundamentals_sync runs so they do not stay running forever.
+
+    Special handling: if a run reached progress_pct=100 (all work done) but
+    never transitioned to "completed" (e.g. process died during final write),
+    finalize as "completed" rather than "cancelled" so the chain can advance
+    normally instead of being marked as failed.
+    """
     stale_before = now - timedelta(seconds=FUNDAMENTALS_SYNC_ZOMBIE_TIMEOUT_SECONDS)
+    _stale_heartbeat_filter = {
+        "job_name": "fundamentals_sync",
+        "status": "running",
+        "$or": [
+            {"heartbeat_at": {"$exists": False}},
+            {"heartbeat_at": None},
+            {"heartbeat_at": {"$lt": stale_before}},
+        ],
+    }
+
+    # Phase 1: Runs that completed their work (100%) — finalize as "completed"
+    completed_zombie_result = await db.ops_job_runs.update_many(
+        {**_stale_heartbeat_filter, "progress_pct": 100},
+        {"$set": {
+            "status": "completed",
+            "finished_at": now,
+            "finished_at_prague": _to_prague_iso(now),
+            "log_timezone": "Europe/Prague",
+            "details.zombie_finalized": True,
+            "details.zombie_reason": "stale_heartbeat_progress_complete",
+        }},
+    )
+    if completed_zombie_result.modified_count:
+        logger.warning(
+            f"fundamentals_sync: finalized {completed_zombie_result.modified_count} zombie run(s) "
+            f"as COMPLETED (progress_pct=100, heartbeat cutoff={stale_before.isoformat()})"
+        )
+
+    # Phase 2: Remaining stale runs (incomplete) — finalize as "cancelled"
     running_zombie_result = await db.ops_job_runs.update_many(
-        {
-            "job_name": "fundamentals_sync",
-            "status": "running",
-            "$or": [
-                {"heartbeat_at": {"$exists": False}},
-                {"heartbeat_at": None},
-                {"heartbeat_at": {"$lt": stale_before}},
-            ],
-        },
+        _stale_heartbeat_filter,
         {"$set": {
             "status": "cancelled",
             "cancelled_at": now,
@@ -3265,12 +3292,18 @@ async def _finalize_zombie_fundamentals_runs(db, now: datetime) -> int:
     # ── Fix stale telemetry: any phase still "running" is incorrect for a
     #    zombie-finalized run (process died).  Patch them to "error" so the
     #    dashboard does not show a ghost "running" phase on a cancelled run.
-    total_zombified = running_zombie_result.modified_count + cancel_zombie_result.modified_count
+    #    (completed-zombie runs at 100% likely have correct telemetry but we
+    #    still patch any stale "running" phase for safety.)
+    total_zombified = (
+        completed_zombie_result.modified_count
+        + running_zombie_result.modified_count
+        + cancel_zombie_result.modified_count
+    )
     if total_zombified:
         async for doc in db.ops_job_runs.find({
             "job_name": "fundamentals_sync",
             "details.zombie_finalized": True,
-            "status": "cancelled",
+            "status": {"$in": ["cancelled", "completed"]},
             "$or": [
                 {"details.step3_telemetry.phases.A.status": "running"},
                 {"details.step3_telemetry.phases.B.status": "running"},
@@ -4805,6 +4838,13 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         result["phase_c_stats"] = phase_c_stats
         result["step3_telemetry"] = step3_telemetry
 
+        # ── Finalization progress: update heartbeat + progress text so the
+        # UI never shows "completed" while status is still "running".
+        # Without this, the window between Phase C "done" and the final
+        # terminal status write shows a misleading "Price history sync
+        # completed" at progress_pct=100 while status="running".
+        await _progress("Finalizing — running completeness sweep…")
+
         # ── Run canonical history-completeness sweep (PR11) ──────────────
         # Verifies all visible tickers and persists truth fields so the
         # admin UI and ticker page read stored values only.
@@ -4820,6 +4860,10 @@ async def run_fundamentals_changes_sync(db, batch_size: int = 50, ignore_kill_sw
         except Exception as _hc_exc:
             logger.warning("[Step 3] History completeness sweep failed: %s", _hc_exc)
             result["history_completeness_sweep"] = {"status": "error", "error": str(_hc_exc)}
+
+        # Post-sweep heartbeat so zombie detection doesn't trigger during
+        # the finalization window (sweep can take several minutes).
+        await _progress("Finalizing — writing results…")
 
         finished_at = datetime.now(timezone.utc)
         result["finished_at"] = finished_at.isoformat()
