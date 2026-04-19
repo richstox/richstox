@@ -3787,9 +3787,11 @@ async def admin_audit_dividend_yield_pool_csv(
 
     output.seek(0)
 
-    filename = f"dividend_yield_audit_{sector.replace(' ', '_')}"
+    # Sanitize filename: keep only alphanumeric + underscore
+    _sanitize = lambda s: re.sub(r"[^a-zA-Z0-9_]", "_", s) if s else ""
+    filename = f"dividend_yield_audit_{_sanitize(sector)}"
     if industry:
-        filename += f"_{industry.replace(' ', '_')}"
+        filename += f"_{_sanitize(industry)}"
     filename += ".csv"
 
     return StreamingResponse(
