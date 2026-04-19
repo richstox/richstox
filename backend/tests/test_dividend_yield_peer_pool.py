@@ -376,3 +376,137 @@ class TestLargeSectorDividendMedian:
         assert statistics.median(dividend_yields) == 0.0
         # Confirm it's not n=5 (the old bug)
         assert len(dividend_yields) > MIN_PEER_COUNT
+
+
+class TestAuditCSVClassification:
+    """Tests for the dividend yield audit CSV classification logic.
+
+    These test the exact same per-ticker classification logic used by
+    the admin audit CSV endpoint to label each ticker as:
+      - included_in_peer_pool=True  (proven payer or proven non-payer)
+      - excluded_reason=missing_dividend_data
+      - excluded_reason=unreliable_sources_disagree
+      - excluded_reason=extreme_outlier_gt_100pct
+    """
+
+    @staticmethod
+    def _classify(*, market_cap, shares_outstanding,
+                  cashflow_dividends_paid_quarterly,
+                  dividend_history_ttm_total, dividend_history_count,
+                  is_visible=True, fundamentals_status="complete",
+                  has_price=True, has_shares=True):
+        """Replicate the audit endpoint classification logic."""
+        canonical = compute_canonical_dividend_yield(
+            market_cap=market_cap,
+            shares_outstanding=shares_outstanding,
+            cashflow_dividends_paid_quarterly=cashflow_dividends_paid_quarterly,
+            dividend_history_ttm_total=dividend_history_ttm_total,
+            dividend_history_count=dividend_history_count,
+        )
+        dy_value = canonical["dividend_yield_ttm_value"]
+        na_reason = canonical["na_reason"]
+
+        if not is_visible:
+            return False, "not_visible"
+        if fundamentals_status != "complete":
+            return False, "fundamentals_incomplete"
+        if not has_price:
+            return False, "no_price_data"
+        if not has_shares:
+            return False, "no_shares_outstanding"
+        if dy_value is not None:
+            return True, ""
+        if na_reason == "missing_inputs":
+            return False, "missing_dividend_data"
+        if na_reason == "unreliable":
+            return False, "unreliable_sources_disagree"
+        if na_reason == "extreme_outlier":
+            return False, "extreme_outlier_gt_100pct"
+        return False, f"na_reason={na_reason}"
+
+    def test_proven_payer_included(self):
+        """Dividend payer with both sources agreeing → included."""
+        included, reason = self._classify(
+            market_cap=100e9, shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[-0.5e9, -0.5e9, -0.5e9, -0.5e9],
+            dividend_history_ttm_total=2.0, dividend_history_count=4,
+        )
+        assert included is True
+        assert reason == ""
+
+    def test_proven_non_payer_included(self):
+        """Cashflow explicitly $0 in all quarters → included as 0.0."""
+        included, reason = self._classify(
+            market_cap=1e9, shares_outstanding=1e7,
+            cashflow_dividends_paid_quarterly=[0, 0, 0, 0],
+            dividend_history_ttm_total=None, dividend_history_count=0,
+        )
+        assert included is True
+        assert reason == ""
+
+    def test_missing_data_excluded(self):
+        """ALL cashflow null + no dividend_history → missing_dividend_data."""
+        included, reason = self._classify(
+            market_cap=1e9, shares_outstanding=1e7,
+            cashflow_dividends_paid_quarterly=[None, None, None, None],
+            dividend_history_ttm_total=None, dividend_history_count=0,
+        )
+        assert included is False
+        assert reason == "missing_dividend_data"
+
+    def test_unreliable_excluded(self):
+        """Sources materially disagree → unreliable_sources_disagree."""
+        included, reason = self._classify(
+            market_cap=3.9e6, shares_outstanding=1e6,
+            cashflow_dividends_paid_quarterly=[-99e6, -99e6, None, None],
+            dividend_history_ttm_total=None, dividend_history_count=0,
+        )
+        assert included is False
+        assert reason == "unreliable_sources_disagree"
+
+    def test_extreme_outlier_excluded(self):
+        """Yield > 100% → extreme_outlier_gt_100pct."""
+        included, reason = self._classify(
+            market_cap=1e6, shares_outstanding=1e6,
+            cashflow_dividends_paid_quarterly=[None, None, None, None],
+            dividend_history_ttm_total=2.0, dividend_history_count=4,
+        )
+        assert included is False
+        assert reason == "extreme_outlier_gt_100pct"
+
+    def test_not_visible_excluded(self):
+        """Non-visible ticker excluded regardless of data."""
+        included, reason = self._classify(
+            market_cap=1e9, shares_outstanding=1e7,
+            cashflow_dividends_paid_quarterly=[0, 0, 0, 0],
+            dividend_history_ttm_total=None, dividend_history_count=0,
+            is_visible=False,
+        )
+        assert included is False
+        assert reason == "not_visible"
+
+    def test_sector_classification_summary(self):
+        """Full sector classification matches expected breakdown."""
+        tickers = _build_financial_services_sector(
+            n_total=50, n_div_payers=8, n_proven_non_payers=20,
+        )
+
+        included = 0
+        excl_counts = {}
+        for t in tickers:
+            inc, reason = self._classify(
+                market_cap=t["market_cap"],
+                shares_outstanding=t["shares_outstanding"],
+                cashflow_dividends_paid_quarterly=t["cashflow_dividends_paid_quarterly"],
+                dividend_history_ttm_total=t["dividend_history_ttm_total"],
+                dividend_history_count=t["dividend_history_count"],
+            )
+            if inc:
+                included += 1
+            else:
+                excl_counts[reason] = excl_counts.get(reason, 0) + 1
+
+        assert included == 28, f"Expected 28 included (8 payers + 20 proven), got {included}"
+        assert excl_counts.get("missing_dividend_data", 0) == 22, (
+            f"Expected 22 missing_dividend_data, got {excl_counts}"
+        )

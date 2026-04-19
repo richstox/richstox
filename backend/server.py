@@ -3558,6 +3558,247 @@ async def admin_dividend_yield_debug(ticker: str):
     }
 
 
+@api_router.get("/admin/audit/dividend-yield-pool/csv")
+async def admin_audit_dividend_yield_pool_csv(
+    sector: str = Query("Financial Services", description="Sector filter"),
+    industry: str = Query(None, description="Industry filter (optional)"),
+):
+    """
+    Audit CSV: dividend yield peer pool evidence for a sector/industry.
+
+    Shows every ticker's dividend data completeness and whether it is included
+    in or excluded from the dividend yield peer pool, with the exact reason.
+
+    Columns:
+      ticker, is_visible, fundamentals_status, last_close_date, last_close,
+      shares_outstanding, market_cap, dividend_history_count_365d,
+      dividends_365d_sum, cashflow_dividendsPaid_non_null_quarters,
+      cashflow_dividendsPaid_sum, dividend_yield_ttm_value, source_used,
+      na_reason, included_in_peer_pool, excluded_reason
+    """
+    from fastapi.responses import StreamingResponse
+    import io
+    import csv
+
+    # ── 1. Ticker universe ──────────────────────────────────────────────
+    tt_query = {"is_visible": True, "fundamentals_status": "complete"}
+    if sector:
+        tt_query["sector"] = sector
+    if industry:
+        tt_query["industry"] = industry
+
+    all_tickers = await db.tracked_tickers.find(
+        tt_query,
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
+         "is_visible": 1, "fundamentals_status": 1,
+         "shares_outstanding": 1, "financial_currency": 1},
+    ).sort("ticker", 1).to_list(length=10000)
+
+    # Also grab non-visible tickers in the same sector/industry for completeness
+    non_visible_query = {"is_visible": {"$ne": True}}
+    if sector:
+        non_visible_query["sector"] = sector
+    if industry:
+        non_visible_query["industry"] = industry
+
+    non_visible_tickers = await db.tracked_tickers.find(
+        non_visible_query,
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
+         "is_visible": 1, "fundamentals_status": 1,
+         "shares_outstanding": 1, "financial_currency": 1},
+    ).sort("ticker", 1).to_list(length=10000)
+
+    all_universe = all_tickers + non_visible_tickers
+    ticker_names = [t["ticker"] for t in all_universe]
+
+    if not ticker_names:
+        return {"error": "No tickers found for the given sector/industry filter"}
+
+    # ── 2. Latest prices ────────────────────────────────────────────────
+    latest_prices = {}
+    latest_dates = {}
+    price_cursor = db.stock_prices.aggregate([
+        {"$match": {"ticker": {"$in": ticker_names}}},
+        {"$sort": {"date": -1}},
+        {"$group": {
+            "_id": "$ticker",
+            "price": {"$first": "$adjusted_close"},
+            "date": {"$first": "$date"},
+        }},
+    ])
+    async for doc in price_cursor:
+        if doc.get("price"):
+            latest_prices[doc["_id"]] = doc["price"]
+            latest_dates[doc["_id"]] = doc.get("date", "")
+
+    # ── 3. Quarterly cashflow dividends_paid ─────────────────────────────
+    cf_batch = {}  # ticker -> [{period_date, dividends_paid}, ...]
+    cf_cursor = db.company_financials.find(
+        {"ticker": {"$in": ticker_names}, "period_type": "quarterly"},
+        {"_id": 0, "ticker": 1, "period_date": 1, "dividends_paid": 1},
+    ).sort("period_date", -1)
+    async for row in cf_cursor:
+        tk = row["ticker"]
+        cf_batch.setdefault(tk, [])
+        if len(cf_batch[tk]) < 4:
+            cf_batch[tk].append(row)
+
+    # ── 4. Dividend history (last 365 days) ──────────────────────────────
+    one_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    div_hist_batch = {}  # ticker -> {"total": float, "count": int}
+    div_hist_pipeline = [
+        {"$match": {
+            "ticker": {"$in": ticker_names},
+            "$or": [
+                {"ex_date": {"$gte": one_year_ago}},
+                {"date": {"$gte": one_year_ago}},
+            ],
+        }},
+        {"$group": {
+            "_id": "$ticker",
+            "total_amount": {"$sum": {"$ifNull": ["$amount", {"$ifNull": ["$value", 0]}]}},
+            "count": {"$sum": 1},
+        }},
+    ]
+    async for doc in db.dividend_history.aggregate(div_hist_pipeline):
+        div_hist_batch[doc["_id"]] = {
+            "total": doc["total_amount"],
+            "count": doc["count"],
+        }
+
+    # ── 5. Build CSV rows ────────────────────────────────────────────────
+    def _sf(val):
+        if val is None:
+            return None
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow([
+        "ticker", "is_visible", "fundamentals_status",
+        "last_close_date", "last_close", "shares_outstanding", "market_cap",
+        "dividend_history_count_365d", "dividends_365d_sum",
+        "cashflow_dividendsPaid_non_null_quarters", "cashflow_dividendsPaid_sum",
+        "dividend_yield_ttm_value", "source_used", "na_reason",
+        "included_in_peer_pool", "excluded_reason",
+    ])
+
+    # Counters
+    total_in_group = len(all_universe)
+    visible_in_group = sum(1 for t in all_universe if t.get("is_visible"))
+    included_count = 0
+    excluded_reasons = {}
+
+    for t in all_universe:
+        ticker = t["ticker"]
+        is_visible = t.get("is_visible", False)
+        fund_status = t.get("fundamentals_status", "")
+        shares = _sf(t.get("shares_outstanding"))
+        last_close = latest_prices.get(ticker)
+        last_close_date = latest_dates.get(ticker, "")
+        market_cap = (last_close * shares) if last_close and shares else None
+
+        # Cashflow data
+        cf_rows = cf_batch.get(ticker, [])
+        cf_vals = [_sf(r.get("dividends_paid")) for r in cf_rows[:4]]
+        cf_non_null_count = sum(1 for v in cf_vals if v is not None)
+        cf_sum = sum(abs(v) for v in cf_vals if v is not None) if cf_non_null_count > 0 else None
+
+        # Pad to 4 elements for canonical function
+        while len(cf_vals) < 4:
+            cf_vals.append(None)
+
+        # Dividend history
+        dh_info = div_hist_batch.get(ticker, {})
+        dh_count = dh_info.get("count", 0)
+        dh_sum = dh_info.get("total") if dh_count > 0 else None
+
+        # Canonical computation
+        canonical = compute_canonical_dividend_yield(
+            market_cap=market_cap,
+            shares_outstanding=shares,
+            cashflow_dividends_paid_quarterly=cf_vals,
+            dividend_history_ttm_total=dh_sum,
+            dividend_history_count=dh_count,
+        )
+        dy_value = canonical["dividend_yield_ttm_value"]
+        source_used = canonical["source_used"]
+        na_reason = canonical["na_reason"]
+
+        # Peer pool inclusion logic (matches compute_peer_benchmarks_v3)
+        included_in_pool = False
+        excluded_reason = ""
+
+        if not is_visible:
+            excluded_reason = "not_visible"
+        elif fund_status != "complete":
+            excluded_reason = "fundamentals_incomplete"
+        elif not last_close:
+            excluded_reason = "no_price_data"
+        elif not shares or shares <= 0:
+            excluded_reason = "no_shares_outstanding"
+        elif dy_value is not None:
+            included_in_pool = True
+        elif na_reason == "missing_inputs":
+            excluded_reason = "missing_dividend_data"
+        elif na_reason == "unreliable":
+            excluded_reason = "unreliable_sources_disagree"
+        elif na_reason == "extreme_outlier":
+            excluded_reason = "extreme_outlier_gt_100pct"
+        else:
+            excluded_reason = f"na_reason={na_reason}"
+
+        if included_in_pool:
+            included_count += 1
+        else:
+            excluded_reasons[excluded_reason] = excluded_reasons.get(excluded_reason, 0) + 1
+
+        writer.writerow([
+            ticker,
+            is_visible,
+            fund_status,
+            last_close_date,
+            f"{last_close:.4f}" if last_close else "",
+            f"{shares:.0f}" if shares else "",
+            f"{market_cap:.0f}" if market_cap else "",
+            dh_count,
+            f"{dh_sum:.6f}" if dh_sum is not None else "",
+            cf_non_null_count,
+            f"{cf_sum:.2f}" if cf_sum is not None else "",
+            f"{dy_value:.4f}" if dy_value is not None else "",
+            source_used,
+            na_reason or "",
+            included_in_pool,
+            excluded_reason,
+        ])
+
+    # ── 6. Summary rows ─────────────────────────────────────────────────
+    writer.writerow([])
+    writer.writerow(["# SUMMARY"])
+    writer.writerow(["total_in_group", total_in_group])
+    writer.writerow(["visible_in_group", visible_in_group])
+    writer.writerow(["included_in_peer_pool", included_count])
+    writer.writerow(["excluded_total", total_in_group - included_count])
+    for reason, count in sorted(excluded_reasons.items(), key=lambda x: -x[1]):
+        writer.writerow([f"excluded_{reason}", count])
+
+    output.seek(0)
+
+    filename = f"dividend_yield_audit_{sector.replace(' ', '_')}"
+    if industry:
+        filename += f"_{industry.replace(' ', '_')}"
+    filename += ".csv"
+
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
 # ----- TTM Calculations Endpoints -----
 
 @api_router.post("/admin/ttm/update-batch")
