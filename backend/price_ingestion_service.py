@@ -953,6 +953,8 @@ async def run_daily_bulk_catchup(
             "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
+            "bulk_parse_complete": False,
+            "bulk_parse_incomplete_reason": "cancelled_before_parse",
         }
 
     if not bulk_data:
@@ -967,6 +969,8 @@ async def run_daily_bulk_catchup(
             "raw_row_count": raw_row_count,
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
+            "bulk_parse_complete": False,
+            "bulk_parse_incomplete_reason": "no_data_returned",
         }
 
     # Load Step 2 universe tickers for filtering bulk_data rows.
@@ -1014,12 +1018,15 @@ async def run_daily_bulk_catchup(
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "tickers_in_bulk": [],
             "ticker_samples": {
                 "bulk_rows_sample": [],
                 "bulk_rows_normalized_sample": [],
                 "seeded_tickers_sample": [],
                 "seeded_tickers_normalized_sample": [],
             },
+            "bulk_parse_complete": False,
+            "bulk_parse_incomplete_reason": "missing_ticker_field",
         }
 
     # Canonical seeded ticker map by normalized key.
@@ -1164,7 +1171,9 @@ async def run_daily_bulk_catchup(
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "tickers_in_bulk": sorted(matched_seeded_tickers),
             "ticker_samples": ticker_samples,
+            "bulk_parse_complete": True,
         }
     date_seen = unique_dates[0]
 
@@ -1210,9 +1219,11 @@ async def run_daily_bulk_catchup(
                 "bulk_writes": 0,
                 "bulk_url_used": bulk_url_used,
                 "tickers_with_price": [],
+                "tickers_in_bulk": sorted(matched_seeded_tickers),
                 "ticker_samples": ticker_samples,
                 "skipped_reason": "non_trading_day",
                 "holiday_name": _holiday_label,
+                "bulk_parse_complete": True,
             }
         if _cal_doc is None:
             logger.info(
@@ -1256,7 +1267,9 @@ async def run_daily_bulk_catchup(
             "bulk_writes": 0,
             "bulk_url_used": bulk_url_used,
             "tickers_with_price": [],
+            "tickers_in_bulk": [],
             "ticker_samples": ticker_samples,
+            "bulk_parse_complete": True,
         }
 
     # Execute in batches — cancel check before each batch (soft stop)
@@ -1288,7 +1301,9 @@ async def run_daily_bulk_catchup(
                 "bulk_writes": bulk_writes,
                 "bulk_url_used": bulk_url_used,
                 "tickers_with_price": sorted(processed_ticker_set),
+                "tickers_in_bulk": sorted(matched_seeded_tickers),
                 "ticker_samples": ticker_samples,
+                "bulk_parse_complete": True,
             }
 
         write_result = await db.stock_prices.bulk_write(batch, ordered=False)
@@ -1515,11 +1530,13 @@ async def run_daily_bulk_catchup(
         "bulk_writes": bulk_writes,
         "bulk_url_used": bulk_url_used,
         "tickers_with_price": sorted(processed_ticker_set),
+        "tickers_in_bulk": sorted(matched_seeded_tickers),
         "ticker_samples": ticker_samples,
         "auto_remediated_tickers_count": len(remediated_tickers),
         "auto_remediated_tickers": remediated_tickers[:50],
         "auto_reflagged_tickers_count": len(reflagged_tickers),
         "auto_reflagged_tickers": reflagged_tickers[:50],
+        "bulk_parse_complete": True,
     }
 
 

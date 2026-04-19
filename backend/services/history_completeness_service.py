@@ -48,7 +48,7 @@ Price-field rule (consistency):
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("richstox.history_completeness")
 
@@ -115,28 +115,37 @@ async def _get_gap_free_exclusions(
     db,
     tickers: List[str],
     expected_dates: List[str],
-) -> Set[tuple]:
-    """Return set of (ticker, date) pairs that are NOT APPLICABLE.
+) -> Tuple[Set[tuple], Set[tuple]]:
+    """Return ``(exclusion_set, not_in_bulk_set)`` for the given tickers/dates.
 
-    A pair is excluded when the ticker is absent from bulk or has
-    close==0 for that date — recorded in ``gap_free_exclusions``.
+    *exclusion_set* — set of ``(ticker, date)`` pairs that are NOT APPLICABLE
+    (absent from bulk or close==0).
+
+    *not_in_bulk_set* — subset of *exclusion_set* where ``bulk_found`` is
+    ``False`` (ticker was not in the EODHD bulk file at all for that date).
+    These dates may still need a full-history redownload to confirm whether
+    the ticker genuinely did not trade.
     """
-    if not tickers or not expected_dates:
-        return set()
     exclusion_set: Set[tuple] = set()
+    not_in_bulk_set: Set[tuple] = set()
+    if not tickers or not expected_dates:
+        return exclusion_set, not_in_bulk_set
     try:
         cursor = db.gap_free_exclusions.find(
             {
                 "ticker": {"$in": tickers},
                 "date": {"$in": expected_dates},
             },
-            {"_id": 0, "ticker": 1, "date": 1},
+            {"_id": 0, "ticker": 1, "date": 1, "bulk_found": 1},
         )
         async for doc in cursor:
-            exclusion_set.add((doc["ticker"], doc["date"]))
+            pair = (doc["ticker"], doc["date"])
+            exclusion_set.add(pair)
+            if doc.get("bulk_found") is False:
+                not_in_bulk_set.add(pair)
     except Exception:
         pass  # Collection may not exist yet
-    return exclusion_set
+    return exclusion_set, not_in_bulk_set
 
 
 async def verify_ticker_history_completeness(
@@ -212,17 +221,24 @@ async def verify_ticker_history_completeness(
             actual_dates_set = set(agg_doc.get("dates", []))
 
     # 5. Load exclusions if not pre-loaded
+    not_in_bulk_set: Set[tuple] = set()
     if exclusion_set is None:
-        exclusion_set = await _get_gap_free_exclusions(
+        exclusion_set, not_in_bulk_set = await _get_gap_free_exclusions(
             db, [ticker], relevant_dates,
         )
 
     # 6. Compute missing required days
     missing_days = []
+    # Count dates excluded as "not in bulk" where stock_prices is also
+    # missing — these need a full-history redownload to verify whether
+    # the ticker genuinely did not trade on those days.
+    not_in_bulk_excluded_count = 0
     for d in relevant_dates:
         if d in actual_dates_set:
             continue
         if (ticker, d) in exclusion_set:
+            if (ticker, d) in not_in_bulk_set:
+                not_in_bulk_excluded_count += 1
             continue  # NOT APPLICABLE — absent from bulk or close==0
         missing_days.append(d)
 
@@ -255,7 +271,7 @@ async def verify_ticker_history_completeness(
     complete = len(missing_days) == 0
     status = "complete" if complete else "incomplete"
 
-    return _result(
+    result = _result(
         status=status,
         complete=complete,
         first_date=first_date,
@@ -264,6 +280,9 @@ async def verify_ticker_history_completeness(
         missing_days=missing_days,
         verified_at=now,
     )
+    # Attach not-in-bulk metadata so callers can trigger redownload.
+    result["not_in_bulk_excluded_count"] = not_in_bulk_excluded_count
+    return result
 
 
 def _detect_data_loss(
@@ -371,8 +390,9 @@ async def run_history_completeness_sweep(
     expected_dates = await _get_bulk_processed_dates(db)
 
     exclusion_set: Set[tuple] = set()
+    not_in_bulk_set: Set[tuple] = set()
     if expected_dates:
-        exclusion_set = await _get_gap_free_exclusions(
+        exclusion_set, not_in_bulk_set = await _get_gap_free_exclusions(
             db, tickers, expected_dates,
         )
 
@@ -408,6 +428,7 @@ async def run_history_completeness_sweep(
     incomplete_count = 0
     no_proof_count = 0
     data_lost_count = 0
+    not_in_bulk_redownload_count = 0
     from pymongo import UpdateOne
     ops: List[Any] = []
 
@@ -423,6 +444,9 @@ async def run_history_completeness_sweep(
         fl = first_last_by_ticker.get(ticker, {})
         live_first = fl.get("first_date")
         data_lost = _detect_data_loss(info.get("range_proof"), live_first)
+
+        # Per-ticker not-in-bulk excluded count (used to decide redownload)
+        _ticker_not_in_bulk_excluded = 0
 
         if data_lost:
             result = _result(
@@ -478,6 +502,15 @@ async def run_history_completeness_sweep(
                 d for d in relevant
                 if d not in actual and (ticker, d) not in exclusion_set
             ]
+            # Count not-in-bulk excluded dates where stock_prices is also
+            # missing.  These are dates that the full-history download has
+            # not yet covered (d > anchor).  A redownload is needed so
+            # Phase C can verify whether the ticker genuinely did not trade.
+            for d in relevant:
+                if d in actual:
+                    continue
+                if (ticker, d) in not_in_bulk_set:
+                    _ticker_not_in_bulk_excluded += 1
             fl = first_last_by_ticker.get(ticker, {})
             complete = len(missing) == 0
             result = _result(
@@ -495,17 +528,38 @@ async def run_history_completeness_sweep(
                 incomplete_count += 1
 
         if not data_lost:
-            ops.append(UpdateOne(
-                {"ticker": ticker},
-                {"$set": {
-                    "price_history_complete": result["price_history_complete"],
-                    "price_history_first_date": result["price_history_first_date"],
-                    "price_history_last_date": result["price_history_last_date"],
-                    "price_history_missing_days_count": result["price_history_missing_days_count"],
-                    "price_history_last_verified_at": result["price_history_last_verified_at"],
-                    "price_history_status": result["price_history_status"],
-                }},
-            ))
+            set_fields = {
+                "price_history_complete": result["price_history_complete"],
+                "price_history_first_date": result["price_history_first_date"],
+                "price_history_last_date": result["price_history_last_date"],
+                "price_history_missing_days_count": result["price_history_missing_days_count"],
+                "price_history_last_verified_at": result["price_history_last_verified_at"],
+                "price_history_status": result["price_history_status"],
+            }
+            # ── Not-in-bulk redownload trigger ────────────────────────
+            # If there are dates excluded as "not in bulk" (bulk_found=false)
+            # and the stock_prices row is also missing, the full history
+            # hasn't been verified for those dates yet (d > anchor).  Flag
+            # the ticker for Phase C redownload so it can confirm whether
+            # the ticker genuinely did not trade on those days.
+            #
+            # After Phase C runs, the anchor moves past these dates.  If
+            # the date is still not in stock_prices (EODHD history doesn't
+            # have it), it falls behind the anchor and is no longer checked
+            # — confirmed as a non-trading day.  No infinite loop.
+            if _ticker_not_in_bulk_excluded > 0:
+                set_fields["needs_price_redownload"] = True
+                not_in_bulk_redownload_count += 1
+                if not_in_bulk_redownload_count <= 20:
+                    logger.info(
+                        "[history_completeness_sweep] %s: %d not-in-bulk "
+                        "excluded date(s) with missing stock_prices row — "
+                        "flagging needs_price_redownload=True for Phase C "
+                        "verification",
+                        ticker,
+                        _ticker_not_in_bulk_excluded,
+                    )
+            ops.append(UpdateOne({"ticker": ticker}, {"$set": set_fields}))
 
         if progress_cb and (i + 1) % 500 == 0:
             await progress_cb(i + 1, total, "history_completeness_sweep")
@@ -524,6 +578,7 @@ async def run_history_completeness_sweep(
         "incomplete": incomplete_count,
         "no_proof": no_proof_count,
         "data_lost": data_lost_count,
+        "not_in_bulk_redownload": not_in_bulk_redownload_count,
         "expected_bulk_dates_count": len(expected_dates),
         "duration_seconds": round(duration_s, 2),
         "verified_at": now.isoformat() + "Z",
@@ -544,9 +599,10 @@ async def run_history_completeness_sweep(
 
     logger.info(
         "[history_completeness_sweep] Done: %d total, %d complete, "
-        "%d incomplete, %d no_proof, %d data_lost, %.1fs",
+        "%d incomplete, %d no_proof, %d data_lost, "
+        "%d not_in_bulk_redownload, %.1fs",
         total, complete_count, incomplete_count, no_proof_count,
-        data_lost_count, duration_s,
+        data_lost_count, not_in_bulk_redownload_count, duration_s,
     )
 
     return summary
