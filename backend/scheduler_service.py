@@ -1980,12 +1980,17 @@ async def run_daily_price_sync(
         _bulk_tickers_in_bulk = result.get("tickers_in_bulk", None)
         _bulk_zero_close_tickers = set(result.get("zero_price_tickers", []))
         _bulk_zero_close_data = result.get("zero_price_ticker_data", {})
+        # Hard guard: only compute not_in_bulk exclusions when the full bulk
+        # payload was parsed successfully.  A partial/failed parse means
+        # tickers_in_bulk is incomplete and would generate false positives.
+        _bulk_parse_complete = result.get("bulk_parse_complete", False)
         price_flag_summary = await sync_has_price_data_flags(
             db, include_exclusions=True,
             tickers_with_price=_bulk_tickers_in_bulk or _bulk_tickers_with_price,
             bulk_date=_last_closing_day,
             bulk_zero_close_tickers=_bulk_zero_close_tickers,
             bulk_zero_close_data=_bulk_zero_close_data,
+            bulk_parse_complete=_bulk_parse_complete,
         )
         seeded_total = price_flag_summary["seeded_total"]
         with_price = price_flag_summary["with_price_data"]
@@ -2202,6 +2207,8 @@ async def run_daily_price_sync(
                     "price_bulk_gapfill": result.get("price_bulk_gapfill", {}),
                     "parent_run_id": parent_run_id,
                     "chain_run_id": chain_run_id,
+                    "bulk_parse_complete": result.get("bulk_parse_complete", False),
+                    "bulk_parse_incomplete_reason": result.get("bulk_parse_incomplete_reason"),
                 },
             }}
         )
@@ -2293,7 +2300,7 @@ async def run_daily_price_sync(
         await _release_price_sync_resources()
 
 
-async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None, bulk_date: Optional[str] = None, bulk_zero_close_tickers: Optional[Set[str]] = None, bulk_zero_close_data: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
+async def sync_has_price_data_flags(db, include_exclusions: bool = False, tickers_with_price: Optional[List[str]] = None, bulk_date: Optional[str] = None, bulk_zero_close_tickers: Optional[Set[str]] = None, bulk_zero_close_data: Optional[Dict[str, Dict[str, Any]]] = None, bulk_parse_complete: bool = True) -> Dict[str, Any]:
     """
     Recompute price-related flags for seeded US Common Stock universe.
 
@@ -2367,6 +2374,7 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
     any_price_set: Set[str] = set()  # for exclusion-report "close=0" distinction
     returning_tickers: Set[str] = set()  # tickers absent yesterday, back today
     _excl_written = 0
+    _not_in_bulk_skipped = 0  # count of not_in_bulk labels suppressed by incomplete parse
     _returning_cooldown_skipped = 0
     _returning_no_gap_skipped = 0
 
@@ -2523,10 +2531,54 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         # in the feed (halted, delisted, no trade, provider omission).
         # Write exclusion entries so the gap-free metric ignores them and
         # the chart endpoint can show data_notices to customers.
+        #
+        # HARD GUARD: only compute not_in_bulk labels when the full bulk
+        # payload was parsed successfully (bulk_parse_complete=True).
+        # A partial/failed parse yields an incomplete tickers_in_bulk set
+        # and would falsely label present tickers as "not_in_bulk_data".
         not_in_bulk = seeded_set - bulk_close_set
         _zero_set = bulk_zero_close_tickers or set()
         _zero_data = bulk_zero_close_data or {}
-        if not_in_bulk and bulk_date:
+        if not bulk_parse_complete:
+            logger.warning(
+                "[sync_has_price_data_flags] bulk_parse_complete=False — "
+                "skipping not_in_bulk_data exclusions for date=%s "
+                "(would affect %d tickers). Zero-close exclusions still written.",
+                bulk_date, len(not_in_bulk - _zero_set),
+            )
+            # Still write zero-close exclusions (those tickers WERE seen in
+            # the partial parse with close=0 — that label is truthful).
+            _not_in_bulk_skipped = len(not_in_bulk - _zero_set)
+            if _zero_set and bulk_date:
+                from pymongo import UpdateOne as _ExclUpdateOne
+                _excl_ops = []
+                for t in not_in_bulk:
+                    if t in _zero_set:
+                        _td = _zero_data.get(t, {})
+                        _excl_ops.append(_ExclUpdateOne(
+                            {"ticker": t, "date": bulk_date},
+                            {"$set": {
+                                "ticker": t,
+                                "date": bulk_date,
+                                "reason": "bulk_found_but_close_is_zero",
+                                "bulk_found": True,
+                                "bulk_close": _td.get("close"),
+                                "bulk_adjusted_close": _td.get("adjusted_close"),
+                                "bulk_volume": _td.get("volume"),
+                                "updated_at": now_ts,
+                            }},
+                            upsert=True,
+                        ))
+                if _excl_ops:
+                    try:
+                        await db.gap_free_exclusions.bulk_write(_excl_ops, ordered=False)
+                        _excl_written = len(_excl_ops)
+                    except Exception as _excl_err:
+                        logger.warning(
+                            "[sync_has_price_data_flags] failed to write zero-close exclusions: %s",
+                            _excl_err,
+                        )
+        elif not_in_bulk and bulk_date:
             from pymongo import UpdateOne as _ExclUpdateOne
             _excl_ops = []
             for t in not_in_bulk:
@@ -2588,6 +2640,10 @@ async def sync_has_price_data_flags(db, include_exclusions: bool = False, ticker
         "returning_tickers_cooldown_skipped": _returning_cooldown_skipped,
         "returning_tickers_no_gap_window_skipped": _returning_no_gap_skipped,
         "gap_free_exclusions_written": _excl_written,
+        "bulk_parse_complete": bulk_parse_complete,
+        "not_in_bulk_skipped_incomplete_parse": (
+            _not_in_bulk_skipped if not bulk_parse_complete else 0
+        ),
     }
     if include_exclusions:
         exclusions: List[Dict[str, Any]] = []
