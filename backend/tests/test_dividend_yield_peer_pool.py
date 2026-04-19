@@ -26,7 +26,6 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import statistics
-import pytest
 from canonical_dividend import compute_canonical_dividend_yield
 
 
