@@ -1,5 +1,5 @@
 """
-Tests for dividend yield coverage tracking and coverage gating.
+Tests for dividend yield coverage tracking, coverage gating, and cashflow fallback.
 
 Covers:
 1. Coverage warning logic (coverage_pct < MIN_COVERAGE_PCT)
@@ -7,7 +7,7 @@ Covers:
 3. Coverage gating: median=null when coverage < 30%
 
 Run:
-    cd backend && python -m pytest tests/test_dividend_sync_and_coverage.py -v
+    cd backend && python -m pytest tests/test_dividend_yield_coverage.py -v
 """
 
 import sys
