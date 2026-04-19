@@ -152,8 +152,6 @@ def _make_db(
 
     db.market_calendar = MagicMock()
     db.market_calendar.find = _mc_find
-    # Also support db["market_calendar"].find
-    db.__getitem__ = lambda self, key: db.market_calendar if key == "market_calendar" else MagicMock()
 
     return db
 

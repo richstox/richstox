@@ -362,8 +362,15 @@ async def _check_internal_calendar_gaps(
     anchor_dt = datetime.strptime(anchor, "%Y-%m-%d")
     start_date = (anchor_dt + timedelta(days=1)).strftime("%Y-%m-%d")
 
+    # Bound the calendar query to a reasonable window: use at most
+    # 50 calendar days before last_date to ensure we capture at least
+    # _INTERNAL_GAP_RECENT_WINDOW trading days while keeping the query small.
+    last_dt = datetime.strptime(last_date, "%Y-%m-%d")
+    bounded_start = (last_dt - timedelta(days=50)).strftime("%Y-%m-%d")
+    effective_start = max(start_date, bounded_start)
+
     # Get expected trading days from market calendar
-    calendar_dates = await _get_calendar_trading_dates(db, start_date, last_date)
+    calendar_dates = await _get_calendar_trading_dates(db, effective_start, last_date)
     if not calendar_dates:
         return []
 
