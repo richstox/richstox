@@ -7,7 +7,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, TouchableOpacity, StyleSheet,
-  RefreshControl, ActivityIndicator, TextInput, Modal, Platform, Linking,
+  RefreshControl, ActivityIndicator, TextInput, Modal, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -1238,24 +1238,24 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
 
   const handleExportCsv = async () => {
     if (csvDownloading) return;
+    if (Platform.OS !== 'web' || typeof window === 'undefined') {
+      dialog.alert('Export CSV', 'CSV export is only available in the web browser.');
+      return;
+    }
     setCsvDownloading(true);
     try {
       const url = `${API_URL}/api/admin/peer-medians/csv?level=${level}`;
-      if (Platform.OS === 'web' && typeof window !== 'undefined') {
-        const response = await authenticatedFetch(url, {}, sessionToken);
-        if (!response.ok) throw new Error(`Download failed (${response.status})`);
-        const blob = await response.blob();
-        const objectUrl = window.URL.createObjectURL(blob);
-        const link = window.document.createElement('a');
-        link.href = objectUrl;
-        link.download = `benchmark_medians_${level}.csv`;
-        window.document.body.appendChild(link);
-        link.click();
-        link.remove();
-        window.URL.revokeObjectURL(objectUrl);
-      } else {
-        await Linking.openURL(url);
-      }
+      const response = await authenticatedFetch(url, {}, sessionToken);
+      if (!response.ok) throw new Error(`Download failed (${response.status})`);
+      const blob = await response.blob();
+      const objectUrl = window.URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = objectUrl;
+      link.download = `benchmark_medians_${level}.csv`;
+      window.document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(objectUrl);
     } catch (e: any) {
       dialog.alert('Export failed', e?.message || 'Could not download CSV');
     } finally {
