@@ -190,8 +190,8 @@ class TestDividendYieldPeerPool:
         )
 
     def test_unreliable_tickers_still_excluded(self):
-        """Tickers where cashflow says dividends but dividend_history disagrees
-        should remain excluded (na_reason=unreliable)."""
+        """Tickers where cashflow implies implausible yield (ONFO-like)
+        are excluded via extreme_outlier guardrail, not 'unreliable'."""
         result = _compute_dividend_yield_for_benchmark(
             market_cap=3.9e6,
             shares_outstanding=1e6,
@@ -199,7 +199,7 @@ class TestDividendYieldPeerPool:
             dividend_history_ttm_total=None,
             dividend_history_count=0,
         )
-        assert result is None, "Unreliable tickers should remain excluded"
+        assert result is None, "Extreme cashflow yield (>100%) should be excluded"
 
     def test_extreme_outlier_still_excluded(self):
         """Yield > 100% should remain excluded."""
@@ -455,11 +455,26 @@ class TestAuditCSVClassification:
         assert reason == "missing_dividend_data"
 
     def test_unreliable_excluded(self):
-        """Sources materially disagree → unreliable_sources_disagree."""
+        """ONFO-like: Cashflow implies implausible yield → extreme_outlier_gt_100pct.
+        
+        With the fixed logic, cashflow is used as the source when history is absent.
+        The extreme cashflow yield (~5077%) exceeds the 100% cap → extreme_outlier.
+        """
         included, reason = self._classify(
             market_cap=3.9e6, shares_outstanding=1e6,
             cashflow_dividends_paid_quarterly=[-99e6, -99e6, None, None],
             dividend_history_ttm_total=None, dividend_history_count=0,
+        )
+        assert included is False
+        assert reason == "extreme_outlier_gt_100pct"
+
+    def test_true_unreliable_both_sources_disagree(self):
+        """True unreliable: BOTH sources produce yields that disagree >20%."""
+        # hist_yield = 2.0%, cashflow_yield = 5.0% → rel_diff = 0.6 > 0.2
+        included, reason = self._classify(
+            market_cap=100e9, shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[-1.25e9, -1.25e9, -1.25e9, -1.25e9],
+            dividend_history_ttm_total=2.0, dividend_history_count=4,
         )
         assert included is False
         assert reason == "unreliable_sources_disagree"

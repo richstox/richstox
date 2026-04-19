@@ -54,10 +54,18 @@ class TestNormalDividendPayer:
 
 
 class TestONFO:
-    """ONFO.US-like: cashflow shows huge dividends, dividend_history has zero records."""
+    """ONFO.US-like: cashflow shows huge dividends, dividend_history has zero records.
+    
+    With the fixed logic, cashflow is used as the source when dividend_history
+    is absent. The extreme cashflow_yield (~5077%) triggers extreme_outlier,
+    which is the correct classification — the data is implausible.
+    """
 
-    def test_cashflow_only_no_history_is_unreliable(self):
-        """Cashflow says dividends but dividend_history is empty → unreliable."""
+    def test_cashflow_only_no_history_is_extreme_outlier(self):
+        """Cashflow says huge dividends but dividend_history is empty → extreme_outlier.
+        
+        The cashflow yield (198M / 3.9M * 100 = ~5077%) exceeds the 100% cap.
+        """
         # ONFO: market_cap ~$3.9M, dividends_paid ~$99M/quarter, no dividend_history
         result = compute_canonical_dividend_yield(
             market_cap=3.9e6,
@@ -67,11 +75,10 @@ class TestONFO:
             dividend_history_count=0,
         )
         assert result["dividend_yield_ttm_value"] is None
-        assert result["na_reason"] == "unreliable"
-        assert result["source_used"] == "none"
+        assert result["na_reason"] == "extreme_outlier"
 
     def test_onfo_key_metrics_and_earnings_agree(self):
-        """Both Key Metrics (N/A unreliable) and Earnings (no dividends) agree."""
+        """Both Key Metrics (N/A extreme_outlier) and Earnings (no dividends) agree."""
         result = compute_canonical_dividend_yield(
             market_cap=3.9e6,
             shares_outstanding=1e6,
@@ -79,7 +86,7 @@ class TestONFO:
             dividend_history_ttm_total=None,
             dividend_history_count=0,
         )
-        # Key Metrics: value is None → shows "N/A (Data unreliable)"
+        # Key Metrics: value is None → shows "N/A (extreme_outlier)"
         assert result["dividend_yield_ttm_value"] is None
         # Earnings & Dividends: dividend_history_count == 0 → shows "No dividends"
         # Both sections agree: no reliable dividend data
@@ -238,3 +245,118 @@ class TestCashflowOnlySource:
         )
         # hist_yield is None (total <= 0), so falls through to cashflow
         assert result["source_used"] == "cashflow"
+
+
+class TestCashflowFallbackSource:
+    """Spec requirement B: Step 4 must compute dividend_yield using the
+    best available source WITHOUT requiring dividend_history to exist.
+
+    Priority:
+    1) dividend_history records in last 365d → canonical yield
+    2) cashflow non-null dividendsPaid:
+       - sum==0 → proven non-payer → yield=0.0, na_reason="no_dividend"
+       - sum>0 and price exists → compute yield from cashflow
+    3) else → missing_inputs
+    """
+
+    def test_cashflow_positive_no_history_uses_cashflow(self):
+        """Cashflow non-null sum>0 with price → included with computed yield.
+
+        This is the key fix: previously this was classified as "unreliable"
+        which excluded ~2393 tickers. Now it uses cashflow as the source.
+        """
+        # market_cap = 100B, cashflow = 2B total → yield = 2%
+        result = compute_canonical_dividend_yield(
+            market_cap=100e9,
+            shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[-0.5e9, -0.5e9, -0.5e9, -0.5e9],
+            dividend_history_ttm_total=None,
+            dividend_history_count=0,
+        )
+        assert result["dividend_yield_ttm_value"] is not None
+        assert result["source_used"] == "cashflow"
+        assert result["na_reason"] is None
+        assert abs(result["dividend_yield_ttm_value"] - 2.0) < 0.1
+
+    def test_cashflow_zero_no_history_proven_non_payer(self):
+        """Cashflow non-null sum==0 → no_dividend → included as 0.0."""
+        result = compute_canonical_dividend_yield(
+            market_cap=100e9,
+            shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[0, 0, 0, 0],
+            dividend_history_ttm_total=None,
+            dividend_history_count=0,
+        )
+        assert result["dividend_yield_ttm_value"] == 0.0
+        assert result["na_reason"] == "no_dividend"
+        assert result["source_used"] == "cashflow"
+
+    def test_cashflow_all_null_no_history_missing_inputs(self):
+        """Cashflow null + no history → missing_inputs (excluded)."""
+        result = compute_canonical_dividend_yield(
+            market_cap=100e9,
+            shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[None, None, None, None],
+            dividend_history_ttm_total=None,
+            dividend_history_count=0,
+        )
+        assert result["dividend_yield_ttm_value"] is None
+        assert result["na_reason"] == "missing_inputs"
+
+    def test_reliability_check_does_not_trigger_when_cashflow_all_null(self):
+        """Reliability check must NOT trigger when cashflow is all-null.
+        
+        When only dividend_history has data, there's nothing to compare against,
+        so it uses history without an integrity check.
+        """
+        result = compute_canonical_dividend_yield(
+            market_cap=100e9,
+            shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[None, None, None, None],
+            dividend_history_ttm_total=2.0,
+            dividend_history_count=4,
+        )
+        assert result["source_used"] == "dividend_history"
+        assert result["na_reason"] is None  # NOT unreliable
+        assert abs(result["dividend_yield_ttm_value"] - 2.0) < 0.01
+
+    def test_cashflow_some_null_quarters_uses_non_null(self):
+        """Cashflow with some non-null quarters uses those (quarterly payer pattern)."""
+        # 2 non-null quarters with -1B each → TTM ~2B, yield ~2%
+        result = compute_canonical_dividend_yield(
+            market_cap=100e9,
+            shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[-1e9, None, -1e9, None],
+            dividend_history_ttm_total=None,
+            dividend_history_count=0,
+        )
+        assert result["source_used"] == "cashflow"
+        assert result["dividend_yield_ttm_value"] is not None
+        assert abs(result["dividend_yield_ttm_value"] - 2.0) < 0.1
+
+    def test_cashflow_positive_with_reasonable_yield(self):
+        """Cashflow fallback with a reasonable yield (not extreme) is included."""
+        # yield = 10M / 500M * 100 = 2%
+        result = compute_canonical_dividend_yield(
+            market_cap=500e6,
+            shares_outstanding=10e6,
+            cashflow_dividends_paid_quarterly=[-2.5e6, -2.5e6, -2.5e6, -2.5e6],
+            dividend_history_ttm_total=None,
+            dividend_history_count=0,
+        )
+        assert result["source_used"] == "cashflow"
+        assert abs(result["dividend_yield_ttm_value"] - 2.0) < 0.1
+        assert result["na_reason"] is None
+
+    def test_cashflow_extreme_yield_caught_by_guardrail(self):
+        """Extreme cashflow yield (>100%) caught by guardrail, not by unreliable check."""
+        # yield = 50M / 5M * 100 = 1000%
+        result = compute_canonical_dividend_yield(
+            market_cap=5e6,
+            shares_outstanding=1e6,
+            cashflow_dividends_paid_quarterly=[-12.5e6, -12.5e6, -12.5e6, -12.5e6],
+            dividend_history_ttm_total=None,
+            dividend_history_count=0,
+        )
+        assert result["dividend_yield_ttm_value"] is None
+        assert result["na_reason"] == "extreme_outlier"
