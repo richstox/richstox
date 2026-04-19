@@ -3088,18 +3088,20 @@ async def admin_peer_medians_constituents_csv(
         }
 
     # ── 6. Fetch cashflow dividendsPaid from company_financials ───────────
-    # We need last 4 quarterly cashflow records per ticker
+    # We need last 4 quarterly cashflow records per ticker.  Use an aggregation
+    # pipeline with $sort + $group + $slice to limit the data fetched from the DB.
     cf_batch: dict[str, list] = {}  # ticker → [{period_date, dividendsPaid}, ...]
-    cf_cursor = db.company_financials.find(
-        {"ticker": {"$in": all_tickers}, "period_type": "quarterly"},
-        {"_id": 0, "ticker": 1, "period_date": 1, "dividends_paid": 1},
-    ).sort("period_date", -1)
-    async for doc in cf_cursor:
-        t = doc["ticker"]
-        if t not in cf_batch:
-            cf_batch[t] = []
-        if len(cf_batch[t]) < 4:
-            cf_batch[t].append(doc)
+    cf_pipeline = [
+        {"$match": {"ticker": {"$in": all_tickers}, "period_type": "quarterly"}},
+        {"$sort": {"period_date": -1}},
+        {"$group": {
+            "_id": "$ticker",
+            "docs": {"$push": {"period_date": "$period_date", "dividends_paid": "$dividends_paid"}},
+        }},
+        {"$project": {"docs": {"$slice": ["$docs", 4]}}},
+    ]
+    async for doc in db.company_financials.aggregate(cf_pipeline):
+        cf_batch[doc["_id"]] = doc.get("docs", [])
 
     # ── 7. Compute canonical dividend yield per ticker + build rows ───────
     def _safe_float(val):

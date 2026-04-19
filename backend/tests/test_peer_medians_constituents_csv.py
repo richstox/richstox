@@ -146,21 +146,25 @@ DH_AGG_DOCS = [
     {"_id": "MSFT.US", "total_amount": 3.00, "count": 4},
 ]
 
-# company_financials cashflow docs (4 quarters each, sorted by period_date desc)
-CF_DOCS = [
-    {"ticker": "AAPL.US", "period_date": "2026-03-31", "dividends_paid": -3800000000},
-    {"ticker": "AAPL.US", "period_date": "2025-12-31", "dividends_paid": -3800000000},
-    {"ticker": "AAPL.US", "period_date": "2025-09-30", "dividends_paid": -3700000000},
-    {"ticker": "AAPL.US", "period_date": "2025-06-30", "dividends_paid": -3700000000},
-    {"ticker": "MSFT.US", "period_date": "2026-03-31", "dividends_paid": -5600000000},
-    {"ticker": "MSFT.US", "period_date": "2025-12-31", "dividends_paid": -5600000000},
-    {"ticker": "MSFT.US", "period_date": "2025-09-30", "dividends_paid": -5500000000},
-    {"ticker": "MSFT.US", "period_date": "2025-06-30", "dividends_paid": -5500000000},
+# company_financials aggregate result: grouped by ticker, last 4 quarterly records
+CF_AGG_DOCS = [
+    {"_id": "AAPL.US", "docs": [
+        {"period_date": "2026-03-31", "dividends_paid": -3800000000},
+        {"period_date": "2025-12-31", "dividends_paid": -3800000000},
+        {"period_date": "2025-09-30", "dividends_paid": -3700000000},
+        {"period_date": "2025-06-30", "dividends_paid": -3700000000},
+    ]},
+    {"_id": "MSFT.US", "docs": [
+        {"period_date": "2026-03-31", "dividends_paid": -5600000000},
+        {"period_date": "2025-12-31", "dividends_paid": -5600000000},
+        {"period_date": "2025-09-30", "dividends_paid": -5500000000},
+        {"period_date": "2025-06-30", "dividends_paid": -5500000000},
+    ]},
 ]
 
 
 def _build_db(tracked_tickers=None, cons_doc=None, pb_doc=None,
-              sp_docs=None, dh_docs=None, cf_docs=None):
+              sp_docs=None, dh_docs=None, cf_agg_docs=None):
     """Build a fake DB object."""
     db = MagicMock()
     db.tracked_tickers = FakeCollection(find_docs=tracked_tickers or [])
@@ -168,7 +172,7 @@ def _build_db(tracked_tickers=None, cons_doc=None, pb_doc=None,
     db.peer_benchmarks = FakeCollection(find_one_return=pb_doc)
     db.stock_prices = FakeCollection(agg_docs=sp_docs or [])
     db.dividend_history = FakeCollection(agg_docs=dh_docs or [])
-    db.company_financials = FakeCollection(find_docs=cf_docs or [])
+    db.company_financials = FakeCollection(agg_docs=cf_agg_docs or [])
     return db
 
 
@@ -225,7 +229,7 @@ async def test_evidence_based_csv_happy_path():
         pb_doc=SAMPLE_PEER_BENCHMARKS,
         sp_docs=SP_AGG_DOCS,
         dh_docs=DH_AGG_DOCS,
-        cf_docs=CF_DOCS,
+        cf_agg_docs=CF_AGG_DOCS,
     )
     _resp, body = await _call_endpoint(fake_db, "industry", "Consumer Electronics")
 
@@ -304,7 +308,7 @@ async def test_csv_market_level():
         pb_doc={"sector": None, "industry": None, "step4_medians": {}},
         sp_docs=SP_AGG_DOCS,
         dh_docs=DH_AGG_DOCS,
-        cf_docs=CF_DOCS,
+        cf_agg_docs=CF_AGG_DOCS,
     )
     _resp, body = await _call_endpoint(fake_db, "market", "")
 
@@ -327,7 +331,7 @@ async def test_csv_exclusion_fundamentals_incomplete():
         pb_doc=SAMPLE_PEER_BENCHMARKS,
         sp_docs=SP_AGG_DOCS,
         dh_docs=DH_AGG_DOCS,
-        cf_docs=CF_DOCS,
+        cf_agg_docs=CF_AGG_DOCS,
     )
     _resp, body = await _call_endpoint(fake_db, "industry", "Consumer Electronics")
 
@@ -352,7 +356,7 @@ async def test_csv_filename_sanitized():
         pb_doc=SAMPLE_PEER_BENCHMARKS,
         sp_docs=SP_AGG_DOCS,
         dh_docs=DH_AGG_DOCS,
-        cf_docs=CF_DOCS,
+        cf_agg_docs=CF_AGG_DOCS,
     )
     resp, _body = await _call_endpoint(fake_db, "industry", "Technology & Electronics")
     cd = resp.headers.get("content-disposition", "")
