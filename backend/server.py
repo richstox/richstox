@@ -9966,6 +9966,47 @@ async def admin_pipeline_chain_status(chain_run_id: str):
     doc["current_step"] = _current_step
     doc["steps_done"] = _steps_done
     doc["failed_step"] = _failed_step
+
+    # ── Attach per-step run summaries so the frontend can display counts
+    # strictly from the ops_job_runs docs belonging to THIS chain, avoiding
+    # data from previous runs or live DB counts that may not match.
+    _step_runs: Dict[str, Any] = {}
+    _STEP_JOBS = {1: "universe_seed", 2: "price_sync", 3: "fundamentals_sync"}
+    _STEP_PROJECTION = {
+        "_id": 0,
+        "job_name": 1,
+        "status": 1,
+        "started_at": 1,
+        "finished_at": 1,
+        "progress": 1,
+        "progress_processed": 1,
+        "progress_total": 1,
+        "progress_pct": 1,
+        "raw_rows_total": 1,
+        "details.seeded_total": 1,
+        "details.raw_rows_total": 1,
+        "details.fetched": 1,
+        "details.filtered_out_total_step1": 1,
+        "details.fetched_raw_per_exchange": 1,
+        "details.tickers_with_price_data": 1,
+        "details.tickers_with_price": 1,
+        "details.chain_run_id": 1,
+        "details.step3_telemetry": 1,
+        "phase": 1,
+    }
+    for _sn, _jn in _STEP_JOBS.items():
+        _step_doc = await db.ops_job_runs.find_one(
+            {"job_name": _jn, "details.chain_run_id": chain_run_id},
+            _STEP_PROJECTION,
+            sort=[("started_at", -1)],
+        )
+        if _step_doc:
+            for _tk in ("started_at", "finished_at"):
+                if isinstance(_step_doc.get(_tk), datetime):
+                    _step_doc[_tk] = _step_doc[_tk].isoformat()
+            _step_runs[_jn] = _step_doc
+    doc["step_runs"] = _step_runs
+
     return doc
 
 

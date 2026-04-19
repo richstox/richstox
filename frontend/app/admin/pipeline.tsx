@@ -466,6 +466,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [chainStepsDone, setChainStepsDone] = useState<number[]>([]);
   const [chainFailedStep, setChainFailedStep] = useState<number | null>(null);
   const [canonicalReport, setCanonicalReport] = useState<Record<string, any> | null>(null);
+  // Per-step ops_job_runs data from chain-status (keyed by job_name).
+  // Single source of truth for funnel counts when a chain is active/recent.
+  const [chainStepRuns, setChainStepRuns] = useState<Record<string, any> | null>(null);
   const chainStateRef = useRef<{ chainRunId: string | null; chainStatus: string | null }>({
     chainRunId: null,
     chainStatus: null,
@@ -533,6 +536,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       setChainStepsDone(sd.steps_done ?? []);
       setChainFailedStep(sd.failed_step ?? null);
       setChainRunning(nextRunning);
+      if (sd.step_runs && typeof sd.step_runs === 'object') {
+        setChainStepRuns(sd.step_runs);
+      }
 
       if (nextRunning) {
         startChainTimer(sd.started_at);
@@ -1353,24 +1359,42 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const syncStatus = data?.pipeline_sync_status || {};
   const todayStr = new Date().toISOString().split('T')[0];
 
-  const rawSymbols = (jobRuns['universe_seed'] as any)?.raw_symbols_fetched
+  // ── Chain-specific step data (from chain-status step_runs) ─────────────
+  // When a chain is active/recent, use per-step ops_job_runs data from the
+  // chain-status response so funnel numbers match the CURRENT chain run,
+  // not the live DB counts from overview (which mix all historical runs).
+  const _cs1 = chainStepRuns?.['universe_seed'];
+  const _cs2 = chainStepRuns?.['price_sync'];
+
+  const rawSymbols = _cs1?.raw_rows_total
+    ?? _cs1?.details?.raw_rows_total
+    ?? (jobRuns['universe_seed'] as any)?.raw_symbols_fetched
     ?? (jobRuns['universe_seed'] as any)?.details?.raw_symbols_fetched as number | undefined;
-  const rawPerExchange = (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange
+  const rawPerExchange = _cs1?.details?.fetched_raw_per_exchange
+    ?? (jobRuns['universe_seed'] as any)?.fetched_raw_per_exchange
     ?? (jobRuns['universe_seed'] as any)?.details?.fetched_raw_per_exchange
     ?? exclusionReport?.step1_counts?.fetched_raw_per_exchange as Record<string, number> | undefined;
-  // Admin funnel: when a completed chain report is available, use it as the
-  // single source of truth so UI and CSV always agree for the same chain_run_id.
+  // Admin funnel: priority order for counts:
+  // 1. canonicalReport (completed chain — single source of truth)
+  // 2. chainStepRuns (active/recent chain — from ops_job_runs of THIS chain_run_id)
+  // 3. overview live-DB counts (fallback when no chain context)
   const raw = canonicalReport
     ? asFiniteNumber(canonicalReport.raw_symbols)
-    : (asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_rows_total)
+    : (asFiniteNumber(_cs1?.raw_rows_total)
+      ?? asFiniteNumber(_cs1?.details?.raw_rows_total)
+      ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_rows_total)
       ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.details?.raw_rows_total)
       ?? asFiniteNumber((jobRuns['universe_seed'] as any)?.raw_symbols_fetched));
   const seeded = canonicalReport
     ? asFiniteNumber(canonicalReport.seeded_tickers)
-    : asFiniteNumber(counts.seeded);
+    : (asFiniteNumber(_cs1?.details?.seeded_total)
+      ?? asFiniteNumber(_cs1?.progress_total)
+      ?? asFiniteNumber(counts.seeded));
   const withPrice = canonicalReport
     ? asFiniteNumber(canonicalReport.with_price)
-    : asFiniteNumber(counts.with_price);
+    : (asFiniteNumber(_cs2?.progress_processed)
+      ?? asFiniteNumber(_cs2?.details?.tickers_with_price_data)
+      ?? asFiniteNumber(counts.with_price));
   const visible = canonicalReport
     ? asFiniteNumber(canonicalReport.visible)
     : asFiniteNumber(counts.visible);
