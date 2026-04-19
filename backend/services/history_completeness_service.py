@@ -48,7 +48,7 @@ Price-field rule (consistency):
 
 import logging
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 
 logger = logging.getLogger("richstox.history_completeness")
 
@@ -115,7 +115,7 @@ async def _get_gap_free_exclusions(
     db,
     tickers: List[str],
     expected_dates: List[str],
-) -> tuple:
+) -> Tuple[Set[tuple], Set[tuple]]:
     """Return ``(exclusion_set, not_in_bulk_set)`` for the given tickers/dates.
 
     *exclusion_set* — set of ``(ticker, date)`` pairs that are NOT APPLICABLE
