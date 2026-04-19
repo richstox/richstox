@@ -59,6 +59,7 @@ logger = logging.getLogger("richstox.history_completeness")
 ALLOWED_STATUSES = frozenset({
     "complete",                         # Range-proof passed, no missing days
     "incomplete",                       # Range-proof ran, missing days > 0
+    "missing_trading_days",             # Internal calendar gap detected
     "no_history_download",              # No proven historical download yet
     "no_bulk_dates",                    # No canonical bulk dates available
     "pending",                          # Awaiting first Phase C download
@@ -95,6 +96,39 @@ STALE_PROOF_RESET_FIELDS = {
     "price_history_complete_as_of": None,
     "needs_price_redownload": True,
 }
+
+
+# ── Internal gap detection constants ──────────────────────────────────────
+# Number of recent trading days (from the last price date backward) in
+# which an internal calendar gap will immediately flag the ticker as
+# "missing_trading_days" and trigger a redownload.
+_INTERNAL_GAP_RECENT_WINDOW = 30
+
+# Maximum number of missing calendar dates persisted in the sample
+# (for admin/proof diagnostics).
+_MAX_MISSING_SAMPLE = 10
+
+
+async def _get_calendar_trading_dates(
+    db,
+    start_date: str,
+    end_date: str,
+    market: str = "US",
+) -> List[str]:
+    """Return sorted trading dates from market_calendar in [start_date, end_date].
+
+    Only dates with ``is_trading_day=True`` are returned.  If the calendar
+    has no rows in the range the result is empty (fail-closed).
+    """
+    docs = await db.market_calendar.find(
+        {
+            "market": market,
+            "is_trading_day": True,
+            "date": {"$gte": start_date, "$lte": end_date},
+        },
+        {"date": 1, "_id": 0},
+    ).sort("date", 1).to_list(None)
+    return [d["date"] for d in docs]
 
 
 async def _get_bulk_processed_dates(db) -> List[str]:
@@ -271,6 +305,23 @@ async def verify_ticker_history_completeness(
     complete = len(missing_days) == 0
     status = "complete" if complete else "incomplete"
 
+    # ── 9. Internal calendar-gap check ───────────────────────────────
+    # Even when the bulk-based check passes, an internal gap may exist
+    # for trading days that were never bulk-processed (e.g. the bulk
+    # run was missing or had no data for that date).  Use the market
+    # calendar as the authoritative source of expected trading days
+    # in a recent window [anchor+1 .. last_price_date].
+    calendar_missing: List[str] = []
+    if complete and last_date and anchor:
+        calendar_missing = await _check_internal_calendar_gaps(
+            db, ticker, anchor, last_date,
+        )
+        if calendar_missing:
+            complete = False
+            status = "missing_trading_days"
+            missing_days = calendar_missing
+    # ────────────────────────────────────────────────────────────────
+
     result = _result(
         status=status,
         complete=complete,
@@ -282,7 +333,63 @@ async def verify_ticker_history_completeness(
     )
     # Attach not-in-bulk metadata so callers can trigger redownload.
     result["not_in_bulk_excluded_count"] = not_in_bulk_excluded_count
+    # Attach calendar-gap sample for diagnostics.
+    result["calendar_gap_missing_sample"] = calendar_missing[:_MAX_MISSING_SAMPLE]
     return result
+
+
+async def _check_internal_calendar_gaps(
+    db,
+    ticker: str,
+    anchor: str,
+    last_date: str,
+) -> List[str]:
+    """Check for internal gaps using the market calendar as source of truth.
+
+    For the window ``(anchor, last_date]`` (bounded to the most recent
+    ``_INTERNAL_GAP_RECENT_WINDOW`` trading days), build the expected
+    trading dates from ``market_calendar`` and verify that a
+    ``stock_prices`` row exists for each.
+
+    Returns a sorted list of missing trading-day date strings.  An empty
+    list means no internal gaps were found.
+    """
+    if not anchor or not last_date or last_date <= anchor:
+        return []
+
+    # Day after anchor (anchor itself was validated by the full-history download)
+    from datetime import timedelta
+    anchor_dt = datetime.strptime(anchor, "%Y-%m-%d")
+    start_date = (anchor_dt + timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # Bound the calendar query to a reasonable window: use at most
+    # 50 calendar days before last_date to ensure we capture at least
+    # _INTERNAL_GAP_RECENT_WINDOW trading days while keeping the query small.
+    last_dt = datetime.strptime(last_date, "%Y-%m-%d")
+    bounded_start = (last_dt - timedelta(days=50)).strftime("%Y-%m-%d")
+    effective_start = max(start_date, bounded_start)
+
+    # Get expected trading days from market calendar
+    calendar_dates = await _get_calendar_trading_dates(db, effective_start, last_date)
+    if not calendar_dates:
+        return []
+
+    # Bound to recent window to limit DB load
+    if len(calendar_dates) > _INTERNAL_GAP_RECENT_WINDOW:
+        calendar_dates = calendar_dates[-_INTERNAL_GAP_RECENT_WINDOW:]
+
+    # Fetch actual price dates for these calendar dates
+    actual_dates_set: set = set()
+    cursor = db.stock_prices.aggregate([
+        {"$match": {"ticker": ticker, "date": {"$in": calendar_dates}}},
+        {"$group": {"_id": None, "dates": {"$addToSet": "$date"}}},
+    ])
+    async for agg_doc in cursor:
+        actual_dates_set = set(agg_doc.get("dates", []))
+
+    # Compute missing
+    missing = sorted(d for d in calendar_dates if d not in actual_dates_set)
+    return missing
 
 
 def _detect_data_loss(
@@ -339,16 +446,24 @@ async def persist_ticker_completeness(
     result: Dict[str, Any],
 ) -> None:
     """Write the canonical truth fields to tracked_tickers."""
+    set_fields = {
+        "price_history_complete": result["price_history_complete"],
+        "price_history_first_date": result["price_history_first_date"],
+        "price_history_last_date": result["price_history_last_date"],
+        "price_history_missing_days_count": result["price_history_missing_days_count"],
+        "price_history_last_verified_at": result["price_history_last_verified_at"],
+        "price_history_status": result["price_history_status"],
+    }
+    # Persist missing-day sample for admin/proof diagnostics
+    cal_sample = result.get("calendar_gap_missing_sample")
+    if cal_sample:
+        set_fields["price_history_missing_days_sample"] = cal_sample
+    # If missing_trading_days status, flag for immediate redownload
+    if result.get("price_history_status") == "missing_trading_days":
+        set_fields["needs_price_redownload"] = True
     await db.tracked_tickers.update_one(
         {"ticker": ticker},
-        {"$set": {
-            "price_history_complete": result["price_history_complete"],
-            "price_history_first_date": result["price_history_first_date"],
-            "price_history_last_date": result["price_history_last_date"],
-            "price_history_missing_days_count": result["price_history_missing_days_count"],
-            "price_history_last_verified_at": result["price_history_last_verified_at"],
-            "price_history_status": result["price_history_status"],
-        }},
+        {"$set": set_fields},
     )
 
 
@@ -429,6 +544,7 @@ async def run_history_completeness_sweep(
     no_proof_count = 0
     data_lost_count = 0
     not_in_bulk_redownload_count = 0
+    calendar_gap_redownload_count = 0
     from pymongo import UpdateOne
     ops: List[Any] = []
 
@@ -513,8 +629,28 @@ async def run_history_completeness_sweep(
                     _ticker_not_in_bulk_excluded += 1
             fl = first_last_by_ticker.get(ticker, {})
             complete = len(missing) == 0
+
+            # ── Internal calendar-gap check (sweep path) ─────────────
+            # Even when the bulk-based check passes, verify that the
+            # market calendar has no unaccounted-for trading days without
+            # a stock_prices row.  This catches the CEV.US scenario where
+            # a trading day (e.g. 2026-04-15) was never bulk-processed
+            # but IS a real trading day.
+            cal_gap_missing: List[str] = []
+            if complete and fl.get("last_date") and anchor:
+                cal_gap_missing = await _check_internal_calendar_gaps(
+                    db, ticker, anchor, fl["last_date"],
+                )
+                if cal_gap_missing:
+                    complete = False
+                    missing = cal_gap_missing
+            # ─────────────────────────────────────────────────────────
+
+            _status = "complete" if complete else (
+                "missing_trading_days" if cal_gap_missing else "incomplete"
+            )
             result = _result(
-                status="complete" if complete else "incomplete",
+                status=_status,
                 complete=complete,
                 first_date=fl.get("first_date"),
                 last_date=fl.get("last_date"),
@@ -559,6 +695,28 @@ async def run_history_completeness_sweep(
                         ticker,
                         _ticker_not_in_bulk_excluded,
                     )
+            # ── Calendar-gap redownload trigger ───────────────────────
+            # If the internal calendar-gap check found missing trading
+            # days, immediately flag for redownload so Phase C can
+            # backfill the gap.  Also persist a sample of the missing
+            # dates for admin/proof diagnostics.
+            if result.get("price_history_status") == "missing_trading_days":
+                _cal_missing = result.get("price_history_missing_days", [])
+                set_fields["needs_price_redownload"] = True
+                set_fields["price_history_missing_days_sample"] = (
+                    _cal_missing[:_MAX_MISSING_SAMPLE]
+                )
+                calendar_gap_redownload_count += 1
+                if calendar_gap_redownload_count <= 20:
+                    logger.warning(
+                        "[history_completeness_sweep] %s: %d internal "
+                        "calendar-gap missing trading day(s) — "
+                        "flagging needs_price_redownload=True. "
+                        "Sample: %s",
+                        ticker,
+                        len(_cal_missing),
+                        _cal_missing[:5],
+                    )
             ops.append(UpdateOne({"ticker": ticker}, {"$set": set_fields}))
 
         if progress_cb and (i + 1) % 500 == 0:
@@ -579,6 +737,7 @@ async def run_history_completeness_sweep(
         "no_proof": no_proof_count,
         "data_lost": data_lost_count,
         "not_in_bulk_redownload": not_in_bulk_redownload_count,
+        "calendar_gap_redownload": calendar_gap_redownload_count,
         "expected_bulk_dates_count": len(expected_dates),
         "duration_seconds": round(duration_s, 2),
         "verified_at": now.isoformat() + "Z",
@@ -600,9 +759,10 @@ async def run_history_completeness_sweep(
     logger.info(
         "[history_completeness_sweep] Done: %d total, %d complete, "
         "%d incomplete, %d no_proof, %d data_lost, "
-        "%d not_in_bulk_redownload, %.1fs",
+        "%d not_in_bulk_redownload, %d calendar_gap_redownload, %.1fs",
         total, complete_count, incomplete_count, no_proof_count,
-        data_lost_count, not_in_bulk_redownload_count, duration_s,
+        data_lost_count, not_in_bulk_redownload_count,
+        calendar_gap_redownload_count, duration_s,
     )
 
     return summary
