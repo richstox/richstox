@@ -183,10 +183,28 @@ interface TTMData {
 
 interface DividendData {
   annual_dividends: { year: number; total: number; is_partial: boolean }[];
-  recent_payments: { ex_date: string; amount: number }[];
+  recent_payments: {
+    ex_date: string;
+    amount: number;
+    payment_date?: string | null;
+    is_special?: boolean;
+    is_irregular?: boolean;
+    dividend_type?: string | null;
+    event_type_label?: string | null;
+  }[];
   yoy_growth: number | null;
   status: string;
 }
+
+type DividendEvent = {
+  ex_date: string;
+  amount: number;
+  payment_date?: string | null;
+  is_special?: boolean;
+  is_irregular?: boolean;
+  dividend_type?: string | null;
+  event_type_label?: string | null;
+};
 
 const round4 = (value: number): number => Number(value.toFixed(4));
 const parseDividendExDateMs = (exDate: string): number | null => {
@@ -404,11 +422,10 @@ export default function StockDetail() {
   const chartWRef = useRef(0);
   
   // Dividends state
-  const [dividendPayments, setDividendPayments] = useState<{ex_date: string; amount: number}[]>([]);
-  const [dividendHistory, setDividendHistory] = useState<{ex_date: string; amount: number}[]>([]);
+  const [dividendPayments, setDividendPayments] = useState<DividendEvent[]>([]);
+  const [dividendHistory, setDividendHistory] = useState<DividendEvent[]>([]);
   const [dividendViewMode, setDividendViewMode] = useState<'payments' | 'annual'>('payments');
   const [dividendAnnualMode, setDividendAnnualMode] = useState<'usd' | 'pct'>('usd');
-  const [selectedDividendPeriod, setSelectedDividendPeriod] = useState<string>('TTM');
   
   // Financials period toggle - handled internally by FinancialHub component
   
@@ -525,14 +542,33 @@ export default function StockDetail() {
       const response = await axios.get(`${API_URL}/api/dividends/${ticker}`);
       const recentPaymentsRaw = Array.isArray(response.data?.recent_payments) ? response.data.recent_payments : [];
       const historyRaw = Array.isArray(response.data?.history) ? response.data.history : [];
+      const resolveDividendType = (row: any): string | null => {
+        if (typeof row?.dividend_type === 'string') return row.dividend_type;
+        if (typeof row?.type === 'string') return row.type;
+        return null;
+      };
 
-      const normalize = (rows: any[]) =>
+      const normalize = (rows: any[]): DividendEvent[] =>
         rows
           .map((d) => {
             const amount = typeof d?.amount === 'number' ? d.amount : Number(d?.amount);
+            const paymentDateRaw = d?.payment_date ?? d?.paymentDate ?? null;
+            const dividendTypeRaw = resolveDividendType(d);
+            const isSpecial = d?.is_special === true
+              || d?.special === true
+              || (typeof dividendTypeRaw === 'string' && dividendTypeRaw.toLowerCase().includes('special'));
+            const isIrregular = d?.is_irregular === true
+              || d?.irregular === true
+              || (typeof dividendTypeRaw === 'string' && dividendTypeRaw.toLowerCase().includes('irregular'));
+            const eventTypeLabel = isSpecial ? 'Special dividend' : isIrregular ? 'Irregular dividend' : null;
             return {
               ex_date: typeof d?.ex_date === 'string' ? d.ex_date : '',
               amount,
+              payment_date: typeof paymentDateRaw === 'string' && paymentDateRaw ? paymentDateRaw : null,
+              dividend_type: dividendTypeRaw,
+              is_special: isSpecial,
+              is_irregular: isIrregular,
+              event_type_label: eventTypeLabel,
             };
           })
           .filter((d) => d.ex_date && Number.isFinite(d.amount))
@@ -1006,6 +1042,17 @@ export default function StockDetail() {
     return `${dd}/${mm}/${yyyy}`;
   };
 
+  const formatDividendDate = (dateStr: string | null | undefined): string => {
+    if (!dateStr) return 'Unknown';
+    const formatted = formatDateDMY(dateStr);
+    return formatted === 'N/A' ? 'Unknown' : formatted;
+  };
+
+  const formatDividendAmount = (value: number | null | undefined): string => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return 'N/A';
+    return `$${toEU(value, 2)}`;
+  };
+
   type AnnualDividendPeriod = {
     key: string;
     label: string;
@@ -1066,13 +1113,6 @@ export default function StockDetail() {
 
   const hasAnnualDividendData = annualDividendPeriods.length > 0 && annualDividendPeriods.some((p) => p.total > 0);
 
-  useEffect(() => {
-    if (!annualDividendPeriods.length) return;
-    if (!annualDividendPeriods.some((p) => p.key === selectedDividendPeriod)) {
-      setSelectedDividendPeriod(annualDividendPeriods[0].key);
-    }
-  }, [annualDividendPeriods, selectedDividendPeriod]);
-
   const getAnnualYoyDisplay = (current: number | null, previous: number | null) => {
     if (current === null || previous === null) return { label: '—', tone: 'neutral' as const };
     if (current === 0 && previous === 0) return { label: '—', tone: 'neutral' as const };
@@ -1087,20 +1127,31 @@ export default function StockDetail() {
     };
   };
 
-  const selectedAnnualDividendPeriod = useMemo(
-    () => annualDividendPeriods.find((p) => p.key === selectedDividendPeriod) || annualDividendPeriods[0] || null,
-    [annualDividendPeriods, selectedDividendPeriod]
-  );
-
-  const selectedAnnualDividendYoy = selectedAnnualDividendPeriod
-    ? getAnnualYoyDisplay(selectedAnnualDividendPeriod.total, selectedAnnualDividendPeriod.previousTotal)
-    : { label: '—', tone: 'neutral' as const };
-
   const getDividendToneStyle = (tone: 'positive' | 'negative' | 'neutral') => {
     if (tone === 'positive') return styles.dividendValuePositive;
     if (tone === 'negative') return styles.dividendValueNegative;
     return styles.dividendValueNeutral;
   };
+
+  const nextDividendEvent = useMemo(() => {
+    const now = new Date();
+    const todayStartMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    const upcoming = dividendHistory
+      .map((event) => ({ event, exDateMs: parseDividendExDateMs(event.ex_date) }))
+      .filter((entry): entry is { event: DividendEvent; exDateMs: number } => entry.exDateMs !== null && entry.exDateMs >= todayStartMs)
+      .sort((a, b) => a.exDateMs - b.exDateMs);
+    return upcoming.length > 0 ? upcoming[0].event : null;
+  }, [dividendHistory]);
+
+  const paymentItems = useMemo(() => {
+    const seenKeys = new Map<string, number>();
+    return dividendPayments.slice(0, 10).map((event) => {
+      const occurrenceCount = seenKeys.get(event.ex_date) || 0;
+      seenKeys.set(event.ex_date, occurrenceCount + 1);
+      const key = occurrenceCount === 0 ? event.ex_date : `${event.ex_date}-${occurrenceCount + 1}`;
+      return { key, event };
+    });
+  }, [dividendPayments]);
 
   const getMarketCapLabel = (cap: number | null | undefined) => {
     if (!cap) return 'N/A';
@@ -3331,9 +3382,39 @@ export default function StockDetail() {
                   <Text style={styles.noDataText}>No earnings data available</Text>
                 </View>
               )}
-              
+               
               {/* Dividends - always show from canonical source (dividend_history) */}
-              <Text style={[styles.subsectionTitle, { marginTop: 16 }]}>Dividends</Text>
+              <Text style={styles.dividendsSubsectionTitle}>Dividends</Text>
+              <View style={styles.nextDividendCard}>
+                <View style={styles.nextDividendHeader}>
+                  <Text style={styles.nextDividendTitle}>Next dividend</Text>
+                  {nextDividendEvent?.event_type_label && (
+                    <View style={styles.dividendEventTag}>
+                      <Text style={styles.dividendEventTagText}>{nextDividendEvent.event_type_label}</Text>
+                    </View>
+                  )}
+                </View>
+                {nextDividendEvent ? (
+                  <View style={styles.nextDividendGrid}>
+                    <View style={styles.nextDividendMetric}>
+                      <Text style={styles.nextDividendMetricLabel}>Next ex-date</Text>
+                      <Text style={styles.nextDividendMetricValue}>{formatDividendDate(nextDividendEvent.ex_date)}</Text>
+                    </View>
+                    <View style={styles.nextDividendMetric}>
+                      <Text style={styles.nextDividendMetricLabel}>Next payment</Text>
+                      <Text style={styles.nextDividendMetricValue}>{formatDividendDate(nextDividendEvent.payment_date)}</Text>
+                    </View>
+                    <View style={styles.nextDividendMetric}>
+                      <Text style={styles.nextDividendMetricLabel}>Next amount</Text>
+                      <Text style={styles.nextDividendMetricValue}>{formatDividendAmount(nextDividendEvent.amount)}</Text>
+                    </View>
+                  </View>
+                ) : (
+                  <Text style={styles.nextDividendEmptyText}>
+                    No upcoming dividend information available.
+                  </Text>
+                )}
+              </View>
               <View style={styles.dividendViewSwitch}>
                 <TouchableOpacity
                   style={[styles.dividendViewButton, dividendViewMode === 'payments' && styles.dividendViewButtonActive]}
@@ -3356,10 +3437,18 @@ export default function StockDetail() {
               {dividendViewMode === 'payments' ? (
                 dividendPayments && dividendPayments.length > 0 ? (
                   <View style={styles.dividendsList}>
-                    {dividendPayments.slice(0, 4).map((d, i) => (
-                      <View key={i} style={styles.dividendRow}>
-                        <Text style={styles.dividendDate}>{formatDateDMY(d.ex_date)}</Text>
-                        <Text style={styles.dividendAmount}>${toEU(d.amount, 4)}</Text>
+                    {paymentItems.map(({ key, event: d }) => (
+                      <View key={key} style={styles.dividendPaymentItem}>
+                        <View style={styles.dividendPaymentTopRow}>
+                          <Text style={styles.dividendAmount}>{formatDividendAmount(d.amount)}</Text>
+                          {d.event_type_label && (
+                            <View style={styles.dividendEventTag}>
+                              <Text style={styles.dividendEventTagText}>{d.event_type_label}</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.dividendDateDetail}>Ex-date: {formatDividendDate(d.ex_date)}</Text>
+                        <Text style={styles.dividendDateDetail}>Payment: {formatDividendDate(d.payment_date)}</Text>
                       </View>
                     ))}
                   </View>
@@ -3391,48 +3480,33 @@ export default function StockDetail() {
 
                   {hasAnnualDividendData ? (
                     <>
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dividendPeriodsRow}>
+                      <View style={styles.dividendAnnualList}>
                         {annualDividendPeriods.map((period) => {
                           const yoy = getAnnualYoyDisplay(period.total, period.previousTotal);
-                          const isSelected = selectedAnnualDividendPeriod?.key === period.key;
-                          const valueLabel = dividendAnnualMode === 'usd'
-                            ? `$${toEU(period.total, 4)}`
-                            : yoy.label;
+                          const valueLabel = dividendAnnualMode === 'usd' ? formatDividendAmount(period.total) : yoy.label;
+                          const helperLabel = dividendAnnualMode === 'usd'
+                            ? `YoY: ${yoy.label}`
+                            : `Dividend / Share: ${formatDividendAmount(period.total)}`;
                           return (
-                            <TouchableOpacity
+                            <View
                               key={period.key}
-                              style={[styles.dividendPeriodPill, isSelected && styles.dividendPeriodPillActive]}
-                              onPress={() => setSelectedDividendPeriod(period.key)}
+                              style={styles.dividendAnnualItem}
                             >
-                              <Text style={[styles.dividendPeriodLabel, isSelected && styles.dividendPeriodLabelActive]}>{period.label}</Text>
+                              <View style={[styles.dividendTrendBar, getDividendToneStyle(yoy.tone)]} />
+                              <View style={styles.dividendAnnualItemBody}>
+                                <Text style={styles.dividendAnnualPeriodLabel}>{period.label}</Text>
+                                <Text style={styles.dividendAnnualHelperText}>{helperLabel}</Text>
+                              </View>
                               <Text style={[
-                                styles.dividendPeriodValue,
-                                dividendAnnualMode === 'pct' ? getDividendToneStyle(yoy.tone) : styles.dividendValueNeutral,
+                                styles.dividendAnnualPrimaryValue,
+                                dividendAnnualMode === 'pct' ? getDividendToneStyle(yoy.tone) : styles.dividendValueNeutral
                               ]}>
                                 {valueLabel}
                               </Text>
-                            </TouchableOpacity>
+                            </View>
                           );
                         })}
-                      </ScrollView>
-
-                      {selectedAnnualDividendPeriod && (
-                        <View style={styles.dividendAnnualTable}>
-                          <View style={styles.dividendAnnualRow}>
-                            <Text style={styles.dividendAnnualLabel}>Dividend / Share</Text>
-                            <Text style={styles.dividendAnnualValue}>${toEU(selectedAnnualDividendPeriod.total, 4)}</Text>
-                          </View>
-                          <View style={styles.dividendAnnualRow}>
-                            <Text style={styles.dividendAnnualLabel}>YoY</Text>
-                            <Text style={[
-                              styles.dividendAnnualValue,
-                              getDividendToneStyle(selectedAnnualDividendYoy.tone),
-                            ]}>
-                              {selectedAnnualDividendYoy.label}
-                            </Text>
-                          </View>
-                        </View>
-                      )}
+                      </View>
                     </>
                   ) : (
                     <View style={styles.noDataPlaceholder}>
@@ -3935,6 +4009,7 @@ const styles = StyleSheet.create({
   descriptionCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, marginBottom: 12 },
   sectionTitle: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginBottom: 10 },
   subsectionTitle: { fontSize: 13, fontWeight: '600', color: COLORS.textMuted, marginBottom: 8 },
+  dividendsSubsectionTitle: { fontSize: 15, fontWeight: '700', color: COLORS.text, marginTop: 16, marginBottom: 10 },
   descriptionText: { fontSize: 14, color: COLORS.textLight, lineHeight: 20 },
   showMoreText: { fontSize: 13, color: COLORS.accent, marginTop: 8, fontWeight: '500' },
   
@@ -3978,10 +4053,21 @@ const styles = StyleSheet.create({
   noDataText: { fontSize: 14, color: COLORS.textMuted, textAlign: 'center' },
   
   // P4: Dividends list
-  dividendsList: { marginTop: 8 },
-  dividendRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  dividendDate: { fontSize: 13, color: COLORS.textMuted },
-  dividendAmount: { fontSize: 13, fontWeight: '600', color: COLORS.text },
+  nextDividendCard: { borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, backgroundColor: COLORS.background, padding: 10, marginBottom: 8 },
+  nextDividendHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  nextDividendTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  nextDividendGrid: { gap: 8 },
+  nextDividendMetric: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  nextDividendMetricLabel: { fontSize: 12, color: COLORS.textMuted },
+  nextDividendMetricValue: { fontSize: 12, fontWeight: '600', color: COLORS.text },
+  nextDividendEmptyText: { fontSize: 12, color: COLORS.textMuted, lineHeight: 18 },
+  dividendEventTag: { borderWidth: 1, borderColor: '#FECACA', backgroundColor: '#FEF2F2', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
+  dividendEventTagText: { fontSize: 11, fontWeight: '700', color: '#7F1D1D' },
+  dividendsList: { marginTop: 4, gap: 8 },
+  dividendPaymentItem: { borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, backgroundColor: COLORS.card, paddingVertical: 10, paddingHorizontal: 12 },
+  dividendPaymentTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  dividendAmount: { fontSize: 14, fontWeight: '700', color: COLORS.text },
+  dividendDateDetail: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
   dividendViewSwitch: { flexDirection: 'row', backgroundColor: '#F3F4F6', borderRadius: 8, padding: 3, marginTop: 8, marginBottom: 8, alignSelf: 'flex-start' },
   dividendViewButton: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
   dividendViewButtonActive: { backgroundColor: '#FFFFFF' },
@@ -3993,16 +4079,13 @@ const styles = StyleSheet.create({
   dividendAnnualModeButtonActive: { backgroundColor: COLORS.primary },
   dividendAnnualModeText: { fontSize: 11, color: COLORS.textMuted, fontWeight: '600' },
   dividendAnnualModeTextActive: { color: '#FFFFFF' },
-  dividendPeriodsRow: { gap: 8, paddingBottom: 4 },
-  dividendPeriodPill: { minWidth: 84, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 10, paddingVertical: 8 },
-  dividendPeriodPillActive: { borderColor: COLORS.primary, backgroundColor: '#EFF6FF' },
-  dividendPeriodLabel: { fontSize: 11, color: COLORS.textMuted, fontWeight: '600', marginBottom: 2 },
-  dividendPeriodLabelActive: { color: COLORS.primary },
-  dividendPeriodValue: { fontSize: 12, fontWeight: '700' },
-  dividendAnnualTable: { marginTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
-  dividendAnnualRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  dividendAnnualLabel: { fontSize: 12, color: COLORS.textMuted },
-  dividendAnnualValue: { fontSize: 13, fontWeight: '600', color: COLORS.text },
+  dividendAnnualList: { gap: 8, marginTop: 2 },
+  dividendAnnualItem: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, backgroundColor: COLORS.card, paddingVertical: 9, paddingHorizontal: 10, gap: 10 },
+  dividendTrendBar: { width: 4, borderRadius: 3, alignSelf: 'stretch' },
+  dividendAnnualItemBody: { flex: 1 },
+  dividendAnnualPeriodLabel: { fontSize: 12, fontWeight: '700', color: COLORS.text, marginBottom: 2 },
+  dividendAnnualHelperText: { fontSize: 11, color: COLORS.textMuted },
+  dividendAnnualPrimaryValue: { fontSize: 13, fontWeight: '700' },
   dividendValuePositive: { color: '#10B981' },
   dividendValueNegative: { color: '#EF4444' },
   dividendValueNeutral: { color: COLORS.textMuted },
