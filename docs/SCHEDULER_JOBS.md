@@ -12,12 +12,13 @@
 | 3 | **Fundamentals Sync** | Mon-Sat | after Step 2 | `/fundamentals/{TICKER}.US` | 0-50 | `price_sync completed today` |
 | 4 | SP500TR Update | Mon-Sat | 04:15 | `/eod/SP500TR.INDX` | 1 | `not run today` |
 | 5 | Backfill Gaps | Mon-Sat | 04:45 | `/eod/{TICKER}.US` | 0-50 | `tickers with gaps exist` |
-| 6 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `tickers without full history` |
-| 7 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 8 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 9 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
-| 10 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
-| 11 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
+| 6 | Upcoming Dividend Calendar | Mon-Sat | 04:50 | `/calendar/dividends?from=..&to=..` | 1 | `not run today` |
+| 7 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `tickers without full history` |
+| 8 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 9 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 10 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
+| 11 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
+| 12 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
 
 ## Configuration Constants
 
@@ -32,6 +33,8 @@ FUNDAMENTALS_SYNC_HOUR = 4   # legacy; fundamentals uses dependency chain
 FUNDAMENTALS_SYNC_MINUTE = 30 # legacy; fundamentals uses dependency chain
 BACKFILL_HOUR = 4
 BACKFILL_MINUTE = 45
+UPCOMING_DIVIDEND_CALENDAR_HOUR = 4
+UPCOMING_DIVIDEND_CALENDAR_MINUTE = 50
 BACKFILL_ALL_HOUR = 5
 BACKFILL_ALL_MINUTE = 0
 NEWS_REFRESH_HOUR = 13
@@ -92,26 +95,33 @@ ADMIN_REPORT_MINUTE = 0
 - **Cost**: 0-50 API calls/day
 - **Condition**: Only runs if tickers have detected price gaps
 
-### 7. Backfill All (Mon-Sat 05:00)
+### 7. Upcoming Dividend Calendar (Mon-Sat 04:50)
+- **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_dividend_calendar_for_visible_tickers()`
+- **Purpose**: Fetch date-window upcoming ex-dividend events (today..+90d) and persist per ticker for UI next-dividend display
+- **API**: `GET https://eodhd.com/api/calendar/dividends?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- **Cost**: 1 API call/day
+- **Persistence**: `upcoming_dividends` collection with one document per visible ticker (upsert/null-safe)
+
+### 8. Backfill All (Mon-Sat 05:00)
 - **File**: `/app/backend/parallel_batch_service.py` → `run_scheduled_backfill_all_prices()`
 - **Purpose**: Full parallel price backfill for tickers without complete history
 - **API**: `GET https://eodhd.com/api/eod/{TICKER}.US`
 - **Cost**: 0-N API calls/day (0 after all tickers backfilled)
 - **Safety**: Rate-limit backoff >30s, error rate >5%, max 4 hours runtime
 
-### 8. Key Metrics (Mon-Sat 05:00)
+### 9. Key Metrics (Mon-Sat 05:00)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Compute per-ticker metrics (52w high/low, etc.)
 - **API**: None (DB-only computation)
 - **Cost**: 0 API calls
 
-### 9. Peer Medians (Mon-Sat 05:30)
+### 10. Peer Medians (Mon-Sat 05:30)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Compute peer/sector median values
 - **API**: None (DB-only computation)
 - **Cost**: 0 API calls
 
-### 10. PAIN Cache (Mon-Sat 05:00)
+### 11. PAIN Cache (Mon-Sat 05:00)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Refresh max drawdown cache
 - **API**: None (DB-only computation)

@@ -15,7 +15,7 @@ describe('Dividends UX regression', () => {
 
   it('labels payment list dates explicitly', () => {
     expect(fileContent).toContain('Ex-date:');
-    expect(fileContent).toContain('Payment:');
+    expect(fileContent).toContain('Payment date:');
   });
 
   it('has upcoming dividend empty-state copy', () => {
@@ -30,6 +30,21 @@ describe('Dividends UX regression', () => {
   it('classifies special/irregular dividend tags from canonical event fields', () => {
     expect(fileContent).toContain("eventTypeLabel = isSpecial ? 'Special dividend' : isIrregular ? 'Irregular dividend' : null");
     expect(fileContent).toContain('event_type_label: eventTypeLabel');
+  });
+
+  it('shows frequency and currency pills', () => {
+    expect(fileContent).toContain('Frequency');
+    expect(fileContent).toContain('Currency');
+  });
+
+  it('marks partial year neutrally in annual view', () => {
+    expect(fileContent).toContain("if (isPartial) return { label: 'Partial', tone: 'neutral' as const, helper: 'Partial year' }");
+    expect(fileContent).toContain("'Partial year'");
+  });
+
+  it('renders payment-to-payment growth copy', () => {
+    expect(fileContent).toContain("'Growth: not comparable'");
+    expect(fileContent).toContain("'Growth: flat'");
   });
 });
 

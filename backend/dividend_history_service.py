@@ -23,12 +23,98 @@ import os
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
+from collections import Counter
+from statistics import median, pstdev
 import httpx
+from pymongo import UpdateOne
 
 logger = logging.getLogger("richstox.dividends")
 
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
+UPCOMING_DIVIDEND_SOURCE = "eodhd_dividend_calendar"
+UPCOMING_DIVIDEND_WINDOW_DAYS = 90
+
+_FREQUENCY_MAP = {
+    "m": "Monthly",
+    "month": "Monthly",
+    "monthly": "Monthly",
+    "q": "Quarterly",
+    "quarter": "Quarterly",
+    "quarterly": "Quarterly",
+    "s": "Semiannual",
+    "semiannual": "Semiannual",
+    "semi-annual": "Semiannual",
+    "biannual": "Semiannual",
+    "half-year": "Semiannual",
+    "half yearly": "Semiannual",
+    "irregular": "Irregular",
+    "special": "Special",
+}
+
+
+def _parse_date_ymd(value: Any) -> Optional[str]:
+    if not value or not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    if len(raw) >= 10:
+        raw = raw[:10]
+    try:
+        datetime.strptime(raw, "%Y-%m-%d")
+        return raw
+    except ValueError:
+        return None
+
+
+def _normalize_ticker_symbol(value: Any) -> Optional[str]:
+    if not value or not isinstance(value, str):
+        return None
+    symbol = value.strip().upper()
+    if not symbol:
+        return None
+    return symbol if "." in symbol else f"{symbol}.US"
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not (parsed > 0):
+        return None
+    return round(parsed, 6)
+
+
+def _normalize_frequency_label(raw: Any) -> Optional[str]:
+    if not raw or not isinstance(raw, str):
+        return None
+    normalized = raw.strip().lower().replace("_", " ").replace("-", " ")
+    normalized = " ".join(normalized.split())
+    if normalized in _FREQUENCY_MAP:
+        return _FREQUENCY_MAP[normalized]
+    if "quarter" in normalized:
+        return "Quarterly"
+    if "semi" in normalized or "biannual" in normalized or "half" in normalized:
+        return "Semiannual"
+    if "month" in normalized:
+        return "Monthly"
+    if "irregular" in normalized:
+        return "Irregular"
+    if "special" in normalized:
+        return "Special"
+    return None
+
+
+def _event_flags(div: Dict[str, Any]) -> tuple[bool, bool]:
+    div_type = str(div.get("dividend_type") or div.get("type") or "").lower()
+    period = str(div.get("period") or div.get("frequency") or "").lower()
+    is_special = bool(div.get("is_special")) or "special" in div_type or "special" in period
+    is_irregular = bool(div.get("is_irregular")) or "irregular" in div_type or "irregular" in period
+    return is_special, is_irregular
 
 
 async def fetch_dividends_from_eodhd(ticker: str, from_date: str = None) -> List[Dict[str, Any]]:
@@ -88,23 +174,37 @@ def parse_dividend_records(ticker: str, dividends: List[Dict]) -> List[Dict[str,
     
     records = []
     for div in dividends:
-        ex_date = div.get("date")
+        ex_date = _parse_date_ymd(div.get("date") or div.get("exDate") or div.get("ex_date"))
         if not ex_date:
             continue
-        
-        amount = div.get("value") or div.get("dividend") or 0
-        if amount <= 0:
+
+        amount = _safe_float(div.get("value") or div.get("dividend") or div.get("amount"))
+        if amount is None:
             continue
-        
+        period_raw = div.get("period") or div.get("frequency")
+        type_raw = div.get("type") or div.get("dividend_type")
+        frequency_label = _normalize_frequency_label(period_raw) or _normalize_frequency_label(type_raw)
+        is_special, is_irregular = _event_flags({
+            "period": period_raw,
+            "dividend_type": type_raw,
+            "is_special": div.get("is_special"),
+            "is_irregular": div.get("is_irregular"),
+        })
+
         records.append({
             "ticker": ticker_full,
             "ex_date": ex_date,
-            "payment_date": div.get("paymentDate"),
-            "record_date": div.get("recordDate"),
-            "declaration_date": div.get("declarationDate"),
+            "payment_date": _parse_date_ymd(div.get("paymentDate") or div.get("payment_date") or div.get("payDate")),
+            "record_date": _parse_date_ymd(div.get("recordDate") or div.get("record_date")),
+            "declaration_date": _parse_date_ymd(div.get("declarationDate") or div.get("declaration_date")),
             "amount": amount,
             "unadjusted_amount": div.get("unadjustedValue"),
-            "currency": div.get("currency", "USD"),
+            "currency": (div.get("currency") or "USD"),
+            "period": period_raw,
+            "dividend_type": type_raw,
+            "frequency_label": frequency_label,
+            "is_special": is_special,
+            "is_irregular": is_irregular,
             "created_at": now,
         })
     
@@ -247,6 +347,257 @@ async def calculate_dividend_yield_ttm(db, ticker: str, current_price: float) ->
     return round(dividend_yield_ttm, 4)
 
 
+def _detect_dividend_frequency(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    lookback_start = now - timedelta(days=365)
+
+    enriched = []
+    for event in events:
+        ex_date = _parse_date_ymd(event.get("ex_date"))
+        if not ex_date:
+            continue
+        ex_dt = datetime.strptime(ex_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        if ex_dt < lookback_start or ex_dt > now + timedelta(days=1):
+            continue
+        is_special, is_irregular = _event_flags(event)
+        enriched.append({
+            **event,
+            "ex_date": ex_date,
+            "ex_dt": ex_dt,
+            "is_special": is_special,
+            "is_irregular": is_irregular,
+        })
+
+    has_special = any(e["is_special"] for e in enriched)
+    has_irregular = any(e["is_irregular"] for e in enriched)
+    regular_events = [e for e in enriched if not e["is_special"] and not e["is_irregular"]]
+
+    if len(regular_events) == 0:
+        if has_special and not has_irregular:
+            return {"label": "Special", "source": "event_flags", "has_special": True, "has_irregular": False}
+        if has_irregular:
+            return {"label": "Irregular", "source": "event_flags", "has_special": has_special, "has_irregular": True}
+        return {"label": "Irregular", "source": "insufficient_data", "has_special": False, "has_irregular": False}
+
+    provider_labels = []
+    for event in regular_events:
+        provider_label = (
+            _normalize_frequency_label(event.get("frequency_label"))
+            or _normalize_frequency_label(event.get("period"))
+            or _normalize_frequency_label(event.get("dividend_type"))
+            or _normalize_frequency_label(event.get("frequency"))
+            or _normalize_frequency_label(event.get("type"))
+        )
+        if provider_label in {"Monthly", "Quarterly", "Semiannual"}:
+            provider_labels.append(provider_label)
+
+    if provider_labels:
+        counts = Counter(provider_labels)
+        top_label, top_count = counts.most_common(1)[0]
+        if top_count >= 2 and top_count / len(provider_labels) >= 0.6:
+            return {
+                "label": top_label,
+                "source": "provider_metadata",
+                "has_special": has_special,
+                "has_irregular": has_irregular,
+            }
+
+    if len(regular_events) < 2:
+        return {
+            "label": "Irregular",
+            "source": "insufficient_data",
+            "has_special": has_special,
+            "has_irregular": has_irregular,
+        }
+
+    regular_sorted = sorted(regular_events, key=lambda x: x["ex_dt"])
+    intervals = []
+    for idx in range(1, len(regular_sorted)):
+        diff = (regular_sorted[idx]["ex_dt"] - regular_sorted[idx - 1]["ex_dt"]).days
+        if diff > 0:
+            intervals.append(diff)
+
+    if not intervals:
+        return {
+            "label": "Irregular",
+            "source": "insufficient_data",
+            "has_special": has_special,
+            "has_irregular": has_irregular,
+        }
+
+    interval_mean = sum(intervals) / len(intervals)
+    interval_median = median(intervals)
+    interval_stdev = pstdev(intervals) if len(intervals) > 1 else 0.0
+    consistency_ratio = interval_stdev / interval_mean if interval_mean > 0 else 1.0
+
+    expected = {
+        "Monthly": 30.4,
+        "Quarterly": 91.3,
+        "Semiannual": 182.6,
+    }
+    best_label = min(expected.keys(), key=lambda k: abs(interval_median - expected[k]))
+    relative_error = abs(interval_median - expected[best_label]) / expected[best_label]
+
+    if consistency_ratio <= 0.35 and relative_error <= 0.35:
+        return {
+            "label": best_label,
+            "source": "inferred",
+            "has_special": has_special,
+            "has_irregular": has_irregular,
+        }
+
+    return {
+        "label": "Irregular",
+        "source": "inferred",
+        "has_special": has_special,
+        "has_irregular": True if has_irregular else False,
+    }
+
+
+def _select_next_upcoming_event(events: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    candidates = []
+    for row in events:
+        ex_date = _parse_date_ymd(row.get("next_ex_date") or row.get("ex_date") or row.get("exDate") or row.get("date"))
+        if not ex_date or ex_date < today:
+            continue
+        amount = _safe_float(row.get("next_dividend_amount") or row.get("dividend") or row.get("amount") or row.get("value"))
+        event = {
+            "next_ex_date": ex_date,
+            "next_pay_date": _parse_date_ymd(row.get("next_pay_date") or row.get("paymentDate") or row.get("payment_date") or row.get("payDate")),
+            "next_dividend_amount": amount,
+            "next_dividend_currency": row.get("next_dividend_currency") or row.get("currency"),
+            "dividend_type": row.get("type") or row.get("dividend_type"),
+            "period": row.get("period") or row.get("frequency"),
+        }
+        is_special, is_irregular = _event_flags(event)
+        event["is_special"] = is_special
+        event["is_irregular"] = is_irregular
+        event["event_type_label"] = "Special dividend" if is_special else ("Irregular dividend" if is_irregular else None)
+        candidates.append(event)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda e: e["next_ex_date"])
+    return candidates[0]
+
+
+async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, Any]:
+    if not EODHD_API_KEY:
+        logger.error("[dividend_upcoming_calendar] EODHD_API_KEY not configured")
+        return {"success": False, "error": "EODHD_API_KEY not configured"}
+
+    now = datetime.now(timezone.utc)
+    window_start = now.strftime("%Y-%m-%d")
+    window_end = (now + timedelta(days=UPCOMING_DIVIDEND_WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+    visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
+    visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
+
+    await db.upcoming_dividends.create_index([("ticker", 1)], unique=True, name="upcoming_dividends_ticker_unique")
+    await db.upcoming_dividends.create_index([("next_ex_date", 1)], name="upcoming_dividends_next_ex_date")
+
+    url = f"{EODHD_BASE_URL}/calendar/dividends"
+    params = {
+        "api_token": EODHD_API_KEY,
+        "fmt": "json",
+        "from": window_start,
+        "to": window_end,
+    }
+
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+    if isinstance(payload, dict):
+        rows = payload.get("dividends") or payload.get("data") or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = _normalize_ticker_symbol(
+            row.get("Code")
+            or row.get("code")
+            or row.get("symbol")
+            or row.get("ticker")
+        )
+        if not ticker:
+            continue
+        if visible_tickers and ticker not in visible_tickers:
+            continue
+        grouped.setdefault(ticker, []).append(row)
+
+    write_ops: List[UpdateOne] = []
+    for ticker, ticker_rows in grouped.items():
+        next_event = _select_next_upcoming_event(ticker_rows)
+        if not next_event:
+            continue
+        write_ops.append(
+            UpdateOne(
+                {"ticker": ticker},
+                {"$set": {
+                    "ticker": ticker,
+                    "next_ex_date": next_event["next_ex_date"],
+                    "next_pay_date": next_event.get("next_pay_date"),
+                    "next_dividend_amount": next_event.get("next_dividend_amount"),
+                    "next_dividend_currency": next_event.get("next_dividend_currency"),
+                    "dividend_type": next_event.get("dividend_type"),
+                    "period": next_event.get("period"),
+                    "is_special": bool(next_event.get("is_special")),
+                    "is_irregular": bool(next_event.get("is_irregular")),
+                    "source": UPCOMING_DIVIDEND_SOURCE,
+                    "fetched_at": now,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }},
+                upsert=True,
+            )
+        )
+
+    null_tickers = sorted(visible_tickers - set(grouped.keys()))
+    for ticker in null_tickers:
+        write_ops.append(
+            UpdateOne(
+                {"ticker": ticker},
+                {"$set": {
+                    "ticker": ticker,
+                    "next_ex_date": None,
+                    "next_pay_date": None,
+                    "next_dividend_amount": None,
+                    "next_dividend_currency": None,
+                    "dividend_type": None,
+                    "period": None,
+                    "is_special": False,
+                    "is_irregular": False,
+                    "source": UPCOMING_DIVIDEND_SOURCE,
+                    "fetched_at": now,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }},
+                upsert=True,
+            )
+        )
+
+    if write_ops:
+        await db.upcoming_dividends.bulk_write(write_ops, ordered=False)
+
+    return {
+        "success": True,
+        "source": UPCOMING_DIVIDEND_SOURCE,
+        "window_start": window_start,
+        "window_end": window_end,
+        "visible_tickers": len(visible_tickers),
+        "tickers_with_upcoming": len(grouped),
+        "tickers_without_upcoming": len(null_tickers),
+        "records_written": len(write_ops),
+    }
+
+
 async def get_dividend_history_for_ticker(
     db,
     ticker: str,
@@ -270,8 +621,9 @@ async def get_dividend_history_for_ticker(
         }
     """
     ticker_full = ticker if ticker.endswith(".US") else f"{ticker}.US"
+    now = datetime.now(timezone.utc)
     
-    from_date = (datetime.now() - timedelta(days=365 * years)).strftime("%Y-%m-%d")
+    from_date = (now - timedelta(days=365 * years)).strftime("%Y-%m-%d")
     
     # Query using $or to support both field formats
     cursor = db.dividend_history.find(
@@ -288,11 +640,28 @@ async def get_dividend_history_for_ticker(
     dividends = await cursor.to_list(length=500)
     
     if not dividends:
+        upcoming = await db.upcoming_dividends.find_one({"ticker": ticker_full}, {"_id": 0})
         return {
             "ticker": ticker_full,
             "annual_dividends": [],
             "history": [],
             "recent_payments": [],
+            "next_dividend": {
+                "next_ex_date": upcoming.get("next_ex_date") if upcoming else None,
+                "next_pay_date": upcoming.get("next_pay_date") if upcoming else None,
+                "next_dividend_amount": upcoming.get("next_dividend_amount") if upcoming else None,
+                "next_dividend_currency": upcoming.get("next_dividend_currency") if upcoming else None,
+                "event_type_label": (
+                    "Special dividend" if upcoming and upcoming.get("is_special")
+                    else ("Irregular dividend" if upcoming and upcoming.get("is_irregular") else None)
+                ),
+            },
+            "frequency": {
+                "label": "Irregular",
+                "source": "insufficient_data",
+                "has_special": False,
+                "has_irregular": False,
+            },
             "yoy_growth": None,
             "status": "no_dividends",
             "total_years": 0,
@@ -307,22 +676,53 @@ async def get_dividend_history_for_ticker(
         amount = div.get("amount") or div.get("value") or 0
         
         if div_date and amount > 0:
+            period_raw = div.get("period") or div.get("frequency")
+            type_raw = div.get("dividend_type") or div.get("type")
+            is_special, is_irregular = _event_flags({
+                "period": period_raw,
+                "dividend_type": type_raw,
+                "is_special": div.get("is_special"),
+                "is_irregular": div.get("is_irregular"),
+            })
             normalized.append({
                 "ex_date": div_date,
                 "amount": amount,
                 "payment_date": div.get("payment_date") or div.get("paymentDate"),
                 "currency": div.get("currency", "USD"),
+                "period": period_raw,
+                "dividend_type": type_raw,
+                "frequency_label": _normalize_frequency_label(div.get("frequency_label")) or _normalize_frequency_label(period_raw),
+                "is_special": is_special,
+                "is_irregular": is_irregular,
+                "event_type_label": "Special dividend" if is_special else ("Irregular dividend" if is_irregular else None),
             })
     
     # Sort by date descending
     normalized.sort(key=lambda x: x["ex_date"], reverse=True)
     
     if not normalized:
+        upcoming = await db.upcoming_dividends.find_one({"ticker": ticker_full}, {"_id": 0})
         return {
             "ticker": ticker_full,
             "annual_dividends": [],
             "history": [],
             "recent_payments": [],
+            "next_dividend": {
+                "next_ex_date": upcoming.get("next_ex_date") if upcoming else None,
+                "next_pay_date": upcoming.get("next_pay_date") if upcoming else None,
+                "next_dividend_amount": upcoming.get("next_dividend_amount") if upcoming else None,
+                "next_dividend_currency": upcoming.get("next_dividend_currency") if upcoming else None,
+                "event_type_label": (
+                    "Special dividend" if upcoming and upcoming.get("is_special")
+                    else ("Irregular dividend" if upcoming and upcoming.get("is_irregular") else None)
+                ),
+            },
+            "frequency": {
+                "label": "Irregular",
+                "source": "insufficient_data",
+                "has_special": False,
+                "has_irregular": False,
+            },
             "yoy_growth": None,
             "status": "no_dividends",
             "total_years": 0,
@@ -330,7 +730,7 @@ async def get_dividend_history_for_ticker(
     
     # Group by year
     by_year = {}
-    current_year = datetime.now().year
+    current_year = now.year
     
     for div in normalized:
         year = div["ex_date"][:4]
@@ -377,11 +777,65 @@ async def get_dividend_history_for_ticker(
     else:
         status = "stable"
     
+    frequency = _detect_dividend_frequency(normalized)
+    display_currency = None
+    for item in normalized:
+        currency = item.get("currency")
+        if isinstance(currency, str) and currency.strip():
+            display_currency = currency.strip().upper()
+            break
+
+    today = now.strftime("%Y-%m-%d")
+    upcoming_history_event = next(
+        (
+            event for event in normalized
+            if _parse_date_ymd(event.get("ex_date")) and event["ex_date"] >= today
+        ),
+        None,
+    )
+
+    upcoming = await db.upcoming_dividends.find_one({"ticker": ticker_full}, {"_id": 0})
+    next_dividend = {
+        "next_ex_date": (
+            upcoming.get("next_ex_date")
+            if upcoming and upcoming.get("next_ex_date")
+            else (upcoming_history_event.get("ex_date") if upcoming_history_event else None)
+        ),
+        "next_pay_date": (
+            upcoming.get("next_pay_date")
+            if upcoming and upcoming.get("next_pay_date")
+            else (upcoming_history_event.get("payment_date") if upcoming_history_event else None)
+        ),
+        "next_dividend_amount": (
+            upcoming.get("next_dividend_amount")
+            if upcoming and upcoming.get("next_dividend_amount") is not None
+            else (upcoming_history_event.get("amount") if upcoming_history_event else None)
+        ),
+        "next_dividend_currency": (
+            upcoming.get("next_dividend_currency")
+            if upcoming and upcoming.get("next_dividend_currency")
+            else (upcoming_history_event.get("currency") if upcoming_history_event else display_currency)
+        ),
+        "event_type_label": (
+            "Special dividend" if upcoming and upcoming.get("is_special")
+            else ("Irregular dividend" if upcoming and upcoming.get("is_irregular") else (
+                upcoming_history_event.get("event_type_label") if upcoming_history_event else None
+            ))
+        ),
+        "source": upcoming.get("source") if upcoming else ("dividend_history" if upcoming_history_event else None),
+        "fetched_at": upcoming.get("fetched_at") if upcoming else None,
+        "window_start": upcoming.get("window_start") if upcoming else None,
+        "window_end": upcoming.get("window_end") if upcoming else None,
+    }
+
     return {
         "ticker": ticker_full,
         "annual_dividends": annual_dividends,
         "history": normalized,
-        "recent_payments": normalized[:8],  # Last 8 payments
+        "recent_payments": normalized[:10],  # Last 10 payments
+        "next_dividend": next_dividend,
+        "frequency": frequency,
+        "display_currency": display_currency,
         "yoy_growth": yoy_growth,
         "status": status,
         "total_years": len(annual_dividends),

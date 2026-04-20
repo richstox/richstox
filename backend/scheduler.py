@@ -30,6 +30,7 @@
 # 4. NEWS:         https://eodhd.com/api/news?s={TICKER}.US
 # 5. EOD:          https://eodhd.com/api/eod/{TICKER}.US (backfill)
 # 6. DIVIDENDS:    https://eodhd.com/api/div/{TICKER}.US (dividend history sync)
+# 7. DIV CALENDAR: https://eodhd.com/api/calendar/dividends?from=..&to=.. (upcoming ex-dates)
 #
 # VISIBLE UNIVERSE RULE:
 # is_visible = is_seeded && has_price_data && has_classification
@@ -74,6 +75,7 @@ Schedule (Europe/Prague timezone):
 - MON-SAT after Step 2 completion: fundamentals sync (changes + corporate actions)
 - MON-SAT 04:15: SP500TR benchmark update
 - MON-SAT 04:45: Dividend history sync (EODHD per-ticker dividends)
+- MON-SAT 04:50: Upcoming ex-dividend calendar refresh (90-day window)
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
 - MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day, gated by ops_config)
 - MON-SAT 05:00: Key metrics
@@ -157,6 +159,10 @@ PAIN_CACHE_MINUTE = 0
 DIVIDEND_SYNC_HOUR = 4
 DIVIDEND_SYNC_MINUTE = 45
 
+# UPCOMING DIVIDEND CALENDAR: Daily refresh at 04:50 (date-window endpoint)
+UPCOMING_DIVIDEND_CALENDAR_HOUR = 4
+UPCOMING_DIVIDEND_CALENDAR_MINUTE = 50
+
 # GAPFILL REMEDIATION: Detect & fill missing bulk dates at 05:00
 GAPFILL_REMEDIATION_HOUR = 5
 GAPFILL_REMEDIATION_MINUTE = 0
@@ -173,6 +179,7 @@ KNOWN_JOBS = sorted([
     "benchmark_update",
     "bulk_gapfill_remediation",
     "dividend_sync",
+    "dividend_upcoming_calendar",
     "fundamentals_sync",
     "key_metrics",
     "market_calendar",
@@ -1241,6 +1248,23 @@ async def scheduler_loop():
                     await set_last_run_state(last_run)
                 except Exception as exc:
                     logger.error(f"[scheduler] dividend_sync unhandled error (will retry next minute): {exc}")
+
+            # UPCOMING DIVIDEND CALENDAR at 04:50 (catch-up enabled)
+            if should_run("dividend_upcoming_calendar", UPCOMING_DIVIDEND_CALENDAR_HOUR, UPCOMING_DIVIDEND_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(
+                    "Triggering dividend_upcoming_calendar "
+                    f"(hour={current_hour}, scheduled={UPCOMING_DIVIDEND_CALENDAR_HOUR}:{UPCOMING_DIVIDEND_CALENDAR_MINUTE:02d})"
+                )
+                try:
+                    from dividend_history_service import sync_upcoming_dividend_calendar_for_visible_tickers
+                    await run_job_with_retry("dividend_upcoming_calendar", sync_upcoming_dividend_calendar_for_visible_tickers, db)
+                    last_run["dividend_upcoming_calendar"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        "[scheduler] dividend_upcoming_calendar unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
             
             # KEY METRICS at 05:00 (catch-up enabled)
             if should_run("key_metrics", KEY_METRICS_HOUR, KEY_METRICS_MINUTE, last_run, today_str, current_hour, current_minute):

@@ -51,6 +51,21 @@ Indexes:
 Indexes:
 - (ticker, ex_date)
 
+### 2.3b `upcoming_dividends`
+- `ticker` (string, unique)
+- `next_ex_date` (date string, nullable)
+- `next_pay_date` (date string, nullable)
+- `next_dividend_amount` (number, nullable)
+- `next_dividend_currency` (string, nullable)
+- `source` (string)
+- `fetched_at` (datetime)
+- `window_start` (date string)
+- `window_end` (date string)
+- optional flags: `is_special` (bool), `is_irregular` (bool), `dividend_type` (string|null), `period` (string|null)
+Indexes:
+- unique (ticker)
+- (next_ex_date)
+
 ### 2.4 `splits` / `corporate_actions`
 - `ticker`
 - `date`

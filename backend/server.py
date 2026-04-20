@@ -2014,6 +2014,7 @@ from dividend_history_service import (
     sync_batch_dividends,
     get_dividend_history_for_ticker,
     get_dividend_stats,
+    sync_upcoming_dividend_calendar_for_visible_tickers,
 )
 
 from canonical_dividend import compute_canonical_dividend_yield
@@ -7330,6 +7331,7 @@ async def admin_get_job_status(job_name: str):
         "backfill_all", "recompute_visibility_all", "clean_zombie_tickers",
         "recompute_visibility_with_zombies", "benchmark_update",
         "market_calendar", "news_refresh", "peer_medians",
+        "dividend_upcoming_calendar",
     }
     if config:
         enabled = config.get("value", False)
@@ -7726,6 +7728,7 @@ async def admin_run_job_now(
         "market_calendar": _market_calendar_refresh,
         "news_refresh": refresh_hot_tickers_news,
         "peer_medians": compute_peer_benchmarks_v3,
+        "dividend_upcoming_calendar": sync_upcoming_dividend_calendar_for_visible_tickers,
     }
 
     if job_name not in JOB_RUNNERS:
