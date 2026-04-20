@@ -544,7 +544,7 @@ export default function StockDetail() {
       setDividendPayments(normalizedRecent);
       setDividendHistory(normalizedHistory.length > 0 ? normalizedHistory : normalizedRecent);
     } catch (err) {
-      console.error('Error fetching dividends:', err);
+      console.error('Error fetching dividends:', err, (err as any)?.response?.data);
       setDividendPayments([]);
       setDividendHistory([]);
     } finally {
@@ -1031,11 +1031,11 @@ export default function StockDetail() {
     const priorTtmEnd = ttmStart;
 
     const ttmTotal = events
-      .filter((e) => e.exDateMs > ttmStart && e.exDateMs <= now)
+      .filter((e) => e.exDateMs >= ttmStart && e.exDateMs <= now)
       .reduce((sum, e) => sum + e.amount, 0);
 
     const priorTtmTotal = events
-      .filter((e) => e.exDateMs > priorTtmStart && e.exDateMs <= priorTtmEnd)
+      .filter((e) => e.exDateMs >= priorTtmStart && e.exDateMs < priorTtmEnd)
       .reduce((sum, e) => sum + e.amount, 0);
 
     const yearTotals = new Map<number, number>();
@@ -1079,7 +1079,6 @@ export default function StockDetail() {
     if (previous === 0) return current > 0
       ? { label: 'New', tone: 'neutral' as const }
       : { label: '—', tone: 'neutral' as const };
-    if (previous < 0) return { label: '—', tone: 'neutral' as const };
     if (current === 0) return { label: 'Suspended', tone: 'negative' as const };
     const pct = ((current - previous) / previous) * 100;
     return {
