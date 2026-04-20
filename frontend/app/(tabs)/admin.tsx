@@ -342,9 +342,18 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   );
 
   const health = overview?.health;
-  const failedCount = health?.jobs_failed ?? 0;
   const schedulerActive = health?.scheduler_active;
   const pAge = overview?.pipeline_age;
+  // Step 4 latest-failure detection from pipeline_age (works across days,
+  // not just today's ops_job_runs window).
+  const step4LatestFailed = pAge?.step4_latest_failed === true;
+  // Augment failed count: health.jobs_failed covers today's runs; if the
+  // most recent Step 4 run (which may have been today but already scrolled
+  // out of the jobs window) failed, ensure it is counted.
+  const baseFailedCount = health?.jobs_failed ?? 0;
+  const failedCount = step4LatestFailed && baseFailedCount === 0
+    ? 1
+    : baseFailedCount;
   // Morning Refresh display status: derive from live job status, fallback to pipeline_age
   const mrDisplayStatus: string | undefined = isNewsRefreshRunning
     ? undefined
@@ -382,6 +391,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     }
   }
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
+  // Step 4 latest-failure alert (catches failures even when not in today's jobs window)
+  if (step4LatestFailed) {
+    const errMsg = pAge?.step4_error_message;
+    alerts.push({ color: '#EF4444', icon: 'close-circle', text: `Step 4 (Peer Medians) failed${errMsg ? ': ' + String(errMsg).slice(0, 120) : ''}` });
+  }
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
   const ctdh = pi?.completed_trading_days_health;
   const ctdhStaleMsg = ctdh?.message || 'Market calendar missing recent rows';
@@ -543,6 +557,13 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             label="Scheduler"
             value={schedulerActive ? 'Running' : 'Paused'}
             status={schedulerActive ? 'green' : 'red'}
+          />
+          <OpsItem
+            label="Step 4"
+            value={step4LatestFailed
+              ? 'Failed'
+              : formatHours(pAge?.step4_hours_since_success)}
+            status={pAge?.step4_status}
           />
           <OpsItem
             label="Failed Jobs"
