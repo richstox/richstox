@@ -154,7 +154,8 @@ def compute_canonical_dividend_yield(
             # reports" routinely causes large relative diffs for quarterly payers.
             min_yield = min(hist_yield, cashflow_yield)
             max_yield = max(hist_yield, cashflow_yield)
-            ratio = max_yield / min_yield if min_yield > 0 else 999
+            # Both yields are > 0 (checked above), so min_yield > 0 is guaranteed.
+            ratio = max_yield / min_yield
 
             if ratio > PATHOLOGICAL_RATIO:
                 # Pathological disagreement (>3x) — likely a data quality issue
