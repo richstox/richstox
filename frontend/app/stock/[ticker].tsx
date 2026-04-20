@@ -687,7 +687,6 @@ export default function StockDetail() {
     setDividendsLoading(true);
     setDividendViewMode('payments');
     setDividendAnnualMode('usd');
-    setSelectedDividendPeriod('TTM');
     fetchStock(false);
     fetchDividends();
   }, [ticker]);
