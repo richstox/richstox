@@ -13,16 +13,22 @@ Source priority (best available):
 1. dividend_history (EODHD /div/ API — per-share payment records in last 365 days)
 2. company_financials cashflow dividendsPaid (last 4 quarterly cash-flow statements)
 
-When BOTH sources produce a non-zero yield and disagree by >20% relative → "unreliable".
+Integrity check (when BOTH sources have data):
+  - dividend_history is ALWAYS the canonical/primary source when it has data.
+  - The cashflow comparison is a *sanity check*, not a veto:
+    * When both sources produce positive yields (both agree: company IS a payer),
+      use dividend_history regardless of magnitude difference. Time window
+      misalignment between "last 365 days" and "last 4 quarterly reports"
+      routinely causes 30-50% relative differences for normal quarterly payers
+      (e.g. AAPL with 2 of 4 payments in the dividend_history window).
+    * "unreliable" is reserved for truly pathological disagreements where the
+      sources suggest fundamentally different conclusions:
+      one says non-payer (yield=0) while the other says payer, or >3x ratio.
 
 When ONLY cashflow is available (dividend_history has no records):
   - cashflow sum == 0 → proven non-payer (yield = 0.0, na_reason = "no_dividend")
   - cashflow sum  > 0 → use cashflow yield (approximation; documented)
   - all-null quarters → missing_inputs
-
-"unreliable" is ONLY set when:
-  a) Both sources produce a positive yield and relative diff > 20%, OR
-  b) [removed — cashflow-only no longer triggers "unreliable"]
 
 Guardrails:
   - >100% yield → extreme_outlier (last-resort safety net)
@@ -33,8 +39,10 @@ from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger("richstox.canonical_dividend")
 
-# Relative difference threshold: >20% between the two sources → unreliable
-INTEGRITY_THRESHOLD = 0.20
+# Pathological disagreement ratio: cashflow yield > 3x dividend_history yield
+# (or vice versa) when both are positive → unreliable.
+# Normal time-window misalignment for quarterly payers causes up to ~50% diff.
+PATHOLOGICAL_RATIO = 3.0
 
 # Maximum plausible dividend yield (%)
 MAX_DIVIDEND_YIELD_PCT = 100.0
@@ -53,8 +61,10 @@ def compute_canonical_dividend_yield(
     Canonical dividend yield TTM computation.
 
     SOURCE POLICY (binding for all call sites):
-      1. If dividend_history has records in last 365 days → compute yield from that
-      2. If BOTH sources exist and materially disagree (>20%) → na_reason="unreliable"
+      1. If dividend_history has records in last 365 days → compute yield from that (canonical primary)
+      2. If BOTH sources exist:
+         - Both positive → use dividend_history (canonical) — time window differences are normal
+         - One payer + one non-payer, or >3x ratio → na_reason="unreliable"
       3. If only cashflow available:
          - sum==0 → proven non-payer (yield=0.0)
          - sum>0 → use cashflow yield (approximation)
@@ -131,33 +141,45 @@ def compute_canonical_dividend_yield(
     # ── Step 3: Determine primary value + integrity check ───────────────
 
     if hist_yield is not None and cashflow_yield is not None:
-        # Both sources available — integrity check
+        # Both sources available — dividend_history is ALWAYS the canonical primary.
         if hist_yield == 0.0 and cashflow_yield == 0.0:
-            # Both say 0 — consistent
+            # Both say 0 — consistent non-payer
             result["dividend_yield_ttm_value"] = 0.0
             result["source_used"] = "dividend_history"
             result["na_reason"] = "no_dividend"
-        else:
-            max_yield = max(abs(hist_yield), abs(cashflow_yield))
-            if max_yield > 0:
-                rel_diff = abs(hist_yield - cashflow_yield) / max_yield
-            else:
-                rel_diff = 0.0
+        elif hist_yield > 0 and cashflow_yield > 0:
+            # Both sources agree the company IS a dividend payer.
+            # Use dividend_history (canonical primary) regardless of magnitude.
+            # Time window misalignment between "last 365 days" and "last 4 quarterly
+            # reports" routinely causes large relative diffs for quarterly payers.
+            min_yield = min(hist_yield, cashflow_yield)
+            max_yield = max(hist_yield, cashflow_yield)
+            ratio = max_yield / min_yield if min_yield > 0 else 999
 
-            if rel_diff > INTEGRITY_THRESHOLD:
-                # Materially disagree → unreliable
+            if ratio > PATHOLOGICAL_RATIO:
+                # Pathological disagreement (>3x) — likely a data quality issue
                 result["dividend_yield_ttm_value"] = None
                 result["source_used"] = "none"
                 result["na_reason"] = "unreliable"
                 logger.info(
-                    "Dividend yield integrity check failed: "
-                    "hist_yield=%.2f%% cashflow_yield=%.2f%% rel_diff=%.2f",
-                    hist_yield, cashflow_yield, rel_diff,
+                    "Dividend yield pathological disagreement: "
+                    "hist_yield=%.2f%% cashflow_yield=%.2f%% ratio=%.1fx",
+                    hist_yield, cashflow_yield, ratio,
                 )
             else:
-                # Agree — use primary (dividend_history)
+                # Normal disagreement — use dividend_history (canonical primary)
                 result["dividend_yield_ttm_value"] = hist_yield
                 result["source_used"] = "dividend_history"
+        else:
+            # One says payer, other says non-payer — pathological mismatch
+            result["dividend_yield_ttm_value"] = None
+            result["source_used"] = "none"
+            result["na_reason"] = "unreliable"
+            logger.info(
+                "Dividend yield payer/non-payer conflict: "
+                "hist_yield=%.2f%% cashflow_yield=%.2f%%",
+                hist_yield, cashflow_yield,
+            )
 
     elif hist_yield is not None:
         # Only dividend_history available
@@ -221,7 +243,7 @@ def compute_canonical_dividend_yield(
             "dividend_history_ttm_total_dollars": hist_ttm_dollars,
             "dividend_history_yield_pct": hist_yield,
             "dividend_history_count": dividend_history_count,
-            "integrity_threshold": INTEGRITY_THRESHOLD,
+            "pathological_ratio": PATHOLOGICAL_RATIO,
         }
 
     return result

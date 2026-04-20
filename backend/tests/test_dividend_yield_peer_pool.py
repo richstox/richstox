@@ -469,15 +469,26 @@ class TestAuditCSVClassification:
         assert reason == "extreme_outlier_gt_100pct"
 
     def test_true_unreliable_both_sources_disagree(self):
-        """True unreliable: BOTH sources produce yields that disagree >20%."""
-        # hist_yield = 2.0%, cashflow_yield = 5.0% → rel_diff = 0.6 > 0.2
+        """True unreliable: BOTH sources produce yields but disagree by >3x ratio."""
+        # hist_yield = 1.0%, cashflow_yield = 5.0% → ratio = 5.0x > 3.0x → unreliable
+        included, reason = self._classify(
+            market_cap=100e9, shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[-1.25e9, -1.25e9, -1.25e9, -1.25e9],
+            dividend_history_ttm_total=1.0, dividend_history_count=4,
+        )
+        assert included is False
+        assert reason == "unreliable_sources_disagree"
+
+    def test_normal_disagreement_still_included(self):
+        """Normal time-window disagreement (2.5x, <3x) → use dividend_history → included."""
+        # hist_yield = 2.0%, cashflow_yield = 5.0% → ratio = 2.5x < 3.0x → use history
         included, reason = self._classify(
             market_cap=100e9, shares_outstanding=1e9,
             cashflow_dividends_paid_quarterly=[-1.25e9, -1.25e9, -1.25e9, -1.25e9],
             dividend_history_ttm_total=2.0, dividend_history_count=4,
         )
-        assert included is False
-        assert reason == "unreliable_sources_disagree"
+        assert included is True
+        assert reason == ""
 
     def test_extreme_outlier_excluded(self):
         """Yield > 100% → extreme_outlier_gt_100pct."""

@@ -3208,13 +3208,9 @@ export default function StockDetail() {
                 </View>
               )}
               
-              {/* Dividends - always show */}
+              {/* Dividends - always show from canonical source (dividend_history) */}
               <Text style={[styles.subsectionTitle, { marginTop: 16 }]}>Dividends</Text>
-              {mobileData?.key_metrics?.dividend_yield_ttm?.na_reason === 'unreliable' || mobileData?.key_metrics?.dividend_yield_ttm?.na_reason === 'extreme_outlier' ? (
-                <View style={styles.noDataPlaceholder}>
-                  <Text style={styles.noDataText}>Dividend data unreliable — sources disagree</Text>
-                </View>
-              ) : dividendPayments && dividendPayments.length > 0 ? (
+              {dividendPayments && dividendPayments.length > 0 ? (
                 <View style={styles.dividendsList}>
                   {dividendPayments.slice(0, 4).map((d, i) => (
                     <View key={i} style={styles.dividendRow}>

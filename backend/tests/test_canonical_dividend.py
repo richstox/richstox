@@ -93,18 +93,52 @@ class TestONFO:
 
 
 class TestIntegrityCheck:
-    """Sources materially disagree (>20% relative difference) → unreliable."""
+    """Integrity check: dividend_history is canonical primary when both sources have data."""
 
-    def test_sources_disagree_by_more_than_20pct(self):
-        """History says 2%, cashflow says 5% → disagree → unreliable."""
+    def test_sources_disagree_within_3x_uses_history(self):
+        """History says 2%, cashflow says 5% (2.5x ratio, <3x) → use dividend_history.
+        
+        This is the AAPL scenario: time window misalignment between "last 365 days"
+        and "last 4 quarterly reports" routinely causes 30-50% relative differences.
+        Both sources agree the company IS a payer → use the canonical primary.
+        """
         # market_cap = 100B, shares = 1B, price = 100
         # hist_yield = 2.0 / 100 * 100 = 2.0%
         # cashflow: total = 5B → yield = 5B/100B * 100 = 5.0%
-        # rel_diff = |2-5|/5 = 0.6 > 0.2 → unreliable
+        # ratio = 5.0/2.0 = 2.5x < 3.0x → use dividend_history
         result = compute_canonical_dividend_yield(
             market_cap=100e9,
             shares_outstanding=1e9,
             cashflow_dividends_paid_quarterly=[-1.25e9, -1.25e9, -1.25e9, -1.25e9],
+            dividend_history_ttm_total=2.0,
+            dividend_history_count=4,
+        )
+        assert result["dividend_yield_ttm_value"] == 2.0
+        assert result["source_used"] == "dividend_history"
+        assert result["na_reason"] is None
+
+    def test_sources_disagree_by_more_than_3x_is_unreliable(self):
+        """History says 1%, cashflow says 5% (5x ratio, >3x) → unreliable."""
+        # market_cap = 100B, shares = 1B, price = 100
+        # hist: 1.0 / 100 * 100 = 1.0%
+        # cashflow: 5B → 5B/100B * 100 = 5.0%
+        # ratio = 5.0/1.0 = 5.0x > 3.0x → unreliable
+        result = compute_canonical_dividend_yield(
+            market_cap=100e9,
+            shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[-1.25e9, -1.25e9, -1.25e9, -1.25e9],
+            dividend_history_ttm_total=1.0,
+            dividend_history_count=4,
+        )
+        assert result["dividend_yield_ttm_value"] is None
+        assert result["na_reason"] == "unreliable"
+
+    def test_payer_vs_nonpayer_conflict_is_unreliable(self):
+        """History says payer (2%), cashflow says non-payer (0%) → unreliable."""
+        result = compute_canonical_dividend_yield(
+            market_cap=100e9,
+            shares_outstanding=1e9,
+            cashflow_dividends_paid_quarterly=[0, 0, 0, 0],
             dividend_history_ttm_total=2.0,
             dividend_history_count=4,
         )
@@ -116,7 +150,6 @@ class TestIntegrityCheck:
         # market_cap = 100B, shares = 1B, price = 100
         # hist: 2.0 / 100 * 100 = 2.0%
         # cashflow: 2.3B → 2.3B/100B * 100 = 2.3%
-        # rel_diff = |2.0-2.3|/2.3 = 0.13 < 0.2 → OK
         result = compute_canonical_dividend_yield(
             market_cap=100e9,
             shares_outstanding=1e9,
@@ -127,6 +160,34 @@ class TestIntegrityCheck:
         assert result["source_used"] == "dividend_history"
         assert result["na_reason"] is None
         assert 1.9 < result["dividend_yield_ttm_value"] < 2.1
+
+    def test_aapl_like_2_of_4_payments_in_window(self):
+        """AAPL regression test: dividend_history has 2 of 4 quarterly payments
+        in the 365-day window, while cashflow has all 4 quarters.
+        
+        This was the root cause of the AAPL 'unreliable' bug: the old 20%
+        threshold triggered on a 50% relative difference caused by normal
+        time window misalignment.
+        """
+        market_cap = 3.06e12   # ~$3T
+        shares = 15.3e9        # 15.3B shares
+        # Cashflow: 4 quarters of ~$3.8B each
+        cf_vals = [-3.8e9, -3.8e9, -3.8e9, -3.8e9]
+        # Dividend history: only 2 of 4 payments in 365d window (0.50 per share)
+        div_hist_ttm_total = 0.50  # 2 x $0.25
+
+        result = compute_canonical_dividend_yield(
+            market_cap=market_cap,
+            shares_outstanding=shares,
+            cashflow_dividends_paid_quarterly=cf_vals,
+            dividend_history_ttm_total=div_hist_ttm_total,
+            dividend_history_count=2,
+        )
+        # Must use dividend_history — NOT unreliable
+        assert result["source_used"] == "dividend_history"
+        assert result["na_reason"] is None
+        assert result["dividend_yield_ttm_value"] is not None
+        assert result["dividend_yield_ttm_value"] > 0
 
 
 class TestExtremeOutlier:
