@@ -3952,67 +3952,6 @@ async def admin_dividend_stats():
     stats = await get_dividend_stats(db)
     return stats
 
-
-@api_router.get("/admin/dividends/coverage-report")
-async def admin_dividend_coverage_report():
-    """
-    Admin report: dividend yield coverage at the market level.
-
-    Returns:
-      - total visible tickers (with fundamentals)
-      - dividend_yield_ttm n_used from latest peer_benchmarks
-      - coverage_pct
-      - coverage_warning
-    """
-
-    # 1. Total visible tickers with fundamentals
-    total_visible = await db.tracked_tickers.count_documents(
-        {"is_visible": True, "fundamentals_status": "complete"}
-    )
-
-    # 2. Latest market-level peer_benchmarks for dividend_yield
-    market_doc = await db.peer_benchmarks.find_one(
-        {"level": "market"},
-        {"_id": 0, "step4_medians": 1, "dividend_peer_count": 1,
-         "dividend_payers_count": 1, "computed_at": 1,
-         "peer_count": 1, "peer_count_known_currency": 1}
-    )
-
-    div_step4 = {}
-    if market_doc:
-        div_step4 = (market_doc.get("step4_medians") or {}).get("dividend_yield_ttm", {})
-
-    n_used = div_step4.get("n_used", 0)
-    pool_total = div_step4.get("total_company_count", total_visible)
-    coverage_pct = div_step4.get("coverage_pct", (
-        round(n_used / pool_total * 100, 1) if pool_total > 0 else 0
-    ))
-    coverage_warning = div_step4.get("coverage_warning", coverage_pct < 30)
-
-    # 3. Constituents data if available
-    cons_doc = await db.peer_benchmarks_constituents.find_one(
-        {"level": "market", "group": "market"},
-        {"_id": 0, "metrics": 1}
-    )
-    div_constituents_n = 0
-    if cons_doc and cons_doc.get("metrics", {}).get("dividend_yield_ttm"):
-        div_constituents_n = cons_doc["metrics"]["dividend_yield_ttm"].get("n_records", 0)
-
-    return {
-        "total_visible_with_fundamentals": total_visible,
-        "dividend_yield_benchmark": {
-            "n_used": n_used,
-            "total_company_count": pool_total,
-            "coverage_pct": coverage_pct,
-            "coverage_warning": coverage_warning,
-            "median": div_step4.get("median"),
-            "dividend_peer_count": market_doc.get("dividend_peer_count") if market_doc else None,
-            "dividend_payers_count": market_doc.get("dividend_payers_count") if market_doc else None,
-            "computed_at": market_doc.get("computed_at") if market_doc else None,
-        },
-        "constituents_n_records": div_constituents_n,
-    }
-
 @api_router.get("/dividends/{ticker}")
 async def get_ticker_dividends(ticker: str):
     """Get dividend history for a ticker with annual aggregation."""
@@ -4102,124 +4041,6 @@ async def admin_dividend_yield_debug(ticker: str):
             "quarterly_dividends_paid": quarterly_dividends,
             "dividend_history_records_last_12m": div_hist_records[:8],
         },
-    }
-
-
-@api_router.get("/admin/dividends/annual-yield-table/{ticker}")
-async def admin_dividend_annual_yield_table(ticker: str, years: int = Query(10)):
-    """
-    Produce a 10-year annual dividend yield table for a single ticker.
-
-    For each calendar year:
-      - all dividend_history rows used (per-share amounts)
-      - payment count
-      - annual dividend per share (sum of per-share payments)
-      - year-end closing price from stock_prices
-      - annual dividend yield = annual_div_per_share / year_end_close * 100
-      - YoY growth of per-share total vs prior year
-
-    Sources:
-      - annual_dividend_per_share: dividend_history collection ONLY
-      - year_end_close: stock_prices collection, last trading day of each year
-      - yield: annual_dividend_per_share / year_end_close * 100
-    """
-    ticker_upper = ticker.upper()
-    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
-
-    current_year = datetime.now(timezone.utc).year
-    from_year = current_year - years
-    from_date = f"{from_year}-01-01"
-
-    # 1. All dividend_history records in the window
-    div_cursor = db.dividend_history.find(
-        {
-            "ticker": ticker_full,
-            "$or": [
-                {"ex_date": {"$gte": from_date}},
-                {"date": {"$gte": from_date}},
-            ],
-        },
-        {"_id": 0},
-    ).sort([("ex_date", -1), ("date", -1)])
-    all_divs = await div_cursor.to_list(length=1000)
-
-    # Normalize
-    normalized_divs = []
-    for d in all_divs:
-        div_date = d.get("ex_date") or d.get("date")
-        amount = d.get("amount") or d.get("value") or 0
-        if div_date and amount > 0:
-            normalized_divs.append({"date": div_date, "amount": round(amount, 6)})
-    normalized_divs.sort(key=lambda x: x["date"])
-
-    # Group by year
-    by_year: dict = {}
-    for d in normalized_divs:
-        yr = int(d["date"][:4])
-        by_year.setdefault(yr, []).append(d)
-
-    # 2. Year-end close prices: last trading day of each year
-    year_end_prices: dict = {}
-    for yr in range(from_year, current_year + 1):
-        if yr == current_year:
-            # Use latest available price for current (partial) year
-            latest = await db.stock_prices.find_one(
-                {"ticker": ticker_full},
-                {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1},
-                sort=[("date", -1)],
-            )
-        else:
-            latest = await db.stock_prices.find_one(
-                {"ticker": ticker_full, "date": {"$lte": f"{yr}-12-31", "$gte": f"{yr}-01-01"}},
-                {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1},
-                sort=[("date", -1)],
-            )
-        if latest:
-            close = latest.get("adjusted_close") or latest.get("close")
-            year_end_prices[yr] = {"date": latest["date"], "close": close}
-
-    # 3. Build table rows
-    rows = []
-    prev_total = None
-    for yr in range(from_year, current_year + 1):
-        divs = by_year.get(yr, [])
-        total_per_share = round(sum(d["amount"] for d in divs), 4)
-        count = len(divs)
-        is_partial = yr == current_year
-
-        price_info = year_end_prices.get(yr)
-        year_end_close = price_info["close"] if price_info else None
-        price_date = price_info["date"] if price_info else None
-
-        annual_yield = None
-        if year_end_close and year_end_close > 0 and total_per_share > 0:
-            annual_yield = round((total_per_share / year_end_close) * 100, 4)
-
-        yoy_growth = None
-        if prev_total is not None and prev_total > 0 and total_per_share > 0:
-            yoy_growth = round(((total_per_share - prev_total) / prev_total) * 100, 2)
-
-        rows.append({
-            "year": yr,
-            "is_partial": is_partial,
-            "dividend_payments_count": count,
-            "annual_dividend_per_share": total_per_share,
-            "dividend_rows_used": divs,
-            "year_end_close": year_end_close,
-            "year_end_close_date": price_date,
-            "annual_dividend_yield_pct": annual_yield,
-            "yoy_growth_pct": yoy_growth,
-        })
-        if total_per_share > 0:
-            prev_total = total_per_share
-
-    return {
-        "ticker": ticker_full,
-        "yield_definition": "annual_dividend_per_share / year_end_adjusted_close * 100",
-        "price_source": "stock_prices collection, last trading day of each calendar year (adjusted_close preferred, close fallback)",
-        "dividend_source": "dividend_history collection ONLY (per-share ex-date payments)",
-        "years_requested": years,
-        "rows": rows,
     }
 
 
@@ -6197,23 +6018,17 @@ async def get_ticker_detail_mobile(
     def _s4_median_with_fallback(key: str):
         """
         Per-metric fallback: Industry → Sector → Market.
-        Returns (median, n_used, level, coverage_pct, coverage_warning)
-        where level is 'industry'/'sector'/'market'/None.
+        Returns (median, n_used, level) where level is 'industry'/'sector'/'market'/None.
         """
         for s4_data, level in _s4_fallback_chain:
             entry = s4_data.get(key) or {}
             n = entry.get("n_used")
             med = entry.get("median")
             if med is not None and n is not None and n >= _MIN_BENCHMARK_N:
-                return (
-                    med, n, level,
-                    entry.get("coverage_pct"),
-                    entry.get("coverage_warning"),
-                )
-        return None, None, None, None, None
+                return med, n, level
+        return None, None, None
 
     # Pre-compute fallback results for each metric (avoid redundant calls)
-    # Each returns (median, n_used, level, coverage_pct, coverage_warning)
     _fb_net_margin = _s4_median_with_fallback("net_margin_ttm")
     _fb_fcf_yield = _s4_median_with_fallback("fcf_yield")
     _fb_net_debt = _s4_median_with_fallback("net_debt_ebitda")
@@ -6307,23 +6122,11 @@ async def get_ticker_detail_mobile(
         _bv = _km.get("peer_median")
         _bl = _km.get("peer_median_level")
         _bn = _km.get("peer_median_n")
-        # Look up coverage info from fallback result
-        _fb_key_map = {
-            "net_margin_ttm": _fb_net_margin,
-            "fcf_yield": _fb_fcf_yield,
-            "net_debt_ebitda": _fb_net_debt,
-            "revenue_growth_3y": _fb_rev_growth,
-            "dividend_yield_ttm": _fb_div_yield,
-        }
-        _fb = _fb_key_map[_mk]
-        _fb_med, _fb_n, _fb_level, _fb_cov_pct, _fb_cov_warn = _fb
         key_metrics[_mk]["benchmark_metadata"] = {
             "benchmark_value": _bv,
             "benchmark_level": _bl,
             "benchmark_n": _bn,
             "statistic_type": "median",
-            "coverage_pct": _fb_cov_pct,
-            "coverage_warning": _fb_cov_warn,
         }
 
     # Determine has_benchmark: True if ANY step4 metric has a valid benchmark

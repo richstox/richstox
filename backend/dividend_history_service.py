@@ -20,7 +20,6 @@ Used for:
 """
 
 import os
-import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
@@ -172,6 +171,7 @@ async def sync_batch_dividends(
     Returns:
         Summary of batch operation.
     """
+    import asyncio
     
     result = {
         "started_at": datetime.now(timezone.utc).isoformat(),

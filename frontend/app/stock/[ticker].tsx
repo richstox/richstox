@@ -215,8 +215,6 @@ interface BenchmarkMetadata {
   benchmark_level: 'industry' | 'sector' | 'market' | null;
   benchmark_n: number | null;
   statistic_type: 'median';
-  coverage_pct?: number | null;
-  coverage_warning?: boolean | null;
 }
 
 interface MobileDetailData {
@@ -1152,11 +1150,6 @@ export default function StockDetail() {
     metricKey: string
   ): { label: string; color: string; bgColor: string } | null => {
     if (companyValue == null || benchmarkMeta == null || benchmarkMeta.benchmark_level == null) return null;
-
-    // Coverage warning: if coverage_pct is too low, show a warning pill
-    if (benchmarkMeta.coverage_warning) {
-      return { label: 'Low data coverage', color: '#92400E', bgColor: '#FEF3C7' };
-    }
 
     const bv = benchmarkMeta.benchmark_value;
     if (bv == null) return null;
