@@ -29,6 +29,7 @@
 # 3. FUNDAMENTALS: https://eodhd.com/api/fundamentals/{TICKER}.US
 # 4. NEWS:         https://eodhd.com/api/news?s={TICKER}.US
 # 5. EOD:          https://eodhd.com/api/eod/{TICKER}.US (backfill)
+# 6. DIVIDENDS:    https://eodhd.com/api/div/{TICKER}.US (dividend history sync)
 #
 # VISIBLE UNIVERSE RULE:
 # is_visible = is_seeded && has_price_data && has_classification
@@ -72,6 +73,7 @@ Schedule (Europe/Prague timezone):
 - MON-SAT after Step 1 completion: price sync (bulk API) + split/dividend detection
 - MON-SAT after Step 2 completion: fundamentals sync (changes + corporate actions)
 - MON-SAT 04:15: SP500TR benchmark update
+- MON-SAT 04:45: Dividend history sync (EODHD per-ticker dividends)
 - MON-SAT 05:00: PAIN cache refresh (max drawdown from full series)
 - MON-SAT 05:00: Parallel backfill ALL (1,000 tickers/day, gated by ops_config)
 - MON-SAT 05:00: Key metrics
@@ -151,6 +153,10 @@ PEER_MEDIANS_MINUTE = 30
 PAIN_CACHE_HOUR = 5
 PAIN_CACHE_MINUTE = 0
 
+# DIVIDEND SYNC: Daily dividend history sync at 04:45 (after fundamentals, before key_metrics)
+DIVIDEND_SYNC_HOUR = 4
+DIVIDEND_SYNC_MINUTE = 45
+
 # GAPFILL REMEDIATION: Detect & fill missing bulk dates at 05:00
 GAPFILL_REMEDIATION_HOUR = 5
 GAPFILL_REMEDIATION_MINUTE = 0
@@ -166,6 +172,7 @@ KNOWN_JOBS = sorted([
     "backfill_all",
     "benchmark_update",
     "bulk_gapfill_remediation",
+    "dividend_sync",
     "fundamentals_sync",
     "key_metrics",
     "market_calendar",
@@ -1224,8 +1231,29 @@ async def scheduler_loop():
                     last_run["backfill_all"] = today_str
                     await set_last_run_state(last_run)
             
+            # DIVIDEND SYNC at 04:45 (catch-up enabled)
+            if should_run("dividend_sync", DIVIDEND_SYNC_HOUR, DIVIDEND_SYNC_MINUTE, last_run, today_str, current_hour, current_minute):
+                logger.info(f"Triggering dividend_sync (hour={current_hour}, scheduled={DIVIDEND_SYNC_HOUR}:{DIVIDEND_SYNC_MINUTE:02d})")
+                try:
+                    from dividend_history_service import sync_dividends_for_visible_tickers
+                    await run_job_with_retry("dividend_sync", sync_dividends_for_visible_tickers, db)
+                    last_run["dividend_sync"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(f"[scheduler] dividend_sync unhandled error (will retry next minute): {exc}")
+            
             # KEY METRICS at 05:00 (catch-up enabled)
             if should_run("key_metrics", KEY_METRICS_HOUR, KEY_METRICS_MINUTE, last_run, today_str, current_hour, current_minute):
+                # Ensure dividend_sync ran first (best-effort: if it hasn't run yet, run it now)
+                if not last_run.get("dividend_sync") == today_str:
+                    logger.info("key_metrics depends on dividend_sync — running dividend_sync first")
+                    try:
+                        from dividend_history_service import sync_dividends_for_visible_tickers
+                        await run_job_with_retry("dividend_sync", sync_dividends_for_visible_tickers, db)
+                        last_run["dividend_sync"] = today_str
+                        await set_last_run_state(last_run)
+                    except Exception as exc:
+                        logger.error(f"[scheduler] dividend_sync (pre-key_metrics) error: {exc}")
                 logger.info(f"Triggering key_metrics (hour={current_hour}, scheduled={KEY_METRICS_HOUR}:{KEY_METRICS_MINUTE:02d})")
                 try:
                     from key_metrics_service import compute_daily_key_metrics
