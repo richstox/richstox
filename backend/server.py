@@ -3547,7 +3547,7 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
                     capex_ttm = sum(_sf(quarterly_cashflow[q].get("capitalExpenditures")) for q in _cf_keys)
 
         # Dividend yield TTM — canonical function (same as compute_peer_benchmarks_v3)
-        # Uses dividend_history (primary) + cashflow/dividends_paid (secondary)
+        # Source: dividend_history ONLY.  Cashflow passed for debug diagnostics only.
         _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
         _div_cf_vals_debug = (
             [_sf(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
@@ -5281,10 +5281,9 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             _benchmark_fallback_level = "industry"
 
     # 5. Calculate Dividend Yield TTM — canonical function
-    # Uses dividend_history (primary) + cashflow/dividends_paid (secondary)
+    # Source: dividend_history ONLY (EODHD dividend events).
     # Same canonical path as compute_peer_benchmarks_v3 and /v1/ticker/detail.
     dividend_yield_ttm = None
-    _dividend_source_used_overview = "none"
     if current_price:
         _shares_so = None
         if tracked:
@@ -5299,18 +5298,6 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
             except (TypeError, ValueError):
                 pass
         _market_cap_so = (current_price * _shares_so) if (_shares_so and current_price) else None
-
-        # Cashflow quarterly data from embedded fundamentals
-        _cf_quarterly = (embedded_fundamentals or {}).get("Financials", {}).get("Cash_Flow", {}).get("quarterly", {})
-        _div_cf_q_keys = sorted(_cf_quarterly.keys(), reverse=True)[:4] if _cf_quarterly else []
-        _div_cf_vals_so = []
-        if len(_div_cf_q_keys) >= 4:
-            for q in _div_cf_q_keys:
-                v = _cf_quarterly[q].get("dividendsPaid")
-                try:
-                    _div_cf_vals_so.append(float(v) if v is not None else None)
-                except (TypeError, ValueError):
-                    _div_cf_vals_so.append(None)
 
         # Dividend history TTM from dividend_history collection
         _one_year_ago_so = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
@@ -5335,13 +5322,10 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
         _canonical_so = compute_canonical_dividend_yield(
             market_cap=_market_cap_so,
             shares_outstanding=_shares_so,
-            cashflow_dividends_paid_quarterly=_div_cf_vals_so,
             dividend_history_ttm_total=_div_hist_ttm_total_so,
             dividend_history_count=_div_hist_count_so,
-            include_debug=False,
         )
         dividend_yield_ttm = _canonical_so["dividend_yield_ttm_value"]
-        _dividend_source_used_overview = _canonical_so["source_used"]
 
     # 6. Compute Valuation Score if we have benchmark
     valuation_result = None
@@ -6113,8 +6097,7 @@ async def get_ticker_detail_mobile(
         net_debt_ebitda = net_debt / ebitda_ttm
 
     # Dividend Yield (TTM) — canonical computation
-    # Uses compute_canonical_dividend_yield: dividend_history first, cashflow second,
-    # integrity check between the two sources, extreme outlier guardrail.
+    # Source: dividend_history ONLY.  Cashflow passed for debug diagnostics only.
     _div_window = _quarterly_rows[:4]  # latest 4 quarterly reporting periods
     _div_cf_vals = [_sf(q.get("dividends_paid")) for q in _div_window] if len(_div_window) >= 4 else []
 

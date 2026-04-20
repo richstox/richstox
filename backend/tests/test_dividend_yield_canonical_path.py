@@ -1,20 +1,17 @@
 """
-Regression test: ALL dividend yield paths resolve through canonical function.
+Regression test: ALL dividend yield paths use dividend_history as sole source.
 
 Previous bug:
-  - /stock-overview/{ticker} used calculate_dividend_yield_ttm (dividend_history only)
+  - /stock-overview/{ticker} used calculate_dividend_yield_ttm (dividend_history only, no canonical)
   - /admin/benchmark-debug/industry used inline cashflow-only computation
-  - compute_peer_benchmarks_v3 used compute_canonical_dividend_yield (correct)
-  - /v1/ticker/{ticker}/detail used compute_canonical_dividend_yield (correct)
+  - compute_canonical_dividend_yield used cashflow as fallback/secondary source
 
-The old paths produced different results because:
-  1. cashflow-only path: sum(abs(dividendsPaid)) / market_cap * 100
-     — ignores dividend_history entirely
-  2. dividend_history-only path: sum(per_share_amounts) / current_price * 100
-     — ignores cashflow, no integrity check, no extreme outlier guardrail
+After fix:
+  - ALL paths call compute_canonical_dividend_yield
+  - compute_canonical_dividend_yield uses ONLY dividend_history
+  - Cashflow is diagnostic/debug only — never used for production yield
 
-After fix: ALL paths call compute_canonical_dividend_yield with BOTH
-dividend_history (primary) and cashflow (secondary/integrity check).
+Source of truth: EODHD dividend events → dividend_history → sum by period → yield from price.
 
 Run:
     cd /app/backend && python -m pytest tests/test_dividend_yield_canonical_path.py -v
@@ -27,221 +24,160 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from canonical_dividend import compute_canonical_dividend_yield
 
 
-# ---------------------------------------------------------------------------
-# Helper: simulate the OLD cashflow-only path (removed)
-# ---------------------------------------------------------------------------
-def _old_cashflow_only_yield(*, cashflow_dividends_paid_quarterly, market_cap):
-    """
-    Replicates the removed inline cashflow-only computation from
-    /admin/benchmark-debug/industry (server.py, formerly lines 3526-3537).
-    """
-    cf_vals = cashflow_dividends_paid_quarterly or []
-    if len(cf_vals) < 4:
-        return None
-    if all(v is None for v in cf_vals):
-        return None
-    total = sum(abs(v) for v in cf_vals if v is not None)
-    if total == 0.0:
-        return 0.0
-    if market_cap and market_cap > 0:
-        return (total / market_cap) * 100
-    return None
+class TestCashflowNeverUsedForProduction:
+    """Prove that cashflow data is completely ignored for yield computation."""
 
-
-# ---------------------------------------------------------------------------
-# Helper: simulate the OLD dividend_history-only path (removed)
-# ---------------------------------------------------------------------------
-def _old_history_only_yield(*, dividend_history_ttm_total, current_price):
-    """
-    Replicates the removed calculate_dividend_yield_ttm from
-    dividend_history_service.py (used by /stock-overview/{ticker}).
-    """
-    if not current_price or current_price <= 0:
-        return None
-    if dividend_history_ttm_total is None or dividend_history_ttm_total <= 0:
-        return None
-    return round((dividend_history_ttm_total / current_price) * 100, 4)
-
-
-class TestOldPathsDisagreedWithCanonical:
-    """Prove the old forked paths could produce different results."""
-
-    def test_cashflow_only_ignores_dividend_history(self):
+    def test_cashflow_positive_but_no_history_returns_missing(self):
         """
-        AAPL-like: dividend_history has 2 of 4 payments in window (~$0.50),
-        cashflow has all 4 quarters (~$15B total).
-        Old cashflow-only path: 15B / 3T * 100 = 0.50%
-        Canonical function: uses dividend_history as primary.
+        Cashflow says company pays dividends, but no dividend_history.
+        Old behavior: used cashflow yield.
+        New behavior: missing_inputs (no history = no data).
         """
-        market_cap = 3_000_000_000_000  # $3T
-        shares = 15_000_000_000  # 15B shares
-        price = market_cap / shares  # $200
-
-        # dividend_history: 2 payments in TTM window = $0.50/share
-        hist_ttm_total = 0.50
-        hist_count = 2
-
-        # cashflow: 4 quarters, total $15B paid
-        cf_vals = [-3_750_000_000.0] * 4  # $3.75B per quarter
-
-        old_cf_yield = _old_cashflow_only_yield(
-            cashflow_dividends_paid_quarterly=cf_vals,
-            market_cap=market_cap,
-        )
-
-        canonical = compute_canonical_dividend_yield(
-            market_cap=market_cap,
-            shares_outstanding=shares,
-            cashflow_dividends_paid_quarterly=cf_vals,
-            dividend_history_ttm_total=hist_ttm_total,
-            dividend_history_count=hist_count,
-        )
-
-        # Old cashflow path: ~0.50%
-        assert old_cf_yield is not None
-        assert abs(old_cf_yield - 0.50) < 0.01
-
-        # Canonical uses dividend_history (primary): $0.50 / $200 * 100 = 0.25%
-        assert canonical["source_used"] == "dividend_history"
-        assert canonical["dividend_yield_ttm_value"] is not None
-        assert abs(canonical["dividend_yield_ttm_value"] - 0.25) < 0.01
-
-        # They disagree — the old path was wrong
-        assert abs(old_cf_yield - canonical["dividend_yield_ttm_value"]) > 0.1
-
-    def test_history_only_misses_cashflow_fallback(self):
-        """
-        Ticker with no dividend_history but cashflow shows $0 dividends_paid.
-        Old history-only path: returns None (no data)
-        Canonical: returns 0.0 (proven non-payer from cashflow evidence)
-        """
-        market_cap = 1_000_000_000
-        shares = 10_000_000
-        price = market_cap / shares
-
-        old_hist_yield = _old_history_only_yield(
+        result = compute_canonical_dividend_yield(
+            market_cap=100_000_000_000,
+            shares_outstanding=1_000_000_000,
+            cashflow_dividends_paid_quarterly=[-0.5e9, -0.5e9, -0.5e9, -0.5e9],
             dividend_history_ttm_total=None,
-            current_price=price,
+            dividend_history_count=0,
         )
+        assert result["dividend_yield_ttm_value"] is None
+        assert result["na_reason"] == "missing_inputs"
+        assert result["source_used"] == "none"
 
-        canonical = compute_canonical_dividend_yield(
-            market_cap=market_cap,
-            shares_outstanding=shares,
+    def test_cashflow_zero_but_no_history_returns_missing(self):
+        """
+        Cashflow says $0 dividends (old: proven non-payer from cashflow).
+        New behavior: missing_inputs (no history = no data).
+        """
+        result = compute_canonical_dividend_yield(
+            market_cap=100_000_000_000,
+            shares_outstanding=1_000_000_000,
             cashflow_dividends_paid_quarterly=[0.0, 0.0, 0.0, 0.0],
             dividend_history_ttm_total=None,
             dividend_history_count=0,
         )
+        assert result["dividend_yield_ttm_value"] is None
+        assert result["na_reason"] == "missing_inputs"
+        assert result["source_used"] == "none"
 
-        # Old path: None (no dividend_history → missing)
-        assert old_hist_yield is None
-
-        # Canonical: 0.0% (proven non-payer from cashflow evidence)
-        assert canonical["dividend_yield_ttm_value"] == 0.0
-        assert canonical["na_reason"] == "no_dividend"
-        assert canonical["source_used"] == "cashflow"
-
-    def test_history_only_no_extreme_outlier_guardrail(self):
+    def test_cashflow_conflict_ignored_history_wins(self):
         """
-        Old history-only path had no >100% yield guardrail.
-        Canonical catches extreme outliers.
+        Cashflow says $0 but history has payments.
+        Old behavior: 'unreliable' (payer/non-payer conflict).
+        New behavior: dividend_history yield used (cashflow ignored).
         """
-        # Extreme case: per-share total > price
-        price = 1.0
-        hist_ttm_total = 5.0  # 500% yield
-        market_cap = 1_000_000
-        shares = 1_000_000
-
-        old_hist_yield = _old_history_only_yield(
-            dividend_history_ttm_total=hist_ttm_total,
-            current_price=price,
-        )
-
-        canonical = compute_canonical_dividend_yield(
-            market_cap=market_cap,
-            shares_outstanding=shares,
-            cashflow_dividends_paid_quarterly=[],
-            dividend_history_ttm_total=hist_ttm_total,
+        result = compute_canonical_dividend_yield(
+            market_cap=100_000_000_000,
+            shares_outstanding=1_000_000_000,
+            cashflow_dividends_paid_quarterly=[0, 0, 0, 0],
+            dividend_history_ttm_total=2.0,
             dividend_history_count=4,
         )
+        assert result["dividend_yield_ttm_value"] == 2.0
+        assert result["source_used"] == "dividend_history"
+        assert result["na_reason"] is None
 
-        # Old path: 500% (no guardrail)
-        assert old_hist_yield == 500.0
-
-        # Canonical: None (extreme outlier caught)
-        assert canonical["dividend_yield_ttm_value"] is None
-        assert canonical["na_reason"] == "extreme_outlier"
-
-
-class TestCanonicalPathUnification:
-    """Verify that all code paths now produce identical results."""
-
-    def test_canonical_is_single_source_of_truth(self):
+    def test_cashflow_3x_disagreement_ignored_history_wins(self):
         """
-        All endpoints now call compute_canonical_dividend_yield.
-        Verify that given the same inputs, the function returns
-        a deterministic result.
+        Cashflow says 5x more dividends than history.
+        Old behavior: 'unreliable' (>3x ratio).
+        New behavior: dividend_history yield used (cashflow ignored).
+        """
+        result = compute_canonical_dividend_yield(
+            market_cap=100_000_000_000,
+            shares_outstanding=1_000_000_000,
+            cashflow_dividends_paid_quarterly=[-5e9, -5e9, -5e9, -5e9],
+            dividend_history_ttm_total=1.0,
+            dividend_history_count=4,
+        )
+        assert result["dividend_yield_ttm_value"] == 1.0
+        assert result["source_used"] == "dividend_history"
+        assert result["na_reason"] is None
+
+
+class TestSourceUsedField:
+    """source_used is NEVER 'cashflow' in production."""
+
+    def test_source_is_dividend_history_or_none(self):
+        """All possible outcomes have source in {'dividend_history', 'none'}."""
+        scenarios = [
+            # Has history
+            dict(market_cap=1e9, shares_outstanding=1e7,
+                 dividend_history_ttm_total=1.0, dividend_history_count=4),
+            # No history
+            dict(market_cap=1e9, shares_outstanding=1e7,
+                 dividend_history_ttm_total=None, dividend_history_count=0),
+            # No history + cashflow present
+            dict(market_cap=1e9, shares_outstanding=1e7,
+                 cashflow_dividends_paid_quarterly=[-1e6]*4,
+                 dividend_history_ttm_total=None, dividend_history_count=0),
+            # Extreme outlier
+            dict(market_cap=1e6, shares_outstanding=1e6,
+                 dividend_history_ttm_total=5.0, dividend_history_count=4),
+        ]
+        for kwargs in scenarios:
+            result = compute_canonical_dividend_yield(**kwargs)
+            assert result["source_used"] in ("dividend_history", "none"), \
+                f"source_used={result['source_used']} for {kwargs}"
+
+    def test_unreliable_na_reason_never_returned(self):
+        """'unreliable' was a dual-source concept. It should never appear."""
+        # Scenario that previously triggered 'unreliable'
+        result = compute_canonical_dividend_yield(
+            market_cap=100_000_000_000,
+            shares_outstanding=1_000_000_000,
+            cashflow_dividends_paid_quarterly=[0, 0, 0, 0],
+            dividend_history_ttm_total=2.0,
+            dividend_history_count=4,
+        )
+        assert result["na_reason"] != "unreliable"
+
+
+class TestAAPLConcreteExample:
+    """
+    AAPL concrete proof:
+      - Dividends tab source: dividend_history payments
+      - ticker detail dividend_yield_ttm: dividend_history / price
+      - peer benchmark per-ticker: same canonical function
+      - All resolve through compute_canonical_dividend_yield
+    """
+
+    def test_aapl_yield_from_dividend_history(self):
+        """
+        AAPL: $0.25/share/quarter, 4 payments/year = $1.00/share TTM
+        Price = $200 (market_cap=3T, shares=15B)
+        Yield = $1.00 / $200 * 100 = 0.50%
+        """
+        market_cap = 3_000_000_000_000
+        shares = 15_000_000_000
+        price = market_cap / shares  # $200
+
+        result = compute_canonical_dividend_yield(
+            market_cap=market_cap,
+            shares_outstanding=shares,
+            dividend_history_ttm_total=1.00,  # 4 × $0.25
+            dividend_history_count=4,
+        )
+        assert result["source_used"] == "dividend_history"
+        assert result["na_reason"] is None
+        expected_yield = (1.00 / price) * 100  # 0.50%
+        assert abs(result["dividend_yield_ttm_value"] - expected_yield) < 0.001
+
+    def test_aapl_peer_benchmark_uses_same_function(self):
+        """
+        Peer benchmark calls the same compute_canonical_dividend_yield.
+        Given identical inputs → identical output.
         """
         inputs = dict(
             market_cap=3_000_000_000_000,
             shares_outstanding=15_000_000_000,
-            cashflow_dividends_paid_quarterly=[-3.75e9, -3.75e9, -3.75e9, -3.75e9],
-            dividend_history_ttm_total=0.96,
+            dividend_history_ttm_total=1.00,
             dividend_history_count=4,
         )
+        # Simulate ticker detail call
+        detail_result = compute_canonical_dividend_yield(**inputs)
+        # Simulate peer benchmark call (same function, same inputs)
+        benchmark_result = compute_canonical_dividend_yield(**inputs)
 
-        result1 = compute_canonical_dividend_yield(**inputs)
-        result2 = compute_canonical_dividend_yield(**inputs)
-
-        assert result1 == result2
-        assert result1["source_used"] == "dividend_history"
-        assert result1["dividend_yield_ttm_value"] is not None
-
-    def test_canonical_uses_dividend_history_primary(self):
-        """
-        When both sources are available, dividend_history is ALWAYS primary.
-        This is the binding contract for ALL call sites.
-        """
-        canonical = compute_canonical_dividend_yield(
-            market_cap=1_000_000_000,
-            shares_outstanding=10_000_000,
-            cashflow_dividends_paid_quarterly=[-5_000_000.0] * 4,
-            dividend_history_ttm_total=2.0,  # $2/share
-            dividend_history_count=4,
-        )
-
-        assert canonical["source_used"] == "dividend_history"
-        # $2/share, price = $100, yield = 2.0%
-        assert abs(canonical["dividend_yield_ttm_value"] - 2.0) < 0.01
-
-    def test_canonical_cashflow_fallback_when_no_history(self):
-        """
-        When dividend_history has no records, cashflow is used as fallback.
-        This is the secondary source, NOT a separate code path.
-        """
-        canonical = compute_canonical_dividend_yield(
-            market_cap=1_000_000_000,
-            shares_outstanding=10_000_000,
-            cashflow_dividends_paid_quarterly=[-20_000_000.0] * 4,
-            dividend_history_ttm_total=None,
-            dividend_history_count=0,
-        )
-
-        assert canonical["source_used"] == "cashflow"
-        # $80M total / $1B market_cap * 100 = 8.0%
-        assert abs(canonical["dividend_yield_ttm_value"] - 8.0) < 0.01
-
-    def test_canonical_integrity_check_pathological(self):
-        """
-        When both sources produce a yield but disagree by >3x ratio,
-        the canonical function marks it unreliable.
-        """
-        canonical = compute_canonical_dividend_yield(
-            market_cap=1_000_000_000,
-            shares_outstanding=10_000_000,
-            cashflow_dividends_paid_quarterly=[-100_000_000.0] * 4,  # $400M → 40%
-            dividend_history_ttm_total=1.0,  # $1/share → 1%
-            dividend_history_count=4,
-        )
-
-        assert canonical["na_reason"] == "unreliable"
-        assert canonical["dividend_yield_ttm_value"] is None
+        assert detail_result == benchmark_result
+        assert detail_result["source_used"] == "dividend_history"

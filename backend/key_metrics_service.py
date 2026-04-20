@@ -1562,8 +1562,8 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 metrics["ev_revenue"] = enterprise_value / revenue_ttm
             
             # Dividend Yield TTM — canonical function (same as ticker detail).
-            # Uses dividend_history (primary) + cashflow/dividends_paid (secondary)
-            # with integrity check and extreme outlier guardrail.
+            # Source: dividend_history ONLY.  Cashflow is passed for debug
+            # diagnostics but never used for production yield computation.
             _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
             _div_cf_vals = (
                 [safe_float(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
@@ -1580,9 +1580,8 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
             )
             if _div_canonical["dividend_yield_ttm_value"] is not None:
                 metrics["dividend_yield"] = _div_canonical["dividend_yield_ttm_value"]
-            # NOTE: When na_reason="missing_inputs", this ticker is EXCLUDED
-            # from the dividend yield peer pool (no evidence of dividends).
-            # When cashflow has data, it's used as a fallback source.
+            # NOTE: When dividend_history has no records (missing_inputs),
+            # this ticker is EXCLUDED from the dividend yield peer pool.
             
             # ── STEP 4 Key Metrics ──────────────────────────────────────
             # Net Margin (TTM) = net_income_ttm / revenue_ttm * 100
