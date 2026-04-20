@@ -188,6 +188,15 @@ interface DividendData {
   status: string;
 }
 
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const round4 = (value: number): number => Number(value.toFixed(4));
+const parseDividendExDateMs = (exDate: string): number | null => {
+  if (!exDate) return null;
+  const normalized = exDate.includes('T') ? exDate : `${exDate}T00:00:00Z`;
+  const ms = Date.parse(normalized);
+  return Number.isFinite(ms) ? ms : null;
+};
+
 // Price range options for chart - including MAX
 type PriceRange = '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | 'MAX';
 
@@ -1006,23 +1015,15 @@ export default function StockDetail() {
   };
 
   const annualDividendPeriods = useMemo<AnnualDividendPeriod[]>(() => {
-    const parseExDateMs = (exDate: string): number | null => {
-      if (!exDate) return null;
-      const normalized = exDate.includes('T') ? exDate : `${exDate}T00:00:00Z`;
-      const ms = Date.parse(normalized);
-      return Number.isFinite(ms) ? ms : null;
-    };
-
     const events = dividendHistory
-      .map((d) => ({ amount: d.amount, exDateMs: parseExDateMs(d.ex_date) }))
+      .map((d) => ({ amount: d.amount, exDateMs: parseDividendExDateMs(d.ex_date) }))
       .filter((d): d is { amount: number; exDateMs: number } => d.exDateMs !== null);
 
     if (events.length === 0) return [];
 
-    const dayMs = 24 * 60 * 60 * 1000;
     const now = Date.now();
-    const ttmStart = now - (365 * dayMs);
-    const priorTtmStart = now - (730 * dayMs);
+    const ttmStart = now - (365 * MS_PER_DAY);
+    const priorTtmStart = now - (730 * MS_PER_DAY);
     const priorTtmEnd = ttmStart;
 
     const ttmTotal = events
@@ -1042,8 +1043,8 @@ export default function StockDetail() {
     const periods: AnnualDividendPeriod[] = [{
       key: 'TTM',
       label: 'TTM',
-      total: Number(ttmTotal.toFixed(4)),
-      previousTotal: Number(priorTtmTotal.toFixed(4)),
+      total: round4(ttmTotal),
+      previousTotal: round4(priorTtmTotal),
     }];
 
     const years = Array.from(yearTotals.keys()).sort((a, b) => b - a);
@@ -1051,8 +1052,8 @@ export default function StockDetail() {
       periods.push({
         key: String(year),
         label: String(year),
-        total: Number((yearTotals.get(year) || 0).toFixed(4)),
-        previousTotal: yearTotals.has(year - 1) ? Number((yearTotals.get(year - 1) || 0).toFixed(4)) : null,
+        total: round4(yearTotals.get(year) || 0),
+        previousTotal: yearTotals.has(year - 1) ? round4(yearTotals.get(year - 1) || 0) : null,
       });
     }
 
@@ -1075,8 +1076,10 @@ export default function StockDetail() {
 
   const getAnnualYoyDisplay = (current: number | null, previous: number | null) => {
     if (current === null || previous === null) return { label: '—', tone: 'neutral' as const };
+    if (previous === 0) return current > 0
+      ? { label: 'New', tone: 'neutral' as const }
+      : { label: '—', tone: 'neutral' as const };
     if (current === 0 && previous > 0) return { label: 'Suspended', tone: 'negative' as const };
-    if (previous === 0 && current > 0) return { label: 'New', tone: 'neutral' as const };
     if (previous > 0) {
       const pct = ((current - previous) / previous) * 100;
       return {
@@ -1084,7 +1087,6 @@ export default function StockDetail() {
         tone: pct > 0 ? ('positive' as const) : pct < 0 ? ('negative' as const) : ('neutral' as const),
       };
     }
-    if (current === 0 && previous === 0) return { label: '—', tone: 'neutral' as const };
     return { label: '—', tone: 'neutral' as const };
   };
 
