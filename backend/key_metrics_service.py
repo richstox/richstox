@@ -1223,6 +1223,46 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
     
     start_time = datetime.now(timezone.utc)
 
+    # ── HARD DEPENDENCY: dividend_history must be populated before medians ──
+    # Import here to avoid circular imports (this file is scheduler-only).
+    # STRICT: If dividend sync fails, Step 4 MUST fail — no silent degradation.
+    from dividend_history_service import sync_dividends_for_visible_tickers
+
+    logger.info("[peer_benchmarks_v3] Running dividend_sync as HARD dependency before median computation...")
+    try:
+        _div_sync_summary = await sync_dividends_for_visible_tickers(db)
+    except Exception as _ds_exc:
+        raise RuntimeError(
+            f"Step 4 ABORTED: dividend_sync hard dependency failed with exception: {_ds_exc}. "
+            f"dividend_history may be stale/empty — refusing to compute medians."
+        ) from _ds_exc
+
+    _synced_ok = _div_sync_summary.get("synced_ok", 0)
+    _synced_fail = _div_sync_summary.get("synced_fail", 0)
+    _pending = _div_sync_summary.get("pending_sync", 0)
+    _total_visible = _div_sync_summary.get("total_visible", 0)
+
+    logger.info(
+        f"[peer_benchmarks_v3] dividend_sync completed: "
+        f"ok={_synced_ok}, fail={_synced_fail}, "
+        f"pending={_pending}, total_visible={_total_visible}"
+    )
+
+    # STRICT GATE: any sync failure → hard fail Step 4.
+    # Even one failed ticker means dividend_history is incomplete for the
+    # visible universe and dividend_yield_ttm medians would be unreliable.
+    if _synced_fail > 0:
+        raise RuntimeError(
+            f"Step 4 ABORTED: dividend_sync had {_synced_fail} failed ticker(s) "
+            f"out of {_pending} pending ({_total_visible} total visible). "
+            f"synced_ok={_synced_ok}. Refusing to compute medians with incomplete dividend data."
+        )
+
+    # Freshness check: how many visible tickers have dividend_history?
+    _div_hist_ticker_count = len(await db.dividend_history.distinct("ticker"))
+    _div_data_fresh = True  # guaranteed by the gate above
+    logger.info(f"[peer_benchmarks_v3] dividend_history has data for {_div_hist_ticker_count} tickers (fresh={_div_data_fresh})")
+
     # Internal heartbeat helper — no-op when no callback is provided.
     async def _hb(phase: str, processed: int = None, total: int = None):
         if heartbeat_cb:
@@ -1338,6 +1378,12 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
                 "market":   {"groups_total": 0, "groups_written": 0, "per_metric": {}},
             },
             "market_medians": None,
+            "dividend_sync_ran": True,
+            "dividend_sync_tickers_synced": _synced_ok,
+            "dividend_sync_tickers_failed": _synced_fail,
+            "dividend_sync_pending": _pending,
+            "dividend_data_fresh": _div_data_fresh,
+            "dividend_history_ticker_count": _div_hist_ticker_count,
         }
     
     # Get latest prices
@@ -2494,5 +2540,11 @@ async def compute_peer_benchmarks_v3(db, *, heartbeat_cb=None) -> Dict[str, Any]
         "benchmarks_written": benchmarks_written,
         "stats": _step4_stats,
         "market_medians": _market_medians,
+        "dividend_sync_ran": True,
+        "dividend_sync_tickers_synced": _synced_ok,
+        "dividend_sync_tickers_failed": _synced_fail,
+        "dividend_sync_pending": _pending,
+        "dividend_data_fresh": _div_data_fresh,
+        "dividend_history_ticker_count": _div_hist_ticker_count,
         "diagnostics": {},
     }

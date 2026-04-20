@@ -308,14 +308,14 @@ async def get_dividend_history_for_ticker(
         
         if div_date and amount > 0:
             normalized.append({
-                "date": div_date,
+                "ex_date": div_date,
                 "amount": amount,
                 "payment_date": div.get("payment_date") or div.get("paymentDate"),
                 "currency": div.get("currency", "USD"),
             })
     
     # Sort by date descending
-    normalized.sort(key=lambda x: x["date"], reverse=True)
+    normalized.sort(key=lambda x: x["ex_date"], reverse=True)
     
     if not normalized:
         return {
@@ -333,7 +333,7 @@ async def get_dividend_history_for_ticker(
     current_year = datetime.now().year
     
     for div in normalized:
-        year = div["date"][:4]
+        year = div["ex_date"][:4]
         year_int = int(year)
         if year_int not in by_year:
             by_year[year_int] = []
@@ -398,3 +398,90 @@ async def get_dividend_stats(db) -> Dict[str, Any]:
         "unique_tickers": len(unique_tickers),
         "sample_tickers": unique_tickers[:10] if unique_tickers else [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Daily automated sync — called from scheduler.py
+# ---------------------------------------------------------------------------
+DIVIDEND_RESYNC_DAYS = 7  # Re-fetch dividend history every 7 days
+
+
+async def sync_dividends_for_visible_tickers(db) -> Dict[str, Any]:
+    """
+    Daily job: sync dividend_history for all visible tickers.
+
+    Logic:
+    1. Get all visible tickers from tracked_tickers.
+    2. Skip tickers whose dividends_synced_at is < DIVIDEND_RESYNC_DAYS old.
+    3. For remaining tickers, call sync_ticker_dividends and stamp
+       dividends_synced_at + dividends_sync_status on tracked_tickers.
+
+    Returns summary dict suitable for ops logging.
+    """
+    import asyncio
+
+    now = datetime.now(timezone.utc)
+    resync_cutoff = now - timedelta(days=DIVIDEND_RESYNC_DAYS)
+
+    # All visible tickers
+    cursor = db.tracked_tickers.find(
+        {"is_visible": True},
+        {"_id": 0, "ticker": 1, "dividends_synced_at": 1},
+    )
+    all_visible = await cursor.to_list(length=10_000)
+
+    # Filter to those needing (re-)sync
+    pending = []
+    for doc in all_visible:
+        last_sync = doc.get("dividends_synced_at")
+        if last_sync is None or last_sync < resync_cutoff:
+            pending.append(doc["ticker"])
+
+    summary: Dict[str, Any] = {
+        "started_at": now.isoformat(),
+        "total_visible": len(all_visible),
+        "pending_sync": len(pending),
+        "synced_ok": 0,
+        "synced_fail": 0,
+        "total_dividends_written": 0,
+    }
+
+    logger.info(
+        f"[dividend_sync] Starting: {len(pending)} of {len(all_visible)} "
+        f"visible tickers need sync (resync_days={DIVIDEND_RESYNC_DAYS})"
+    )
+
+    for ticker in pending:
+        try:
+            result = await sync_ticker_dividends(db, ticker)
+            status = "ok" if result["success"] else "error"
+            divs_written = result.get("dividends_synced", 0)
+
+            await db.tracked_tickers.update_one(
+                {"ticker": ticker},
+                {"$set": {
+                    "dividends_synced_at": now,
+                    "dividends_sync_status": status,
+                }},
+            )
+
+            if result["success"]:
+                summary["synced_ok"] += 1
+                summary["total_dividends_written"] += divs_written
+            else:
+                summary["synced_fail"] += 1
+                logger.warning(f"[dividend_sync] {ticker}: {result.get('error')}")
+
+        except Exception as exc:
+            summary["synced_fail"] += 1
+            logger.error(f"[dividend_sync] {ticker} unhandled error: {exc}")
+
+        # Rate-limit: 0.25 s between EODHD calls (≈4 req/s)
+        await asyncio.sleep(0.25)
+
+    summary["finished_at"] = datetime.now(timezone.utc).isoformat()
+    logger.info(
+        f"[dividend_sync] Done: ok={summary['synced_ok']}, "
+        f"fail={summary['synced_fail']}, dividends={summary['total_dividends_written']}"
+    )
+    return summary
