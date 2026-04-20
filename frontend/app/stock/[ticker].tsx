@@ -1140,8 +1140,9 @@ export default function StockDetail() {
   };
 
   const nextDividendEvent = useMemo(() => {
-    const today = new Date();
-    const todayStartMs = Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate());
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const todayStartMs = todayStart.getTime();
     const upcoming = dividendHistory
       .map((event) => ({ event, exDateMs: parseDividendExDateMs(event.ex_date) }))
       .filter((entry): entry is { event: DividendEvent; exDateMs: number } => entry.exDateMs !== null && entry.exDateMs >= todayStartMs)
@@ -3407,7 +3408,7 @@ export default function StockDetail() {
                   </View>
                 ) : (
                   <Text style={styles.nextDividendEmptyText}>
-                    Upcoming dividend is not available from canonical dividend events.
+                    No upcoming dividend information available.
                   </Text>
                 )}
               </View>
@@ -3433,8 +3434,8 @@ export default function StockDetail() {
               {dividendViewMode === 'payments' ? (
                 dividendPayments && dividendPayments.length > 0 ? (
                   <View style={styles.dividendsList}>
-                    {dividendPayments.slice(0, 10).map((d, i) => (
-                      <View key={`${d.ex_date}-${i}`} style={styles.dividendPaymentItem}>
+                    {dividendPayments.slice(0, 10).map((d) => (
+                      <View key={`${d.ex_date}-${d.payment_date || 'na'}-${d.amount}`} style={styles.dividendPaymentItem}>
                         <View style={styles.dividendPaymentTopRow}>
                           <Text style={styles.dividendAmount}>{formatDividendAmount(d.amount)}</Text>
                           {getDividendEventTypeLabel(d) && (
