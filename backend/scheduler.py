@@ -1250,7 +1250,15 @@ async def scheduler_loop():
                     logger.error(f"[scheduler] dividend_sync unhandled error (will retry next minute): {exc}")
 
             # UPCOMING DIVIDEND CALENDAR at 04:50 (catch-up enabled)
-            if should_run("dividend_upcoming_calendar", UPCOMING_DIVIDEND_CALENDAR_HOUR, UPCOMING_DIVIDEND_CALENDAR_MINUTE, last_run, today_str, current_hour, current_minute):
+            if should_run(
+                "dividend_upcoming_calendar",
+                UPCOMING_DIVIDEND_CALENDAR_HOUR,
+                UPCOMING_DIVIDEND_CALENDAR_MINUTE,
+                last_run,
+                today_str,
+                current_hour,
+                current_minute,
+            ):
                 logger.info(
                     "Triggering dividend_upcoming_calendar "
                     f"(hour={current_hour}, scheduled={UPCOMING_DIVIDEND_CALENDAR_HOUR}:{UPCOMING_DIVIDEND_CALENDAR_MINUTE:02d})"

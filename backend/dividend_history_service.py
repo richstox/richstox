@@ -33,7 +33,12 @@ logger = logging.getLogger("richstox.dividends")
 EODHD_BASE_URL = "https://eodhd.com/api"
 EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 UPCOMING_DIVIDEND_SOURCE = "eodhd_dividend_calendar"
+# Product requirement: keep a rolling 90-day horizon for upcoming ex-dividend UX.
 UPCOMING_DIVIDEND_WINDOW_DAYS = 90
+MIN_PROVIDER_CONSENSUS_COUNT = 2
+PROVIDER_CONSENSUS_RATIO = 0.6
+MAX_FREQUENCY_CONSISTENCY_RATIO = 0.35
+MAX_FREQUENCY_RELATIVE_ERROR = 0.35
 
 _FREQUENCY_MAP = {
     "m": "Monthly",
@@ -110,6 +115,7 @@ def _normalize_frequency_label(raw: Any) -> Optional[str]:
 
 
 def _event_flags(div: Dict[str, Any]) -> tuple[bool, bool]:
+    """Return tuple (is_special, is_irregular) inferred from event metadata fields."""
     div_type = str(div.get("dividend_type") or div.get("type") or "").lower()
     period = str(div.get("period") or div.get("frequency") or "").lower()
     is_special = bool(div.get("is_special")) or "special" in div_type or "special" in period
@@ -348,6 +354,14 @@ async def calculate_dividend_yield_ttm(db, ticker: str, current_price: float) ->
 
 
 def _detect_dividend_frequency(events: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Detect dividend frequency from the last 12 months of ex-dated events.
+
+    Preference order:
+    1) reliable provider metadata labels (Monthly/Quarterly/Semiannual),
+    2) inferred cadence from interval consistency between regular events,
+    3) Special/Irregular fallback when cadence is not comparable.
+    """
     now = datetime.now(timezone.utc)
     lookback_start = now - timedelta(days=365)
 
@@ -394,7 +408,10 @@ def _detect_dividend_frequency(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     if provider_labels:
         counts = Counter(provider_labels)
         top_label, top_count = counts.most_common(1)[0]
-        if top_count >= 2 and top_count / len(provider_labels) >= 0.6:
+        if (
+            top_count >= MIN_PROVIDER_CONSENSUS_COUNT
+            and top_count / len(provider_labels) >= PROVIDER_CONSENSUS_RATIO
+        ):
             return {
                 "label": top_label,
                 "source": "provider_metadata",
@@ -430,6 +447,7 @@ def _detect_dividend_frequency(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     interval_stdev = pstdev(intervals) if len(intervals) > 1 else 0.0
     consistency_ratio = interval_stdev / interval_mean if interval_mean > 0 else 1.0
 
+    # Approximate Gregorian average spacing (365.25-day year), rounded.
     expected = {
         "Monthly": 30.4,
         "Quarterly": 91.3,
@@ -438,7 +456,10 @@ def _detect_dividend_frequency(events: List[Dict[str, Any]]) -> Dict[str, Any]:
     best_label = min(expected.keys(), key=lambda k: abs(interval_median - expected[k]))
     relative_error = abs(interval_median - expected[best_label]) / expected[best_label]
 
-    if consistency_ratio <= 0.35 and relative_error <= 0.35:
+    if (
+        consistency_ratio <= MAX_FREQUENCY_CONSISTENCY_RATIO
+        and relative_error <= MAX_FREQUENCY_RELATIVE_ERROR
+    ):
         return {
             "label": best_label,
             "source": "inferred",
@@ -450,7 +471,7 @@ def _detect_dividend_frequency(events: List[Dict[str, Any]]) -> Dict[str, Any]:
         "label": "Irregular",
         "source": "inferred",
         "has_special": has_special,
-        "has_irregular": True if has_irregular else False,
+        "has_irregular": has_irregular,
     }
 
 
@@ -490,6 +511,7 @@ async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, A
     window_start = now.strftime("%Y-%m-%d")
     window_end = (now + timedelta(days=UPCOMING_DIVIDEND_WINDOW_DAYS)).strftime("%Y-%m-%d")
 
+    # Canonical universe source: tracked_tickers.is_visible.
     visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
     visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
 
@@ -789,7 +811,7 @@ async def get_dividend_history_for_ticker(
     upcoming_history_event = next(
         (
             event for event in normalized
-            if _parse_date_ymd(event.get("ex_date")) and event["ex_date"] >= today
+            if event["ex_date"] >= today
         ),
         None,
     )

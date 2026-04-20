@@ -233,11 +233,19 @@ type NextDividendInfo = {
 } | null;
 
 const round4 = (value: number): number => Number(value.toFixed(4));
+const DEFAULT_FREQUENCY_LABEL = 'Irregular';
+const FLAT_GROWTH_THRESHOLD_PCT = 1.0;
 const parseDividendExDateMs = (exDate: string): number | null => {
   if (!exDate) return null;
   const normalized = exDate.includes('T') ? exDate : `${exDate}T00:00:00Z`;
   const ms = Date.parse(normalized);
   return Number.isFinite(ms) ? ms : null;
+};
+
+const resolveDividendCurrency = (eventCurrency?: string | null, fallbackCurrency?: string | null): string | null => {
+  if (typeof eventCurrency === 'string' && eventCurrency.trim()) return eventCurrency;
+  if (typeof fallbackCurrency === 'string' && fallbackCurrency.trim()) return fallbackCurrency;
+  return null;
 };
 
 // Price range options for chart - including MAX
@@ -451,7 +459,7 @@ export default function StockDetail() {
   const [dividendPayments, setDividendPayments] = useState<DividendEvent[]>([]);
   const [dividendHistory, setDividendHistory] = useState<DividendEvent[]>([]);
   const [dividendViewMode, setDividendViewMode] = useState<'payments' | 'annual'>('payments');
-  const [dividendFrequencyLabel, setDividendFrequencyLabel] = useState<string>('Irregular');
+  const [dividendFrequencyLabel, setDividendFrequencyLabel] = useState<string>(DEFAULT_FREQUENCY_LABEL);
   const [dividendFrequencyFlags, setDividendFrequencyFlags] = useState<{ hasSpecial: boolean; hasIrregular: boolean }>({
     hasSpecial: false,
     hasIrregular: false,
@@ -615,7 +623,7 @@ export default function StockDetail() {
 
       setDividendPayments(normalizedRecent);
       setDividendHistory(normalizedHistory.length > 0 ? normalizedHistory : normalizedRecent);
-      setDividendFrequencyLabel(responseData?.frequency?.label || 'Irregular');
+      setDividendFrequencyLabel(responseData?.frequency?.label || DEFAULT_FREQUENCY_LABEL);
       setDividendFrequencyFlags({
         hasSpecial: responseData?.frequency?.has_special === true,
         hasIrregular: responseData?.frequency?.has_irregular === true,
@@ -631,7 +639,7 @@ export default function StockDetail() {
       console.error('Error fetching dividends:', err, (err as any)?.response?.data);
       setDividendPayments([]);
       setDividendHistory([]);
-      setDividendFrequencyLabel('Irregular');
+      setDividendFrequencyLabel(DEFAULT_FREQUENCY_LABEL);
       setDividendFrequencyFlags({ hasSpecial: false, hasIrregular: false });
       setDividendDisplayCurrency('USD');
       setNextDividendInfo(null);
@@ -1100,7 +1108,7 @@ export default function StockDetail() {
 
   const formatDividendAmount = (value: number | null | undefined, currency?: string | null): string => {
     if (typeof value !== 'number' || !Number.isFinite(value)) return 'N/A';
-    const normalizedCurrency = typeof currency === 'string' && currency.trim() ? currency.trim().toUpperCase() : null;
+    const normalizedCurrency = resolveDividendCurrency(currency, null);
     return normalizedCurrency ? `${normalizedCurrency} ${toEU(value, 2)}` : toEU(value, 2);
   };
 
@@ -1178,9 +1186,11 @@ export default function StockDetail() {
     if (previous === 0) return current > 0
       ? { label: 'New', tone: 'neutral' as const }
       : { label: '—', tone: 'neutral' as const };
-    if (current === 0) return isTTM
-      ? { label: 'Suspended', tone: 'negative' as const }
-      : { label: '0%', tone: 'negative' as const };
+    if (current === 0) {
+      return isTTM
+        ? { label: 'Suspended', tone: 'negative' as const }
+        : { label: '0%', tone: 'negative' as const };
+    }
     const pct = ((current - previous) / previous) * 100;
     return {
       label: `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
@@ -1215,7 +1225,7 @@ export default function StockDetail() {
       return { label: 'Growth: not comparable', tone: 'neutral' as const };
     }
     const pct = ((current.amount - previous.amount) / previous.amount) * 100;
-    if (Math.abs(pct) < 0.05) return { label: 'Growth: flat', tone: 'neutral' as const };
+    if (Math.abs(pct) < FLAT_GROWTH_THRESHOLD_PCT) return { label: 'Growth: flat', tone: 'neutral' as const };
     return {
       label: `Growth: ${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
       tone: pct > 0 ? ('positive' as const) : ('negative' as const),
@@ -3499,7 +3509,10 @@ export default function StockDetail() {
                       <View style={styles.nextDividendMetric}>
                         <Text style={styles.nextDividendMetricLabel}>Amount</Text>
                         <Text style={styles.nextDividendMetricValue}>
-                          {formatDividendAmount(nextDividendInfo.next_dividend_amount, nextDividendInfo.next_dividend_currency || dividendDisplayCurrency)}
+                          {formatDividendAmount(
+                            nextDividendInfo.next_dividend_amount,
+                            resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency)
+                          )}
                         </Text>
                       </View>
                     )}
@@ -3535,21 +3548,23 @@ export default function StockDetail() {
                     {paymentItems.map(({ key, event: d }, idx) => {
                       const previous = idx + 1 < paymentItems.length ? paymentItems[idx + 1].event : null;
                       const growth = getPaymentGrowthDisplay(d, previous);
+                      const rowCurrency = resolveDividendCurrency(d.currency, dividendDisplayCurrency);
                       return (
-                      <View key={key} style={styles.dividendPaymentItem}>
-                        <View style={styles.dividendPaymentTopRow}>
-                          <Text style={styles.dividendAmount}>{formatDividendAmount(d.amount, d.currency || dividendDisplayCurrency)}</Text>
-                          {d.event_type_label && (
-                            <View style={styles.dividendEventTag}>
-                              <Text style={styles.dividendEventTagText}>{d.event_type_label}</Text>
-                            </View>
-                          )}
+                        <View key={key} style={styles.dividendPaymentItem}>
+                          <View style={styles.dividendPaymentTopRow}>
+                            <Text style={styles.dividendAmount}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
+                            {d.event_type_label && (
+                              <View style={styles.dividendEventTag}>
+                                <Text style={styles.dividendEventTagText}>{d.event_type_label}</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text style={styles.dividendDateDetail}>Ex-date: {formatDividendDate(d.ex_date)}</Text>
+                          <Text style={styles.dividendDateDetail}>Payment date: {formatDividendDate(d.payment_date)}</Text>
+                          <Text style={[styles.dividendGrowthText, getDividendToneStyle(growth.tone)]}>{growth.label}</Text>
                         </View>
-                        <Text style={styles.dividendDateDetail}>Ex-date: {formatDividendDate(d.ex_date)}</Text>
-                        <Text style={styles.dividendDateDetail}>Payment date: {formatDividendDate(d.payment_date)}</Text>
-                        <Text style={[styles.dividendGrowthText, getDividendToneStyle(growth.tone)]}>{growth.label}</Text>
-                      </View>
-                    )})}
+                      );
+                    })}
                   </View>
                 ) : (
                   <View style={styles.noDataPlaceholder}>
@@ -3574,7 +3589,14 @@ export default function StockDetail() {
                               <View style={[styles.dividendTrendBar, getDividendToneStyle(yoy.tone)]} />
                               <View style={styles.dividendAnnualItemBody}>
                                 <Text style={styles.dividendAnnualPeriodLabel}>{period.label}</Text>
-                                <Text style={[styles.dividendAnnualHelperText, getDividendToneStyle(yoy.tone)]}>{helperLabel}</Text>
+                                <Text
+                                  style={[
+                                    styles.dividendAnnualHelperText,
+                                    period.isPartial ? styles.dividendPartialHelperText : getDividendToneStyle(yoy.tone),
+                                  ]}
+                                >
+                                  {helperLabel}
+                                </Text>
                               </View>
                               <Text style={[
                                 styles.dividendAnnualPrimaryValue,
@@ -4165,6 +4187,7 @@ const styles = StyleSheet.create({
   dividendAnnualItemBody: { flex: 1 },
   dividendAnnualPeriodLabel: { fontSize: 28, fontWeight: '900', color: '#111827', marginBottom: 2 },
   dividendAnnualHelperText: { fontSize: 14, color: '#374151', fontWeight: '700' },
+  dividendPartialHelperText: { color: '#6B7280' },
   dividendAnnualPrimaryValue: { fontSize: 24, fontWeight: '900', color: '#111827' },
   dividendValuePositive: { color: '#10B981' },
   dividendValueNegative: { color: '#EF4444' },
