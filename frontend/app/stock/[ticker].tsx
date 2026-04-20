@@ -1140,9 +1140,8 @@ export default function StockDetail() {
   };
 
   const nextDividendEvent = useMemo(() => {
-    const todayStart = new Date();
-    todayStart.setUTCHours(0, 0, 0, 0);
-    const todayStartMs = todayStart.getTime();
+    const now = new Date();
+    const todayStartMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     const upcoming = dividendHistory
       .map((event) => ({ event, exDateMs: parseDividendExDateMs(event.ex_date) }))
       .filter((entry): entry is { event: DividendEvent; exDateMs: number } => entry.exDateMs !== null && entry.exDateMs >= todayStartMs)
@@ -3434,8 +3433,8 @@ export default function StockDetail() {
               {dividendViewMode === 'payments' ? (
                 dividendPayments && dividendPayments.length > 0 ? (
                   <View style={styles.dividendsList}>
-                    {dividendPayments.slice(0, 10).map((d) => (
-                      <View key={`${d.ex_date}-${d.payment_date || 'na'}-${d.amount}`} style={styles.dividendPaymentItem}>
+                    {dividendPayments.slice(0, 10).map((d, i) => (
+                      <View key={`${d.ex_date}-${d.payment_date || 'na'}-${d.amount}-${d.dividend_type || 'regular'}-${i}`} style={styles.dividendPaymentItem}>
                         <View style={styles.dividendPaymentTopRow}>
                           <Text style={styles.dividendAmount}>{formatDividendAmount(d.amount)}</Text>
                           {getDividendEventTypeLabel(d) && (
@@ -4059,7 +4058,7 @@ const styles = StyleSheet.create({
   nextDividendMetricValue: { fontSize: 12, fontWeight: '600', color: COLORS.text },
   nextDividendEmptyText: { fontSize: 12, color: COLORS.textMuted, lineHeight: 18 },
   dividendEventTag: { borderWidth: 1, borderColor: '#FECACA', backgroundColor: '#FEF2F2', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
-  dividendEventTagText: { fontSize: 10, fontWeight: '700', color: '#B91C1C' },
+  dividendEventTagText: { fontSize: 11, fontWeight: '700', color: '#7F1D1D' },
   dividendsList: { marginTop: 4, gap: 8 },
   dividendPaymentItem: { borderWidth: 1, borderColor: COLORS.border, borderRadius: 10, backgroundColor: '#FFFFFF', paddingVertical: 10, paddingHorizontal: 12 },
   dividendPaymentTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
