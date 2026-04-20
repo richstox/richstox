@@ -1146,6 +1146,16 @@ export default function StockDetail() {
     return upcoming.length > 0 ? upcoming[0].event : null;
   }, [dividendHistory]);
 
+  const paymentItems = useMemo(() => {
+    const seenKeys = new Map<string, number>();
+    return dividendPayments.slice(0, 10).map((event) => {
+      const seen = seenKeys.get(event.ex_date) || 0;
+      seenKeys.set(event.ex_date, seen + 1);
+      const key = seen === 0 ? event.ex_date : `${event.ex_date}-${seen + 1}`;
+      return { key, event };
+    });
+  }, [dividendPayments]);
+
   const getMarketCapLabel = (cap: number | null | undefined) => {
     if (!cap) return 'N/A';
     if (cap >= 300e9) return 'Mega Cap';
@@ -3430,8 +3440,8 @@ export default function StockDetail() {
               {dividendViewMode === 'payments' ? (
                 dividendPayments && dividendPayments.length > 0 ? (
                   <View style={styles.dividendsList}>
-                    {dividendPayments.slice(0, 10).map((d, i) => (
-                      <View key={`${d.ex_date}-${i}`} style={styles.dividendPaymentItem}>
+                    {paymentItems.map(({ key, event: d }) => (
+                      <View key={key} style={styles.dividendPaymentItem}>
                         <View style={styles.dividendPaymentTopRow}>
                           <Text style={styles.dividendAmount}>{formatDividendAmount(d.amount)}</Text>
                           {getDividendEventTypeLabel(d) && (
