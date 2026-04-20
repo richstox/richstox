@@ -1079,15 +1079,13 @@ export default function StockDetail() {
     if (previous === 0) return current > 0
       ? { label: 'New', tone: 'neutral' as const }
       : { label: '—', tone: 'neutral' as const };
-    if (current === 0 && previous > 0) return { label: 'Suspended', tone: 'negative' as const };
-    if (previous > 0) {
-      const pct = ((current - previous) / previous) * 100;
-      return {
-        label: `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
-        tone: pct > 0 ? ('positive' as const) : pct < 0 ? ('negative' as const) : ('neutral' as const),
-      };
-    }
-    return { label: '—', tone: 'neutral' as const };
+    if (previous < 0) return { label: '—', tone: 'neutral' as const };
+    if (current === 0) return { label: 'Suspended', tone: 'negative' as const };
+    const pct = ((current - previous) / previous) * 100;
+    return {
+      label: `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
+      tone: pct > 0 ? ('positive' as const) : pct < 0 ? ('negative' as const) : ('neutral' as const),
+    };
   };
 
   const selectedAnnualDividendPeriod = useMemo(
@@ -1098,6 +1096,12 @@ export default function StockDetail() {
   const selectedAnnualDividendYoy = selectedAnnualDividendPeriod
     ? getAnnualYoyDisplay(selectedAnnualDividendPeriod.total, selectedAnnualDividendPeriod.previousTotal)
     : { label: '—', tone: 'neutral' as const };
+
+  const getDividendToneStyle = (tone: 'positive' | 'negative' | 'neutral') => {
+    if (tone === 'positive') return styles.dividendValuePositive;
+    if (tone === 'negative') return styles.dividendValueNegative;
+    return styles.dividendValueNeutral;
+  };
 
   const getMarketCapLabel = (cap: number | null | undefined) => {
     if (!cap) return 'N/A';
@@ -3404,9 +3408,7 @@ export default function StockDetail() {
                               <Text style={[styles.dividendPeriodLabel, isSelected && styles.dividendPeriodLabelActive]}>{period.label}</Text>
                               <Text style={[
                                 styles.dividendPeriodValue,
-                                dividendAnnualMode === 'pct' && yoy.tone === 'positive' && styles.dividendValuePositive,
-                                dividendAnnualMode === 'pct' && yoy.tone === 'negative' && styles.dividendValueNegative,
-                                dividendAnnualMode === 'pct' && yoy.tone === 'neutral' && styles.dividendValueNeutral,
+                                dividendAnnualMode === 'pct' ? getDividendToneStyle(yoy.tone) : styles.dividendValueNeutral,
                               ]}>
                                 {valueLabel}
                               </Text>
@@ -3418,10 +3420,6 @@ export default function StockDetail() {
                       {selectedAnnualDividendPeriod && (
                         <View style={styles.dividendAnnualTable}>
                           <View style={styles.dividendAnnualRow}>
-                            <Text style={styles.dividendAnnualLabel}>Period</Text>
-                            <Text style={styles.dividendAnnualValue}>{selectedAnnualDividendPeriod.label}</Text>
-                          </View>
-                          <View style={styles.dividendAnnualRow}>
                             <Text style={styles.dividendAnnualLabel}>Dividend / Share</Text>
                             <Text style={styles.dividendAnnualValue}>${toEU(selectedAnnualDividendPeriod.total, 4)}</Text>
                           </View>
@@ -3429,9 +3427,7 @@ export default function StockDetail() {
                             <Text style={styles.dividendAnnualLabel}>YoY</Text>
                             <Text style={[
                               styles.dividendAnnualValue,
-                              selectedAnnualDividendYoy.tone === 'positive' && styles.dividendValuePositive,
-                              selectedAnnualDividendYoy.tone === 'negative' && styles.dividendValueNegative,
-                              selectedAnnualDividendYoy.tone === 'neutral' && styles.dividendValueNeutral,
+                              getDividendToneStyle(selectedAnnualDividendYoy.tone),
                             ]}>
                               {selectedAnnualDividendYoy.label}
                             </Text>
