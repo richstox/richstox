@@ -190,6 +190,7 @@ interface DividendData {
     is_special?: boolean;
     is_irregular?: boolean;
     dividend_type?: string | null;
+    event_type_label?: string | null;
   }[];
   yoy_growth: number | null;
   status: string;
@@ -202,6 +203,7 @@ type DividendEvent = {
   is_special?: boolean;
   is_irregular?: boolean;
   dividend_type?: string | null;
+  event_type_label?: string | null;
 };
 
 const round4 = (value: number): number => Number(value.toFixed(4));
@@ -557,6 +559,7 @@ export default function StockDetail() {
             const isIrregular = d?.is_irregular === true
               || d?.irregular === true
               || (typeof dividendTypeRaw === 'string' && dividendTypeRaw.toLowerCase().includes('irregular'));
+            const eventTypeLabel = isSpecial ? 'Special dividend' : isIrregular ? 'Irregular dividend' : null;
             return {
               ex_date: typeof d?.ex_date === 'string' ? d.ex_date : '',
               amount,
@@ -564,6 +567,7 @@ export default function StockDetail() {
               dividend_type: dividendTypeRaw,
               is_special: isSpecial,
               is_irregular: isIrregular,
+              event_type_label: eventTypeLabel,
             };
           })
           .filter((d) => d.ex_date && Number.isFinite(d.amount))
@@ -1129,14 +1133,7 @@ export default function StockDetail() {
   };
 
   const getDividendEventTypeLabel = (event: DividendEvent): string | null => {
-    if (event.is_special) return 'Special dividend';
-    if (event.is_irregular) return 'Irregular dividend';
-    if (typeof event.dividend_type === 'string') {
-      const normalized = event.dividend_type.toLowerCase();
-      if (normalized.includes('special')) return 'Special dividend';
-      if (normalized.includes('irregular')) return 'Irregular dividend';
-    }
-    return null;
+    return event.event_type_label || null;
   };
 
   const nextDividendEvent = useMemo(() => {
@@ -3434,7 +3431,7 @@ export default function StockDetail() {
                 dividendPayments && dividendPayments.length > 0 ? (
                   <View style={styles.dividendsList}>
                     {dividendPayments.slice(0, 10).map((d, i) => (
-                      <View key={`${d.ex_date}-${d.payment_date || 'na'}-${d.amount}-${d.dividend_type || 'regular'}-${i}`} style={styles.dividendPaymentItem}>
+                      <View key={`${d.ex_date}-${i}`} style={styles.dividendPaymentItem}>
                         <View style={styles.dividendPaymentTopRow}>
                           <Text style={styles.dividendAmount}>{formatDividendAmount(d.amount)}</Text>
                           {getDividendEventTypeLabel(d) && (
