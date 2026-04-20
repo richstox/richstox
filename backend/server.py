@@ -4075,6 +4075,124 @@ async def admin_dividend_yield_debug(ticker: str):
     }
 
 
+@api_router.get("/admin/dividends/annual-yield-table/{ticker}")
+async def admin_dividend_annual_yield_table(ticker: str, years: int = Query(10)):
+    """
+    Produce a 10-year annual dividend yield table for a single ticker.
+
+    For each calendar year:
+      - all dividend_history rows used (per-share amounts)
+      - payment count
+      - annual dividend per share (sum of per-share payments)
+      - year-end closing price from stock_prices
+      - annual dividend yield = annual_div_per_share / year_end_close * 100
+      - YoY growth of per-share total vs prior year
+
+    Sources:
+      - annual_dividend_per_share: dividend_history collection ONLY
+      - year_end_close: stock_prices collection, last trading day of each year
+      - yield: annual_dividend_per_share / year_end_close * 100
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    current_year = datetime.now(timezone.utc).year
+    from_year = current_year - years
+    from_date = f"{from_year}-01-01"
+
+    # 1. All dividend_history records in the window
+    div_cursor = db.dividend_history.find(
+        {
+            "ticker": ticker_full,
+            "$or": [
+                {"ex_date": {"$gte": from_date}},
+                {"date": {"$gte": from_date}},
+            ],
+        },
+        {"_id": 0},
+    ).sort([("ex_date", -1), ("date", -1)])
+    all_divs = await div_cursor.to_list(length=1000)
+
+    # Normalize
+    normalized_divs = []
+    for d in all_divs:
+        div_date = d.get("ex_date") or d.get("date")
+        amount = d.get("amount") or d.get("value") or 0
+        if div_date and amount > 0:
+            normalized_divs.append({"date": div_date, "amount": round(amount, 6)})
+    normalized_divs.sort(key=lambda x: x["date"])
+
+    # Group by year
+    by_year: dict = {}
+    for d in normalized_divs:
+        yr = int(d["date"][:4])
+        by_year.setdefault(yr, []).append(d)
+
+    # 2. Year-end close prices: last trading day of each year
+    year_end_prices: dict = {}
+    for yr in range(from_year, current_year + 1):
+        if yr == current_year:
+            # Use latest available price for current (partial) year
+            latest = await db.stock_prices.find_one(
+                {"ticker": ticker_full},
+                {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1},
+                sort=[("date", -1)],
+            )
+        else:
+            latest = await db.stock_prices.find_one(
+                {"ticker": ticker_full, "date": {"$lte": f"{yr}-12-31", "$gte": f"{yr}-01-01"}},
+                {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1},
+                sort=[("date", -1)],
+            )
+        if latest:
+            close = latest.get("adjusted_close") or latest.get("close")
+            year_end_prices[yr] = {"date": latest["date"], "close": close}
+
+    # 3. Build table rows
+    rows = []
+    prev_total = None
+    for yr in range(from_year, current_year + 1):
+        divs = by_year.get(yr, [])
+        total_per_share = round(sum(d["amount"] for d in divs), 4)
+        count = len(divs)
+        is_partial = yr == current_year
+
+        price_info = year_end_prices.get(yr)
+        year_end_close = price_info["close"] if price_info else None
+        price_date = price_info["date"] if price_info else None
+
+        annual_yield = None
+        if year_end_close and year_end_close > 0 and total_per_share > 0:
+            annual_yield = round((total_per_share / year_end_close) * 100, 4)
+
+        yoy_growth = None
+        if prev_total is not None and prev_total > 0 and total_per_share > 0:
+            yoy_growth = round(((total_per_share - prev_total) / prev_total) * 100, 2)
+
+        rows.append({
+            "year": yr,
+            "is_partial": is_partial,
+            "dividend_payments_count": count,
+            "annual_dividend_per_share": total_per_share,
+            "dividend_rows_used": divs,
+            "year_end_close": year_end_close,
+            "year_end_close_date": price_date,
+            "annual_dividend_yield_pct": annual_yield,
+            "yoy_growth_pct": yoy_growth,
+        })
+        if total_per_share > 0:
+            prev_total = total_per_share
+
+    return {
+        "ticker": ticker_full,
+        "yield_definition": "annual_dividend_per_share / year_end_adjusted_close * 100",
+        "price_source": "stock_prices collection, last trading day of each calendar year (adjusted_close preferred, close fallback)",
+        "dividend_source": "dividend_history collection ONLY (per-share ex-date payments)",
+        "years_requested": years,
+        "rows": rows,
+    }
+
+
 @api_router.get("/admin/audit/dividend-yield-pool/csv")
 async def admin_audit_dividend_yield_pool_csv(
     sector: str = Query("Financial Services", description="Sector filter"),
