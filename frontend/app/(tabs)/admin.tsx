@@ -393,8 +393,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     }
   }
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
-  // Step 4 latest-failure alert (catches failures even when not in today's jobs window)
-  if (step4LatestFailed) {
+  // Step 4 latest-failure alert (catches failures even when not in today's jobs window).
+  // Only add when peer_medians is NOT already in failedJobsList to avoid duplicate alerts.
+  if (step4LatestFailed && !step4AlreadyCounted) {
     const errMsg = pAge?.step4_error_message;
     alerts.push({ color: '#EF4444', icon: 'close-circle', text: `Step 4 (Peer Medians) failed${errMsg ? ': ' + String(errMsg).slice(0, 120) : ''}` });
   }
