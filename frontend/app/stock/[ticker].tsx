@@ -397,6 +397,10 @@ export default function StockDetail() {
   
   // Dividends state
   const [dividendPayments, setDividendPayments] = useState<{ex_date: string; amount: number}[]>([]);
+  const [dividendHistory, setDividendHistory] = useState<{ex_date: string; amount: number}[]>([]);
+  const [dividendViewMode, setDividendViewMode] = useState<'payments' | 'annual'>('payments');
+  const [dividendAnnualMode, setDividendAnnualMode] = useState<'usd' | 'pct'>('usd');
+  const [selectedDividendPeriod, setSelectedDividendPeriod] = useState<string>('TTM');
   
   // Financials period toggle - handled internally by FinancialHub component
   
@@ -511,10 +515,30 @@ export default function StockDetail() {
   const fetchDividends = async () => {
     try {
       const response = await axios.get(`${API_URL}/api/dividends/${ticker}`);
-      setDividendPayments(response.data.recent_payments || []);
+      const recentPaymentsRaw = Array.isArray(response.data?.recent_payments) ? response.data.recent_payments : [];
+      const historyRaw = Array.isArray(response.data?.history) ? response.data.history : [];
+
+      const normalize = (rows: any[]) =>
+        rows
+          .map((d) => {
+            const amount = typeof d?.amount === 'number' ? d.amount : Number(d?.amount);
+            return {
+              ex_date: typeof d?.ex_date === 'string' ? d.ex_date : '',
+              amount,
+            };
+          })
+          .filter((d) => d.ex_date && Number.isFinite(d.amount))
+          .sort((a, b) => b.ex_date.localeCompare(a.ex_date));
+
+      const normalizedRecent = normalize(recentPaymentsRaw);
+      const normalizedHistory = normalize(historyRaw);
+
+      setDividendPayments(normalizedRecent);
+      setDividendHistory(normalizedHistory.length > 0 ? normalizedHistory : normalizedRecent);
     } catch (err) {
       console.error('Error fetching dividends:', err);
       setDividendPayments([]);
+      setDividendHistory([]);
     } finally {
       setDividendsLoading(false);
     }
@@ -617,6 +641,9 @@ export default function StockDetail() {
     // Reset loading states for new ticker to avoid flashing negative pills
     setMobileDataLoading(true);
     setDividendsLoading(true);
+    setDividendViewMode('payments');
+    setDividendAnnualMode('usd');
+    setSelectedDividendPeriod('TTM');
     fetchStock(false);
     fetchDividends();
   }, [ticker]);
@@ -969,6 +996,96 @@ export default function StockDetail() {
     const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
     const yyyy = d.getUTCFullYear();
     return `${dd}/${mm}/${yyyy}`;
+  };
+
+  type AnnualDividendPeriod = {
+    key: string;
+    label: string;
+    total: number;
+    previousTotal: number | null;
+  };
+
+  const annualDividendPeriods = useMemo<AnnualDividendPeriod[]>(() => {
+    const parseExDateMs = (exDate: string): number | null => {
+      if (!exDate) return null;
+      const normalized = exDate.includes('T') ? exDate : `${exDate}T00:00:00Z`;
+      const ms = Date.parse(normalized);
+      return Number.isFinite(ms) ? ms : null;
+    };
+
+    const events = dividendHistory
+      .map((d) => ({ amount: d.amount, exDateMs: parseExDateMs(d.ex_date) }))
+      .filter((d): d is { amount: number; exDateMs: number } => d.exDateMs !== null);
+
+    if (events.length === 0) return [];
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    const ttmStart = now - (365 * dayMs);
+    const priorTtmStart = now - (730 * dayMs);
+    const priorTtmEnd = ttmStart;
+
+    const ttmTotal = events
+      .filter((e) => e.exDateMs > ttmStart && e.exDateMs <= now)
+      .reduce((sum, e) => sum + e.amount, 0);
+
+    const priorTtmTotal = events
+      .filter((e) => e.exDateMs > priorTtmStart && e.exDateMs <= priorTtmEnd)
+      .reduce((sum, e) => sum + e.amount, 0);
+
+    const yearTotals = new Map<number, number>();
+    for (const event of events) {
+      const year = new Date(event.exDateMs).getUTCFullYear();
+      yearTotals.set(year, (yearTotals.get(year) || 0) + event.amount);
+    }
+
+    const periods: AnnualDividendPeriod[] = [{
+      key: 'TTM',
+      label: 'TTM',
+      total: Number(ttmTotal.toFixed(4)),
+      previousTotal: Number(priorTtmTotal.toFixed(4)),
+    }];
+
+    const years = Array.from(yearTotals.keys()).sort((a, b) => b - a);
+    for (const year of years) {
+      periods.push({
+        key: String(year),
+        label: String(year),
+        total: Number((yearTotals.get(year) || 0).toFixed(4)),
+        previousTotal: yearTotals.has(year - 1) ? Number((yearTotals.get(year - 1) || 0).toFixed(4)) : null,
+      });
+    }
+
+    return periods;
+  }, [dividendHistory]);
+
+  const hasAnnualDividendData = annualDividendPeriods.length > 0 && annualDividendPeriods.some((p) => p.total > 0);
+
+  useEffect(() => {
+    if (!annualDividendPeriods.length) return;
+    if (!annualDividendPeriods.some((p) => p.key === selectedDividendPeriod)) {
+      setSelectedDividendPeriod(annualDividendPeriods[0].key);
+    }
+  }, [annualDividendPeriods, selectedDividendPeriod]);
+
+  const selectedAnnualDividendPeriod = useMemo(
+    () => annualDividendPeriods.find((p) => p.key === selectedDividendPeriod) || annualDividendPeriods[0] || null,
+    [annualDividendPeriods, selectedDividendPeriod]
+  );
+
+  const getAnnualYoyDisplay = (current: number | null, previous: number | null) => {
+    if (current === null || previous === null) return { label: '—', tone: 'neutral' as const };
+    if (current === 0 && previous > 0) return { label: 'Suspended', tone: 'negative' as const };
+    if (previous === 0 && current > 0) return { label: 'New', tone: 'neutral' as const };
+    if (previous > 0) {
+      const pct = ((current - previous) / previous) * 100;
+      return {
+        label: `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
+        tone: pct > 0 ? ('positive' as const) : pct < 0 ? ('negative' as const) : ('neutral' as const),
+      };
+    }
+    if (current === 0 && previous === 0) return { label: '—', tone: 'neutral' as const };
+    return { label: '—', tone: 'neutral' as const };
   };
 
   const getMarketCapLabel = (cap: number | null | undefined) => {
@@ -3203,18 +3320,122 @@ export default function StockDetail() {
               
               {/* Dividends - always show from canonical source (dividend_history) */}
               <Text style={[styles.subsectionTitle, { marginTop: 16 }]}>Dividends</Text>
-              {dividendPayments && dividendPayments.length > 0 ? (
-                <View style={styles.dividendsList}>
-                  {dividendPayments.slice(0, 4).map((d, i) => (
-                    <View key={i} style={styles.dividendRow}>
-                      <Text style={styles.dividendDate}>{formatDateDMY(d.ex_date)}</Text>
-                      <Text style={styles.dividendAmount}>${toEU(d.amount, 4)}</Text>
-                    </View>
-                  ))}
-                </View>
+              <View style={styles.dividendViewSwitch}>
+                <TouchableOpacity
+                  style={[styles.dividendViewButton, dividendViewMode === 'payments' && styles.dividendViewButtonActive]}
+                  onPress={() => setDividendViewMode('payments')}
+                >
+                  <Text style={[styles.dividendViewButtonText, dividendViewMode === 'payments' && styles.dividendViewButtonTextActive]}>
+                    Payments
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.dividendViewButton, dividendViewMode === 'annual' && styles.dividendViewButtonActive]}
+                  onPress={() => setDividendViewMode('annual')}
+                >
+                  <Text style={[styles.dividendViewButtonText, dividendViewMode === 'annual' && styles.dividendViewButtonTextActive]}>
+                    Annual
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {dividendViewMode === 'payments' ? (
+                dividendPayments && dividendPayments.length > 0 ? (
+                  <View style={styles.dividendsList}>
+                    {dividendPayments.slice(0, 4).map((d, i) => (
+                      <View key={i} style={styles.dividendRow}>
+                        <Text style={styles.dividendDate}>{formatDateDMY(d.ex_date)}</Text>
+                        <Text style={styles.dividendAmount}>${toEU(d.amount, 4)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : (
+                  <View style={styles.noDataPlaceholder}>
+                    <Text style={styles.noDataText}>No dividend payments</Text>
+                  </View>
+                )
               ) : (
-                <View style={styles.noDataPlaceholder}>
-                  <Text style={styles.noDataText}>No dividend payments</Text>
+                <View style={styles.dividendAnnualSection}>
+                  <View style={styles.dividendAnnualModeSwitch}>
+                    <TouchableOpacity
+                      style={[styles.dividendAnnualModeButton, dividendAnnualMode === 'usd' && styles.dividendAnnualModeButtonActive]}
+                      onPress={() => setDividendAnnualMode('usd')}
+                    >
+                      <Text style={[styles.dividendAnnualModeText, dividendAnnualMode === 'usd' && styles.dividendAnnualModeTextActive]}>
+                        USD
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.dividendAnnualModeButton, dividendAnnualMode === 'pct' && styles.dividendAnnualModeButtonActive]}
+                      onPress={() => setDividendAnnualMode('pct')}
+                    >
+                      <Text style={[styles.dividendAnnualModeText, dividendAnnualMode === 'pct' && styles.dividendAnnualModeTextActive]}>
+                        %
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {hasAnnualDividendData ? (
+                    <>
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dividendPeriodsRow}>
+                        {annualDividendPeriods.map((period) => {
+                          const yoy = getAnnualYoyDisplay(period.total, period.previousTotal);
+                          const isSelected = selectedAnnualDividendPeriod?.key === period.key;
+                          const valueLabel = dividendAnnualMode === 'usd'
+                            ? `$${toEU(period.total, 4)}`
+                            : yoy.label;
+                          return (
+                            <TouchableOpacity
+                              key={period.key}
+                              style={[styles.dividendPeriodPill, isSelected && styles.dividendPeriodPillActive]}
+                              onPress={() => setSelectedDividendPeriod(period.key)}
+                            >
+                              <Text style={[styles.dividendPeriodLabel, isSelected && styles.dividendPeriodLabelActive]}>{period.label}</Text>
+                              <Text style={[
+                                styles.dividendPeriodValue,
+                                yoy.tone === 'positive' && styles.dividendValuePositive,
+                                yoy.tone === 'negative' && styles.dividendValueNegative,
+                                yoy.tone === 'neutral' && styles.dividendValueNeutral,
+                              ]}>
+                                {valueLabel}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+
+                      {selectedAnnualDividendPeriod && (() => {
+                        const yoy = getAnnualYoyDisplay(selectedAnnualDividendPeriod.total, selectedAnnualDividendPeriod.previousTotal);
+                        return (
+                          <View style={styles.dividendAnnualTable}>
+                            <View style={styles.dividendAnnualRow}>
+                              <Text style={styles.dividendAnnualLabel}>Period</Text>
+                              <Text style={styles.dividendAnnualValue}>{selectedAnnualDividendPeriod.label}</Text>
+                            </View>
+                            <View style={styles.dividendAnnualRow}>
+                              <Text style={styles.dividendAnnualLabel}>Dividend / Share</Text>
+                              <Text style={styles.dividendAnnualValue}>${toEU(selectedAnnualDividendPeriod.total, 4)}</Text>
+                            </View>
+                            <View style={styles.dividendAnnualRow}>
+                              <Text style={styles.dividendAnnualLabel}>YoY</Text>
+                              <Text style={[
+                                styles.dividendAnnualValue,
+                                yoy.tone === 'positive' && styles.dividendValuePositive,
+                                yoy.tone === 'negative' && styles.dividendValueNegative,
+                                yoy.tone === 'neutral' && styles.dividendValueNeutral,
+                              ]}>
+                                {yoy.label}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })()}
+                    </>
+                  ) : (
+                    <View style={styles.noDataPlaceholder}>
+                      <Text style={styles.noDataText}>Not enough dividend history for annual view</Text>
+                    </View>
+                  )}
                 </View>
               )}
             </>
@@ -3758,6 +3979,30 @@ const styles = StyleSheet.create({
   dividendRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   dividendDate: { fontSize: 13, color: COLORS.textMuted },
   dividendAmount: { fontSize: 13, fontWeight: '600', color: COLORS.text },
+  dividendViewSwitch: { flexDirection: 'row', backgroundColor: '#F3F4F6', borderRadius: 8, padding: 3, marginTop: 8, marginBottom: 8, alignSelf: 'flex-start' },
+  dividendViewButton: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6 },
+  dividendViewButtonActive: { backgroundColor: '#FFFFFF' },
+  dividendViewButtonText: { fontSize: 12, color: COLORS.textMuted, fontWeight: '600' },
+  dividendViewButtonTextActive: { color: COLORS.text },
+  dividendAnnualSection: { marginTop: 4 },
+  dividendAnnualModeSwitch: { flexDirection: 'row', backgroundColor: '#F3F4F6', borderRadius: 8, padding: 3, alignSelf: 'flex-end', marginBottom: 10 },
+  dividendAnnualModeButton: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 6 },
+  dividendAnnualModeButtonActive: { backgroundColor: COLORS.primary },
+  dividendAnnualModeText: { fontSize: 11, color: COLORS.textMuted, fontWeight: '600' },
+  dividendAnnualModeTextActive: { color: '#FFFFFF' },
+  dividendPeriodsRow: { gap: 8, paddingBottom: 4 },
+  dividendPeriodPill: { minWidth: 84, backgroundColor: '#F8FAFC', borderRadius: 10, borderWidth: 1, borderColor: COLORS.border, paddingHorizontal: 10, paddingVertical: 8 },
+  dividendPeriodPillActive: { borderColor: COLORS.primary, backgroundColor: '#EFF6FF' },
+  dividendPeriodLabel: { fontSize: 11, color: COLORS.textMuted, fontWeight: '600', marginBottom: 2 },
+  dividendPeriodLabelActive: { color: COLORS.primary },
+  dividendPeriodValue: { fontSize: 12, fontWeight: '700' },
+  dividendAnnualTable: { marginTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
+  dividendAnnualRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: COLORS.border },
+  dividendAnnualLabel: { fontSize: 12, color: COLORS.textMuted },
+  dividendAnnualValue: { fontSize: 13, fontWeight: '600', color: COLORS.text },
+  dividendValuePositive: { color: '#10B981' },
+  dividendValueNegative: { color: '#EF4444' },
+  dividendValueNeutral: { color: COLORS.textMuted },
   
   // P4: Tab styles removed - Single vertical scroll, no tabs
   
