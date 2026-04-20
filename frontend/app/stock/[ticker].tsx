@@ -188,7 +188,6 @@ interface DividendData {
   status: string;
 }
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const round4 = (value: number): number => Number(value.toFixed(4));
 const parseDividendExDateMs = (exDate: string): number | null => {
   if (!exDate) return null;
@@ -1021,9 +1020,14 @@ export default function StockDetail() {
 
     if (events.length === 0) return [];
 
-    const now = Date.now();
-    const ttmStart = now - (365 * MS_PER_DAY);
-    const priorTtmStart = now - (730 * MS_PER_DAY);
+    const nowDate = new Date();
+    const now = nowDate.getTime();
+    const ttmStartDate = new Date(nowDate.getTime());
+    ttmStartDate.setUTCFullYear(ttmStartDate.getUTCFullYear() - 1);
+    const priorTtmStartDate = new Date(ttmStartDate.getTime());
+    priorTtmStartDate.setUTCFullYear(priorTtmStartDate.getUTCFullYear() - 1);
+    const ttmStart = ttmStartDate.getTime();
+    const priorTtmStart = priorTtmStartDate.getTime();
     const priorTtmEnd = ttmStart;
 
     const ttmTotal = events
@@ -1069,13 +1073,9 @@ export default function StockDetail() {
     }
   }, [annualDividendPeriods, selectedDividendPeriod]);
 
-  const selectedAnnualDividendPeriod = useMemo(
-    () => annualDividendPeriods.find((p) => p.key === selectedDividendPeriod) || annualDividendPeriods[0] || null,
-    [annualDividendPeriods, selectedDividendPeriod]
-  );
-
   const getAnnualYoyDisplay = (current: number | null, previous: number | null) => {
     if (current === null || previous === null) return { label: '—', tone: 'neutral' as const };
+    if (current === 0 && previous === 0) return { label: '—', tone: 'neutral' as const };
     if (previous === 0) return current > 0
       ? { label: 'New', tone: 'neutral' as const }
       : { label: '—', tone: 'neutral' as const };
@@ -1089,6 +1089,15 @@ export default function StockDetail() {
     }
     return { label: '—', tone: 'neutral' as const };
   };
+
+  const selectedAnnualDividendPeriod = useMemo(
+    () => annualDividendPeriods.find((p) => p.key === selectedDividendPeriod) || annualDividendPeriods[0] || null,
+    [annualDividendPeriods, selectedDividendPeriod]
+  );
+
+  const selectedAnnualDividendYoy = selectedAnnualDividendPeriod
+    ? getAnnualYoyDisplay(selectedAnnualDividendPeriod.total, selectedAnnualDividendPeriod.previousTotal)
+    : { label: '—', tone: 'neutral' as const };
 
   const getMarketCapLabel = (cap: number | null | undefined) => {
     if (!cap) return 'N/A';
@@ -3395,9 +3404,9 @@ export default function StockDetail() {
                               <Text style={[styles.dividendPeriodLabel, isSelected && styles.dividendPeriodLabelActive]}>{period.label}</Text>
                               <Text style={[
                                 styles.dividendPeriodValue,
-                                yoy.tone === 'positive' && styles.dividendValuePositive,
-                                yoy.tone === 'negative' && styles.dividendValueNegative,
-                                yoy.tone === 'neutral' && styles.dividendValueNeutral,
+                                dividendAnnualMode === 'pct' && yoy.tone === 'positive' && styles.dividendValuePositive,
+                                dividendAnnualMode === 'pct' && yoy.tone === 'negative' && styles.dividendValueNegative,
+                                dividendAnnualMode === 'pct' && yoy.tone === 'neutral' && styles.dividendValueNeutral,
                               ]}>
                                 {valueLabel}
                               </Text>
@@ -3406,32 +3415,29 @@ export default function StockDetail() {
                         })}
                       </ScrollView>
 
-                      {selectedAnnualDividendPeriod && (() => {
-                        const yoy = getAnnualYoyDisplay(selectedAnnualDividendPeriod.total, selectedAnnualDividendPeriod.previousTotal);
-                        return (
-                          <View style={styles.dividendAnnualTable}>
-                            <View style={styles.dividendAnnualRow}>
-                              <Text style={styles.dividendAnnualLabel}>Period</Text>
-                              <Text style={styles.dividendAnnualValue}>{selectedAnnualDividendPeriod.label}</Text>
-                            </View>
-                            <View style={styles.dividendAnnualRow}>
-                              <Text style={styles.dividendAnnualLabel}>Dividend / Share</Text>
-                              <Text style={styles.dividendAnnualValue}>${toEU(selectedAnnualDividendPeriod.total, 4)}</Text>
-                            </View>
-                            <View style={styles.dividendAnnualRow}>
-                              <Text style={styles.dividendAnnualLabel}>YoY</Text>
-                              <Text style={[
-                                styles.dividendAnnualValue,
-                                yoy.tone === 'positive' && styles.dividendValuePositive,
-                                yoy.tone === 'negative' && styles.dividendValueNegative,
-                                yoy.tone === 'neutral' && styles.dividendValueNeutral,
-                              ]}>
-                                {yoy.label}
-                              </Text>
-                            </View>
+                      {selectedAnnualDividendPeriod && (
+                        <View style={styles.dividendAnnualTable}>
+                          <View style={styles.dividendAnnualRow}>
+                            <Text style={styles.dividendAnnualLabel}>Period</Text>
+                            <Text style={styles.dividendAnnualValue}>{selectedAnnualDividendPeriod.label}</Text>
                           </View>
-                        );
-                      })()}
+                          <View style={styles.dividendAnnualRow}>
+                            <Text style={styles.dividendAnnualLabel}>Dividend / Share</Text>
+                            <Text style={styles.dividendAnnualValue}>${toEU(selectedAnnualDividendPeriod.total, 4)}</Text>
+                          </View>
+                          <View style={styles.dividendAnnualRow}>
+                            <Text style={styles.dividendAnnualLabel}>YoY</Text>
+                            <Text style={[
+                              styles.dividendAnnualValue,
+                              selectedAnnualDividendYoy.tone === 'positive' && styles.dividendValuePositive,
+                              selectedAnnualDividendYoy.tone === 'negative' && styles.dividendValueNegative,
+                              selectedAnnualDividendYoy.tone === 'neutral' && styles.dividendValueNeutral,
+                            ]}>
+                              {selectedAnnualDividendYoy.label}
+                            </Text>
+                          </View>
+                        </View>
+                      )}
                     </>
                   ) : (
                     <View style={styles.noDataPlaceholder}>
