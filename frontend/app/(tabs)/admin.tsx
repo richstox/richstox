@@ -349,10 +349,13 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const step4LatestFailed = pAge?.step4_latest_failed === true;
   // Augment failed count: health.jobs_failed covers today's runs; if the
   // most recent Step 4 run (which may have been today but already scrolled
-  // out of the jobs window) failed, ensure it is counted.
+  // out of the jobs window) failed, ensure it is counted.  Check whether
+  // peer_medians is already in the jobs.failed list to avoid double-counting.
   const baseFailedCount = health?.jobs_failed ?? 0;
-  const failedCount = step4LatestFailed && baseFailedCount === 0
-    ? 1
+  const failedJobsList: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
+  const step4AlreadyCounted = failedJobsList.some(fj => fj.name === 'peer_medians');
+  const failedCount = step4LatestFailed && !step4AlreadyCounted
+    ? baseFailedCount + 1
     : baseFailedCount;
   // Morning Refresh display status: derive from live job status, fallback to pipeline_age
   const mrDisplayStatus: string | undefined = isNewsRefreshRunning
@@ -376,12 +379,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const hc = overview?.history_completeness;
 
   // Build alerts
-  const failedJobs: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
   const alerts: { color: string; icon: string; text: string }[] = [];
   if (failedCount > 0) {
     // Show each failed job name + error reason individually
-    if (failedJobs.length > 0) {
-      for (const fj of failedJobs) {
+    if (failedJobsList.length > 0) {
+      for (const fj of failedJobsList) {
         const name = fj.name ?? 'unknown';
         const err = fj.error_summary ?? 'Unknown error';
         alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${name} failed: ${err}` });
@@ -567,8 +569,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           />
           <OpsItem
             label="Failed Jobs"
-            value={failedCount > 0 && failedJobs.length > 0
-              ? failedJobs.map(fj => fj.name ?? '?').join(', ')
+            value={failedCount > 0 && failedJobsList.length > 0
+              ? failedJobsList.map(fj => fj.name ?? '?').join(', ')
               : String(failedCount)}
             status={failedCount > 0 ? 'red' : 'green'}
           />

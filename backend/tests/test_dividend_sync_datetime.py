@@ -69,7 +69,7 @@ async def test_naive_synced_at_does_not_crash():
     # Simulate a ticker whose dividends_synced_at was stored 3 days ago.
     # MongoDB strips tzinfo, so we pass a NAIVE datetime — this is the exact
     # condition that triggered the production crash.
-    three_days_ago_naive = datetime.utcnow() - timedelta(days=3)
+    three_days_ago_naive = (datetime.now(timezone.utc) - timedelta(days=3)).replace(tzinfo=None)
     tracked_docs = [
         {"ticker": "AAPL.US", "dividends_synced_at": three_days_ago_naive},
     ]
@@ -98,7 +98,7 @@ async def test_naive_synced_at_old_triggers_resync():
     """A naive ``dividends_synced_at`` older than DIVIDEND_RESYNC_DAYS
     must correctly identify the ticker as pending resync.
     """
-    ten_days_ago_naive = datetime.utcnow() - timedelta(days=10)
+    ten_days_ago_naive = (datetime.now(timezone.utc) - timedelta(days=10)).replace(tzinfo=None)
     tracked_docs = [
         {"ticker": "MSFT.US", "dividends_synced_at": ten_days_ago_naive},
     ]
