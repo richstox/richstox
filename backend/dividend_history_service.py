@@ -434,6 +434,9 @@ async def sync_dividends_for_visible_tickers(db) -> Dict[str, Any]:
     pending = []
     for doc in all_visible:
         last_sync = doc.get("dividends_synced_at")
+        if last_sync is not None and getattr(last_sync, "tzinfo", None) is None:
+            # MongoDB returns naive datetimes — treat as UTC to match resync_cutoff.
+            last_sync = last_sync.replace(tzinfo=timezone.utc)
         if last_sync is None or last_sync < resync_cutoff:
             pending.append(doc["ticker"])
 

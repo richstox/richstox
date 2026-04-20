@@ -342,9 +342,21 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   );
 
   const health = overview?.health;
-  const failedCount = health?.jobs_failed ?? 0;
   const schedulerActive = health?.scheduler_active;
   const pAge = overview?.pipeline_age;
+  // Step 4 latest-failure detection from pipeline_age (works across days,
+  // not just today's ops_job_runs window).
+  const step4LatestFailed = pAge?.step4_latest_failed === true;
+  // Augment failed count: health.jobs_failed covers today's runs; if the
+  // most recent Step 4 run (which may have been today but already scrolled
+  // out of the jobs window) failed, ensure it is counted.  Check whether
+  // peer_medians is already in the jobs.failed list to avoid double-counting.
+  const baseFailedCount = health?.jobs_failed ?? 0;
+  const failedJobsList: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
+  const step4AlreadyCounted = failedJobsList.some(fj => fj.name === 'peer_medians');
+  const failedCount = step4LatestFailed && !step4AlreadyCounted
+    ? baseFailedCount + 1
+    : baseFailedCount;
   // Morning Refresh display status: derive from live job status, fallback to pipeline_age
   const mrDisplayStatus: string | undefined = isNewsRefreshRunning
     ? undefined
@@ -367,12 +379,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const hc = overview?.history_completeness;
 
   // Build alerts
-  const failedJobs: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
   const alerts: { color: string; icon: string; text: string }[] = [];
   if (failedCount > 0) {
     // Show each failed job name + error reason individually
-    if (failedJobs.length > 0) {
-      for (const fj of failedJobs) {
+    if (failedJobsList.length > 0) {
+      for (const fj of failedJobsList) {
         const name = fj.name ?? 'unknown';
         const err = fj.error_summary ?? 'Unknown error';
         alerts.push({ color: '#EF4444', icon: 'close-circle', text: `${name} failed: ${err}` });
@@ -382,6 +393,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     }
   }
   if (schedulerActive === false) alerts.push({ color: '#EF4444', icon: 'pause-circle', text: 'Scheduler is paused' });
+  // Step 4 latest-failure alert (catches failures even when not in today's jobs window).
+  // Only add when peer_medians is NOT already in failedJobsList to avoid duplicate alerts.
+  if (step4LatestFailed && !step4AlreadyCounted) {
+    const errMsg = pAge?.step4_error_message;
+    alerts.push({ color: '#EF4444', icon: 'close-circle', text: `Step 4 (Peer Medians) failed${errMsg ? ': ' + String(errMsg).slice(0, 120) : ''}` });
+  }
   if ((pi?.today_visible ?? 0) === 0) alerts.push({ color: '#EF4444', icon: 'eye-off', text: '0 visible tickers — universe not seeded' });
   const ctdh = pi?.completed_trading_days_health;
   const ctdhStaleMsg = ctdh?.message || 'Market calendar missing recent rows';
@@ -545,9 +562,16 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             status={schedulerActive ? 'green' : 'red'}
           />
           <OpsItem
+            label="Step 4"
+            value={step4LatestFailed
+              ? 'Failed'
+              : formatHours(pAge?.step4_hours_since_success)}
+            status={pAge?.step4_status}
+          />
+          <OpsItem
             label="Failed Jobs"
-            value={failedCount > 0 && failedJobs.length > 0
-              ? failedJobs.map(fj => fj.name ?? '?').join(', ')
+            value={failedCount > 0 && failedJobsList.length > 0
+              ? failedJobsList.map(fj => fj.name ?? '?').join(', ')
               : String(failedCount)}
             status={failedCount > 0 ? 'red' : 'green'}
           />

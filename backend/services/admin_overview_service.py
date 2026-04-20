@@ -1368,8 +1368,8 @@ async def get_eodhd_api_usage() -> Dict[str, Any]:
 
 async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
     """
-    Return hours since last successful full pipeline run (Step 3 = fundamentals_sync)
-    and last successful morning refresh (news_refresh).
+    Return hours since last successful full pipeline run (Step 3 = fundamentals_sync),
+    last successful morning refresh (news_refresh), and Step 4 (peer_medians) status.
 
     Morning Refresh = ``news_refresh`` job only.
     Both the scheduler (13:00 Prague) and admin Run Now write
@@ -1377,6 +1377,12 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
     The scheduler path writes ``completed_at``; the admin path writes
     ``finished_at`` — we handle both.
     If no qualifying run exists, morning_refresh_hours_since_success = None → UI shows "—".
+
+    Step 4 = ``peer_medians``.  We return:
+    - step4_hours_since_success: hours since last successful run (None if never)
+    - step4_status: green/yellow/red/unknown based on age
+    - step4_latest_failed: True if the most recent run (any status) was a failure
+    - step4_error_message: short error string when latest run failed
     """
     try:
         now_utc = datetime.now(timezone.utc)
@@ -1397,6 +1403,19 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
             sort=[("started_at", -1)],
         )
 
+        # Step 4: last successful peer_medians run
+        step4_success_run = await db.ops_job_runs.find_one(
+            {"job_name": "peer_medians", "status": {"$in": ["success", "completed"]}},
+            {"finished_at": 1, "completed_at": 1, "_id": 0},
+            sort=[("started_at", -1)],
+        )
+        # Step 4: absolute latest run (any status) to detect recent failures
+        step4_latest_run = await db.ops_job_runs.find_one(
+            {"job_name": "peer_medians"},
+            {"status": 1, "error_message": 1, "finished_at": 1, "completed_at": 1, "_id": 0},
+            sort=[("started_at", -1)],
+        )
+
         def _hours_since(run_doc):
             if not run_doc:
                 return None
@@ -1412,6 +1431,7 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
 
         pipeline_hours = _hours_since(pipeline_run)
         mr_hours = _hours_since(morning_refresh_run)
+        step4_hours = _hours_since(step4_success_run)
 
         def _status(hours):
             if hours is None:
@@ -1422,11 +1442,26 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
                 return "yellow"
             return "red"
 
+        # Determine Step 4 status: if the latest run failed, override to red
+        step4_base_status = _status(step4_hours)
+        step4_latest_failed = False
+        step4_error_message = None
+        if step4_latest_run:
+            latest_status = (step4_latest_run.get("status") or "").lower()
+            if latest_status in ("failed", "error"):
+                step4_latest_failed = True
+                step4_error_message = step4_latest_run.get("error_message")
+                step4_base_status = "red"
+
         return {
             "pipeline_hours_since_success": pipeline_hours,
             "pipeline_status": _status(pipeline_hours),
             "morning_refresh_hours_since_success": mr_hours,
             "morning_refresh_status": _status(mr_hours),
+            "step4_hours_since_success": step4_hours,
+            "step4_status": step4_base_status,
+            "step4_latest_failed": step4_latest_failed,
+            "step4_error_message": step4_error_message,
         }
     except Exception as exc:
         logger.warning("get_pipeline_last_success_age failed: %s", exc)
@@ -1435,6 +1470,10 @@ async def get_pipeline_last_success_age(db) -> Dict[str, Any]:
             "pipeline_status": "unknown",
             "morning_refresh_hours_since_success": None,
             "morning_refresh_status": "unknown",
+            "step4_hours_since_success": None,
+            "step4_status": "unknown",
+            "step4_latest_failed": False,
+            "step4_error_message": None,
         }
 
 
