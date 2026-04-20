@@ -1244,16 +1244,6 @@ async def scheduler_loop():
             
             # KEY METRICS at 05:00 (catch-up enabled)
             if should_run("key_metrics", KEY_METRICS_HOUR, KEY_METRICS_MINUTE, last_run, today_str, current_hour, current_minute):
-                # Ensure dividend_sync ran first (best-effort: if it hasn't run yet, run it now)
-                if not last_run.get("dividend_sync") == today_str:
-                    logger.info("key_metrics depends on dividend_sync — running dividend_sync first")
-                    try:
-                        from dividend_history_service import sync_dividends_for_visible_tickers
-                        await run_job_with_retry("dividend_sync", sync_dividends_for_visible_tickers, db)
-                        last_run["dividend_sync"] = today_str
-                        await set_last_run_state(last_run)
-                    except Exception as exc:
-                        logger.error(f"[scheduler] dividend_sync (pre-key_metrics) error: {exc}")
                 logger.info(f"Triggering key_metrics (hour={current_hour}, scheduled={KEY_METRICS_HOUR}:{KEY_METRICS_MINUTE:02d})")
                 try:
                     from key_metrics_service import compute_daily_key_metrics
@@ -1264,6 +1254,10 @@ async def scheduler_loop():
                     logger.error(f"[scheduler] key_metrics unhandled error (will retry next minute): {exc}")
             
             # PEER MEDIANS at 05:30 (catch-up enabled)
+            # NOTE: dividend_sync is a HARD dependency embedded inside
+            # compute_peer_benchmarks_v3 — it runs dividend_sync automatically
+            # before computing medians. The standalone 04:45 job is belt-and-
+            # suspenders; the function itself guarantees freshness.
             if should_run("peer_medians", PEER_MEDIANS_HOUR, PEER_MEDIANS_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering peer_medians (hour={current_hour}, scheduled={PEER_MEDIANS_HOUR}:{PEER_MEDIANS_MINUTE:02d})")
                 try:
