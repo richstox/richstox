@@ -2012,7 +2012,6 @@ from industry_benchmarks_service import (
 from dividend_history_service import (
     sync_ticker_dividends,
     sync_batch_dividends,
-    calculate_dividend_yield_ttm,
     get_dividend_history_for_ticker,
     get_dividend_stats,
 )
@@ -3377,6 +3376,30 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
     step4_keys = ["pe", "net_margin_ttm", "fcf_yield", "net_debt_ebitda",
                   "revenue_growth_3y", "dividend_yield", "roe"]
 
+    # ── 2b. Fetch dividend_history TTM totals for canonical dividend function ──
+    # (same aggregation as compute_peer_benchmarks_v3)
+    _one_year_ago_debug = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    _div_hist_batch_debug: dict = {}
+    _div_hist_pipeline_debug = [
+        {"$match": {
+            "ticker": {"$in": ticker_names},
+            "$or": [
+                {"ex_date": {"$gte": _one_year_ago_debug}},
+                {"date": {"$gte": _one_year_ago_debug}},
+            ],
+        }},
+        {"$group": {
+            "_id": "$ticker",
+            "total_amount": {"$sum": {"$ifNull": ["$amount", {"$ifNull": ["$value", 0]}]}},
+            "count": {"$sum": 1},
+        }},
+    ]
+    async for doc in db.dividend_history.aggregate(_div_hist_pipeline_debug):
+        _div_hist_batch_debug[doc["_id"]] = {
+            "total": doc["total_amount"],
+            "count": doc["count"],
+        }
+
     # ── 3. Compute per-ticker eligibility + step4 metric values ──
     tickers_detail = []
     # Counters
@@ -3523,18 +3546,25 @@ async def admin_benchmark_debug_industry(name: str = Query(..., min_length=1)):
                     operating_cf_ttm = sum(_sf(quarterly_cashflow[q].get(_ocf_field_d)) for q in _cf_keys)
                     capex_ttm = sum(_sf(quarterly_cashflow[q].get("capitalExpenditures")) for q in _cf_keys)
 
-        # Dividend yield TTM — from quarterly dividends_paid / market_cap
-        # (consistent with compute_peer_benchmarks_v3)
+        # Dividend yield TTM — canonical function (same as compute_peer_benchmarks_v3)
+        # Source: dividend_history ONLY.  Cashflow passed for debug diagnostics only.
         _div_q_keys = sorted(quarterly_cashflow.keys(), reverse=True)[:4] if quarterly_cashflow else []
+        _div_cf_vals_debug = (
+            [_sf(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
+            if len(_div_q_keys) >= 4 else []
+        )
+        _div_hist_info_debug = _div_hist_batch_debug.get(ticker, {})
+        _div_canonical_debug = compute_canonical_dividend_yield(
+            market_cap=market_cap,
+            shares_outstanding=shares,
+            cashflow_dividends_paid_quarterly=_div_cf_vals_debug,
+            dividend_history_ttm_total=_div_hist_info_debug.get("total"),
+            dividend_history_count=_div_hist_info_debug.get("count", 0),
+            include_debug=False,
+        )
         dividend_yield_ttm_val = None
-        if len(_div_q_keys) >= 4:
-            _div_vals_debug = [_sf(quarterly_cashflow[q].get("dividendsPaid")) for q in _div_q_keys]
-            if not all(v is None for v in _div_vals_debug):
-                _dividends_ttm_debug = sum(abs(v) for v in _div_vals_debug if v is not None)
-                if _dividends_ttm_debug == 0.0:
-                    dividend_yield_ttm_val = 0.0
-                elif market_cap > 0:
-                    dividend_yield_ttm_val = (_dividends_ttm_debug / market_cap) * 100
+        if _div_canonical_debug["dividend_yield_ttm_value"] is not None:
+            dividend_yield_ttm_val = _div_canonical_debug["dividend_yield_ttm_value"]
 
         # Revenue growth 3Y
         annual_income = financials_data.get("Income_Statement", {}).get("yearly", {})
@@ -5071,10 +5101,52 @@ async def get_stock_overview(ticker: str, lite: bool = Query(True)):
         else:
             _benchmark_fallback_level = "industry"
 
-    # 5. Calculate Dividend Yield TTM
+    # 5. Calculate Dividend Yield TTM — canonical function
+    # Source: dividend_history ONLY (EODHD dividend events).
+    # Same canonical path as compute_peer_benchmarks_v3 and /v1/ticker/detail.
     dividend_yield_ttm = None
     if current_price:
-        dividend_yield_ttm = await calculate_dividend_yield_ttm(db, ticker_full, current_price)
+        _shares_so = None
+        if tracked:
+            try:
+                _shares_so = float(tracked.get("shares_outstanding") or 0) or None
+            except (TypeError, ValueError):
+                _shares_so = None
+        if not _shares_so and embedded_fundamentals:
+            _ss = embedded_fundamentals.get("SharesStats", {})
+            try:
+                _shares_so = float(_ss.get("SharesOutstanding") or 0) or None
+            except (TypeError, ValueError):
+                pass
+        _market_cap_so = (current_price * _shares_so) if (_shares_so and current_price) else None
+
+        # Dividend history TTM from dividend_history collection
+        _one_year_ago_so = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+        _div_hist_cursor_so = db.dividend_history.find(
+            {
+                "ticker": ticker_full,
+                "$or": [
+                    {"ex_date": {"$gte": _one_year_ago_so}},
+                    {"date": {"$gte": _one_year_ago_so}},
+                ],
+            },
+            {"_id": 0, "amount": 1, "value": 1},
+        )
+        _div_hist_records_so = await _div_hist_cursor_so.to_list(length=200)
+        _div_hist_count_so = len(_div_hist_records_so)
+        _div_hist_ttm_total_so = (
+            sum(d.get("amount") or d.get("value") or 0 for d in _div_hist_records_so)
+            if _div_hist_count_so > 0
+            else None
+        )
+
+        _canonical_so = compute_canonical_dividend_yield(
+            market_cap=_market_cap_so,
+            shares_outstanding=_shares_so,
+            dividend_history_ttm_total=_div_hist_ttm_total_so,
+            dividend_history_count=_div_hist_count_so,
+        )
+        dividend_yield_ttm = _canonical_so["dividend_yield_ttm_value"]
 
     # 6. Compute Valuation Score if we have benchmark
     valuation_result = None
@@ -5846,8 +5918,7 @@ async def get_ticker_detail_mobile(
         net_debt_ebitda = net_debt / ebitda_ttm
 
     # Dividend Yield (TTM) — canonical computation
-    # Uses compute_canonical_dividend_yield: dividend_history first, cashflow second,
-    # integrity check between the two sources, extreme outlier guardrail.
+    # Source: dividend_history ONLY.  Cashflow passed for debug diagnostics only.
     _div_window = _quarterly_rows[:4]  # latest 4 quarterly reporting periods
     _div_cf_vals = [_sf(q.get("dividends_paid")) for q in _div_window] if len(_div_window) >= 4 else []
 
