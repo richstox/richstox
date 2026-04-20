@@ -1051,7 +1051,7 @@ export default function StockDetail() {
       previousTotal: round4(priorTtmTotal),
     }];
 
-    const years = Array.from(yearTotals.keys()).sort((a, b) => b - a);
+    const years = Array.from(yearTotals.keys()).sort((a, b) => b - a).slice(0, 10);
     for (const year of years) {
       periods.push({
         key: String(year),
