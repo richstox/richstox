@@ -3643,7 +3643,7 @@ export default function StockDetail() {
                                   style={styles.dividendYoYBadgeNeutral}
                                   onPress={() => showTooltip('dividendsPartialYear')}
                                   accessibilityRole="button"
-                                   accessibilityLabel="Show partial year help"
+                                  accessibilityLabel="Show partial year help"
                                 >
                                   <Text style={styles.dividendYoYBadgeNeutralText}>Partial</Text>
                                   <Ionicons name="help-circle-outline" size={11} color="#6B7280" />
@@ -3658,7 +3658,7 @@ export default function StockDetail() {
                                   ]}
                                   onPress={() => showTooltip('dividendsYoY')}
                                   accessibilityRole="button"
-                                   accessibilityLabel="Show year over year change help"
+                                  accessibilityLabel="Show year over year change help"
                                 >
                                   <Text style={[
                                     styles.dividendYoYBadgeText,
