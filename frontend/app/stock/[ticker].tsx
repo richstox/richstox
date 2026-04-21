@@ -3435,33 +3435,51 @@ export default function StockDetail() {
               {/* Earnings History */}
               {data?.earnings && data.earnings.length > 0 ? (
                 <>
-                  <Text style={[styles.subsectionTitle, { marginTop: 8 }]}>Earnings History</Text>
-                  {data.earnings.slice(0, 8).map((e, i) => (
-                    <View key={i} style={styles.earningsRow}>
-                      <Text style={styles.earningsDate}>{formatDateDMY(e.quarter_date)}</Text>
-                      <View style={styles.earningsData}>
-                        <Text style={styles.earningsValue}>
-                          ${e.reported_eps ? toEU(e.reported_eps, 2) : 'N/A'} vs ${e.estimated_eps ? toEU(e.estimated_eps, 2) : 'N/A'}
-                        </Text>
-                        <View style={[
-                          styles.beatMissBadge,
-                          e.beat_miss === 'beat' ? styles.beatBadge : styles.missBadge
-                        ]}>
+                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button">
+                    <Text style={styles.subsectionTitle}>Earnings History</Text>
+                    <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                  </TouchableOpacity>
+                  {data.earnings.slice(0, 8).map((e, i) => {
+                    const hasNA = !e.reported_eps || !e.estimated_eps || !e.surprise_pct;
+                    return (
+                      <View key={i} style={styles.earningsRow}>
+                        <View style={styles.earningsLeft}>
+                          <Text style={styles.earningsDate}>{formatDateDMY(e.quarter_date)}</Text>
+                          <View style={styles.earningsEpsRow}>
+                            <TouchableOpacity onPress={() => showTooltip('earningsActual')} accessibilityRole="button">
+                              <Text style={styles.earningsEpsLabel}>Act</Text>
+                            </TouchableOpacity>
+                            <Text style={styles.earningsEpsValue}>${e.reported_eps ? toEU(e.reported_eps, 2) : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}</Text>
+                            <Text style={styles.earningsEpsSep}>·</Text>
+                            <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button">
+                              <Text style={styles.earningsEpsLabel}>Exp</Text>
+                            </TouchableOpacity>
+                            <Text style={styles.earningsEpsValue}>${e.estimated_eps ? toEU(e.estimated_eps, 2) : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}</Text>
+                          </View>
+                        </View>
+                        <TouchableOpacity
+                          style={[
+                            styles.beatMissBadge,
+                            e.beat_miss === 'beat' ? styles.beatBadge : styles.missBadge
+                          ]}
+                          onPress={() => showTooltip(hasNA ? 'earningsNA' : 'earningsBeatMiss')}
+                          accessibilityRole="button"
+                        >
                           <Ionicons 
                             name={e.beat_miss === 'beat' ? 'checkmark' : 'close'} 
-                            size={12} 
+                            size={14} 
                             color={e.beat_miss === 'beat' ? '#10B981' : '#EF4444'} 
                           />
                           <Text style={[
                             styles.beatMissText,
                             e.beat_miss === 'beat' ? styles.beatText : styles.missText
                           ]}>
-                            {e.surprise_pct ? toEU(e.surprise_pct, 1) : 'N/A'}%
+                            {e.surprise_pct ? `${toEU(e.surprise_pct, 1)}%` : 'N/A'}
                           </Text>
-                        </View>
+                        </TouchableOpacity>
                       </View>
-                    </View>
-                  ))}
+                    );
+                  })}
                 </>
               ) : (
                 <View style={styles.noDataPlaceholder}>
@@ -3470,16 +3488,19 @@ export default function StockDetail() {
               )}
                
               {/* Dividends - always show from canonical source (dividend_history) */}
-              <Text style={styles.dividendsSubsectionTitle}>Dividends</Text>
+              <TouchableOpacity style={styles.dividendsSubsectionTitleRow} onPress={() => showTooltip('dividendsHeader')} accessibilityRole="button">
+                <Text style={styles.dividendsSubsectionTitle}>Dividends</Text>
+                <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+              </TouchableOpacity>
               <View style={styles.dividendMetaRow}>
-                <View style={styles.dividendMetaPill}>
+                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsFrequency')} accessibilityRole="button">
                   <Text style={styles.dividendMetaPillLabel}>Frequency</Text>
                   <Text style={styles.dividendMetaPillValue}>{dividendFrequencyLabel}</Text>
-                </View>
-                <View style={styles.dividendMetaPill}>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsCurrency')} accessibilityRole="button">
                   <Text style={styles.dividendMetaPillLabel}>Currency</Text>
                   <Text style={styles.dividendMetaPillValue}>{dividendDisplayCurrency}</Text>
-                </View>
+                </TouchableOpacity>
                 {dividendFrequencyFlags.hasSpecial && (
                   <View style={[styles.dividendMetaPill, styles.dividendMetaPillAccent]}>
                     <Text style={styles.dividendMetaPillValue}>Special</Text>
@@ -3493,7 +3514,10 @@ export default function StockDetail() {
               </View>
               <View style={styles.nextDividendCard}>
                 <View style={styles.nextDividendHeader}>
-                  <Text style={styles.nextDividendTitle}>Next dividend</Text>
+                  <TouchableOpacity style={styles.nextDividendTitleRow} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button">
+                    <Text style={styles.nextDividendTitle}>Next dividend</Text>
+                    <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                  </TouchableOpacity>
                   {nextDividendInfo?.event_type_label && (
                     <View style={styles.dividendEventTag}>
                       <Text style={styles.dividendEventTagText}>{nextDividendInfo.event_type_label}</Text>
@@ -3585,9 +3609,7 @@ export default function StockDetail() {
                       <View style={styles.dividendAnnualList}>
                         {annualDividendPeriods.map((period) => {
                           const yoy = getAnnualYoyDisplay(period.total, period.previousTotal, period.isPartial === true, period.isTTM === true);
-                          const helperLabel = period.isPartial
-                            ? 'Partial year'
-                            : `YoY: ${yoy.label}`;
+                          const isTTM = period.isTTM === true;
                           return (
                             <View
                               key={period.key}
@@ -3595,22 +3617,48 @@ export default function StockDetail() {
                             >
                               <View style={[styles.dividendTrendBar, getDividendToneStyle(yoy.tone)]} />
                               <View style={styles.dividendAnnualItemBody}>
-                                <Text style={styles.dividendAnnualPeriodLabel}>{period.label}</Text>
-                                <Text
-                                  style={[
-                                    styles.dividendAnnualHelperText,
-                                    period.isPartial ? styles.dividendPartialHelperText : getDividendToneStyle(yoy.tone),
-                                  ]}
-                                >
-                                  {helperLabel}
+                                <View style={styles.dividendAnnualLabelRow}>
+                                  <Text style={styles.dividendAnnualPeriodLabel}>{period.label}</Text>
+                                  {isTTM && (
+                                    <TouchableOpacity onPress={() => showTooltip('dividendsTTM')} accessibilityRole="button">
+                                      <Ionicons name="help-circle-outline" size={13} color={COLORS.textMuted} />
+                                    </TouchableOpacity>
+                                  )}
+                                </View>
+                                <Text style={styles.dividendAnnualSecondaryValue}>
+                                  {formatDividendAmount(period.total, dividendDisplayCurrency)}
                                 </Text>
                               </View>
-                              <Text style={[
-                                styles.dividendAnnualPrimaryValue,
-                                styles.dividendValueNeutral
-                              ]}>
-                                {formatDividendAmount(period.total, dividendDisplayCurrency)}
-                              </Text>
+                              {period.isPartial ? (
+                                <TouchableOpacity
+                                  style={styles.dividendYoYBadgeNeutral}
+                                  onPress={() => showTooltip('dividendsPartialYear')}
+                                  accessibilityRole="button"
+                                >
+                                  <Text style={styles.dividendYoYBadgeNeutralText}>Partial</Text>
+                                  <Ionicons name="help-circle-outline" size={11} color="#6B7280" />
+                                </TouchableOpacity>
+                              ) : (
+                                <TouchableOpacity
+                                  style={[
+                                    styles.dividendYoYBadge,
+                                    yoy.tone === 'positive' ? styles.dividendYoYBadgePositive
+                                    : yoy.tone === 'negative' ? styles.dividendYoYBadgeNegative
+                                    : styles.dividendYoYBadgeNeutralBase,
+                                  ]}
+                                  onPress={() => showTooltip('dividendsYoY')}
+                                  accessibilityRole="button"
+                                >
+                                  <Text style={[
+                                    styles.dividendYoYBadgeText,
+                                    yoy.tone === 'positive' ? styles.dividendYoYBadgeTextPositive
+                                    : yoy.tone === 'negative' ? styles.dividendYoYBadgeTextNegative
+                                    : styles.dividendYoYBadgeTextNeutral,
+                                  ]}>
+                                    {yoy.label}
+                                  </Text>
+                                </TouchableOpacity>
+                              )}
                             </View>
                           );
                         })}
@@ -4198,7 +4246,8 @@ const styles = StyleSheet.create({
   descriptionCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, marginBottom: 12 },
   sectionTitle: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginBottom: 10 },
   subsectionTitle: { fontSize: 15, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
-  dividendsSubsectionTitle: { fontSize: 15, fontWeight: '700', color: '#111827', marginTop: 16, marginBottom: 10 },
+  dividendsSubsectionTitle: { fontSize: 15, fontWeight: '700', color: '#111827' },
+  dividendsSubsectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 16, marginBottom: 10 },
   descriptionText: { fontSize: 14, color: COLORS.textLight, lineHeight: 20 },
   showMoreText: { fontSize: 13, color: COLORS.accent, marginTop: 8, fontWeight: '500' },
   
@@ -4273,10 +4322,24 @@ const styles = StyleSheet.create({
   dividendAnnualItem: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, backgroundColor: '#F9FAFB', paddingVertical: 10, paddingHorizontal: 12, gap: 10 },
   dividendTrendBar: { width: 4, borderRadius: 3, alignSelf: 'stretch' },
   dividendAnnualItemBody: { flex: 1 },
-  dividendAnnualPeriodLabel: { fontSize: 28, fontWeight: '900', color: '#111827', marginBottom: 2 },
+  dividendAnnualLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
+  dividendAnnualPeriodLabel: { fontSize: 28, fontWeight: '900', color: '#111827' },
+  dividendAnnualSecondaryValue: { fontSize: 14, color: '#374151', fontWeight: '600' },
   dividendAnnualHelperText: { fontSize: 14, color: '#374151', fontWeight: '700' },
   dividendPartialHelperText: { color: '#6B7280' },
   dividendAnnualPrimaryValue: { fontSize: 24, fontWeight: '900', color: '#111827' },
+  // YoY badge (pill) for annual dividend rows
+  dividendYoYBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, minWidth: 62, justifyContent: 'center' },
+  dividendYoYBadgePositive: { backgroundColor: '#D1FAE5' },
+  dividendYoYBadgeNegative: { backgroundColor: '#FEE2E2' },
+  dividendYoYBadgeNeutralBase: { backgroundColor: '#F3F4F6' },
+  dividendYoYBadgeText: { fontSize: 14, fontWeight: '700' },
+  dividendYoYBadgeTextPositive: { color: '#10B981' },
+  dividendYoYBadgeTextNegative: { color: '#EF4444' },
+  dividendYoYBadgeTextNeutral: { color: '#6B7280' },
+  dividendYoYBadgeNeutral: { flexDirection: 'row', alignItems: 'center', gap: 3, backgroundColor: '#F3F4F6', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6 },
+  dividendYoYBadgeNeutralText: { fontSize: 14, fontWeight: '700', color: '#6B7280' },
+  nextDividendTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   dividendValuePositive: { color: '#10B981' },
   dividendValueNegative: { color: '#EF4444' },
   dividendValueNeutral: { color: '#111827' },
@@ -4375,15 +4438,22 @@ const styles = StyleSheet.create({
   
   // Earnings
   earningsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
-  earningsDate: { fontSize: 15, color: COLORS.textMuted },
+  earningsLeft: { flex: 1, marginRight: 8 },
+  earningsDate: { fontSize: 13, color: COLORS.textMuted, marginBottom: 3 },
+  earningsEpsRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  earningsEpsLabel: { fontSize: 11, fontWeight: '600', color: COLORS.textMuted, letterSpacing: 0.3 },
+  earningsEpsValue: { fontSize: 13, fontWeight: '600', color: '#374151' },
+  earningsEpsSep: { fontSize: 13, color: COLORS.textMuted },
+  earningsNAText: { fontSize: 13, fontWeight: '600', color: COLORS.textMuted },
   earningsData: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   earningsValue: { fontSize: 15, fontWeight: '700', color: '#111827' },
-  beatMissBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, gap: 2 },
+  beatMissBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, gap: 3, minWidth: 62 },
   beatBadge: { backgroundColor: '#D1FAE5' },
   missBadge: { backgroundColor: '#FEE2E2' },
-  beatMissText: { fontSize: 13, fontWeight: '600' },
+  beatMissText: { fontSize: 14, fontWeight: '700' },
   beatText: { color: '#10B981' },
   missText: { color: '#EF4444' },
+  subsectionTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
   
   // Insider
   insiderStatus: { alignItems: 'center', marginBottom: 16 },

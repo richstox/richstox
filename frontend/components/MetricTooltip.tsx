@@ -201,6 +201,70 @@ export const TOOLTIP_CONTENT = {
     title: "Index (S&P 500 TR)",
     body: "Comparison against the S&P 500 Total Return index (dividends reinvested) over the same period.",
     howToRead: "Positive 'vs. index' = this stock outperformed the market. Negative = it underperformed. Context only."
+  },
+
+  // ── Earnings tooltips ──────────────────────────────────────────────────────
+  earningsHeader: {
+    title: "Earnings History",
+    body: "Each row shows one quarter's reported profit-per-share versus what analysts expected beforehand. A beat means the company surprised to the upside; a miss means it fell short.",
+    howToRead: "Green badge = beat expectations. Red badge = missed. The % shows how far off the estimate was. Context only, not advice."
+  },
+  earningsExpected: {
+    title: "Expected (Consensus Estimate)",
+    body: "The average earnings-per-share (EPS) forecast from Wall Street analysts before the company reported results. It reflects the market's best guess going in.",
+    howToRead: "Compare it against 'Actual' to see whether the company beat or missed. Context only, not advice."
+  },
+  earningsActual: {
+    title: "Actual (Reported EPS)",
+    body: "The earnings-per-share the company officially reported for that quarter. Negative numbers mean the company lost money per share that period.",
+    howToRead: "Higher than expected = beat. Lower = miss. Negative = unprofitable that quarter. Context only, not advice."
+  },
+  earningsBeatMiss: {
+    title: "Beat / Miss",
+    body: "Whether the reported EPS came in above (beat) or below (miss) the analyst consensus estimate. The percentage shows the size of the surprise.",
+    howToRead: "+5% beat means the company earned 5% more than expected. -10% miss means 10% below the estimate. Context only, not advice."
+  },
+  earningsNA: {
+    title: "N/A — Data Not Available",
+    body: "Either the analyst estimate or the reported figure is missing for this quarter. This can happen for very small companies, recent IPOs, or periods with no analyst coverage.",
+    howToRead: "N/A in 'Expected' means no analyst consensus existed. N/A in 'Actual' means the result was not captured. Context only, not advice."
+  },
+
+  // ── Dividends tooltips ─────────────────────────────────────────────────────
+  dividendsHeader: {
+    title: "Dividends",
+    body: "Cash payments a company makes to shareholders from its profits. Not all companies pay dividends — many reinvest profits into growth instead.",
+    howToRead: "Consistent or growing dividends can signal financial health. A cut or stop may signal stress. Context only, not advice."
+  },
+  dividendsTTM: {
+    title: "TTM — Trailing Twelve Months",
+    body: "The total dividend paid over the most recent 12-month period, rolling back from today. It gives a current-year snapshot even if the calendar year is not finished.",
+    howToRead: "TTM updates with each new payment, so it reflects the latest dividend run-rate rather than a fixed prior year. Context only, not advice."
+  },
+  dividendsYoY: {
+    title: "YoY — Year-over-Year Change",
+    body: "The percentage change in total annual dividends compared to the previous full calendar year. A positive number means the company paid more; negative means less.",
+    howToRead: "Green = dividend grew vs last year. Red = dividend shrank. Only shown for complete calendar years. Context only, not advice."
+  },
+  dividendsPartialYear: {
+    title: "Partial Year",
+    body: "The current calendar year is not yet complete, so total dividends so far are less than a full year. YoY comparison is hidden to avoid misleading you with an incomplete figure.",
+    howToRead: "Wait until year-end for a fair year-over-year comparison. The amount shown is just what has been paid so far this year. Context only, not advice."
+  },
+  dividendsFrequency: {
+    title: "Payment Frequency",
+    body: "How often the company pays dividends, detected from its recent payment history. Common patterns are monthly, quarterly, semi-annual, or annual.",
+    howToRead: "Frequency is auto-detected and may show 'Irregular' if the schedule is inconsistent. Context only, not advice."
+  },
+  dividendsCurrency: {
+    title: "Display Currency",
+    body: "The currency used to show dividend amounts on this screen. It matches the stock's primary trading currency unless a conversion has been applied.",
+    howToRead: "If you see a currency different from your home currency, amounts may vary with exchange rates. Context only, not advice."
+  },
+  dividendsNextDividend: {
+    title: "Next Dividend",
+    body: "The upcoming dividend event based on scheduled ex-dividend and payment dates. The ex-date is the cut-off — you must own the stock before this date to receive the payment.",
+    howToRead: "Owning shares on or after the ex-date means you will NOT receive the next dividend. The payment date is when cash is deposited. Context only, not advice."
   }
 };
 
