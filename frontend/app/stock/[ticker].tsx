@@ -447,6 +447,8 @@ export default function StockDetail() {
   
   // Performance Check period selector
   const [perfCheckPeriodVisible, setPerfCheckPeriodVisible] = useState(false);
+  // Price History range selector
+  const [priceRangeSelectorVisible, setPriceRangeSelectorVisible] = useState(false);
   
   // Price chart state
   const [priceRange, setPriceRange] = useState<PriceRange>('MAX'); // P1 CRITICAL: Default to MAX
@@ -2065,28 +2067,24 @@ export default function StockDetail() {
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionIcon}>📈</Text>
             <Text style={styles.sectionTitleBold}>Price History</Text>
+            <TouchableOpacity
+              style={styles.perfCheckPeriodTouchable}
+              onPress={() => setPriceRangeSelectorVisible(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Change price history period"
+            >
+              <Text style={styles.perfCheckPeriodBadge}>
+                {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
+              </Text>
+              <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
+            </TouchableOpacity>
           </View>
-          
-          {/* Range Selector */}
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.rangeSelectorContent}
-            style={styles.rangeSelectorScroll}
-          >
-            {(['3M', '6M', 'YTD', '1Y', '5Y', 'MAX'] as PriceRange[]).map((range) => (
-              <TouchableOpacity
-                key={range}
-                style={[styles.rangeButton, priceRange === range && styles.rangeButtonActive]}
-                onPress={() => setPriceRange(range)}
-                data-testid={`range-btn-${range}`}
-              >
-                <Text style={[styles.rangeButtonText, priceRange === range && styles.rangeButtonTextActive]}>
-                  {range}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
+
+          {visibleChartData.length > 0 && (
+            <Text style={styles.dateRangeText}>
+              {formatDateDMY(visibleChartData[0]?.date)} – {formatDateDMY(visibleChartData[visibleChartData.length - 1]?.date)}
+            </Text>
+          )}
           
           {/* ===== DATA NOTICE BANNER ===== */}
           {chartDataNotices.length > 0 && (
@@ -2100,11 +2098,6 @@ export default function StockDetail() {
             </View>
           )}
 
-          {visibleChartData.length > 0 && (
-            <Text style={styles.dateRangeText}>
-              {formatDateDMY(visibleChartData[0]?.date)} – {formatDateDMY(visibleChartData[visibleChartData.length - 1]?.date)}
-            </Text>
-          )}
           {showBenchmark && visibleBenchmarkData.length > 0 && (
             <Text style={styles.benchmarkNote}>Comparison starts at first common date.</Text>
           )}
@@ -2129,11 +2122,10 @@ export default function StockDetail() {
               </View>
             ) : visibleChartData.length > 0 && chartWMeasured > 0 ? (
               (() => {
-                const MIN_PX_PER_LABEL = 50;
-                const BADGE_FONT_SIZE = 9;
-                const BADGE_CHAR_W = 5.5;
-                const BADGE_PAD_H = 5;
-                const BADGE_H = 16;
+                const BADGE_FONT_SIZE = 11;
+                const BADGE_CHAR_W = 6.5;
+                const BADGE_PAD_H = 6;
+                const BADGE_H = 20;
                 const chartW = chartWMeasured;
                 chartWRef.current = chartW;
                 const chartH = 240;
@@ -2156,7 +2148,7 @@ export default function StockDetail() {
                   chartHeight: number,
                   formatPriceFn: (p: number) => string
                 ): ChartLabelData[] => {
-                  const LABEL_HEIGHT = 16;
+                  const LABEL_HEIGHT = 20;
                   const MIN_GAP = 2;
                   const TOP_BOUND = 8;
                   const BOTTOM_BOUND = chartHeight - 4;
@@ -2254,7 +2246,7 @@ export default function StockDetail() {
                 const paddingLeft = 64;
                 const paddingRight = 16;
                 const paddingTop = 20;
-                const paddingBottom = 32;
+                const paddingBottom = 20;
                 const graphW = chartW - paddingLeft - paddingRight;
                 const graphH = chartH - paddingTop - paddingBottom;
                 
@@ -2334,53 +2326,7 @@ export default function StockDetail() {
                   return ticks;
                 })();
                 
-                // ===== HIGH/LOW date labels for X-axis =====
-                const formatDateLabel = (dateStr: string): string => {
-                  const d = new Date(dateStr + 'T00:00:00Z');
-                  return `${d.getUTCDate().toString().padStart(2, '0')}.${(d.getUTCMonth() + 1).toString().padStart(2, '0')}.${d.getUTCFullYear().toString().slice(2)}`;
-                };
-                const highDateLabel = formatDateLabel(visibleChartData[highIdx].date);
-                const lowDateLabel = formatDateLabel(visibleChartData[lowIdx].date);
-                
-                // Vertical offset if HIGH and LOW x-positions are too close
-                const HL_LABEL_W = 8 * 6; // ~8 chars (DD.MM.YY) * ~6px per char at fontSize=10
-                const REGULAR_LABEL_W = 5 * 6; // ~5 chars (MM/YY) * ~6px
-                const hlOverlap = Math.abs(highX - lowX) < HL_LABEL_W;
-                const xAxisBaseY = chartH - paddingBottom + 16;
-                const xAxisOffsetY = Math.min(xAxisBaseY + 12, chartH - 2); // second row, clamped to SVG bottom
-                // HIGH always gets base row; LOW gets offset row if overlapping
-                const highDateY = xAxisBaseY;
-                const lowDateY = hlOverlap ? xAxisOffsetY : xAxisBaseY;
-                // Clamp label x so half-width doesn't extend outside the graph area
-                const hlHalf = HL_LABEL_W / 2;
-                const clampX = (x: number) => Math.max(paddingLeft + hlHalf, Math.min(x, paddingLeft + graphW - hlHalf));
 
-                // ===== X-AXIS: Compute date labels at regular intervals =====
-                const xAxisTicks: { x: number; label: string }[] = (() => {
-                  // Need at least 2 points to create meaningful date intervals
-                  if (dataCount < 2) return [];
-                  const maxLabels = Math.max(2, Math.min(7, Math.floor(graphW / MIN_PX_PER_LABEL)));
-                  const numLabels = Math.min(maxLabels, dataCount);
-                  if (numLabels < 2) return [];
-                  const regHalf = REGULAR_LABEL_W / 2;
-                  const ticks: { x: number; label: string }[] = [];
-                  for (let i = 0; i < numLabels; i++) {
-                    const dataIdx = Math.round(i * (dataCount - 1) / (numLabels - 1));
-                    const d = new Date(visibleChartData[dataIdx].date + 'T00:00:00Z');
-                    const label = `${(d.getUTCMonth() + 1).toString().padStart(2, '0')}/${d.getUTCFullYear().toString().slice(2)}`;
-                    // Clamp so the label stays fully inside the graph area
-                    const rawX = paddingLeft + (dataIdx / (dataCount - 1)) * graphW;
-                    const x = Math.max(paddingLeft + regHalf, Math.min(rawX, paddingLeft + graphW - regHalf));
-                    // Skip regular tick if it overlaps with HIGH or LOW date label
-                    const overlapThreshold = (HL_LABEL_W + REGULAR_LABEL_W) / 2;
-                    if (Math.abs(x - clampX(highX)) < overlapThreshold || Math.abs(x - clampX(lowX)) < overlapThreshold) continue;
-                    // Skip if clamped position overlaps the previous tick
-                    if (ticks.length > 0 && Math.abs(x - ticks[ticks.length - 1].x) < REGULAR_LABEL_W) continue;
-                    ticks.push({ x, label });
-                  }
-                  return ticks;
-                })();
-                
                 // Compute chart labels with deterministic stacking
                 const chartLabels = computeChartLabels(
                   highY, lowY, currentY,
@@ -2504,21 +2450,6 @@ export default function StockDetail() {
                         </G>
                       ))}
                       
-                      {/* X-axis date labels */}
-                      {xAxisTicks.map((tick, i) => (
-                        <SvgText key={`x-label-${i}`} x={tick.x} y={chartH - paddingBottom + 16} fontSize={10} fill="#9CA3AF" textAnchor="middle">
-                          {tick.label}
-                        </SvgText>
-                      ))}
-                      
-                      {/* HIGH/LOW date labels on X-axis */}
-                      <SvgText x={clampX(highX)} y={highDateY} fontSize={10} fill="#10B981" fontWeight="700" textAnchor="middle">
-                        {highDateLabel}
-                      </SvgText>
-                      <SvgText x={clampX(lowX)} y={lowDateY} fontSize={10} fill="#EF4444" fontWeight="700" textAnchor="middle">
-                        {lowDateLabel}
-                      </SvgText>
-                      
                       {/* X-axis baseline */}
                       <Line x1={paddingLeft} y1={chartH - paddingBottom} x2={paddingLeft + graphW} y2={chartH - paddingBottom}
                         stroke="#E5E7EB" strokeWidth={0.5} />
@@ -2561,7 +2492,7 @@ export default function StockDetail() {
                             />
                             <SvgText
                               x={badgeX + badgeW / 2}
-                              y={badgeY + BADGE_H / 2 + 3}
+                              y={badgeY + BADGE_H / 2 + 4}
                               fontSize={BADGE_FONT_SIZE}
                               fill="#FFFFFF"
                               fontWeight="700"
@@ -3926,6 +3857,37 @@ export default function StockDetail() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* Price History range selector */}
+      <Modal
+        visible={priceRangeSelectorVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPriceRangeSelectorVisible(false)}
+      >
+        <Pressable style={styles.periodSelectorOverlay} onPress={() => setPriceRangeSelectorVisible(false)}>
+          <Pressable style={styles.periodSelectorSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.periodSelectorHandle} />
+            <Text style={styles.periodSelectorTitle}>Price range</Text>
+            {PERFORMANCE_PERIODS.map((r) => (
+              <TouchableOpacity
+                key={r}
+                style={styles.periodSelectorOption}
+                onPress={() => {
+                  setPriceRange(r);
+                  setPriceRangeSelectorVisible(false);
+                }}
+                accessibilityRole="button"
+              >
+                <Text style={[styles.periodSelectorOptionText, priceRange === r && styles.periodSelectorOptionTextActive]}>
+                  {r === 'MAX' ? 'Full History' : `Past ${r}`}
+                </Text>
+                {priceRange === r && <Ionicons name="checkmark" size={18} color={COLORS.primary} />}
+              </TouchableOpacity>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
       
       {/* Persistent Bottom Navigation */}
       <BottomNav />
@@ -4199,7 +4161,7 @@ const styles = StyleSheet.create({
   rangeSelectorScroll: { marginBottom: 8 },
   rangeSelectorContent: { flexDirection: 'row', gap: 6, paddingHorizontal: 2 },
   // P22: Date range text under range selector
-  dateRangeText: { fontSize: 11, color: COLORS.textMuted, textAlign: 'center', marginBottom: 12 },
+  dateRangeText: { fontSize: 14, color: '#374151', marginBottom: 8 },
   benchmarkNote: { fontSize: 10, color: '#9CA3AF', textAlign: 'center', marginTop: -4, marginBottom: 8, fontStyle: 'italic' },
   rangeButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, backgroundColor: '#F5F8FC', alignItems: 'center', minWidth: 44 },
   rangeButtonActive: { backgroundColor: COLORS.primary },
