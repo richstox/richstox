@@ -3935,7 +3935,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 8,
-    marginBottom: 6,
+    marginBottom: 6, // tighter gap now that exchange pill moved to classificationRow below
   },
   classificationRow: {
     flexDirection: 'row',
