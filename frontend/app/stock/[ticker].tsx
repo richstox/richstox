@@ -3868,7 +3868,7 @@ export default function StockDetail() {
         <Pressable style={styles.periodSelectorOverlay} onPress={() => setPriceRangeSelectorVisible(false)}>
           <Pressable style={styles.periodSelectorSheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.periodSelectorHandle} />
-            <Text style={styles.periodSelectorTitle}>Price range</Text>
+            <Text style={styles.periodSelectorTitle}>Price history period</Text>
             {PERFORMANCE_PERIODS.map((r) => (
               <TouchableOpacity
                 key={r}
