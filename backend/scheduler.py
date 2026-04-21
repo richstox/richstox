@@ -155,10 +155,6 @@ PEER_MEDIANS_MINUTE = 30
 PAIN_CACHE_HOUR = 5
 PAIN_CACHE_MINUTE = 0
 
-# DIVIDEND SYNC: Daily dividend history sync at 04:45 (after fundamentals, before key_metrics)
-DIVIDEND_SYNC_HOUR = 4
-DIVIDEND_SYNC_MINUTE = 45
-
 # UPCOMING DIVIDEND CALENDAR: Daily refresh at 04:50 (date-window endpoint)
 UPCOMING_DIVIDEND_CALENDAR_HOUR = 4
 UPCOMING_DIVIDEND_CALENDAR_MINUTE = 50
@@ -178,7 +174,6 @@ KNOWN_JOBS = sorted([
     "backfill_all",
     "benchmark_update",
     "bulk_gapfill_remediation",
-    "dividend_sync",
     "dividend_upcoming_calendar",
     "fundamentals_sync",
     "key_metrics",
@@ -1238,17 +1233,6 @@ async def scheduler_loop():
                     last_run["backfill_all"] = today_str
                     await set_last_run_state(last_run)
             
-            # DIVIDEND SYNC at 04:45 (catch-up enabled)
-            if should_run("dividend_sync", DIVIDEND_SYNC_HOUR, DIVIDEND_SYNC_MINUTE, last_run, today_str, current_hour, current_minute):
-                logger.info(f"Triggering dividend_sync (hour={current_hour}, scheduled={DIVIDEND_SYNC_HOUR}:{DIVIDEND_SYNC_MINUTE:02d})")
-                try:
-                    from dividend_history_service import sync_dividends_for_visible_tickers
-                    await run_job_with_retry("dividend_sync", sync_dividends_for_visible_tickers, db)
-                    last_run["dividend_sync"] = today_str
-                    await set_last_run_state(last_run)
-                except Exception as exc:
-                    logger.error(f"[scheduler] dividend_sync unhandled error (will retry next minute): {exc}")
-
             # UPCOMING DIVIDEND CALENDAR at 04:50 (catch-up enabled)
             if should_run(
                 "dividend_upcoming_calendar",
@@ -1286,10 +1270,6 @@ async def scheduler_loop():
                     logger.error(f"[scheduler] key_metrics unhandled error (will retry next minute): {exc}")
             
             # PEER MEDIANS at 05:30 (catch-up enabled)
-            # NOTE: dividend_sync is a HARD dependency embedded inside
-            # compute_peer_benchmarks_v3 — it runs dividend_sync automatically
-            # before computing medians. The standalone 04:45 job is belt-and-
-            # suspenders; the function itself guarantees freshness.
             if should_run("peer_medians", PEER_MEDIANS_HOUR, PEER_MEDIANS_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering peer_medians (hour={current_hour}, scheduled={PEER_MEDIANS_HOUR}:{PEER_MEDIANS_MINUTE:02d})")
                 try:
