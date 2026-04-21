@@ -17,6 +17,8 @@ import {
   Image,
   Linking,
   Platform,
+  Modal,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
@@ -251,6 +253,9 @@ const resolveDividendCurrency = (eventCurrency?: string | null, fallbackCurrency
 // Price range options for chart - including MAX
 type PriceRange = '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | 'MAX';
 
+/** Periods available in the Performance Check period selector (3Y excluded). */
+const PERFORMANCE_PERIODS: PriceRange[] = ['3M', '6M', 'YTD', '1Y', '5Y', 'MAX'];
+
 interface PriceHistoryPoint {
   date: string;
   adjusted_close: number;
@@ -439,6 +444,9 @@ export default function StockDetail() {
   
   // Company details accordion state
   const [companyDetailsExpanded, setCompanyDetailsExpanded] = useState(false);
+  
+  // Performance Check period selector
+  const [perfCheckPeriodVisible, setPerfCheckPeriodVisible] = useState(false);
   
   // Price chart state
   const [priceRange, setPriceRange] = useState<PriceRange>('MAX'); // P1 CRITICAL: Default to MAX
@@ -1890,7 +1898,14 @@ export default function StockDetail() {
           {/* Name & Classification */}
           <View style={styles.compactInfo}>
             <View style={styles.compactNameRow}>
-              <Text style={styles.compactName} numberOfLines={2}>{company.name || ticker}</Text>
+              <Text
+                style={styles.compactName}
+                numberOfLines={1}
+                ellipsizeMode="tail"
+                accessibilityLabel={company.name || ticker?.toString() || ''}
+              >
+                {company.name || ticker}
+              </Text>
               {company.exchange && (
                 <View style={styles.exchangePill}>
                   <Text style={styles.exchangePillText}>{company.exchange}</Text>
@@ -2683,9 +2698,17 @@ export default function StockDetail() {
                 <Text style={styles.sectionIcon}>📊</Text>
                 <Text style={styles.sectionTitleBold}>Performance Check</Text>
               </View>
-              <Text style={styles.perfCheckPeriodBadge}>
-                {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
-              </Text>
+              <TouchableOpacity
+                style={styles.perfCheckPeriodTouchable}
+                onPress={() => setPerfCheckPeriodVisible(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Change performance period"
+              >
+                <Text style={styles.perfCheckPeriodBadge}>
+                  {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
+                </Text>
+                <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
+              </TouchableOpacity>
             </View>
             <Text style={styles.perfCheckDateRange}>
               {formatDateDMY(mobileData.period_stats.start_date)} – {formatDateDMY(mobileData.period_stats.end_date)}
@@ -2695,13 +2718,25 @@ export default function StockDetail() {
             <View style={styles.perfCheckColumns}>
               {/* REWARD sub-card - GREEN */}
               <View style={styles.perfCheckRewardCard}>
-                <View style={styles.perfCheckCardHeader}>
+                <TouchableOpacity
+                  style={styles.perfCheckCardHeader}
+                  onPress={() => showTooltip('perfCheckReward')}
+                  accessibilityRole="button"
+                >
                   <Ionicons name="trending-up" size={18} color="#059669" />
                   <Text style={styles.perfCheckRewardTitle}>REWARD</Text>
-                </View>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
                 
                 {/* Total Profit */}
-                <Text style={styles.perfCheckMetricLabel}>Total Profit</Text>
+                <TouchableOpacity
+                  style={styles.perfCheckMetricLabelRow}
+                  onPress={() => showTooltip('perfCheckTotalProfit')}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.perfCheckMetricLabel}>Total Profit</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
                 <Text style={[
                   styles.perfCheckMetricValueLarge,
                   mobileData.period_stats.profit_pct >= 0 ? styles.positiveText : styles.negativeText
@@ -2712,7 +2747,14 @@ export default function StockDetail() {
                 {/* Average per year (CAGR) */}
                 {mobileData.period_stats.cagr_pct !== null && (
                   <View style={styles.perfCheckMetricRow}>
-                    <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
+                    <TouchableOpacity
+                      style={styles.perfCheckMetricLabelRow}
+                      onPress={() => showTooltip('perfCheckAvgPerYear')}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
+                      <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                    </TouchableOpacity>
                     <View style={styles.perfCheckMetricInlineRow}>
                       <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={14} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
                       <Text style={[
@@ -2731,12 +2773,15 @@ export default function StockDetail() {
                   if (rrr === null) return null;
                   
                   return (
-                    <TouchableOpacity 
-                      style={styles.perfCheckMetricRow}
-                      onPress={() => dialog.alert('Reward / Risk', 'RRR (Upside/Downside): how much upside the stock had vs how much it dropped, measured from the start of the period. The higher, the better.')}
-                      data-testid="rrr-performance-check"
-                    >
-                      <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
+                    <View style={styles.perfCheckMetricRow} data-testid="rrr-performance-check">
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckRewardRisk')}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
                       <View style={styles.perfCheckMetricInlineRow}>
                         <Text style={[
                           styles.perfCheckMetricValue,
@@ -2746,22 +2791,33 @@ export default function StockDetail() {
                         ]}>
                           {formatRRR(rrr)}
                         </Text>
-                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                       </View>
-                    </TouchableOpacity>
+                    </View>
                   );
                 })()}
               </View>
               
               {/* RISK sub-card - RED */}
               <View style={styles.perfCheckRiskCard}>
-                <View style={styles.perfCheckCardHeader}>
+                <TouchableOpacity
+                  style={styles.perfCheckCardHeader}
+                  onPress={() => showTooltip('perfCheckRisk')}
+                  accessibilityRole="button"
+                >
                   <Ionicons name="alert-circle" size={18} color="#DC2626" />
                   <Text style={styles.perfCheckRiskTitle}>RISK</Text>
-                </View>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
                 
                 {/* Max Drawdown */}
-                <Text style={styles.perfCheckMetricLabel}>Max. Drawdown</Text>
+                <TouchableOpacity
+                  style={styles.perfCheckMetricLabelRow}
+                  onPress={() => showTooltip('perfCheckMaxDrawdown')}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.perfCheckMetricLabel}>Max. Drawdown</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
                 <Text style={[styles.perfCheckMetricValueLarge, styles.negativeText]}>
                   {formatLargePercent(-Math.abs(mobileData.period_stats.max_drawdown_pct))}
                 </Text>
@@ -2770,19 +2826,27 @@ export default function StockDetail() {
                 {drawdownDetails && (
                   <>
                     <View style={styles.perfCheckMetricRow}>
-                      <View style={styles.perfCheckMetricInlineRow}>
-                        <Ionicons name="time-outline" size={14} color={COLORS.textMuted} />
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckDuration')}
+                        accessibilityRole="button"
+                      >
                         <Text style={styles.perfCheckMetricLabel}>Duration</Text>
-                      </View>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
                       <Text style={styles.perfCheckMetricValue}>
                         {drawdownDetails.durationDays} days
                       </Text>
                     </View>
                     <View style={styles.perfCheckMetricRow}>
-                      <View style={styles.perfCheckMetricInlineRow}>
-                        <Ionicons name="refresh-outline" size={14} color={COLORS.textMuted} />
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckRecovered')}
+                        accessibilityRole="button"
+                      >
                         <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
-                      </View>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
                       <Text style={styles.perfCheckMetricValue}>
                         {drawdownDetails.recoveryDate 
                           ? formatDateDMY(drawdownDetails.recoveryDate)
@@ -2794,32 +2858,41 @@ export default function StockDetail() {
               </View>
             </View>
             
-            {/* BENCHMARK STRIP - Index comparison */}
-            <View style={styles.perfCheckBenchmarkStrip}>
-              <Text style={styles.perfCheckBenchmarkText}>
-                Index (S&P 500 TR):{' '}
-                <Text style={styles.perfCheckBenchmarkValue}>
-                  {mobileData.period_stats.benchmark_total_pct !== null 
-                    ? `${mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}${toEU(mobileData.period_stats.benchmark_total_pct, 1)}%`
-                    : 'N/A'}
+            {/* INDEX BLOCK - Index comparison (stacked, readable) */}
+            <View style={styles.perfCheckIndexBlock}>
+              <View style={styles.perfCheckIndexTitleRow}>
+                <Text style={styles.perfCheckIndexTitle}>Index (S&P 500 TR)</Text>
+                <TouchableOpacity onPress={() => showTooltip('perfCheckIndex')} accessibilityRole="button">
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </View>
+              {mobileData.period_stats.benchmark_total_pct !== null && (
+                <Text style={styles.perfCheckIndexRow}>
+                  Total return:{' '}
+                  <Text style={styles.perfCheckIndexRowValue}>
+                    {mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}{toEU(mobileData.period_stats.benchmark_total_pct, 1)}%
+                  </Text>
                 </Text>
-                {/* P0 FIX: Use backend's Wealth Gap calculation (outperformance_pct) */}
-                {(() => {
-                  const wealthGap = mobileData.period_stats.outperformance_pct;
-                  if (wealthGap === null || wealthGap === undefined) return null;
-                  const deltaClamped = Math.max(wealthGap, -100);
-                  const sign = deltaClamped >= 0 ? '+' : '';
-                  return (
+              )}
+              {/* P0 FIX: Use backend's Wealth Gap calculation (outperformance_pct) */}
+              {(() => {
+                const wealthGap = mobileData.period_stats.outperformance_pct;
+                if (wealthGap === null || wealthGap === undefined) return null;
+                const deltaClamped = Math.max(wealthGap, -100);
+                const sign = deltaClamped >= 0 ? '+' : '';
+                return (
+                  <Text style={styles.perfCheckIndexRow}>
+                    {'Stock vs. index: '}
                     <Text style={[
-                      styles.perfCheckBenchmarkValue,
-                      deltaClamped > 0 ? styles.positiveText : 
+                      styles.perfCheckIndexRowValue,
+                      deltaClamped > 0 ? styles.positiveText :
                       deltaClamped < 0 ? styles.negativeText : null
                     ]}>
-                      {' • vs S&P 500 TR: '}{sign}{toEU(deltaClamped, 1)}%
+                      {sign}{toEU(deltaClamped, 1)}%
                     </Text>
-                  );
-                })()}
-              </Text>
+                  </Text>
+                );
+              })()}
             </View>
             
             {/* Footer disclaimer */}
@@ -3398,7 +3471,7 @@ export default function StockDetail() {
 
         {/* ===== SECTION 6: EARNINGS & DIVIDENDS - Collapsible with Dividend pill ===== */}
         <View 
-          style={[styles.sectionCard]} 
+          style={styles.perfCheckCard} 
           data-testid="earnings-section"
           
         >
@@ -3823,6 +3896,37 @@ export default function StockDetail() {
         content={TOOLTIP_CONTENT[activeTooltip]} 
       />
       
+      {/* Performance Check period selector */}
+      <Modal
+        visible={perfCheckPeriodVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setPerfCheckPeriodVisible(false)}
+      >
+        <Pressable style={styles.periodSelectorOverlay} onPress={() => setPerfCheckPeriodVisible(false)}>
+          <Pressable style={styles.periodSelectorSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.periodSelectorHandle} />
+            <Text style={styles.periodSelectorTitle}>Performance period</Text>
+            {PERFORMANCE_PERIODS.map((r) => (
+              <TouchableOpacity
+                key={r}
+                style={styles.periodSelectorOption}
+                onPress={() => {
+                  setPriceRange(r);
+                  setPerfCheckPeriodVisible(false);
+                }}
+                accessibilityRole="button"
+              >
+                <Text style={[styles.periodSelectorOptionText, priceRange === r && styles.periodSelectorOptionTextActive]}>
+                  {r === 'MAX' ? 'Full History' : `Past ${r}`}
+                </Text>
+                {priceRange === r && <Ionicons name="checkmark" size={18} color={COLORS.primary} />}
+              </TouchableOpacity>
+            ))}
+          </Pressable>
+        </Pressable>
+      </Modal>
+      
       {/* Persistent Bottom Navigation */}
       <BottomNav />
     </SafeAreaView>
@@ -3897,7 +4001,7 @@ const styles = StyleSheet.create({
   // ============================================================================
   compactHeader: { 
     flexDirection: 'row', 
-    alignItems: 'center', 
+    alignItems: 'flex-start', 
     gap: 12, 
     marginBottom: 12,
   },
@@ -3924,23 +4028,26 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   compactName: { 
-    fontSize: 23,
+    fontSize: 20,
     fontWeight: '700',
     color: '#111827',
-    lineHeight: 35,
+    lineHeight: 30,
     flexShrink: 1,
   },
   compactNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
+    flex: 1,
+    minWidth: 0,
     gap: 8,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   classificationRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+    marginTop: 2,
   },
   exchangePill: {
     backgroundColor: '#E5E7EB',
@@ -3949,6 +4056,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     borderWidth: 1,
     borderColor: '#D1D5DB',
+    flexShrink: 0,
   },
   exchangePillText: {
     fontSize: 14,
@@ -4127,7 +4235,7 @@ const styles = StyleSheet.create({
   // Description
   descriptionCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, marginBottom: 12 },
   sectionTitle: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginBottom: 10 },
-  subsectionTitle: { fontSize: 13, fontWeight: '600', color: COLORS.textMuted, marginBottom: 8 },
+  subsectionTitle: { fontSize: 15, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
   dividendsSubsectionTitle: { fontSize: 15, fontWeight: '700', color: COLORS.text, marginTop: 16, marginBottom: 10 },
   descriptionText: { fontSize: 14, color: COLORS.textLight, lineHeight: 20 },
   showMoreText: { fontSize: 13, color: COLORS.accent, marginTop: 8, fontWeight: '500' },
@@ -4175,7 +4283,7 @@ const styles = StyleSheet.create({
   dividendMetaRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 10 },
   dividendMetaPill: { borderRadius: 10, borderWidth: 1, borderColor: '#D1D5DB', backgroundColor: '#FFFFFF', paddingVertical: 6, paddingHorizontal: 10 },
   dividendMetaPillAccent: { backgroundColor: '#F3F4F6' },
-  dividendMetaPillLabel: { fontSize: 11, color: '#4B5563', fontWeight: '700' },
+  dividendMetaPillLabel: { fontSize: 14, color: '#4B5563', fontWeight: '700' },
   dividendMetaPillValue: { fontSize: 13, color: '#111827', fontWeight: '800' },
   nextDividendCard: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 12, backgroundColor: '#FFFFFF', padding: 12, marginBottom: 10 },
   nextDividendHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
@@ -4188,7 +4296,7 @@ const styles = StyleSheet.create({
   dividendEventTag: { borderWidth: 1, borderColor: '#FECACA', backgroundColor: '#FEF2F2', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 999 },
   dividendEventTagText: { fontSize: 11, fontWeight: '700', color: '#7F1D1D' },
   dividendsList: { marginTop: 4, gap: 10 },
-  dividendPaymentItem: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 12, backgroundColor: '#FFFFFF', paddingVertical: 12, paddingHorizontal: 14 },
+  dividendPaymentItem: { borderRadius: 12, backgroundColor: '#F9FAFB', paddingVertical: 12, paddingHorizontal: 14 },
   dividendPaymentTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   dividendAmount: { fontSize: 26, fontWeight: '900', color: '#111827' },
   dividendDateDetail: { fontSize: 14, color: '#374151', marginTop: 2, fontWeight: '600' },
@@ -4200,7 +4308,7 @@ const styles = StyleSheet.create({
   dividendViewButtonTextActive: { color: '#111827' },
   dividendAnnualSection: { marginTop: 4 },
   dividendAnnualList: { gap: 10, marginTop: 2 },
-  dividendAnnualItem: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 12, backgroundColor: '#FFFFFF', paddingVertical: 10, paddingHorizontal: 12, gap: 10 },
+  dividendAnnualItem: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, backgroundColor: '#F9FAFB', paddingVertical: 10, paddingHorizontal: 12, gap: 10 },
   dividendTrendBar: { width: 4, borderRadius: 3, alignSelf: 'stretch' },
   dividendAnnualItemBody: { flex: 1 },
   dividendAnnualPeriodLabel: { fontSize: 28, fontWeight: '900', color: '#111827', marginBottom: 2 },
@@ -4304,14 +4412,14 @@ const styles = StyleSheet.create({
   barNegative: { backgroundColor: '#EF4444' },
   
   // Earnings
-  earningsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
-  earningsDate: { fontSize: 13, color: COLORS.textMuted },
+  earningsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  earningsDate: { fontSize: 15, color: COLORS.textMuted },
   earningsData: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  earningsValue: { fontSize: 13, color: COLORS.text },
+  earningsValue: { fontSize: 15, fontWeight: '700', color: '#111827' },
   beatMissBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, gap: 2 },
   beatBadge: { backgroundColor: '#D1FAE5' },
   missBadge: { backgroundColor: '#FEE2E2' },
-  beatMissText: { fontSize: 11, fontWeight: '600' },
+  beatMissText: { fontSize: 13, fontWeight: '600' },
   beatText: { color: '#10B981' },
   missText: { color: '#EF4444' },
   
@@ -4523,6 +4631,89 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     marginTop: 8,
     textAlign: 'center',
+  },
+  // Period badge touchable
+  perfCheckPeriodTouchable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  // Metric label row with ? icon (reuses metricLabelRow pattern)
+  perfCheckMetricLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 1,
+  },
+  // Index comparison block (replaces benchmark strip)
+  perfCheckIndexBlock: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: 10,
+    paddingBottom: 2,
+  },
+  perfCheckIndexTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 6,
+  },
+  perfCheckIndexTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#374151',
+  },
+  perfCheckIndexRow: {
+    fontSize: 15,
+    color: COLORS.textMuted,
+    lineHeight: 22,
+  },
+  perfCheckIndexRowValue: {
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  // Period selector modal
+  periodSelectorOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'flex-end',
+  },
+  periodSelectorSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 24,
+    paddingBottom: 40,
+  },
+  periodSelectorHandle: {
+    width: 40,
+    height: 4,
+    backgroundColor: '#D1D5DB',
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 20,
+  },
+  periodSelectorTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 16,
+  },
+  periodSelectorOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  periodSelectorOptionText: {
+    fontSize: 16,
+    color: '#374151',
+  },
+  periodSelectorOptionTextActive: {
+    color: COLORS.primary,
+    fontWeight: '700',
   },
   // Legacy styles kept for compatibility
   realityCheckColumns: {

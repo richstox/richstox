@@ -156,6 +156,51 @@ export const TOOLTIP_CONTENT = {
     title: "Performance vs Index",
     body: "If you invested $100 in this stock vs $100 in S&P 500, how much more or less would you have today?",
     howToRead: "Positive = you would have more. Negative = you would have less. -100% = stock went to zero."
+  },
+  perfCheckReward: {
+    title: "Reward",
+    body: "Summarises the upside of owning this stock over the selected period: total gain and how much it compounded each year.",
+    howToRead: "Bigger numbers mean stronger returns. Look at both Total Profit and Avg per Year together."
+  },
+  perfCheckRisk: {
+    title: "Risk",
+    body: "Summarises how hard the stock fell at its worst point, and how long it took to recover.",
+    howToRead: "Smaller drawdown and shorter recovery = lower risk. These two numbers tell the full pain story."
+  },
+  perfCheckTotalProfit: {
+    title: "Total Profit",
+    body: "Overall percentage gain (or loss) from the start to the end of the selected period.",
+    howToRead: "+50% means a $100 investment became $150. -30% means it shrank to $70."
+  },
+  perfCheckAvgPerYear: {
+    title: "Avg. per Year (CAGR)",
+    body: "Compound Annual Growth Rate—the smoothed yearly return if the stock grew at a constant pace over the period.",
+    howToRead: "Better than simple average: accounts for compounding. A 10% CAGR over 5 years doubles your money."
+  },
+  perfCheckRewardRisk: {
+    title: "Reward / Risk (RRR)",
+    body: "Ratio of total upside vs total downside from the start of the period. How much did you earn for each unit of risk?",
+    howToRead: "Above 1.0 = upside exceeded downside. Above 2.0 = strong. Below 1.0 = risk outweighed reward."
+  },
+  perfCheckMaxDrawdown: {
+    title: "Max. Drawdown",
+    body: "The biggest peak-to-trough decline during the period — the worst loss experienced before recovery.",
+    howToRead: "-40% means the stock dropped 40% from its high before recovering. Lower absolute value = less pain."
+  },
+  perfCheckDuration: {
+    title: "Drawdown Duration",
+    body: "How many days the stock spent below its previous high during the worst drawdown.",
+    howToRead: "Fewer days = quicker to recover. A long duration means capital was tied up at a loss for a long time."
+  },
+  perfCheckRecovered: {
+    title: "Recovered",
+    body: "The date when the stock price finally climbed back above the level it was at before the worst drawdown began.",
+    howToRead: "'Not yet' means the stock is still below its previous high. A past date means it has fully recovered."
+  },
+  perfCheckIndex: {
+    title: "Index (S&P 500 TR)",
+    body: "Comparison against the S&P 500 Total Return index (dividends reinvested) over the same period.",
+    howToRead: "Positive 'vs. index' = this stock outperformed the market. Negative = it underperformed. Context only."
   }
 };
 
