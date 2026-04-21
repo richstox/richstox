@@ -2015,6 +2015,7 @@ from dividend_history_service import (
     get_dividend_history_for_ticker,
     get_dividend_stats,
     sync_upcoming_dividend_calendar_for_visible_tickers,
+    create_upcoming_dividends_indexes,
 )
 
 from canonical_dividend import compute_canonical_dividend_yield
@@ -11603,6 +11604,7 @@ async def startup():
     await create_news_indexes(db)
     await create_talk_indexes(db)
     await create_notification_indexes(db)
+    await create_upcoming_dividends_indexes(db)
 
     # ⚠️ Expire orphaned "running" manual_ad_hoc job docs from previous process.
     expired_jobs = await _expire_orphaned_running_jobs(db)

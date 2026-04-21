@@ -502,6 +502,21 @@ def _select_next_upcoming_event(events: List[Dict[str, Any]]) -> Optional[Dict[s
     return candidates[0]
 
 
+async def create_upcoming_dividends_indexes(db) -> None:
+    """Create indexes for the upcoming_dividends collection.
+
+    Called once at server startup, not on every job run.
+    Motor/PyMongo make create_index idempotent so it is safe to call on each
+    cold start without rebuilding existing indexes.
+    """
+    await db.upcoming_dividends.create_index(
+        [("ticker", 1)], unique=True, name="upcoming_dividends_ticker_unique"
+    )
+    await db.upcoming_dividends.create_index(
+        [("next_ex_date", 1)], name="upcoming_dividends_next_ex_date"
+    )
+
+
 async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, Any]:
     if not EODHD_API_KEY:
         logger.error("[dividend_upcoming_calendar] EODHD_API_KEY not configured")
@@ -514,9 +529,6 @@ async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, A
     # Canonical universe source: tracked_tickers.is_visible.
     visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
     visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
-
-    await db.upcoming_dividends.create_index([("ticker", 1)], unique=True, name="upcoming_dividends_ticker_unique")
-    await db.upcoming_dividends.create_index([("next_ex_date", 1)], name="upcoming_dividends_next_ex_date")
 
     url = f"{EODHD_BASE_URL}/calendar/dividends"
     params = {

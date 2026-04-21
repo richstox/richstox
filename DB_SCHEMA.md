@@ -62,7 +62,7 @@ Indexes:
 - `window_start` (date string)
 - `window_end` (date string)
 - optional flags: `is_special` (bool), `is_irregular` (bool), `dividend_type` (string|null), `period` (string|null)
-Indexes:
+Indexes (created once at server startup via `create_upcoming_dividends_indexes(db)`, not during job runs):
 - unique (ticker)
 - (next_ex_date)
 
