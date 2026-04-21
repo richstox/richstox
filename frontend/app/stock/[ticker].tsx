@@ -2746,7 +2746,7 @@ export default function StockDetail() {
                         ]}>
                           {formatRRR(rrr)}
                         </Text>
-                        <Ionicons name="help-circle-outline" size={13} color={COLORS.textMuted} />
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                       </View>
                     </TouchableOpacity>
                   );
@@ -4435,6 +4435,7 @@ const styles = StyleSheet.create({
   },
   perfCheckColumns: {
     flexDirection: 'column',
+    gap: 10,
     marginBottom: 12,
   },
   perfCheckRewardCard: {
@@ -4443,7 +4444,6 @@ const styles = StyleSheet.create({
     padding: 14,
     borderWidth: 1,
     borderColor: '#D1FAE5',
-    marginBottom: 10,
   },
   perfCheckRiskCard: {
     backgroundColor: '#FEF2F2',
