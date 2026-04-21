@@ -3927,7 +3927,7 @@ const styles = StyleSheet.create({
     fontSize: 23,
     fontWeight: '700',
     color: '#111827',
-    lineHeight: 30,
+    lineHeight: 35,
     flexShrink: 1,
   },
   compactNameRow: {
@@ -3943,16 +3943,16 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   exchangePill: {
-    backgroundColor: '#EEF2FF',
+    backgroundColor: '#E5E7EB',
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#C7D2FE',
+    borderColor: '#D1D5DB',
   },
   exchangePillText: {
     fontSize: 14,
-    color: '#1E3A8A',
+    color: '#111827',
     fontWeight: '700',
   },
   companyMetaPill: {
@@ -3965,7 +3965,7 @@ const styles = StyleSheet.create({
   },
   companyMetaPillLabel: {
     fontSize: 14,
-    color: '#4B5563',
+    color: '#1F2937',
     fontWeight: '700',
   },
   companyMetaPillValue: {
@@ -4988,7 +4988,7 @@ const styles = StyleSheet.create({
   companyDetailLabel: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#374151',
+    color: '#1F2937',
     minWidth: 90,
   },
   companyDetailValue: {
@@ -5005,7 +5005,7 @@ const styles = StyleSheet.create({
   descriptionTextCompact: {
     fontSize: 15,
     color: '#374151',
-    lineHeight: 22,
+    lineHeight: 23,
   },
   companyShowMoreText: {
     fontSize: 15,
