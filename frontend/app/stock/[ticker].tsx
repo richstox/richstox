@@ -3435,7 +3435,7 @@ export default function StockDetail() {
               {/* Earnings History */}
               {data?.earnings && data.earnings.length > 0 ? (
                 <>
-                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button">
+                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show earnings history help">
                     <Text style={styles.subsectionTitle}>Earnings History</Text>
                     <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                   </TouchableOpacity>
@@ -3446,15 +3446,23 @@ export default function StockDetail() {
                         <View style={styles.earningsLeft}>
                           <Text style={styles.earningsDate}>{formatDateDMY(e.quarter_date)}</Text>
                           <View style={styles.earningsEpsRow}>
-                            <TouchableOpacity onPress={() => showTooltip('earningsActual')} accessibilityRole="button">
+                            <TouchableOpacity onPress={() => showTooltip('earningsActual')} accessibilityRole="button" accessibilityLabel="Show actual earnings help">
                               <Text style={styles.earningsEpsLabel}>Act</Text>
                             </TouchableOpacity>
-                            <Text style={styles.earningsEpsValue}>${e.reported_eps ? toEU(e.reported_eps, 2) : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}</Text>
+                            <Text style={styles.earningsEpsValue}>
+                              {'$'}{e.reported_eps
+                                ? toEU(e.reported_eps, 2)
+                                : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
+                            </Text>
                             <Text style={styles.earningsEpsSep}>·</Text>
-                            <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button">
+                            <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button" accessibilityLabel="Show expected earnings help">
                               <Text style={styles.earningsEpsLabel}>Exp</Text>
                             </TouchableOpacity>
-                            <Text style={styles.earningsEpsValue}>${e.estimated_eps ? toEU(e.estimated_eps, 2) : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}</Text>
+                            <Text style={styles.earningsEpsValue}>
+                              {'$'}{e.estimated_eps
+                                ? toEU(e.estimated_eps, 2)
+                                : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
+                            </Text>
                           </View>
                         </View>
                         <TouchableOpacity
@@ -3464,6 +3472,7 @@ export default function StockDetail() {
                           ]}
                           onPress={() => showTooltip(hasNA ? 'earningsNA' : 'earningsBeatMiss')}
                           accessibilityRole="button"
+                          accessibilityLabel="Show beat or miss help"
                         >
                           <Ionicons 
                             name={e.beat_miss === 'beat' ? 'checkmark' : 'close'} 
@@ -3488,16 +3497,16 @@ export default function StockDetail() {
               )}
                
               {/* Dividends - always show from canonical source (dividend_history) */}
-              <TouchableOpacity style={styles.dividendsSubsectionTitleRow} onPress={() => showTooltip('dividendsHeader')} accessibilityRole="button">
+              <TouchableOpacity style={styles.dividendsSubsectionTitleRow} onPress={() => showTooltip('dividendsHeader')} accessibilityRole="button" accessibilityLabel="Show dividends help">
                 <Text style={styles.dividendsSubsectionTitle}>Dividends</Text>
                 <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
               </TouchableOpacity>
               <View style={styles.dividendMetaRow}>
-                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsFrequency')} accessibilityRole="button">
+                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsFrequency')} accessibilityRole="button" accessibilityLabel="Show dividend frequency help">
                   <Text style={styles.dividendMetaPillLabel}>Frequency</Text>
                   <Text style={styles.dividendMetaPillValue}>{dividendFrequencyLabel}</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsCurrency')} accessibilityRole="button">
+                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsCurrency')} accessibilityRole="button" accessibilityLabel="Show dividend currency help">
                   <Text style={styles.dividendMetaPillLabel}>Currency</Text>
                   <Text style={styles.dividendMetaPillValue}>{dividendDisplayCurrency}</Text>
                 </TouchableOpacity>
@@ -3514,7 +3523,7 @@ export default function StockDetail() {
               </View>
               <View style={styles.nextDividendCard}>
                 <View style={styles.nextDividendHeader}>
-                  <TouchableOpacity style={styles.nextDividendTitleRow} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button">
+                  <TouchableOpacity style={styles.nextDividendTitleRow} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
                     <Text style={styles.nextDividendTitle}>Next dividend</Text>
                     <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                   </TouchableOpacity>
@@ -3620,7 +3629,7 @@ export default function StockDetail() {
                                 <View style={styles.dividendAnnualLabelRow}>
                                   <Text style={styles.dividendAnnualPeriodLabel}>{period.label}</Text>
                                   {isTTM && (
-                                    <TouchableOpacity onPress={() => showTooltip('dividendsTTM')} accessibilityRole="button">
+                                    <TouchableOpacity onPress={() => showTooltip('dividendsTTM')} accessibilityRole="button" accessibilityLabel="Show trailing twelve months help">
                                       <Ionicons name="help-circle-outline" size={13} color={COLORS.textMuted} />
                                     </TouchableOpacity>
                                   )}
@@ -3634,6 +3643,7 @@ export default function StockDetail() {
                                   style={styles.dividendYoYBadgeNeutral}
                                   onPress={() => showTooltip('dividendsPartialYear')}
                                   accessibilityRole="button"
+                                   accessibilityLabel="Show partial year help"
                                 >
                                   <Text style={styles.dividendYoYBadgeNeutralText}>Partial</Text>
                                   <Ionicons name="help-circle-outline" size={11} color="#6B7280" />
@@ -3648,6 +3658,7 @@ export default function StockDetail() {
                                   ]}
                                   onPress={() => showTooltip('dividendsYoY')}
                                   accessibilityRole="button"
+                                   accessibilityLabel="Show year over year change help"
                                 >
                                   <Text style={[
                                     styles.dividendYoYBadgeText,
