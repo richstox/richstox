@@ -2074,7 +2074,7 @@ export default function StockDetail() {
             contentContainerStyle={styles.rangeSelectorContent}
             style={styles.rangeSelectorScroll}
           >
-            {(['3M', '6M', 'YTD', '1Y', '3Y', '5Y', 'MAX'] as PriceRange[]).map((range) => (
+            {(['3M', '6M', 'YTD', '1Y', '5Y', 'MAX'] as PriceRange[]).map((range) => (
               <TouchableOpacity
                 key={range}
                 style={[styles.rangeButton, priceRange === range && styles.rangeButtonActive]}
@@ -4236,7 +4236,7 @@ const styles = StyleSheet.create({
   descriptionCard: { backgroundColor: COLORS.card, borderRadius: 16, padding: 16, marginBottom: 12 },
   sectionTitle: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginBottom: 10 },
   subsectionTitle: { fontSize: 15, fontWeight: '700', color: COLORS.text, marginBottom: 8 },
-  dividendsSubsectionTitle: { fontSize: 15, fontWeight: '700', color: COLORS.text, marginTop: 16, marginBottom: 10 },
+  dividendsSubsectionTitle: { fontSize: 15, fontWeight: '700', color: '#111827', marginTop: 16, marginBottom: 10 },
   descriptionText: { fontSize: 14, color: COLORS.textLight, lineHeight: 20 },
   showMoreText: { fontSize: 13, color: COLORS.accent, marginTop: 8, fontWeight: '500' },
   
@@ -4284,7 +4284,7 @@ const styles = StyleSheet.create({
   dividendMetaPill: { borderRadius: 10, borderWidth: 1, borderColor: '#D1D5DB', backgroundColor: '#FFFFFF', paddingVertical: 6, paddingHorizontal: 10 },
   dividendMetaPillAccent: { backgroundColor: '#F3F4F6' },
   dividendMetaPillLabel: { fontSize: 14, color: '#4B5563', fontWeight: '700' },
-  dividendMetaPillValue: { fontSize: 13, color: '#111827', fontWeight: '800' },
+  dividendMetaPillValue: { fontSize: 14, color: '#111827', fontWeight: '800' },
   nextDividendCard: { borderWidth: 1, borderColor: '#D1D5DB', borderRadius: 12, backgroundColor: '#FFFFFF', padding: 12, marginBottom: 10 },
   nextDividendHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
   nextDividendTitle: { fontSize: 18, fontWeight: '800', color: '#111827' },
@@ -4317,7 +4317,7 @@ const styles = StyleSheet.create({
   dividendAnnualPrimaryValue: { fontSize: 24, fontWeight: '900', color: '#111827' },
   dividendValuePositive: { color: '#10B981' },
   dividendValueNegative: { color: '#EF4444' },
-  dividendValueNeutral: { color: '#6B7280' },
+  dividendValueNeutral: { color: '#111827' },
   
   // P4: Tab styles removed - Single vertical scroll, no tabs
   
