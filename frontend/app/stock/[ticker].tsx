@@ -1891,11 +1891,6 @@ export default function StockDetail() {
           <View style={styles.compactInfo}>
             <View style={styles.compactNameRow}>
               <Text style={styles.compactName} numberOfLines={2}>{company.name || ticker}</Text>
-              {company.exchange && (
-                <View style={styles.exchangePill}>
-                  <Text style={styles.exchangePillText}>{company.exchange}</Text>
-                </View>
-              )}
             </View>
             
             {/* Safety Badge - on its own row for visibility */}
@@ -1932,6 +1927,11 @@ export default function StockDetail() {
             
             {/* Sector & Industry pills */}
             <View style={styles.classificationRow}>
+              {company.exchange && (
+                <View style={styles.exchangePill}>
+                  <Text style={styles.exchangePillText}>{company.exchange}</Text>
+                </View>
+              )}
               {company.sector && (
                 <View style={styles.companyMetaPill}>
                   <Text style={styles.companyMetaPillLabel}>Sector</Text>
@@ -3897,7 +3897,7 @@ const styles = StyleSheet.create({
   // ============================================================================
   compactHeader: { 
     flexDirection: 'row', 
-    alignItems: 'center', 
+    alignItems: 'flex-start', 
     gap: 12, 
     marginBottom: 12,
   },
@@ -3924,10 +3924,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   compactName: { 
-    fontSize: 23,
+    fontSize: 20,
     fontWeight: '700',
     color: '#111827',
-    lineHeight: 35,
+    lineHeight: 28,
     flexShrink: 1,
   },
   compactNameRow: {
@@ -3935,11 +3935,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: 8,
-    marginBottom: 8,
+    marginBottom: 6,
   },
   classificationRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    alignItems: 'flex-start',
     gap: 8,
   },
   exchangePill: {
@@ -3964,14 +3965,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   companyMetaPillLabel: {
-    fontSize: 14,
+    fontSize: 11,
     color: '#1F2937',
     fontWeight: '600',
   },
   companyMetaPillValue: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#111827',
-    fontWeight: '800',
+    fontWeight: '700',
   },
   // Safety Badge styles
   safetyBadgeRow: {
