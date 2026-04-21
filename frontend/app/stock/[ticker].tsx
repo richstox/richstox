@@ -2696,7 +2696,7 @@ export default function StockDetail() {
               {/* REWARD sub-card - GREEN */}
               <View style={styles.perfCheckRewardCard}>
                 <View style={styles.perfCheckCardHeader}>
-                  <Ionicons name="trending-up" size={14} color="#10B981" />
+                  <Ionicons name="trending-up" size={18} color="#059669" />
                   <Text style={styles.perfCheckRewardTitle}>REWARD</Text>
                 </View>
                 
@@ -2714,7 +2714,7 @@ export default function StockDetail() {
                   <View style={styles.perfCheckMetricRow}>
                     <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
                     <View style={styles.perfCheckMetricInlineRow}>
-                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={12} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
+                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={14} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
                       <Text style={[
                         styles.perfCheckMetricValue, 
                         mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
@@ -2746,7 +2746,7 @@ export default function StockDetail() {
                         ]}>
                           {formatRRR(rrr)}
                         </Text>
-                        <Ionicons name="help-circle-outline" size={11} color={COLORS.textMuted} />
+                        <Ionicons name="help-circle-outline" size={13} color={COLORS.textMuted} />
                       </View>
                     </TouchableOpacity>
                   );
@@ -2756,7 +2756,7 @@ export default function StockDetail() {
               {/* RISK sub-card - RED */}
               <View style={styles.perfCheckRiskCard}>
                 <View style={styles.perfCheckCardHeader}>
-                  <Ionicons name="alert-circle" size={14} color="#EF4444" />
+                  <Ionicons name="alert-circle" size={18} color="#DC2626" />
                   <Text style={styles.perfCheckRiskTitle}>RISK</Text>
                 </View>
                 
@@ -2771,7 +2771,7 @@ export default function StockDetail() {
                   <>
                     <View style={styles.perfCheckMetricRow}>
                       <View style={styles.perfCheckMetricInlineRow}>
-                        <Ionicons name="time-outline" size={12} color={COLORS.textMuted} />
+                        <Ionicons name="time-outline" size={14} color={COLORS.textMuted} />
                         <Text style={styles.perfCheckMetricLabel}>Duration</Text>
                       </View>
                       <Text style={styles.perfCheckMetricValue}>
@@ -2780,7 +2780,7 @@ export default function StockDetail() {
                     </View>
                     <View style={styles.perfCheckMetricRow}>
                       <View style={styles.perfCheckMetricInlineRow}>
-                        <Ionicons name="refresh-outline" size={12} color={COLORS.textMuted} />
+                        <Ionicons name="refresh-outline" size={14} color={COLORS.textMuted} />
                         <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
                       </View>
                       <Text style={styles.perfCheckMetricValue}>
@@ -4434,66 +4434,67 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   perfCheckColumns: {
-    flexDirection: 'row',
-    gap: 10,
+    flexDirection: 'column',
     marginBottom: 12,
   },
   perfCheckRewardCard: {
-    flex: 1,
     backgroundColor: '#F0FDF4',
     borderRadius: 10,
-    padding: 12,
+    padding: 14,
     borderWidth: 1,
     borderColor: '#D1FAE5',
+    marginBottom: 10,
   },
   perfCheckRiskCard: {
-    flex: 1,
     backgroundColor: '#FEF2F2',
     borderRadius: 10,
-    padding: 12,
+    padding: 14,
     borderWidth: 1,
     borderColor: '#FECACA',
   },
   perfCheckCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    marginBottom: 10,
+    gap: 6,
+    marginBottom: 12,
   },
   perfCheckRewardTitle: {
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#10B981',
+    color: '#059669',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   perfCheckRiskTitle: {
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#EF4444',
+    color: '#DC2626',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   perfCheckMetricLabel: {
-    fontSize: 11,
+    fontSize: 14,
     color: COLORS.textMuted,
-    marginBottom: 2,
+    marginBottom: 4,
   },
   perfCheckMetricValueLarge: {
-    fontSize: 20,
+    fontSize: 26,
     fontWeight: '700',
-    marginBottom: 10,
+    color: '#111827',
+    marginBottom: 12,
   },
   perfCheckMetricValue: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
     color: COLORS.text,
+    flexShrink: 1,
+    textAlign: 'right',
   },
   perfCheckMetricRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
+    alignItems: 'flex-start',
+    marginBottom: 8,
   },
   perfCheckMetricInlineRow: {
     flexDirection: 'row',
@@ -4508,7 +4509,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   perfCheckBenchmarkText: {
-    fontSize: 12,
+    fontSize: 14,
     color: '#6B7280',
     textAlign: 'center',
   },
@@ -4517,7 +4518,7 @@ const styles = StyleSheet.create({
     color: '#374151',
   },
   perfCheckDisclaimer: {
-    fontSize: 10,
+    fontSize: 11,
     color: COLORS.textMuted,
     fontStyle: 'italic',
     marginTop: 8,
