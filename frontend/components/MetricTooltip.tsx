@@ -174,7 +174,7 @@ export const TOOLTIP_CONTENT = {
   },
   perfCheckAvgPerYear: {
     title: "Avg. per Year (CAGR)",
-    body: "Compound Annual Growth Rate — the smoothed yearly return if the stock grew at a constant pace over the period.",
+    body: "Compound Annual Growth Rate—the smoothed yearly return if the stock grew at a constant pace over the period.",
     howToRead: "Better than simple average: accounts for compounding. A 10% CAGR over 5 years doubles your money."
   },
   perfCheckRewardRisk: {

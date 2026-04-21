@@ -2831,7 +2831,6 @@ export default function StockDetail() {
                         onPress={() => showTooltip('perfCheckDuration')}
                         accessibilityRole="button"
                       >
-                        <Ionicons name="time-outline" size={14} color={COLORS.textMuted} />
                         <Text style={styles.perfCheckMetricLabel}>Duration</Text>
                         <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                       </TouchableOpacity>
@@ -2845,7 +2844,6 @@ export default function StockDetail() {
                         onPress={() => showTooltip('perfCheckRecovered')}
                         accessibilityRole="button"
                       >
-                        <Ionicons name="refresh-outline" size={14} color={COLORS.textMuted} />
                         <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
                         <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                       </TouchableOpacity>
@@ -4033,7 +4031,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: '#111827',
-    lineHeight: 28,
+    lineHeight: 30,
     flexShrink: 1,
   },
   compactNameRow: {
