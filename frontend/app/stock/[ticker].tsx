@@ -1890,7 +1890,7 @@ export default function StockDetail() {
           {/* Name & Classification */}
           <View style={styles.compactInfo}>
             <View style={styles.compactNameRow}>
-              <Text style={styles.compactName}>{company.name || ticker}</Text>
+              <Text style={styles.compactName} numberOfLines={2}>{company.name || ticker}</Text>
               {company.exchange && (
                 <View style={styles.exchangePill}>
                   <Text style={styles.exchangePillText}>{company.exchange}</Text>
@@ -4012,12 +4012,14 @@ const styles = StyleSheet.create({
   safetyTooltip: {
     fontSize: 14,
     color: COLORS.textMuted,
+    fontStyle: 'italic',
     marginTop: 4,
     lineHeight: 20,
   },
   safetyTooltipInline: {
     fontSize: 14,
     color: COLORS.textMuted,
+    fontStyle: 'italic',
     flex: 1,
     lineHeight: 20,
   },
