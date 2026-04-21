@@ -4982,7 +4982,6 @@ const styles = StyleSheet.create({
   companyDetailRowReadable: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    justifyContent: 'space-between',
     gap: 12,
   },
   companyDetailLabel: {
@@ -4993,7 +4992,7 @@ const styles = StyleSheet.create({
   },
   companyDetailValue: {
     flex: 3,
-    textAlign: 'right',
+    textAlign: 'left',
     fontSize: 16,
     color: '#111827',
     lineHeight: 24,
