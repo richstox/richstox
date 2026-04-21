@@ -1890,7 +1890,7 @@ export default function StockDetail() {
           {/* Name & Classification */}
           <View style={styles.compactInfo}>
             <View style={styles.compactNameRow}>
-              <Text style={styles.compactName} numberOfLines={1}>{company.name || ticker}</Text>
+              <Text style={styles.compactName} numberOfLines={2}>{company.name || ticker}</Text>
               {company.exchange && (
                 <View style={styles.exchangePill}>
                   <Text style={styles.exchangePillText}>{company.exchange}</Text>
@@ -1930,17 +1930,19 @@ export default function StockDetail() {
               </View>
             )}
             
-            {/* Sector & Industry on separate line */}
+            {/* Sector & Industry pills */}
             <View style={styles.classificationRow}>
               {company.sector && (
-                <Text style={styles.classificationText}>
-                  Sector: <Text style={styles.classificationValue}>{company.sector}</Text>
-                </Text>
+                <View style={styles.companyMetaPill}>
+                  <Text style={styles.companyMetaPillLabel}>Sector</Text>
+                  <Text style={styles.companyMetaPillValue}>{company.sector}</Text>
+                </View>
               )}
               {company.industry && (
-                <Text style={styles.classificationText}>
-                  {' · '}Industry: <Text style={styles.classificationValue}>{company.industry}</Text>
-                </Text>
+                <View style={styles.companyMetaPill}>
+                  <Text style={styles.companyMetaPillLabel}>Industry</Text>
+                  <Text style={styles.companyMetaPillValue}>{company.industry}</Text>
+                </View>
               )}
             </View>
           </View>
@@ -1952,49 +1954,50 @@ export default function StockDetail() {
           onPress={() => setCompanyDetailsExpanded(!companyDetailsExpanded)}
           data-testid="company-details-toggle"
         >
+          <Text style={styles.companyDetailsMinimalText}>Company Details</Text>
           <Ionicons 
             name={companyDetailsExpanded ? 'chevron-up' : 'chevron-down'} 
-            size={14} 
+            size={18} 
             color={COLORS.textMuted} 
           />
-          <Text style={styles.companyDetailsMinimalText}>Company Details</Text>
         </TouchableOpacity>
         
         {companyDetailsExpanded && (
           <View style={styles.companyDetailsExpanded}>
             {(companyDetails.city || companyDetails.state || companyDetails.country_name) && (
-              <View style={styles.detailRowCompact}>
-                <Ionicons name="location-outline" size={14} color={COLORS.textMuted} />
-                <Text style={styles.detailTextCompact}>
+              <View style={styles.companyDetailRowReadable}>
+                <Text style={styles.companyDetailLabel}>Location</Text>
+                <Text style={styles.companyDetailValue}>
                   {[companyDetails.city, companyDetails.state, companyDetails.country_name].filter(Boolean).join(', ')}
                 </Text>
               </View>
             )}
             {companyDetails.website && (
               <TouchableOpacity 
-                style={styles.detailRowCompact}
+                style={styles.companyDetailRowReadable}
                 onPress={() => Linking.openURL(companyDetails.website!)}
               >
-                <Ionicons name="globe-outline" size={14} color={COLORS.accent} />
-                <Text style={[styles.detailTextCompact, styles.linkText]} numberOfLines={1}>
+                <Text style={styles.companyDetailLabel}>Website</Text>
+                <Text style={[styles.companyDetailValue, styles.companyDetailLink]}>
                   {companyDetails.website.replace(/^https?:\/\//, '').replace(/\/$/, '')}
                 </Text>
               </TouchableOpacity>
             )}
             {companyDetails.employees && (
-              <View style={styles.detailRowCompact}>
-                <Ionicons name="people-outline" size={14} color={COLORS.textMuted} />
-                <Text style={styles.detailTextCompact}>{formatNumber(companyDetails.employees)} employees</Text>
+              <View style={styles.companyDetailRowReadable}>
+                <Text style={styles.companyDetailLabel}>Employees</Text>
+                <Text style={styles.companyDetailValue}>{formatNumber(companyDetails.employees)}</Text>
               </View>
             )}
             {companyDetails.ipo_date && (
-              <View style={styles.detailRowCompact}>
-                <Ionicons name="calendar-outline" size={14} color={COLORS.textMuted} />
-                <Text style={styles.detailTextCompact}>IPO: {formatDateDMY(companyDetails.ipo_date)}</Text>
+              <View style={styles.companyDetailRowReadable}>
+                <Text style={styles.companyDetailLabel}>IPO Date</Text>
+                <Text style={styles.companyDetailValue}>{formatDateDMY(companyDetails.ipo_date)}</Text>
               </View>
             )}
             {companyDetails.description && (
               <>
+                <Text style={styles.companyDetailLabel}>Description</Text>
                 <Text 
                   style={styles.descriptionTextCompact} 
                   numberOfLines={showFullDescription ? undefined : 3}
@@ -2003,7 +2006,7 @@ export default function StockDetail() {
                 </Text>
                 {companyDetails.description.length > 150 && (
                   <TouchableOpacity onPress={() => setShowFullDescription(!showFullDescription)}>
-                    <Text style={styles.showMoreText}>
+                    <Text style={styles.companyShowMoreText}>
                       {showFullDescription ? 'Show less' : 'Show more'}
                     </Text>
                   </TouchableOpacity>
@@ -3895,18 +3898,18 @@ const styles = StyleSheet.create({
   compactHeader: { 
     flexDirection: 'row', 
     alignItems: 'center', 
-    gap: 10, 
-    marginBottom: 8,  // Reduced from 12
+    gap: 12, 
+    marginBottom: 12,
   },
   compactLogo: { 
-    width: 40, 
-    height: 40, 
+    width: 38, 
+    height: 38, 
     borderRadius: 8, 
     backgroundColor: '#F5F8FC',
   },
   compactLogoPlaceholder: { 
-    width: 40, 
-    height: 40, 
+    width: 38, 
+    height: 38, 
     borderRadius: 8, 
     backgroundColor: COLORS.primary, 
     alignItems: 'center', 
@@ -3921,39 +3924,54 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   compactName: { 
-    fontSize: 16, 
-    fontWeight: '600', 
-    color: COLORS.text, 
-    marginBottom: 4,
+    fontSize: 23,
+    fontWeight: '700',
+    color: '#111827',
+    lineHeight: 35,
+    flexShrink: 1,
   },
   compactNameRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    marginBottom: 2,
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 8,
   },
   classificationRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-  },
-  classificationText: {
-    fontSize: 11,
-    color: COLORS.textMuted,
-  },
-  classificationValue: {
-    color: COLORS.text,
-    fontWeight: '500',
+    gap: 8,
   },
   exchangePill: {
-    backgroundColor: '#1A365D',
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 3,
+    backgroundColor: '#E5E7EB',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
   },
   exchangePillText: {
-    fontSize: 9,
-    color: '#FFF',
+    fontSize: 14,
+    color: '#111827',
+    fontWeight: '700',
+  },
+  companyMetaPill: {
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  companyMetaPillLabel: {
+    fontSize: 14,
+    color: '#1F2937',
     fontWeight: '600',
+  },
+  companyMetaPillValue: {
+    fontSize: 16,
+    color: '#111827',
+    fontWeight: '800',
   },
   // Safety Badge styles
   safetyBadgeRow: {
@@ -3982,7 +4000,7 @@ const styles = StyleSheet.create({
     borderColor: '#3B82F6',
   },
   safetyBadgeText: {
-    fontSize: 11,
+    fontSize: 14,
     fontWeight: '700',
   },
   safetyBadgeTextAmber: {
@@ -3992,18 +4010,18 @@ const styles = StyleSheet.create({
     color: '#1E40AF',
   },
   safetyTooltip: {
-    fontSize: 10,
+    fontSize: 14,
     color: COLORS.textMuted,
     fontStyle: 'italic',
     marginTop: 4,
-    lineHeight: 14,
+    lineHeight: 20,
   },
   safetyTooltipInline: {
-    fontSize: 10,
+    fontSize: 14,
     color: COLORS.textMuted,
     fontStyle: 'italic',
     flex: 1,
-    lineHeight: 14,
+    lineHeight: 20,
   },
   compactPills: { 
     flexDirection: 'row', 
@@ -4943,35 +4961,56 @@ const styles = StyleSheet.create({
   companyDetailsMinimal: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'space-between',
     paddingVertical: 6,
-    marginBottom: 4,
+    marginBottom: 8,
   },
   companyDetailsMinimalText: {
-    fontSize: 12,
-    color: COLORS.textMuted,
+    fontSize: 16,
+    color: '#111827',
+    fontWeight: '700',
   },
   companyDetailsExpanded: {
-    backgroundColor: '#F9FAFB',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 8,
-    gap: 6,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 12,
   },
-  detailRowCompact: {
+  companyDetailRowReadable: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    alignItems: 'flex-start',
+    gap: 12,
   },
-  detailTextCompact: {
-    fontSize: 12,
-    color: COLORS.textMuted,
+  companyDetailLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1F2937',
+    flex: 2,
+  },
+  companyDetailValue: {
+    flex: 3,
+    textAlign: 'left',
+    fontSize: 16,
+    color: '#111827',
+    lineHeight: 24,
+  },
+  companyDetailLink: {
+    color: '#2563EB',
+    textDecorationLine: 'underline',
   },
   descriptionTextCompact: {
-    fontSize: 11,
-    color: COLORS.textMuted,
-    lineHeight: 16,
+    fontSize: 15,
+    color: '#374151',
+    lineHeight: 23,
+  },
+  companyShowMoreText: {
+    fontSize: 15,
+    color: '#2563EB',
     marginTop: 4,
+    fontWeight: '600',
   },
   
   // ============================================================================
