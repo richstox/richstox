@@ -4072,14 +4072,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   companyMetaPillLabel: {
-    fontSize: 12,
+    fontSize: 14,
     color: '#1F2937',
     fontWeight: '600',
   },
   companyMetaPillValue: {
-    fontSize: 14,
+    fontSize: 16,
     color: '#111827',
-    fontWeight: '700',
+    fontWeight: '800',
   },
   // Safety Badge styles
   safetyBadgeRow: {
