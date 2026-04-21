@@ -3966,10 +3966,10 @@ const styles = StyleSheet.create({
   companyMetaPillLabel: {
     fontSize: 14,
     color: '#1F2937',
-    fontWeight: '700',
+    fontWeight: '600',
   },
   companyMetaPillValue: {
-    fontSize: 15,
+    fontSize: 16,
     color: '#111827',
     fontWeight: '800',
   },
@@ -4987,12 +4987,12 @@ const styles = StyleSheet.create({
   },
   companyDetailLabel: {
     fontSize: 16,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#1F2937',
-    minWidth: 90,
+    flex: 0.4,
   },
   companyDetailValue: {
-    flex: 1,
+    flex: 0.6,
     textAlign: 'right',
     fontSize: 16,
     color: '#111827',
