@@ -253,6 +253,9 @@ const resolveDividendCurrency = (eventCurrency?: string | null, fallbackCurrency
 // Price range options for chart - including MAX
 type PriceRange = '3M' | '6M' | 'YTD' | '1Y' | '3Y' | '5Y' | 'MAX';
 
+/** Periods available in the Performance Check period selector (3Y excluded). */
+const PERFORMANCE_PERIODS: PriceRange[] = ['3M', '6M', 'YTD', '1Y', '5Y', 'MAX'];
+
 interface PriceHistoryPoint {
   date: string;
   adjusted_close: number;
@@ -1899,7 +1902,7 @@ export default function StockDetail() {
                 style={styles.compactName}
                 numberOfLines={1}
                 ellipsizeMode="tail"
-                accessibilityLabel={String(company.name || ticker || '')}
+                accessibilityLabel={company.name || ticker?.toString() || ''}
               >
                 {company.name || ticker}
               </Text>
@@ -3906,10 +3909,10 @@ export default function StockDetail() {
           <Pressable style={styles.periodSelectorSheet} onPress={(e) => e.stopPropagation()}>
             <View style={styles.periodSelectorHandle} />
             <Text style={styles.periodSelectorTitle}>Performance period</Text>
-            {(['3M', '6M', 'YTD', '1Y', '5Y', 'MAX'] as PriceRange[]).map((r) => (
+            {PERFORMANCE_PERIODS.map((r) => (
               <TouchableOpacity
                 key={r}
-                style={[styles.periodSelectorOption, priceRange === r && styles.periodSelectorOptionActive]}
+                style={styles.periodSelectorOption}
                 onPress={() => {
                   setPriceRange(r);
                   setPerfCheckPeriodVisible(false);
@@ -4071,7 +4074,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
   companyMetaPillLabel: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#1F2937',
     fontWeight: '600',
   },
@@ -4705,9 +4708,6 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#F3F4F6',
-  },
-  periodSelectorOptionActive: {
-    // no background change; checkmark icon is the indicator
   },
   periodSelectorOptionText: {
     fontSize: 16,
