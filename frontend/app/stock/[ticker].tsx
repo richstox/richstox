@@ -4989,10 +4989,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#1F2937',
-    flex: 0.4,
+    flex: 2,
   },
   companyDetailValue: {
-    flex: 0.6,
+    flex: 3,
     textAlign: 'right',
     fontSize: 16,
     color: '#111827',
