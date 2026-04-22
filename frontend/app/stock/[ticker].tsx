@@ -1225,19 +1225,21 @@ export default function StockDetail() {
   }, [dividendPayments]);
 
   const getPaymentGrowthDisplay = (current: DividendEvent, previous: DividendEvent | null) => {
-    if (!previous) return { label: 'Growth: —', tone: 'neutral' as const };
+    if (!previous) return { label: 'Growth: —', badgeLabel: '—', tone: 'neutral' as const };
     if (
       current.is_special || previous.is_special
       || current.is_irregular || previous.is_irregular
       || (current.currency && previous.currency && current.currency !== previous.currency)
       || previous.amount <= 0
     ) {
-      return { label: 'Growth: not comparable', tone: 'neutral' as const };
+      return { label: 'Growth: not comparable', badgeLabel: '—', tone: 'neutral' as const };
     }
     const pct = ((current.amount - previous.amount) / previous.amount) * 100;
-    if (Math.abs(pct) < FLAT_GROWTH_THRESHOLD_PCT) return { label: 'Growth: flat', tone: 'neutral' as const };
+    if (Math.abs(pct) < FLAT_GROWTH_THRESHOLD_PCT) return { label: 'Growth: flat', badgeLabel: 'flat', tone: 'neutral' as const };
+    const pctStr = `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`;
     return {
-      label: `Growth: ${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
+      label: `Growth: ${pctStr}`,
+      badgeLabel: pctStr,
       tone: pct > 0 ? ('positive' as const) : ('negative' as const),
     };
   };
@@ -3584,7 +3586,6 @@ export default function StockDetail() {
                       const previous = idx + 1 < paymentItems.length ? paymentItems[idx + 1].event : null;
                       const growth = getPaymentGrowthDisplay(d, previous);
                       const rowCurrency = resolveDividendCurrency(d.currency, dividendDisplayCurrency);
-                      const growthLabel = growth.label.replace('Growth: ', '');
                       return (
                         <View key={key} style={styles.earningsRow}>
                           <View style={styles.earningsLeft}>
@@ -3614,8 +3615,7 @@ export default function StockDetail() {
                               : growth.tone === 'negative' ? styles.missText
                               : styles.dividendYoYBadgeTextNeutral,
                             ]}>
-                              {growthLabel}
-                            </Text>
+                              {growth.badgeLabel}                            </Text>
                           </View>
                         </View>
                       );
