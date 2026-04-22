@@ -4067,7 +4067,7 @@ const styles = StyleSheet.create({
   classificationRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
+    gap: 6,
     marginTop: 2,
   },
   exchangePill: {
@@ -4087,20 +4087,20 @@ const styles = StyleSheet.create({
   companyMetaPill: {
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#D1D5DB',
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    borderColor: '#E5E7EB',
+    backgroundColor: '#F9FAFB',
+    paddingVertical: 5,
+    paddingHorizontal: 8,
   },
   companyMetaPillLabel: {
-    fontSize: 14,
+    fontSize: 12,
     color: '#1F2937',
-    fontWeight: '600',
+    fontWeight: '500',
   },
   companyMetaPillValue: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#111827',
-    fontWeight: '800',
+    fontWeight: '700',
   },
   // Safety Badge styles
   safetyBadgeRow: {
