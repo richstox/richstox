@@ -3589,14 +3589,14 @@ export default function StockDetail() {
                       return (
                         <View key={key} style={styles.earningsRow}>
                           <View style={styles.earningsLeft}>
-                            <Text style={styles.earningsDate}>{d.payment_date ? formatDividendDate(d.payment_date) : d.ex_date ? formatDividendDate(d.ex_date) : '—'}</Text>
-                            <View style={styles.earningsEpsRow}>
-                              <Text style={styles.earningsEpsLabel}>Pay</Text>
+                            <View style={[styles.earningsEpsRow, { marginBottom: 2 }]}>
+                              <Text style={styles.earningsEpsLabel}>Payment date:</Text>
                               <Text style={styles.earningsEpsValue}>{d.payment_date ? formatDividendDate(d.payment_date) : '—'}</Text>
-                              <Text style={styles.earningsEpsSep}>·</Text>
-                              <Text style={styles.earningsEpsLabel}>Ex</Text>
+                              <Text style={[styles.earningsEpsSep, { marginHorizontal: 6 }]}>·</Text>
+                              <Text style={styles.earningsEpsLabel}>Ex-date:</Text>
                               <Text style={styles.earningsEpsValue}>{d.ex_date ? formatDividendDate(d.ex_date) : '—'}</Text>
-                              <Text style={styles.earningsEpsSep}>·</Text>
+                            </View>
+                            <View style={styles.earningsEpsRow}>
                               <Text style={styles.earningsEpsLabel}>Amt</Text>
                               <Text style={styles.earningsEpsValue}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
                               {d.event_type_label && (
