@@ -206,28 +206,28 @@ export const TOOLTIP_CONTENT = {
   // ── Earnings tooltips ──────────────────────────────────────────────────────
   earningsHeader: {
     title: "Earnings History",
-    body: "Each row shows one quarter's reported profit-per-share versus what analysts expected beforehand. A beat means the company surprised to the upside; a miss means it fell short.",
-    howToRead: "Green badge = beat expectations. Red badge = missed. The % shows how far off the estimate was. Context only, not advice."
+    body: "Each row shows one quarter's reported profit-per-share (Act = Actual) versus what analysts expected beforehand (Exp = Expected). A green badge means the company beat expectations; a red badge means it missed.",
+    howToRead: "Green badge = beat. Red badge = miss. The % shows how far the actual result was from the estimate. Context only, not advice."
   },
   earningsExpected: {
-    title: "Expected (Consensus Estimate)",
-    body: "The average earnings-per-share (EPS) forecast from Wall Street analysts before the company reported results. It reflects the market's best guess going in.",
-    howToRead: "Compare it against 'Actual' to see whether the company beat or missed. Context only, not advice."
+    title: "Exp — Expected (Consensus Estimate)",
+    body: "Exp is short for Expected. It is the average earnings-per-share (EPS) forecast from Wall Street analysts before the company reported results. It reflects the market's best guess going in.",
+    howToRead: "Compare it against Act (Actual) to see whether the company beat or missed. Context only, not advice."
   },
   earningsActual: {
-    title: "Actual (Reported EPS)",
-    body: "The earnings-per-share the company officially reported for that quarter. Negative numbers mean the company lost money per share that period.",
-    howToRead: "Higher than expected = beat. Lower = miss. Negative = unprofitable that quarter. Context only, not advice."
+    title: "Act — Actual (Reported EPS)",
+    body: "Act is short for Actual. It is the earnings-per-share the company officially reported for that quarter. Negative numbers mean the company lost money per share that period.",
+    howToRead: "Higher than Exp (Expected) = beat (green badge). Lower than Exp = miss (red badge). Negative = unprofitable that quarter. Context only, not advice."
   },
   earningsBeatMiss: {
-    title: "Beat / Miss",
-    body: "Whether the reported EPS came in above (beat) or below (miss) the analyst consensus estimate. The percentage shows the size of the surprise.",
-    howToRead: "+5% beat means the company earned 5% more than expected. -10% miss means 10% below the estimate. Context only, not advice."
+    title: "Beat / Miss Badge",
+    body: "The coloured badge shows whether the reported EPS (Act) came in above or below the analyst estimate (Exp). Green badge = beat (company earned more than expected). Red badge = miss (company fell short). The percentage shows the size of the surprise.",
+    howToRead: "+5% means the company earned 5% more than expected. -10% means 10% below the estimate. Context only, not advice."
   },
   earningsNA: {
     title: "N/A — Data Not Available",
-    body: "Either the analyst estimate or the reported figure is missing for this quarter. This can happen for very small companies, recent IPOs, or periods with no analyst coverage.",
-    howToRead: "N/A in 'Expected' means no analyst consensus existed. N/A in 'Actual' means the result was not captured. Context only, not advice."
+    body: "Either the analyst estimate (Exp) or the reported figure (Act) is missing for this quarter. This can happen for very small companies, recent IPOs, or periods with no analyst coverage.",
+    howToRead: "N/A in Exp means no analyst consensus existed. N/A in Act means the result was not captured. Context only, not advice."
   },
 
   // ── Dividends tooltips ─────────────────────────────────────────────────────

@@ -2122,10 +2122,10 @@ export default function StockDetail() {
               </View>
             ) : visibleChartData.length > 0 && chartWMeasured > 0 ? (
               (() => {
-                const BADGE_FONT_SIZE = 11;
-                const BADGE_CHAR_W = 6.5;
-                const BADGE_PAD_H = 6;
-                const BADGE_H = 20;
+                const BADGE_FONT_SIZE = 12;
+                const BADGE_CHAR_W = 7;
+                const BADGE_PAD_H = 7;
+                const BADGE_H = 22;
                 const chartW = chartWMeasured;
                 chartWRef.current = chartW;
                 const chartH = 240;
@@ -2487,12 +2487,12 @@ export default function StockDetail() {
                               y={badgeY}
                               width={badgeW}
                               height={BADGE_H}
-                              rx={3}
+                              rx={4}
                               fill={label.color}
                             />
                             <SvgText
                               x={badgeX + badgeW / 2}
-                              y={badgeY + BADGE_H / 2 + 4}
+                              y={badgeY + BADGE_H / 2 + 4.5}
                               fontSize={BADGE_FONT_SIZE}
                               fill="#FFFFFF"
                               fontWeight="700"
@@ -4200,7 +4200,7 @@ const styles = StyleSheet.create({
   changeText: { fontSize: 13, fontWeight: '600' },
   positiveText: { color: '#10B981' },
   negativeText: { color: '#EF4444' },
-  priceDate: { fontSize: 11, color: COLORS.textMuted, marginTop: 2 },
+  priceDate: { fontSize: 14, color: '#374151', lineHeight: 20, marginTop: 4 },
   
   // Price Chart - MORE COMPACT
   chartCard: { backgroundColor: COLORS.card, borderRadius: 12, padding: 12, marginBottom: 8 },  // Reduced
@@ -4220,7 +4220,7 @@ const styles = StyleSheet.create({
   rangeSelectorScroll: { marginBottom: 8 },
   rangeSelectorContent: { flexDirection: 'row', gap: 6, paddingHorizontal: 2 },
   // P22: Date range text under range selector
-  dateRangeText: { fontSize: 14, color: '#374151', marginBottom: 8 },
+  dateRangeText: { fontSize: 14, color: '#374151', lineHeight: 20, marginBottom: 8 },
   benchmarkNote: { fontSize: 10, color: '#9CA3AF', textAlign: 'center', marginTop: -4, marginBottom: 8, fontStyle: 'italic' },
   rangeButton: { paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, backgroundColor: '#F5F8FC', alignItems: 'center', minWidth: 44 },
   rangeButtonActive: { backgroundColor: COLORS.primary },
@@ -4330,17 +4330,17 @@ const styles = StyleSheet.create({
   dividendViewButtonTextActive: { color: '#111827' },
   dividendAnnualSection: { marginTop: 4 },
   dividendAnnualList: { gap: 10, marginTop: 2 },
-  dividendAnnualItem: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, backgroundColor: '#F9FAFB', paddingVertical: 10, paddingHorizontal: 12, gap: 10 },
+  dividendAnnualItem: { flexDirection: 'row', alignItems: 'center', borderRadius: 12, backgroundColor: '#F9FAFB', paddingVertical: 12, paddingHorizontal: 14, gap: 10 },
   dividendTrendBar: { width: 4, borderRadius: 3, alignSelf: 'stretch' },
   dividendAnnualItemBody: { flex: 1 },
   dividendAnnualLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
-  dividendAnnualPeriodLabel: { fontSize: 28, fontWeight: '900', color: '#111827' },
+  dividendAnnualPeriodLabel: { fontSize: 26, fontWeight: '900', color: '#111827' },
   dividendAnnualSecondaryValue: { fontSize: 14, color: '#374151', fontWeight: '600' },
   dividendAnnualHelperText: { fontSize: 14, color: '#374151', fontWeight: '700' },
   dividendPartialHelperText: { color: '#6B7280' },
   dividendAnnualPrimaryValue: { fontSize: 24, fontWeight: '900', color: '#111827' },
   // YoY badge (pill) for annual dividend rows
-  dividendYoYBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, minWidth: 62, justifyContent: 'center' },
+  dividendYoYBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 6, gap: 3, minWidth: 62, justifyContent: 'center' },
   dividendYoYBadgePositive: { backgroundColor: '#D1FAE5' },
   dividendYoYBadgeNegative: { backgroundColor: '#FEE2E2' },
   dividendYoYBadgeNeutralBase: { backgroundColor: '#F3F4F6' },
@@ -4580,8 +4580,9 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
   },
   perfCheckDateRange: {
-    fontSize: 11,
-    color: COLORS.textMuted,
+    fontSize: 14,
+    color: '#374151',
+    lineHeight: 20,
     marginBottom: 12,
   },
   perfCheckColumns: {
