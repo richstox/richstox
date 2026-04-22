@@ -3589,10 +3589,13 @@ export default function StockDetail() {
                       return (
                         <View key={key} style={styles.earningsRow}>
                           <View style={styles.earningsLeft}>
-                            <Text style={styles.earningsDate}>{formatDividendDate(d.payment_date || d.ex_date)}</Text>
+                            <Text style={styles.earningsDate}>{d.payment_date ? formatDividendDate(d.payment_date) : d.ex_date ? formatDividendDate(d.ex_date) : '—'}</Text>
                             <View style={styles.earningsEpsRow}>
+                              <Text style={styles.earningsEpsLabel}>Pay</Text>
+                              <Text style={styles.earningsEpsValue}>{d.payment_date ? formatDividendDate(d.payment_date) : '—'}</Text>
+                              <Text style={styles.earningsEpsSep}>·</Text>
                               <Text style={styles.earningsEpsLabel}>Ex</Text>
-                              <Text style={styles.earningsEpsValue}>{formatDividendDate(d.ex_date)}</Text>
+                              <Text style={styles.earningsEpsValue}>{d.ex_date ? formatDividendDate(d.ex_date) : '—'}</Text>
                               <Text style={styles.earningsEpsSep}>·</Text>
                               <Text style={styles.earningsEpsLabel}>Amt</Text>
                               <Text style={styles.earningsEpsValue}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
@@ -3615,7 +3618,8 @@ export default function StockDetail() {
                               : growth.tone === 'negative' ? styles.missText
                               : styles.dividendYoYBadgeTextNeutral,
                             ]}>
-                              {growth.badgeLabel}                            </Text>
+                              {growth.badgeLabel ?? '—'}
+                            </Text>
                           </View>
                         </View>
                       );
