@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React from 'react';
 import { View, Text, TouchableOpacity, Modal, Pressable, StyleSheet } from 'react-native';
 
 interface TooltipContent {
@@ -14,13 +14,6 @@ interface MetricTooltipProps {
 }
 
 export const MetricTooltip = ({ visible, onClose, content }: MetricTooltipProps) => {
-  useEffect(() => {
-    if (visible) {
-      // Auto-close after 5 seconds of inactivity
-      const timer = setTimeout(onClose, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [visible, onClose]);
 
   if (!visible) return null;
 
