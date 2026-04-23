@@ -24,6 +24,45 @@ import { authenticatedFetch } from '../../utils/api_client';
 
 type Tab = 'dashboard' | 'pipeline' | 'customers' | 'remediation';
 
+class AdminTabErrorBoundary extends React.Component<
+  { children: React.ReactNode; onRetry?: () => void; title: string },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: Error) {
+    console.error(`${this.props.title} render error`, error);
+  }
+
+  private handleRetry = () => {
+    this.setState({ hasError: false });
+    this.props.onRetry?.();
+  };
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <View style={a.tabErrorCard}>
+          <Ionicons name="warning-outline" size={28} color="#EF4444" />
+          <Text style={a.tabErrorTitle}>{this.props.title} failed to load</Text>
+          <Text style={a.tabErrorText}>
+            The rest of the admin panel is still available.
+          </Text>
+          <TouchableOpacity style={a.tabErrorButton} onPress={this.handleRetry}>
+            <Text style={a.tabErrorButtonText}>Retry tab</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface CoverageCheckpoint {
@@ -1914,6 +1953,7 @@ const sk = StyleSheet.create({
 export default function AdminScreen() {
   const { isAdmin, sessionToken, isLoading } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
+  const [pipelineTabKey, setPipelineTabKey] = useState(0);
   // Track which tabs have been visited so we lazy-mount them on first visit
   // but keep them mounted (retain state / avoid re-fetch) on subsequent switches.
   const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(new Set(['dashboard']));
@@ -1985,7 +2025,13 @@ export default function AdminScreen() {
       )}
       {visitedTabs.has('pipeline') && (
         <View style={activeTab === 'pipeline' ? a.tabContentVisible : a.tabContentHidden}>
-          <PipelineTab sessionToken={sessionToken} />
+          <AdminTabErrorBoundary
+            key={pipelineTabKey}
+            title="Pipeline tab"
+            onRetry={() => setPipelineTabKey(prev => prev + 1)}
+          >
+            <PipelineTab sessionToken={sessionToken} />
+          </AdminTabErrorBoundary>
         </View>
       )}
       {visitedTabs.has('customers') && (
@@ -2008,6 +2054,28 @@ const a = StyleSheet.create({
 
   tabContentVisible: { display: 'flex' as any, flex: 1 },
   tabContentHidden: { display: 'none' as any },
+  tabErrorCard: {
+    flex: 1,
+    margin: 16,
+    padding: 20,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    backgroundColor: '#FEF2F2',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  tabErrorTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+  tabErrorText: { fontSize: 13, color: COLORS.textMuted, textAlign: 'center' },
+  tabErrorButton: {
+    marginTop: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: COLORS.primary,
+  },
+  tabErrorButtonText: { fontSize: 13, fontWeight: '700', color: '#fff' },
 
   header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: COLORS.border },
   headerLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },

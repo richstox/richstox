@@ -3463,7 +3463,7 @@ export default function StockDetail() {
             <View style={styles.collapsibleTitleRow}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionIcon}>💸</Text>
-                <Text style={styles.sectionTitleBold}>Earnings & Dividends</Text>
+                <Text style={styles.sectionTitleBold}>Dividends & Earnings</Text>
               </View>
               {/* P5: Summary Pill (only when collapsed) - Shows dividend status */}
               {!earningsDividendsExpanded && (
@@ -3521,13 +3521,13 @@ export default function StockDetail() {
                       <View style={styles.earningsNextTileBody}>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.earningsNextTilePrimary}>
+                            {upcomingEarnings ? formatDateDMY(upcomingEarnings.report_date) : 'No date'}
+                          </Text>
+                          <Text style={styles.earningsNextTileSecondary}>
                             {upcomingEarnings?.estimate != null
                               ? `Est. ${upcomingEarnings.currency && upcomingEarnings.currency !== 'USD' ? upcomingEarnings.currency + ' ' : '$'}${toEU(upcomingEarnings.estimate, 2)}`
-                              : '—'
+                              : 'Estimate —'
                             }
-                          </Text>
-                          <Text style={styles.earningsNextTileDate}>
-                            {upcomingEarnings ? formatDateDMY(upcomingEarnings.report_date) : 'No date'}
                           </Text>
                         </View>
                         <View style={{ alignItems: 'flex-end', gap: 4 }}>
@@ -3679,56 +3679,54 @@ export default function StockDetail() {
                         <Text style={styles.dividendMetaPillValue}>Irregular</Text>
                       </View>
                     )}
-                  </View>
-
-                  {/* Next dividend — card-tile style matching Next Earnings */}
-                  <View style={[styles.dividendMetaPill, styles.earningsNextTilePill, { marginTop: 4 }]}>
-                    <TouchableOpacity style={styles.earningsNextTileHeader} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
-                      <Ionicons name="calendar-outline" size={12} color={COLORS.textMuted} />
-                      <Text style={styles.earningsNextTileLabel}>NEXT DIVIDEND</Text>
-                      {nextDividendInfo?.event_type_label && (
-                        <View style={[styles.dividendEventTag, { marginLeft: 4 }]}>
-                          <Text style={styles.dividendEventTagText}>{nextDividendInfo.event_type_label}</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                    {nextDividendInfo?.next_ex_date ? (
-                      <View style={styles.earningsNextTileBody}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.earningsNextTilePrimary}>
-                            {typeof nextDividendInfo.next_dividend_amount === 'number'
-                              ? formatDividendAmount(nextDividendInfo.next_dividend_amount, resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency))
-                              : '—'}
-                          </Text>
-                          <Text style={styles.earningsNextTileDate}>
-                            Ex {formatDividendDate(nextDividendInfo.next_ex_date)}
-                          </Text>
-                          {nextDividendInfo.next_pay_date && (
-                            <Text style={styles.earningsNextTileDate}>
-                              Pay {formatDividendDate(nextDividendInfo.next_pay_date)}
+                    <View style={[styles.dividendMetaPill, styles.earningsNextTilePill]}>
+                      <TouchableOpacity style={styles.earningsNextTileHeader} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
+                        <Ionicons name="calendar-outline" size={12} color={COLORS.textMuted} />
+                        <Text style={styles.earningsNextTileLabel}>NEXT DIVIDEND</Text>
+                        {nextDividendInfo?.event_type_label && (
+                          <View style={[styles.dividendEventTag, { marginLeft: 4 }]}>
+                            <Text style={styles.dividendEventTagText}>{nextDividendInfo.event_type_label}</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                      {nextDividendInfo?.next_ex_date ? (
+                        <View style={styles.earningsNextTileBody}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.earningsNextTilePrimary}>
+                              {typeof nextDividendInfo.next_dividend_amount === 'number'
+                                ? formatDividendAmount(nextDividendInfo.next_dividend_amount, resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency))
+                                : '—'}
                             </Text>
-                          )}
-                        </View>
-                        <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                          {(() => {
-                            const daysLeft = Math.ceil(
-                              (new Date(nextDividendInfo.next_ex_date + 'T00:00:00Z').getTime() - Date.now()) / 86400000
-                            );
-                            if (daysLeft > 0 && daysLeft <= 365) {
-                              return (
-                                <View style={styles.earningsCountdownBadge}>
-                                  <Ionicons name="time-outline" size={11} color="#6B7280" />
-                                  <Text style={styles.earningsCountdownText}>{daysLeft}d</Text>
-                                </View>
+                            <Text style={styles.earningsNextTileDate}>
+                              Ex {formatDividendDate(nextDividendInfo.next_ex_date)}
+                            </Text>
+                            {nextDividendInfo.next_pay_date && (
+                              <Text style={styles.earningsNextTileDate}>
+                                Pay {formatDividendDate(nextDividendInfo.next_pay_date)}
+                              </Text>
+                            )}
+                          </View>
+                          <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                            {(() => {
+                              const daysLeft = Math.ceil(
+                                (new Date(nextDividendInfo.next_ex_date + 'T00:00:00Z').getTime() - Date.now()) / 86400000
                               );
-                            }
-                            return null;
-                          })()}
+                              if (daysLeft > 0 && daysLeft <= 365) {
+                                return (
+                                  <View style={styles.earningsCountdownBadge}>
+                                    <Ionicons name="time-outline" size={11} color="#6B7280" />
+                                    <Text style={styles.earningsCountdownText}>{daysLeft}d</Text>
+                                  </View>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </View>
                         </View>
-                      </View>
-                    ) : (
-                      <Text style={styles.nextDividendNeutralText}>No upcoming dividend scheduled.</Text>
-                    )}
+                      ) : (
+                        <Text style={styles.nextDividendNeutralText}>No upcoming dividend scheduled.</Text>
+                      )}
+                    </View>
                   </View>
 
                   {/* Annual / Payments sub-tab switcher (full-width, Annual left/default) */}
@@ -4526,11 +4524,12 @@ const styles = StyleSheet.create({
   earningsDivTabTextActive: { fontSize: 15, fontWeight: '700', color: '#111827', textAlign: 'center' },
 
   // Next Earnings header tile (wider pill)
-  earningsNextTilePill: { flex: 1, minWidth: 180 },
+  earningsNextTilePill: { flexGrow: 1, flexShrink: 1, flexBasis: 220, minWidth: 220, alignSelf: 'stretch' },
   earningsNextTileHeader: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
   earningsNextTileLabel: { fontSize: 11, fontWeight: '700', color: '#6B7280', letterSpacing: 0.5 },
   earningsNextTileBody: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
   earningsNextTilePrimary: { fontSize: 16, fontWeight: '800', color: '#111827', marginBottom: 2 },
+  earningsNextTileSecondary: { fontSize: 13, color: '#6B7280', fontWeight: '600' },
   earningsNextTileDate: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
   earningsCountdownBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: '#F3F4F6', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
   earningsCountdownText: { fontSize: 12, fontWeight: '700', color: '#6B7280' },
