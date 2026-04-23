@@ -408,19 +408,19 @@ JOB_REGISTRY = {
     },
     "dividend_upcoming_calendar": {
         "hour": 4, "minute": 50, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/calendar/dividends?from={YYYY-MM-DD}&to={YYYY-MM-DD}"
+        "api_endpoint": "https://eodhd.com/api/calendar/dividends?from={from_date}&to={to_date}"
     },
     "earnings_upcoming_calendar": {
         "hour": 4, "minute": 55, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/calendar/earnings?from={YYYY-MM-DD}&to={YYYY-MM-DD}"
+        "api_endpoint": "https://eodhd.com/api/calendar/earnings?from={from_date}&to={to_date}"
     },
     "splits_upcoming_calendar": {
         "hour": 4, "minute": 57, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/calendar/splits?from={YYYY-MM-DD}&to={YYYY-MM-DD}"
+        "api_endpoint": "https://eodhd.com/api/calendar/splits?from={from_date}&to={to_date}"
     },
     "ipos_upcoming_calendar": {
         "hour": 4, "minute": 58, "sunday_only": False, "has_api_calls": True,
-        "api_endpoint": "https://eodhd.com/api/calendar/ipos?from={YYYY-MM-DD}&to={YYYY-MM-DD}"
+        "api_endpoint": "https://eodhd.com/api/calendar/ipos?from={from_date}&to={to_date}"
     },
     "backfill_all": {
         "hour": 5, "minute": 0, "sunday_only": False, "has_api_calls": True,
