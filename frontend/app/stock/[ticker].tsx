@@ -517,6 +517,7 @@ export default function StockDetail() {
   const [earningsLoading, setEarningsLoading] = useState(true);
   const [earningsCurrency, setEarningsCurrency] = useState<string | null>(null);
   const [earningsDivMode, setEarningsDivMode] = useState<'earnings' | 'dividends'>('dividends');
+  const [earningsViewMode, setEarningsViewMode] = useState<'annual' | 'history'>('annual');
   
   // Financials period toggle - handled internally by FinancialHub component
   
@@ -824,6 +825,7 @@ export default function StockDetail() {
     setEarningsLoading(true);
     setDividendViewMode('annual');
     setEarningsDivMode('dividends');
+    setEarningsViewMode('annual');
     fetchStock(false);
     fetchDividends();
     fetchEarningsData();
@@ -3577,8 +3579,35 @@ export default function StockDetail() {
                     </View>
                   </View>
 
-                  {/* Earnings History — upcoming rows excluded */}
-                  {earningsHistory.length > 0 ? (
+                  <View style={styles.dividendViewSwitch}>
+                    <TouchableOpacity
+                      style={[styles.dividendViewButton, earningsViewMode === 'annual' && styles.dividendViewButtonActive]}
+                      onPress={() => setEarningsViewMode('annual')}
+                    >
+                      <Text style={[styles.dividendViewButtonText, earningsViewMode === 'annual' && styles.dividendViewButtonTextActive]}>
+                        Annual
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.dividendViewButton, earningsViewMode === 'history' && styles.dividendViewButtonActive]}
+                      onPress={() => setEarningsViewMode('history')}
+                    >
+                      <Text style={[styles.dividendViewButtonText, earningsViewMode === 'history' && styles.dividendViewButtonTextActive]}>
+                        History
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {earningsViewMode === 'annual' ? (
+                    <>
+                      <Text style={styles.subsectionTitle}>Annual Earnings</Text>
+                      {!earningsLoading ? (
+                        <View style={styles.noDataPlaceholder}>
+                          <Text style={styles.noDataText}>No earnings data available</Text>
+                        </View>
+                      ) : null}
+                    </>
+                  ) : earningsHistory.length > 0 ? (
                     <>
                       <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show earnings history help">
                         <Text style={styles.subsectionTitle}>Earnings History</Text>
