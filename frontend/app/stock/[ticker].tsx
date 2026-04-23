@@ -502,7 +502,7 @@ export default function StockDetail() {
   // Dividends state
   const [dividendPayments, setDividendPayments] = useState<DividendEvent[]>([]);
   const [dividendHistory, setDividendHistory] = useState<DividendEvent[]>([]);
-  const [dividendViewMode, setDividendViewMode] = useState<'payments' | 'annual'>('payments');
+  const [dividendViewMode, setDividendViewMode] = useState<'payments' | 'annual'>('annual');
   const [dividendFrequencyLabel, setDividendFrequencyLabel] = useState<string>(DEFAULT_FREQUENCY_LABEL);
   const [dividendFrequencyFlags, setDividendFrequencyFlags] = useState<{ hasSpecial: boolean; hasIrregular: boolean }>({
     hasSpecial: false,
@@ -516,7 +516,7 @@ export default function StockDetail() {
   const [earningsHistory, setEarningsHistory] = useState<EarningsData[]>([]);
   const [earningsLoading, setEarningsLoading] = useState(true);
   const [earningsCurrency, setEarningsCurrency] = useState<string | null>(null);
-  const [earningsDivMode, setEarningsDivMode] = useState<'earnings' | 'dividends'>('earnings');
+  const [earningsDivMode, setEarningsDivMode] = useState<'earnings' | 'dividends'>('dividends');
   
   // Financials period toggle - handled internally by FinancialHub component
   
@@ -822,8 +822,8 @@ export default function StockDetail() {
     setMobileDataLoading(true);
     setDividendsLoading(true);
     setEarningsLoading(true);
-    setDividendViewMode('payments');
-    setEarningsDivMode('earnings');
+    setDividendViewMode('annual');
+    setEarningsDivMode('dividends');
     fetchStock(false);
     fetchDividends();
     fetchEarningsData();
@@ -3481,22 +3481,22 @@ export default function StockDetail() {
           
           {earningsDividendsExpanded && (
             <>
-              {/* ── Main tab selector: Earnings | Dividends ── */}
+              {/* ── Main tab selector: Dividends | Earnings (full-width segmented control) ── */}
               <View style={styles.earningsDivTabRow}>
-                <TouchableOpacity
-                  style={[styles.earningsDivTab, earningsDivMode === 'earnings' && styles.earningsDivTabActive]}
-                  onPress={() => setEarningsDivMode('earnings')}
-                >
-                  <Text style={[styles.earningsDivTabText, earningsDivMode === 'earnings' && styles.earningsDivTabTextActive]}>
-                    Earnings
-                  </Text>
-                </TouchableOpacity>
                 <TouchableOpacity
                   style={[styles.earningsDivTab, earningsDivMode === 'dividends' && styles.earningsDivTabActive]}
                   onPress={() => setEarningsDivMode('dividends')}
                 >
                   <Text style={[styles.earningsDivTabText, earningsDivMode === 'dividends' && styles.earningsDivTabTextActive]}>
                     Dividends
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.earningsDivTab, earningsDivMode === 'earnings' && styles.earningsDivTabActive]}
+                  onPress={() => setEarningsDivMode('earnings')}
+                >
+                  <Text style={[styles.earningsDivTabText, earningsDivMode === 'earnings' && styles.earningsDivTabTextActive]}>
+                    Earnings
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -3531,11 +3531,29 @@ export default function StockDetail() {
                           </Text>
                         </View>
                         <View style={{ alignItems: 'flex-end', gap: 4 }}>
-                          <View style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase]}>
-                            <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>
-                              {upcomingEarnings ? 'Scheduled' : '—'}
-                            </Text>
-                          </View>
+                          {upcomingEarnings ? (() => {
+                            const marketTiming = (upcomingEarnings.before_after_market ?? '').toLowerCase();
+                            const isBefore = marketTiming.startsWith('before');
+                            const isAfter = marketTiming.startsWith('after');
+                            return (
+                              <View style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}>
+                                {(isBefore || isAfter) && (
+                                  <Ionicons
+                                    name={isBefore ? 'sunny-outline' : 'moon-outline'}
+                                    size={12}
+                                    color="#6B7280"
+                                  />
+                                )}
+                                <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>
+                                  {isBefore ? 'Before Market' : isAfter ? 'After Market' : 'Scheduled'}
+                                </Text>
+                              </View>
+                            );
+                          })() : (
+                            <View style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase]}>
+                              <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>—</Text>
+                            </View>
+                          )}
                           {(() => {
                             if (!upcomingEarnings?.report_date) return null;
                             const daysLeft = Math.ceil(
@@ -3663,59 +3681,72 @@ export default function StockDetail() {
                     )}
                   </View>
 
-                  {/* Next dividend section */}
-                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 12 }]} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
-                    <Text style={styles.subsectionTitle}>Next dividend</Text>
-                    <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                    {nextDividendInfo?.event_type_label && (
-                      <View style={[styles.dividendEventTag, { marginLeft: 4 }]}>
-                        <Text style={styles.dividendEventTagText}>{nextDividendInfo.event_type_label}</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                  {nextDividendInfo?.next_ex_date ? (
-                    <View style={styles.earningsRow}>
-                      <View style={styles.earningsLeft}>
-                        <View style={[styles.earningsEpsRow, { marginBottom: 3 }]}>
-                          <Text style={styles.earningsEpsLabel}>Ex-date</Text>
-                          <Text style={styles.earningsEpsValue}>{formatDividendDate(nextDividendInfo.next_ex_date)}</Text>
+                  {/* Next dividend — card-tile style matching Next Earnings */}
+                  <View style={[styles.dividendMetaPill, styles.earningsNextTilePill, { marginTop: 4 }]}>
+                    <TouchableOpacity style={styles.earningsNextTileHeader} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
+                      <Ionicons name="calendar-outline" size={12} color={COLORS.textMuted} />
+                      <Text style={styles.earningsNextTileLabel}>NEXT DIVIDEND</Text>
+                      {nextDividendInfo?.event_type_label && (
+                        <View style={[styles.dividendEventTag, { marginLeft: 4 }]}>
+                          <Text style={styles.dividendEventTagText}>{nextDividendInfo.event_type_label}</Text>
                         </View>
-                        {nextDividendInfo?.next_pay_date && (
-                          <View style={styles.earningsEpsRow}>
-                            <Text style={styles.earningsEpsLabel}>Pay date</Text>
-                            <Text style={styles.earningsEpsValue}>{formatDividendDate(nextDividendInfo.next_pay_date)}</Text>
-                          </View>
-                        )}
-                      </View>
-                      {typeof nextDividendInfo?.next_dividend_amount === 'number' && (
-                        <Text style={styles.nextDividendMetricValue}>
-                          {formatDividendAmount(
-                            nextDividendInfo.next_dividend_amount,
-                            resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency)
-                          )}
-                        </Text>
                       )}
-                    </View>
-                  ) : (
-                    <Text style={styles.nextDividendNeutralText}>No upcoming dividend scheduled.</Text>
-                  )}
-
-                  {/* Payments / Annual sub-tab switcher */}
-                  <View style={styles.dividendViewSwitch}>
-                    <TouchableOpacity
-                      style={[styles.dividendViewButton, dividendViewMode === 'payments' && styles.dividendViewButtonActive]}
-                      onPress={() => setDividendViewMode('payments')}
-                    >
-                      <Text style={[styles.dividendViewButtonText, dividendViewMode === 'payments' && styles.dividendViewButtonTextActive]}>
-                        Payments
-                      </Text>
                     </TouchableOpacity>
+                    {nextDividendInfo?.next_ex_date ? (
+                      <View style={styles.earningsNextTileBody}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.earningsNextTilePrimary}>
+                            {typeof nextDividendInfo.next_dividend_amount === 'number'
+                              ? formatDividendAmount(nextDividendInfo.next_dividend_amount, resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency))
+                              : '—'}
+                          </Text>
+                          <Text style={styles.earningsNextTileDate}>
+                            Ex {formatDividendDate(nextDividendInfo.next_ex_date)}
+                          </Text>
+                          {nextDividendInfo.next_pay_date && (
+                            <Text style={styles.earningsNextTileDate}>
+                              Pay {formatDividendDate(nextDividendInfo.next_pay_date)}
+                            </Text>
+                          )}
+                        </View>
+                        <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                          {(() => {
+                            const daysLeft = Math.ceil(
+                              (new Date(nextDividendInfo.next_ex_date + 'T00:00:00Z').getTime() - Date.now()) / 86400000
+                            );
+                            if (daysLeft > 0 && daysLeft <= 365) {
+                              return (
+                                <View style={styles.earningsCountdownBadge}>
+                                  <Ionicons name="time-outline" size={11} color="#6B7280" />
+                                  <Text style={styles.earningsCountdownText}>{daysLeft}d</Text>
+                                </View>
+                              );
+                            }
+                            return null;
+                          })()}
+                        </View>
+                      </View>
+                    ) : (
+                      <Text style={styles.nextDividendNeutralText}>No upcoming dividend scheduled.</Text>
+                    )}
+                  </View>
+
+                  {/* Annual / Payments sub-tab switcher (full-width, Annual left/default) */}
+                  <View style={styles.dividendViewSwitch}>
                     <TouchableOpacity
                       style={[styles.dividendViewButton, dividendViewMode === 'annual' && styles.dividendViewButtonActive]}
                       onPress={() => setDividendViewMode('annual')}
                     >
                       <Text style={[styles.dividendViewButtonText, dividendViewMode === 'annual' && styles.dividendViewButtonTextActive]}>
                         Annual
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.dividendViewButton, dividendViewMode === 'payments' && styles.dividendViewButtonActive]}
+                      onPress={() => setDividendViewMode('payments')}
+                    >
+                      <Text style={[styles.dividendViewButtonText, dividendViewMode === 'payments' && styles.dividendViewButtonTextActive]}>
+                        Payments
                       </Text>
                     </TouchableOpacity>
                   </View>
@@ -4454,8 +4485,8 @@ const styles = StyleSheet.create({
   dividendAmount: { fontSize: 26, fontWeight: '900', color: '#111827' },
   dividendDateDetail: { fontSize: 14, color: '#374151', marginTop: 2, fontWeight: '600' },
   dividendGrowthText: { fontSize: 14, marginTop: 6, fontWeight: '800' },
-  dividendViewSwitch: { flexDirection: 'row', backgroundColor: '#E5E7EB', borderRadius: 10, padding: 4, marginTop: 6, marginBottom: 10, alignSelf: 'flex-start' },
-  dividendViewButton: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8 },
+  dividendViewSwitch: { flexDirection: 'row', backgroundColor: '#E5E7EB', borderRadius: 10, padding: 4, marginTop: 6, marginBottom: 10 },
+  dividendViewButton: { flex: 1, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
   dividendViewButtonActive: { backgroundColor: '#FFFFFF' },
   dividendViewButtonText: { fontSize: 15, color: '#4B5563', fontWeight: '700' },
   dividendViewButtonTextActive: { color: '#111827' },
@@ -4487,12 +4518,12 @@ const styles = StyleSheet.create({
   dividendValueNeutral: { color: '#111827' },
   nextDividendNeutralText: { fontSize: 14, color: '#6B7280', lineHeight: 20, marginBottom: 8 },
 
-  // Earnings | Dividends main tab bar
-  earningsDivTabRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#E5E7EB', marginBottom: 14 },
-  earningsDivTab: { paddingHorizontal: 16, paddingVertical: 10, marginBottom: -1 },
-  earningsDivTabActive: { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
-  earningsDivTabText: { fontSize: 15, fontWeight: '600', color: '#9CA3AF' },
-  earningsDivTabTextActive: { fontSize: 15, fontWeight: '700', color: '#111827' },
+  // Earnings | Dividends main tab bar (full-width segmented control)
+  earningsDivTabRow: { flexDirection: 'row', backgroundColor: '#E5E7EB', borderRadius: 10, padding: 4, marginBottom: 14 },
+  earningsDivTab: { flex: 1, paddingVertical: 10, borderRadius: 8, alignItems: 'center' },
+  earningsDivTabActive: { backgroundColor: '#FFFFFF' },
+  earningsDivTabText: { fontSize: 15, fontWeight: '600', color: '#4B5563', textAlign: 'center' },
+  earningsDivTabTextActive: { fontSize: 15, fontWeight: '700', color: '#111827', textAlign: 'center' },
 
   // Next Earnings header tile (wider pill)
   earningsNextTilePill: { flex: 1, minWidth: 180 },

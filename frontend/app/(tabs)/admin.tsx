@@ -71,6 +71,16 @@ interface PipelineAge {
   morning_refresh_status?: string;
 }
 
+interface AdminJobSummary {
+  name: string;
+  status?: string;
+  next_run?: string;
+  next_run_iso?: string | null;
+  last_run_started?: string | null;
+  last_run_finished?: string | null;
+  error_summary?: string;
+}
+
 interface BulkCompletenessBaseline {
   completed_at?: string | null;
   completed_at_prague?: string | null;
@@ -123,6 +133,7 @@ interface OverviewData {
     jobs_failed?: number;
   };
   jobs?: {
+    all_sorted?: AdminJobSummary[];
     overdue?: any[];
     failed?: any[];
     completed?: any[];
@@ -172,6 +183,46 @@ function formatHours(h?: number | null): string {
   return `${h.toFixed(1)}h ago`;
 }
 
+function jobStatusToHealth(status?: string | null): string | undefined {
+  if (!status) return undefined;
+  if (status === 'success' || status === 'completed') return 'green';
+  if (status === 'failed' || status === 'error' || status === 'overdue') return 'red';
+  if (status === 'running' || status === 'pending') return 'yellow';
+  return undefined;
+}
+
+function jobStatusLabel(status?: string | null): string {
+  if (!status) return 'Unknown';
+  if (status === 'success' || status === 'completed') return 'OK';
+  if (status === 'failed' || status === 'error') return 'Failed';
+  if (status === 'overdue') return 'Overdue';
+  if (status === 'running') return 'Running';
+  if (status === 'pending') return 'Pending';
+  return String(status);
+}
+
+function adminJobLabel(jobName: string): string {
+  const labels: Record<string, string> = {
+    dividend_upcoming_calendar: 'Dividends',
+    earnings_upcoming_calendar: 'Earnings',
+    splits_upcoming_calendar: 'Splits',
+    ipos_upcoming_calendar: 'IPOs',
+  };
+  return labels[jobName] ?? jobName;
+}
+
+function formatPragueDisplay(value?: string | null): string {
+  if (!value) return 'Never';
+  return value.replace('T', ' ').slice(0, 16);
+}
+
+const UPCOMING_CALENDAR_JOB_NAMES = [
+  'dividend_upcoming_calendar',
+  'earnings_upcoming_calendar',
+  'splits_upcoming_calendar',
+  'ipos_upcoming_calendar',
+] as const;
+
 // ─── Dashboard Tab ────────────────────────────────────────────────────────────
 
 interface DashboardProps {
@@ -196,6 +247,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
 
   // ── Calendar refresh state ──────────────────────────────────────────────
   const [calendarRefreshing, setCalendarRefreshing] = useState(false);
+  const [calendarJobRunning, setCalendarJobRunning] = useState<Record<string, boolean>>({});
 
   // ── Collapse toggles for vertical-space savings ────────────────────────
   const [showTradingDays, setShowTradingDays] = useState(false);
@@ -336,6 +388,27 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     }
   };
 
+  const handleRunCalendarJob = async (jobName: string, label: string) => {
+    setCalendarJobRunning(prev => ({ ...prev, [jobName]: true }));
+    try {
+      const res = await fetch(`${API_URL}/api/admin/job/${jobName}/run`, {
+        method: 'POST',
+        headers: authHeaders,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
+        throw new Error(msg);
+      }
+      await fetchAll();
+    } catch (e: any) {
+      dialog.alert(label, e?.message || `Could not start ${label.toLowerCase()} job`);
+    } finally {
+      setCalendarJobRunning(prev => ({ ...prev, [jobName]: false }));
+    }
+  };
+
   // Show branded loading only on first load when nothing has arrived yet
   if (initialLoad && !overview && !stats && !calendarSummary) return (
     <BrandedLoading message="Loading Dashboard..." subtitle="Crunching the numbers." />
@@ -368,6 +441,23 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const pi = overview?.price_integrity;
   const cp = pi?.coverage_checkpoints || {};
   const eodhd = overview?.eodhd_api_usage;
+  const upcomingCalendarJobs = UPCOMING_CALENDAR_JOB_NAMES
+    .map((jobName) => {
+      const job = overview?.jobs?.all_sorted?.find((item) => item.name === jobName);
+      const lastRun = overview?.job_last_runs?.[jobName];
+      return {
+        jobName,
+        label: adminJobLabel(jobName),
+        status: lastRun?.status ?? job?.status,
+        nextRunIso: job?.next_run_iso ?? null,
+        nextRun: job?.next_run,
+        lastRunIso: lastRun?.finished_at ?? lastRun?.end_time ?? lastRun?.started_at ?? lastRun?.start_time ?? null,
+        lastRunPrague: lastRun?.finished_at_prague ?? lastRun?.started_at_prague ?? job?.last_run_finished ?? job?.last_run_started ?? null,
+        errorMessage: lastRun?.error_message ?? job?.error_summary,
+        running: calendarJobRunning[jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time),
+      };
+    })
+    .filter((job) => !!job.nextRun || !!job.lastRunIso || !!job.lastRunPrague);
 
   // ── Bulk Completeness (since last full backfill) ──
   const bc = overview?.bulk_completeness;
@@ -653,6 +743,50 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         ) : (
           <Text style={d.cpHint}>Loading…</Text>
         )}
+      </View>
+
+      <View style={d.card}>
+        <Text style={d.sectionTitle}>Upcoming Calendar Jobs</Text>
+        <View style={d.calendarJobsList}>
+          {upcomingCalendarJobs.map((job) => {
+            const healthStatus = job.running ? 'yellow' : jobStatusToHealth(job.status);
+            const nextRunText = job.nextRunIso ? formatTime(job.nextRunIso) : (job.nextRun ?? '—');
+            const lastRunText = job.lastRunPrague
+              ? formatPragueDisplay(String(job.lastRunPrague))
+              : formatTime(job.lastRunIso ?? undefined);
+            return (
+              <View key={job.jobName} style={d.calendarJobItem}>
+                <View style={d.calendarJobHeader}>
+                  <View style={d.calendarJobTitleWrap}>
+                    {job.running ? (
+                      <ActivityIndicator size={14} color="#F59E0B" />
+                    ) : (
+                      <Ionicons name={statusIcon(healthStatus) as any} size={14} color={statusColor(healthStatus)} />
+                    )}
+                    <Text style={d.calendarJobTitle}>{job.label}</Text>
+                  </View>
+                  <TouchableOpacity
+                    style={[d.opsRunBtn, job.running && { opacity: 0.6 }]}
+                    onPress={() => handleRunCalendarJob(job.jobName, job.label)}
+                    disabled={job.running}
+                  >
+                    <Text style={d.opsRunBtnText}>{job.running ? 'Running' : 'Run'}</Text>
+                  </TouchableOpacity>
+                </View>
+                <View style={d.calendarJobMetaRow}>
+                  <Text style={[d.calendarJobBadge, { color: statusColor(healthStatus) }]}>
+                    {job.running ? 'Running' : jobStatusLabel(job.status)}
+                  </Text>
+                  <Text style={d.calendarJobMeta}>Next: {nextRunText}</Text>
+                </View>
+                <Text style={d.calendarJobMeta}>Last: {lastRunText || 'Never'}</Text>
+                {!!job.errorMessage && (
+                  <Text style={d.opsErrorDetail} numberOfLines={2}>⚠️ {job.errorMessage}</Text>
+                )}
+              </View>
+            );
+          })}
+        </View>
       </View>
 
       {/* C) Price Integrity / Coverage */}
@@ -1732,6 +1866,14 @@ const d = StyleSheet.create({
   opsErrorDetail: { fontSize: 9, color: '#DC2626', marginTop: 2 },
   opsRunBtn: { marginLeft: 4, backgroundColor: '#06B6D4', paddingHorizontal: 6, paddingVertical: 3, borderRadius: 4 },
   opsRunBtnText: { color: '#fff', fontSize: 9, fontWeight: '700' },
+  calendarJobsList: { gap: 8 },
+  calendarJobItem: { backgroundColor: COLORS.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: COLORS.border, gap: 4 },
+  calendarJobHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  calendarJobTitleWrap: { flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 },
+  calendarJobTitle: { fontSize: 12, fontWeight: '700', color: COLORS.text },
+  calendarJobMetaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  calendarJobBadge: { fontSize: 10, fontWeight: '700' },
+  calendarJobMeta: { fontSize: 10, color: COLORS.textMuted },
 
   // C) Price Integrity
   integrityGridCompact: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },

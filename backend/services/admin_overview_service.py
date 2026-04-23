@@ -406,6 +406,23 @@ JOB_REGISTRY = {
         "hour": 4, "minute": 45, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?api_token=YOUR_API_TOKEN&from={date}&fmt=json"
     },
+    # Calendar endpoints use an explicit date window: {from_date} .. {to_date}.
+    "dividend_upcoming_calendar": {
+        "hour": 4, "minute": 50, "sunday_only": False, "has_api_calls": True,
+        "api_endpoint": "https://eodhd.com/api/calendar/dividends?from={from_date}&to={to_date}"
+    },
+    "earnings_upcoming_calendar": {
+        "hour": 4, "minute": 55, "sunday_only": False, "has_api_calls": True,
+        "api_endpoint": "https://eodhd.com/api/calendar/earnings?from={from_date}&to={to_date}"
+    },
+    "splits_upcoming_calendar": {
+        "hour": 4, "minute": 57, "sunday_only": False, "has_api_calls": True,
+        "api_endpoint": "https://eodhd.com/api/calendar/splits?from={from_date}&to={to_date}"
+    },
+    "ipos_upcoming_calendar": {
+        "hour": 4, "minute": 58, "sunday_only": False, "has_api_calls": True,
+        "api_endpoint": "https://eodhd.com/api/calendar/ipos?from={from_date}&to={to_date}"
+    },
     "backfill_all": {
         "hour": 5, "minute": 0, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?api_token=YOUR_API_TOKEN&from={date}&fmt=json",
@@ -450,6 +467,10 @@ JOB_PATTERNS = {
     "market_calendar": ["market_calendar", "calendar_refresh"],
     "fundamentals_sync": ["scheduled_fundamentals_sync", "fundamentals_sync", "fundamentals_batch"],
     "backfill_gaps": ["backfill_gaps", "scheduled_backfill_gaps"],
+    "dividend_upcoming_calendar": ["dividend_upcoming_calendar"],
+    "earnings_upcoming_calendar": ["earnings_upcoming_calendar"],
+    "splits_upcoming_calendar": ["splits_upcoming_calendar"],
+    "ipos_upcoming_calendar": ["ipos_upcoming_calendar"],
     "backfill_all": ["backfill_all", "scheduled_backfill_all", "parallel_backfill"],
     "key_metrics": ["key_metrics", "metrics_calc"],
     "peer_medians": ["peer_medians", "medians_calc"],
