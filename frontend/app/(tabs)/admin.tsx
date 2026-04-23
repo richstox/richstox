@@ -1953,7 +1953,6 @@ const sk = StyleSheet.create({
 export default function AdminScreen() {
   const { isAdmin, sessionToken, isLoading } = useAuth();
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [pipelineTabKey, setPipelineTabKey] = useState(0);
   // Track which tabs have been visited so we lazy-mount them on first visit
   // but keep them mounted (retain state / avoid re-fetch) on subsequent switches.
   const [visitedTabs, setVisitedTabs] = useState<Set<Tab>>(new Set(['dashboard']));
@@ -2020,28 +2019,30 @@ export default function AdminScreen() {
       {/* Tab Content — lazy-mount on first visit, keep mounted to preserve state */}
       {visitedTabs.has('dashboard') && (
         <View style={activeTab === 'dashboard' ? a.tabContentVisible : a.tabContentHidden}>
-          <DashboardTab sessionToken={sessionToken} />
+          <AdminTabErrorBoundary title="Dashboard tab">
+            <DashboardTab sessionToken={sessionToken} />
+          </AdminTabErrorBoundary>
         </View>
       )}
       {visitedTabs.has('pipeline') && (
         <View style={activeTab === 'pipeline' ? a.tabContentVisible : a.tabContentHidden}>
-          <AdminTabErrorBoundary
-            key={pipelineTabKey}
-            title="Pipeline tab"
-            onRetry={() => setPipelineTabKey(prev => prev + 1)}
-          >
+          <AdminTabErrorBoundary title="Pipeline tab">
             <PipelineTab sessionToken={sessionToken} />
           </AdminTabErrorBoundary>
         </View>
       )}
       {visitedTabs.has('customers') && (
         <View style={activeTab === 'customers' ? a.tabContentVisible : a.tabContentHidden}>
-          <CustomersTab sessionToken={sessionToken} />
+          <AdminTabErrorBoundary title="Customers tab">
+            <CustomersTab sessionToken={sessionToken} />
+          </AdminTabErrorBoundary>
         </View>
       )}
       {visitedTabs.has('remediation') && (
         <View style={activeTab === 'remediation' ? a.tabContentVisible : a.tabContentHidden}>
-          <RemediationTab sessionToken={sessionToken} />
+          <AdminTabErrorBoundary title="Remediation tab">
+            <RemediationTab sessionToken={sessionToken} />
+          </AdminTabErrorBoundary>
         </View>
       )}
     </SafeAreaView>
