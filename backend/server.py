@@ -2016,6 +2016,16 @@ from dividend_history_service import (
     get_dividend_stats,
     sync_upcoming_dividend_calendar_for_visible_tickers,
     create_upcoming_dividends_indexes,
+    sync_upcoming_earnings_calendar_for_visible_tickers,
+    create_upcoming_earnings_indexes,
+    get_earnings_for_ticker,
+    sync_upcoming_splits_calendar_for_visible_tickers,
+    create_upcoming_splits_indexes,
+    get_splits_for_ticker,
+    sync_upcoming_ipos_calendar,
+    create_upcoming_ipos_indexes,
+    get_ipos_for_ticker,
+    get_ipos_calendar,
 )
 
 from canonical_dividend import compute_canonical_dividend_yield
@@ -6602,6 +6612,115 @@ async def get_ticker_chart_data(
             "prices": benchmark_prices
         } if include_benchmark else None
     }
+
+
+@api_router.get("/v1/ticker/{ticker}/earnings")
+async def get_ticker_earnings(ticker: str):
+    """
+    Get earnings history and upcoming earnings for a ticker.
+
+    Returns:
+    - metadata: currency and frequency context
+    - upcoming_earnings: next scheduled report (from upcoming_earnings collection), or null
+    - earnings_history: quarterly EPS rows (from earnings_history_cache), newest first
+
+    Classification rules (Europe/Prague date-only — no UTC comparison):
+      is_upcoming = True  when quarter_date > today_prague
+                          OR (quarter_date <= today_prague AND reported_eps is null)
+      is_upcoming = False when quarter_date <= today_prague AND reported_eps is not null
+
+    show_badge = True only when is_upcoming=False, reported_eps!=null,
+                 estimated_eps!=null, estimated_eps!=0.
+
+    History rows with show_badge=False carry surprise_pct=null (display as neutral "—").
+    Upcoming rows never carry surprise_pct.
+    beat_miss is never returned.
+    before_after_market and fiscal_period_end are always null for history rows.
+
+    Visibility gate: same as /v1/ticker/{ticker}/detail — 404 for non-visible tickers.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker} is not available")
+
+    return await get_earnings_for_ticker(db, ticker_full)
+
+
+@api_router.get("/v1/ticker/{ticker}/splits")
+async def get_ticker_splits(ticker: str):
+    """
+    Get upcoming stock split for a ticker.
+
+    Returns:
+    - upcoming_split: next scheduled split (from upcoming_splits collection), or null
+
+    upcoming_split fields: split_date (YYYY-MM-DD), split_ratio (e.g. "4:1")
+
+    Visibility gate: 404 for non-visible tickers.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker} is not available")
+
+    return await get_splits_for_ticker(db, ticker_full)
+
+
+@api_router.get("/v1/calendar/ipos")
+async def get_ipo_calendar(
+    exchange: Optional[str] = Query(None, description="Filter by exchange code, e.g. 'US'"),
+    limit: int = Query(50, ge=1, le=200, description="Max results to return"),
+):
+    """
+    List all upcoming IPOs from the upcoming_ipos collection.
+
+    NOT gated by ticker visibility — IPO companies are not pre-listed in
+    tracked_tickers, so this endpoint returns the full EODHD-sourced universe.
+
+    Query params:
+    - exchange: optional filter (e.g. 'US', 'LSE')
+    - limit: max results (default 50, max 200)
+
+    Results sorted by ipo_date ascending.
+    """
+    return await get_ipos_calendar(db, exchange=exchange, limit=limit)
+
+
+@api_router.get("/v1/ticker/{ticker}/ipo")
+async def get_ticker_ipo(ticker: str):
+    """
+    Get upcoming IPO for a specific ticker (visibility-gated).
+
+    Returns:
+    - upcoming_ipo: next scheduled IPO (from upcoming_ipos collection), or null
+
+    upcoming_ipo fields: ipo_date (YYYY-MM-DD), description, exchange, ipo_price
+
+    Ingestion is NOT filtered by visibility — all EODHD-returned IPOs are stored.
+    This endpoint applies a visibility gate at read time only.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker} is not available")
+
+    return await get_ipos_for_ticker(db, ticker_full)
 
 
 # ----- News Endpoints (FROM CACHE - updated daily) -----
@@ -11605,6 +11724,9 @@ async def startup():
     await create_talk_indexes(db)
     await create_notification_indexes(db)
     await create_upcoming_dividends_indexes(db)
+    await create_upcoming_earnings_indexes(db)
+    await create_upcoming_splits_indexes(db)
+    await create_upcoming_ipos_indexes(db)
 
     # ⚠️ Expire orphaned "running" manual_ad_hoc job docs from previous process.
     expired_jobs = await _expire_orphaned_running_jobs(db)

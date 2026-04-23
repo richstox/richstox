@@ -13,12 +13,15 @@
 | 4 | SP500TR Update | Mon-Sat | 04:15 | `/eod/SP500TR.INDX` | 1 | `not run today` |
 | 5 | Backfill Gaps | Mon-Sat | 04:45 | `/eod/{TICKER}.US` | 0-50 | `tickers with gaps exist` |
 | 6 | Upcoming Dividend Calendar | Mon-Sat | 04:50 | `/calendar/dividends?from=..&to=..` | 1 | `not run today` |
-| 7 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `tickers without full history` |
-| 8 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 9 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 10 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
-| 11 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
-| 12 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
+| 7 | Upcoming Earnings Calendar | Mon-Sat | 04:55 | `/calendar/earnings?from=..&to=..` | 1 | `not run today` |
+| 8 | Upcoming Splits Calendar | Mon-Sat | 04:57 | `/calendar/splits?from=..&to=..` | 1 | `not run today` |
+| 9 | Upcoming IPOs Calendar | Mon-Sat | 04:58 | `/calendar/ipos?from=..&to=..` | 1 | `not run today` |
+| 10 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `tickers without full history` |
+| 11 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 12 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 13 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
+| 14 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
+| 15 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
 
 ## Configuration Constants
 
@@ -35,6 +38,12 @@ BACKFILL_HOUR = 4
 BACKFILL_MINUTE = 45
 UPCOMING_DIVIDEND_CALENDAR_HOUR = 4
 UPCOMING_DIVIDEND_CALENDAR_MINUTE = 50
+UPCOMING_EARNINGS_CALENDAR_HOUR = 4
+UPCOMING_EARNINGS_CALENDAR_MINUTE = 55
+UPCOMING_SPLITS_CALENDAR_HOUR = 4
+UPCOMING_SPLITS_CALENDAR_MINUTE = 57
+UPCOMING_IPOS_CALENDAR_HOUR = 4
+UPCOMING_IPOS_CALENDAR_MINUTE = 58
 BACKFILL_ALL_HOUR = 5
 BACKFILL_ALL_MINUTE = 0
 NEWS_REFRESH_HOUR = 13
@@ -102,26 +111,53 @@ ADMIN_REPORT_MINUTE = 0
 - **Cost**: 1 API call/day
 - **Persistence**: `upcoming_dividends` collection with one document per visible ticker (upsert/null-safe)
 
-### 8. Backfill All (Mon-Sat 05:00)
+### 8. Upcoming Earnings Calendar (Mon-Sat 04:55)
+- **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_earnings_calendar_for_visible_tickers()`
+- **Purpose**: Fetch date-window upcoming earnings report dates (today..+90d) and persist per visible ticker for UI display. **Independent of Step 2.6** (`_detect_earnings_candidates_eodhd` in `scheduler_service.py`), which solely flags tickers for fundamentals refresh.
+- **API**: `GET https://eodhd.com/api/calendar/earnings?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- **Cost**: 1 API call/day
+- **Persistence**: `upcoming_earnings` collection with one document per visible ticker (upsert/null-safe)
+- **Window**: Europe/Prague date-only (not UTC)
+- **Served by**: `GET /v1/ticker/{ticker}/earnings`
+
+### 9. Upcoming Splits Calendar (Mon-Sat 04:57)
+- **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_splits_calendar_for_visible_tickers()`
+- **Purpose**: Fetch date-window upcoming stock split events (today..+90d) and persist per visible ticker for UI display.
+- **API**: `GET https://eodhd.com/api/calendar/splits?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- **Cost**: 1 API call/day
+- **Persistence**: `upcoming_splits` collection with one document per visible ticker (upsert/null-safe)
+- **Window**: Europe/Prague date-only (not UTC)
+- **Served by**: `GET /v1/ticker/{ticker}/splits`
+
+### 10. Upcoming IPOs Calendar (Mon-Sat 04:58)
+- **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_ipos_calendar()`
+- **Purpose**: Fetch date-window upcoming IPO events (today..+90d) and persist ALL EODHD-returned rows into `upcoming_ipos` for UI display. **NOT filtered by `tracked_tickers.is_visible`** — IPO companies do not yet exist in tracked_tickers at ingestion time, so a visibility filter would produce zero rows. The collection is replaced wholesale each run.
+- **API**: `GET https://eodhd.com/api/calendar/ipos?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- **Cost**: 1 API call/day
+- **Persistence**: `upcoming_ipos` collection (full replace per run; indexes on ticker, ipo_date, exchange)
+- **Window**: Europe/Prague date-only (not UTC)
+- **Served by**: `GET /v1/calendar/ipos` (list; no visibility gate), `GET /v1/ticker/{ticker}/ipo` (per-ticker; visibility-gated at read time)
+
+### 11. Backfill All (Mon-Sat 05:00)
 - **File**: `/app/backend/parallel_batch_service.py` → `run_scheduled_backfill_all_prices()`
 - **Purpose**: Full parallel price backfill for tickers without complete history
 - **API**: `GET https://eodhd.com/api/eod/{TICKER}.US`
 - **Cost**: 0-N API calls/day (0 after all tickers backfilled)
 - **Safety**: Rate-limit backoff >30s, error rate >5%, max 4 hours runtime
 
-### 9. Key Metrics (Mon-Sat 05:00)
+### 12. Key Metrics (Mon-Sat 05:00)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Compute per-ticker metrics (52w high/low, etc.)
 - **API**: None (DB-only computation)
 - **Cost**: 0 API calls
 
-### 10. Peer Medians (Mon-Sat 05:30)
+### 13. Peer Medians (Mon-Sat 05:30)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Compute peer/sector median values
 - **API**: None (DB-only computation)
 - **Cost**: 0 API calls
 
-### 11. PAIN Cache (Mon-Sat 05:00)
+### 14. PAIN Cache (Mon-Sat 05:00)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Refresh max drawdown cache
 - **API**: None (DB-only computation)
@@ -146,6 +182,10 @@ The `upcoming_dividends` collection is additive and can be left in place or drop
 | Universe Seed | 1 (Mon-Sat) |
 | Price Sync | 1 |
 | SP500TR | 1 |
+| Upcoming Dividends Calendar | 1 |
+| Upcoming Earnings Calendar | 1 |
+| Upcoming Splits Calendar | 1 |
+| Upcoming IPOs Calendar | 1 |
 | Fundamentals | ~0 (event-driven) |
 | Backfill Gaps | ~0 (after setup) |
 | Backfill All | ~0 (after setup) |
