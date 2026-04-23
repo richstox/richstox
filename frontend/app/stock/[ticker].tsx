@@ -3527,7 +3527,7 @@ export default function StockDetail() {
                       <View style={styles.earningsNextTileBody}>
                         <View style={{ flex: 1 }}>
                           <Text style={styles.earningsNextTilePrimary}>
-                            {upcomingEarnings ? formatDateDMY(upcomingEarnings.report_date) : 'No date'}
+                            {upcomingEarnings ? formatDateDMY(upcomingEarnings.report_date) : 'No upcoming earnings'}
                           </Text>
                           <Text style={styles.earningsNextTileSecondary}>
                             {formatUpcomingEarningsEstimate(upcomingEarnings?.estimate, upcomingEarnings?.currency)}
