@@ -94,6 +94,26 @@ interface EarningsData {
   is_upcoming?: boolean;
 }
 
+interface UpcomingEarningsData {
+  report_date: string;
+  fiscal_period_end: string | null;
+  before_after_market: string | null;
+  currency: string | null;
+  estimate: number | null;
+}
+
+interface EarningsApiResponse {
+  ticker: string;
+  metadata: {
+    default_currency: string;
+    currencies: string[];
+    default_frequency: string;
+    frequencies: string[];
+  };
+  upcoming_earnings: UpcomingEarningsData | null;
+  earnings_history: EarningsData[];
+}
+
 interface InsiderData {
   status: string;
   buyers_count: number;
@@ -477,6 +497,11 @@ export default function StockDetail() {
   });
   const [dividendDisplayCurrency, setDividendDisplayCurrency] = useState<string>('USD');
   const [nextDividendInfo, setNextDividendInfo] = useState<NextDividendInfo>(null);
+
+  // Earnings from dedicated /v1/ticker/{ticker}/earnings endpoint
+  const [upcomingEarnings, setUpcomingEarnings] = useState<UpcomingEarningsData | null>(null);
+  const [earningsHistory, setEarningsHistory] = useState<EarningsData[]>([]);
+  const [earningsLoading, setEarningsLoading] = useState(true);
   
   // Financials period toggle - handled internally by FinancialHub component
   
@@ -659,6 +684,29 @@ export default function StockDetail() {
     }
   };
 
+  // Fetch earnings history + upcoming from dedicated endpoint
+  const fetchEarningsData = async () => {
+    try {
+      const response = await axios.get<EarningsApiResponse>(`${API_URL}/api/v1/ticker/${ticker}/earnings`);
+      setUpcomingEarnings(response.data.upcoming_earnings || null);
+      // Exclude is_upcoming rows from the history list — upcoming rows belong only
+      // in the "Next earnings" section, not the history table.
+      const history = (response.data.earnings_history || []).filter(
+        (e) => !(e.is_upcoming ?? false)
+      );
+      setEarningsHistory(history);
+    } catch (err: any) {
+      // 404 is expected for non-visible tickers; swallow silently.
+      if (err?.response?.status !== 404) {
+        console.error('Error fetching earnings:', err.message || err);
+      }
+      setUpcomingEarnings(null);
+      setEarningsHistory([]);
+    } finally {
+      setEarningsLoading(false);
+    }
+  };
+
   // Fetch price history for chart (now includes benchmark)
   // Uses per-range cache so repeated MAX/range switches are instant
   const fetchChartData = async (range: PriceRange) => {
@@ -756,9 +804,11 @@ export default function StockDetail() {
     // Reset loading states for new ticker to avoid flashing negative pills
     setMobileDataLoading(true);
     setDividendsLoading(true);
+    setEarningsLoading(true);
     setDividendViewMode('payments');
     fetchStock(false);
     fetchDividends();
+    fetchEarningsData();
   }, [ticker]);
 
   useEffect(() => {
@@ -921,6 +971,7 @@ export default function StockDetail() {
     fetchStock(false); // P4: Always load full data for single vertical scroll
     fetchChartData(priceRange);
     fetchDividends();
+    fetchEarningsData();
     fetchTalkPosts();
   };
   
@@ -3435,24 +3486,55 @@ export default function StockDetail() {
           
           {earningsDividendsExpanded && (
             <>
-              {/* Earnings History */}
-              {data?.earnings && data.earnings.length > 0 ? (
+              {/* Next Earnings */}
+              {upcomingEarnings && (
                 <>
-                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show earnings history help">
+                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show next earnings help">
+                    <Text style={styles.subsectionTitle}>Next Earnings</Text>
+                    <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                  </TouchableOpacity>
+                  <View style={styles.earningsRow}>
+                    <View style={styles.earningsLeft}>
+                      <Text style={styles.earningsDate}>{formatDateDMY(upcomingEarnings.report_date)}</Text>
+                      <View style={styles.earningsEpsRow}>
+                        {upcomingEarnings.before_after_market ? (
+                          <Text style={styles.earningsEpsLabel}>{upcomingEarnings.before_after_market}</Text>
+                        ) : null}
+                        {upcomingEarnings.estimate != null && (
+                          <>
+                            {upcomingEarnings.before_after_market ? <Text style={styles.earningsEpsSep}>·</Text> : null}
+                            <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button" accessibilityLabel="Show expected earnings help">
+                              <Text style={styles.earningsEpsLabel}>Est</Text>
+                            </TouchableOpacity>
+                            <Text style={styles.earningsEpsValue}>{'$'}{toEU(upcomingEarnings.estimate, 2)}</Text>
+                          </>
+                        )}
+                      </View>
+                    </View>
+                    <View style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase]}>
+                      <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>Scheduled</Text>
+                    </View>
+                  </View>
+                </>
+              )}
+
+              {/* Earnings History — upcoming rows excluded; sourced from /v1/ticker/{ticker}/earnings */}
+              {earningsHistory.length > 0 ? (
+                <>
+                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: upcomingEarnings ? 12 : 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show earnings history help">
                     <Text style={styles.subsectionTitle}>Earnings History</Text>
                     <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                   </TouchableOpacity>
-                  {data.earnings.slice(0, 8).map((e, i) => {
-                    // show_badge may come from new /earnings endpoint or be derived
-                    // from existing fields. Never rely on beat_miss.
+                  {earningsHistory.slice(0, 8).map((e, i) => {
+                    // show_badge from the /earnings endpoint; fall back to field derivation.
+                    // Upcoming rows never reach here (filtered in fetchEarningsData).
                     const showBadge = e.show_badge != null
                       ? e.show_badge
                       : (
                           e.reported_eps != null &&
                           e.estimated_eps != null &&
                           e.estimated_eps !== 0 &&
-                          e.surprise_pct != null &&
-                          !(e.is_upcoming ?? false)
+                          e.surprise_pct != null
                         );
                     const badgeIsPositive = (e.surprise_pct ?? 0) >= 0;
                     return (
@@ -3512,11 +3594,11 @@ export default function StockDetail() {
                     );
                   })}
                 </>
-              ) : (
+              ) : !earningsLoading && !upcomingEarnings ? (
                 <View style={styles.noDataPlaceholder}>
                   <Text style={styles.noDataText}>No earnings data available</Text>
                 </View>
-              )}
+              ) : null}
                
               {/* Dividends - always show from canonical source (dividend_history) */}
               <TouchableOpacity style={styles.dividendsSubsectionTitleRow} onPress={() => showTooltip('dividendsHeader')} accessibilityRole="button" accessibilityLabel="Show dividends help">

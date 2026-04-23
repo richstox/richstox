@@ -1338,8 +1338,8 @@ async def scheduler_loop():
                     f"(hour={current_hour}, scheduled={UPCOMING_IPOS_CALENDAR_HOUR}:{UPCOMING_IPOS_CALENDAR_MINUTE:02d})"
                 )
                 try:
-                    from dividend_history_service import sync_upcoming_ipos_calendar_for_visible_tickers
-                    await run_job_with_retry("ipos_upcoming_calendar", sync_upcoming_ipos_calendar_for_visible_tickers, db)
+                    from dividend_history_service import sync_upcoming_ipos_calendar
+                    await run_job_with_retry("ipos_upcoming_calendar", sync_upcoming_ipos_calendar, db)
                     last_run["ipos_upcoming_calendar"] = today_str
                     await set_last_run_state(last_run)
                 except Exception as exc:

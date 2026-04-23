@@ -130,13 +130,13 @@ ADMIN_REPORT_MINUTE = 0
 - **Served by**: `GET /v1/ticker/{ticker}/splits`
 
 ### 10. Upcoming IPOs Calendar (Mon-Sat 04:58)
-- **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_ipos_calendar_for_visible_tickers()`
-- **Purpose**: Fetch date-window upcoming IPO events (today..+90d) and persist per visible ticker for UI display. IPO tickers must be pre-seeded into tracked_tickers with is_visible=True before the listing date.
+- **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_ipos_calendar()`
+- **Purpose**: Fetch date-window upcoming IPO events (today..+90d) and persist ALL EODHD-returned rows into `upcoming_ipos` for UI display. **NOT filtered by `tracked_tickers.is_visible`** — IPO companies do not yet exist in tracked_tickers at ingestion time, so a visibility filter would produce zero rows. The collection is replaced wholesale each run.
 - **API**: `GET https://eodhd.com/api/calendar/ipos?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
 - **Cost**: 1 API call/day
-- **Persistence**: `upcoming_ipos` collection with one document per visible ticker (upsert/null-safe)
+- **Persistence**: `upcoming_ipos` collection (full replace per run; indexes on ticker, ipo_date, exchange)
 - **Window**: Europe/Prague date-only (not UTC)
-- **Served by**: `GET /v1/ticker/{ticker}/ipo`
+- **Served by**: `GET /v1/calendar/ipos` (list; no visibility gate), `GET /v1/ticker/{ticker}/ipo` (per-ticker; visibility-gated at read time)
 
 ### 11. Backfill All (Mon-Sat 05:00)
 - **File**: `/app/backend/parallel_batch_service.py` → `run_scheduled_backfill_all_prices()`

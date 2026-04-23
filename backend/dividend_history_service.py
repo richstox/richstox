@@ -1454,26 +1454,33 @@ async def get_splits_for_ticker(db, ticker: str) -> Dict[str, Any]:
 
 async def create_upcoming_ipos_indexes(db) -> None:
     """Create indexes for the upcoming_ipos collection."""
+    # NOTE: ticker is NOT unique here — IPO calendar is stored per-event (by code),
+    # not per-tracked-ticker, so multiple rows with the same ticker are possible.
     await db.upcoming_ipos.create_index(
-        [("ticker", 1)], unique=True, name="upcoming_ipos_ticker_unique"
+        [("ticker", 1)], name="upcoming_ipos_ticker"
     )
     await db.upcoming_ipos.create_index(
         [("ipo_date", 1)], name="upcoming_ipos_ipo_date"
     )
+    await db.upcoming_ipos.create_index(
+        [("exchange", 1)], name="upcoming_ipos_exchange"
+    )
 
 
-async def sync_upcoming_ipos_calendar_for_visible_tickers(db) -> Dict[str, Any]:
-    """Daily job: fetch EODHD /calendar/ipos and persist one doc per visible
-    ticker into the upcoming_ipos collection.
+async def sync_upcoming_ipos_calendar(db) -> Dict[str, Any]:
+    """Daily job: fetch EODHD /calendar/ipos and persist ALL returned IPO events
+    into the upcoming_ipos collection.
 
-    Pattern mirrors sync_upcoming_splits_calendar_for_visible_tickers exactly:
-    - One document per visible ticker (upsert).
-    - Visible tickers with no upcoming IPO get all payload fields set to None.
-    - Visibility definition: tracked_tickers.is_visible = True.
-    - window_start / window_end use Europe/Prague date-only. fetched_at stays UTC.
+    KEY DESIGN DIFFERENCE FROM other calendar jobs:
+    - IPOs are NOT filtered by tracked_tickers.is_visible. IPO companies are not
+      yet listed, so they cannot be pre-seeded as visible tickers — doing so would
+      result in zero rows written every day.
+    - Instead, every row returned by EODHD for the 90-day window is stored; the
+      collection is replaced per-run (all existing docs deleted, new docs inserted).
+    - The per-ticker endpoint GET /v1/ticker/{ticker}/ipo still applies a visibility
+      gate at read time if needed, but ingestion is unconditional.
 
-    Note: IPO entries are pre-seeded into tracked_tickers before the listing date
-    so that the visibility filter can match them.
+    window_start / window_end use Europe/Prague date-only. fetched_at stays UTC.
 
     EODHD fields:
       ipo_date    ← row["Date"] or row["date"] or row["ipo_date"]
@@ -1489,9 +1496,6 @@ async def sync_upcoming_ipos_calendar_for_visible_tickers(db) -> Dict[str, Any]:
     now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
     window_start = now_prague.strftime("%Y-%m-%d")
     window_end = (now_prague + timedelta(days=UPCOMING_IPOS_WINDOW_DAYS)).strftime("%Y-%m-%d")
-
-    visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
-    visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
 
     url = f"{EODHD_BASE_URL}/calendar/ipos"
     params = {
@@ -1513,8 +1517,8 @@ async def sync_upcoming_ipos_calendar_for_visible_tickers(db) -> Dict[str, Any]:
     else:
         rows = []
 
-    # Group rows by ticker; keep only the nearest upcoming IPO per ticker.
-    grouped: Dict[str, Dict[str, Any]] = {}
+    # Build documents for every valid row; no visibility filter.
+    docs: List[Dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1526,8 +1530,6 @@ async def sync_upcoming_ipos_calendar_for_visible_tickers(db) -> Dict[str, Any]:
         )
         if not ticker:
             continue
-        if visible_tickers and ticker not in visible_tickers:
-            continue
         ipo_date = _parse_date_ymd(
             row.get("Date")
             or row.get("date")
@@ -1535,91 +1537,78 @@ async def sync_upcoming_ipos_calendar_for_visible_tickers(db) -> Dict[str, Any]:
         )
         if not ipo_date:
             continue
-        if ticker not in grouped or ipo_date < grouped[ticker]["_ipo_date"]:
-            grouped[ticker] = {
-                "_ipo_date": ipo_date,
-                "ipo_date": ipo_date,
-                "description": (
-                    row.get("Description")
-                    or row.get("description")
-                    or row.get("name")
-                    or None
-                ),
-                "exchange": row.get("Exchange") or row.get("exchange") or None,
-                "ipo_price": (
-                    row.get("IPO_Price")
-                    or row.get("ipo_price")
-                    or row.get("ipoPrice")
-                    or None
-                ),
-            }
+        docs.append({
+            "ticker": ticker,
+            "ipo_date": ipo_date,
+            "description": (
+                row.get("Description")
+                or row.get("description")
+                or row.get("name")
+                or None
+            ),
+            "exchange": row.get("Exchange") or row.get("exchange") or None,
+            "ipo_price": (
+                row.get("IPO_Price")
+                or row.get("ipo_price")
+                or row.get("ipoPrice")
+                or None
+            ),
+            "source": UPCOMING_IPOS_SOURCE,
+            "fetched_at": now_utc,
+            "window_start": window_start,
+            "window_end": window_end,
+        })
 
-    write_ops: List[UpdateOne] = []
-
-    for ticker, event in grouped.items():
-        write_ops.append(
-            UpdateOne(
-                {"ticker": ticker},
-                {"$set": {
-                    "ticker": ticker,
-                    "ipo_date": event["ipo_date"],
-                    "description": event["description"],
-                    "exchange": event["exchange"],
-                    "ipo_price": event["ipo_price"],
-                    "source": UPCOMING_IPOS_SOURCE,
-                    "fetched_at": now_utc,
-                    "window_start": window_start,
-                    "window_end": window_end,
-                }},
-                upsert=True,
-            )
-        )
-
-    null_tickers = sorted(visible_tickers - set(grouped.keys()))
-    for ticker in null_tickers:
-        write_ops.append(
-            UpdateOne(
-                {"ticker": ticker},
-                {"$set": {
-                    "ticker": ticker,
-                    "ipo_date": None,
-                    "description": None,
-                    "exchange": None,
-                    "ipo_price": None,
-                    "source": UPCOMING_IPOS_SOURCE,
-                    "fetched_at": now_utc,
-                    "window_start": window_start,
-                    "window_end": window_end,
-                }},
-                upsert=True,
-            )
-        )
-
-    if write_ops:
-        await db.upcoming_ipos.bulk_write(write_ops, ordered=False)
+    # Full replace: delete all existing docs for this window, insert fresh set.
+    await db.upcoming_ipos.delete_many({})
+    if docs:
+        await db.upcoming_ipos.insert_many(docs, ordered=False)
 
     return {
         "success": True,
         "source": UPCOMING_IPOS_SOURCE,
         "window_start": window_start,
         "window_end": window_end,
-        "visible_tickers": len(visible_tickers),
-        "tickers_with_upcoming": len(grouped),
-        "tickers_without_upcoming": len(null_tickers),
-        "records_written": len(write_ops),
+        "records_written": len(docs),
+    }
+
+
+async def get_ipos_calendar(db, exchange: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    """Return upcoming IPOs from the upcoming_ipos collection.
+
+    Served by GET /v1/calendar/ipos (no visibility gate).
+    Optionally filtered by exchange. Results are sorted by ipo_date ascending.
+    """
+    query: Dict[str, Any] = {}
+    if exchange:
+        query["exchange"] = exchange.upper()
+
+    docs = await db.upcoming_ipos.find(
+        query,
+        {"_id": 0, "ticker": 1, "ipo_date": 1, "description": 1, "exchange": 1, "ipo_price": 1},
+    ).sort("ipo_date", 1).limit(limit).to_list(limit)
+
+    return {
+        "ipos": docs,
+        "count": len(docs),
     }
 
 
 async def get_ipos_for_ticker(db, ticker: str) -> Dict[str, Any]:
     """Return the upcoming IPO for the given ticker.
 
-    Served by GET /v1/ticker/{ticker}/ipo.
+    Served by GET /v1/ticker/{ticker}/ipo (visibility-gated at the route level).
     Returns upcoming_ipo = None if no IPO is scheduled in the 90-day window.
+    Queries the unified upcoming_ipos collection (stored without visibility filter).
     """
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
 
-    doc = await db.upcoming_ipos.find_one({"ticker": ticker_full}, {"_id": 0})
+    doc = await db.upcoming_ipos.find_one(
+        {"ticker": ticker_full},
+        {"_id": 0},
+        sort=[("ipo_date", 1)],
+    )
 
     upcoming_ipo = None
     if doc and doc.get("ipo_date"):

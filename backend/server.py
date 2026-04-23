@@ -2022,9 +2022,10 @@ from dividend_history_service import (
     sync_upcoming_splits_calendar_for_visible_tickers,
     create_upcoming_splits_indexes,
     get_splits_for_ticker,
-    sync_upcoming_ipos_calendar_for_visible_tickers,
+    sync_upcoming_ipos_calendar,
     create_upcoming_ipos_indexes,
     get_ipos_for_ticker,
+    get_ipos_calendar,
 )
 
 from canonical_dividend import compute_canonical_dividend_yield
@@ -6676,18 +6677,38 @@ async def get_ticker_splits(ticker: str):
     return await get_splits_for_ticker(db, ticker_full)
 
 
+@api_router.get("/v1/calendar/ipos")
+async def get_ipo_calendar(
+    exchange: Optional[str] = Query(None, description="Filter by exchange code, e.g. 'US'"),
+    limit: int = Query(50, ge=1, le=200, description="Max results to return"),
+):
+    """
+    List all upcoming IPOs from the upcoming_ipos collection.
+
+    NOT gated by ticker visibility — IPO companies are not pre-listed in
+    tracked_tickers, so this endpoint returns the full EODHD-sourced universe.
+
+    Query params:
+    - exchange: optional filter (e.g. 'US', 'LSE')
+    - limit: max results (default 50, max 200)
+
+    Results sorted by ipo_date ascending.
+    """
+    return await get_ipos_calendar(db, exchange=exchange, limit=limit)
+
+
 @api_router.get("/v1/ticker/{ticker}/ipo")
 async def get_ticker_ipo(ticker: str):
     """
-    Get upcoming IPO for a ticker.
+    Get upcoming IPO for a specific ticker (visibility-gated).
 
     Returns:
     - upcoming_ipo: next scheduled IPO (from upcoming_ipos collection), or null
 
     upcoming_ipo fields: ipo_date (YYYY-MM-DD), description, exchange, ipo_price
 
-    Note: IPO entries are matched against visible tracked_tickers only.
-    Visibility gate: 404 for non-visible tickers.
+    Ingestion is NOT filtered by visibility — all EODHD-returned IPOs are stored.
+    This endpoint applies a visibility gate at read time only.
     """
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
