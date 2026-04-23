@@ -255,7 +255,7 @@ function formatPragueDisplay(value?: string | null): string {
   return value.replace('T', ' ').slice(0, 16);
 }
 
-function formatTime(value: any): string {
+function formatTime(value: unknown): string {
   if (value == null) return '—';
   const raw = String(value).trim();
   if (!raw) return '—';
