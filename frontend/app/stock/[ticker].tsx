@@ -3601,11 +3601,11 @@ export default function StockDetail() {
                   {earningsViewMode === 'annual' ? (
                     <>
                       <Text style={styles.subsectionTitle}>Annual Earnings</Text>
-                      {!earningsLoading ? (
+                      {!earningsLoading && (
                         <View style={styles.noDataPlaceholder}>
                           <Text style={styles.noDataText}>No earnings data available</Text>
                         </View>
-                      ) : null}
+                      )}
                     </>
                   ) : earningsHistory.length > 0 ? (
                     <>
@@ -3643,7 +3643,7 @@ export default function StockDetail() {
                                 </TouchableOpacity>
                                 <Text style={styles.earningsEpsValue}>
                                   {hasEstimate
-                                    ? <>{'$'}{toEU(e.estimated_eps as number, 2)}</>
+                                    ? `$${toEU(e.estimated_eps as number, 2)}`
                                     : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNoEstimate')}>N/A</Text>}
                                 </Text>
                               </View>
