@@ -41,6 +41,14 @@ UPCOMING_EARNINGS_SOURCE = "eodhd_earnings_calendar"
 # Same 90-day horizon as dividends.
 UPCOMING_EARNINGS_WINDOW_DAYS = 90
 
+UPCOMING_SPLITS_SOURCE = "eodhd_splits_calendar"
+# Same 90-day horizon.
+UPCOMING_SPLITS_WINDOW_DAYS = 90
+
+UPCOMING_IPOS_SOURCE = "eodhd_ipos_calendar"
+# Same 90-day horizon.
+UPCOMING_IPOS_WINDOW_DAYS = 90
+
 PRAGUE_TZ_NAME = "Europe/Prague"
 MIN_PROVIDER_CONSENSUS_COUNT = 2
 PROVIDER_CONSENSUS_RATIO = 0.6
@@ -1005,10 +1013,14 @@ async def create_upcoming_earnings_indexes(db) -> None:
 
 
 def _parse_earnings_report_date(row: Dict[str, Any]) -> Optional[str]:
-    """Extract and normalise the report date from an EODHD earnings calendar row."""
+    """Extract and normalise the report date from an EODHD earnings calendar row.
+
+    EODHD uses 'Report_Date' (capital R and D) for the earnings announcement date.
+    'date' / 'Date' is the fiscal period end — it must NOT be used as report_date.
+    """
     raw = (
-        row.get("report_date")
-        or row.get("date")
+        row.get("Report_Date")
+        or row.get("report_date")
         or row.get("reportDate")
     )
     return _parse_date_ymd(raw)
@@ -1024,14 +1036,19 @@ async def sync_upcoming_earnings_calendar_for_visible_tickers(db) -> Dict[str, A
     - Visibility definition: tracked_tickers.is_visible = True.
     - Does NOT touch scheduler_service.py Step 2.6 (_detect_earnings_candidates_eodhd),
       which is a separate pipeline stage for flagging fundamentals refresh.
+
+    window_start / window_end are derived from Europe/Prague date-only (not UTC),
+    so the 90-day horizon aligns with the business-day calendar as perceived in Prague.
+    fetched_at is stored as UTC for audit purposes.
     """
     if not EODHD_API_KEY:
         logger.error("[earnings_upcoming_calendar] EODHD_API_KEY not configured")
         return {"success": False, "error": "EODHD_API_KEY not configured"}
 
-    now = datetime.now(timezone.utc)
-    window_start = now.strftime("%Y-%m-%d")
-    window_end = (now + timedelta(days=UPCOMING_EARNINGS_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    now_utc = datetime.now(timezone.utc)
+    now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
+    window_start = now_prague.strftime("%Y-%m-%d")
+    window_end = (now_prague + timedelta(days=UPCOMING_EARNINGS_WINDOW_DAYS)).strftime("%Y-%m-%d")
 
     # Canonical universe source: tracked_tickers.is_visible (same as dividend calendar).
     visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
@@ -1080,16 +1097,19 @@ async def sync_upcoming_earnings_calendar_for_visible_tickers(db) -> Dict[str, A
             grouped[ticker] = {
                 "_report_date": report_date,
                 "report_date": report_date,
+                # EODHD: 'date'/'Date' is the fiscal period end, NOT the report date.
                 "fiscal_period_end": _parse_date_ymd(
-                    row.get("fiscal_date_ending")
+                    row.get("date")
+                    or row.get("Date")
+                    or row.get("fiscal_date_ending")
                     or row.get("fiscalDateEnding")
                     or row.get("date_period")
                 ),
-                "before_after_market": row.get("before_after_market")
-                    or row.get("Before_After_Market")
+                "before_after_market": row.get("Before_After_Market")
+                    or row.get("before_after_market")
                     or row.get("beforeAfterMarket")
                     or None,
-                "currency": row.get("currency") or row.get("Currency") or None,
+                "currency": row.get("Currency") or row.get("currency") or None,
                 "estimate": _safe_float(
                     row.get("estimate")
                     or row.get("epsMean")
@@ -1111,7 +1131,7 @@ async def sync_upcoming_earnings_calendar_for_visible_tickers(db) -> Dict[str, A
                     "currency": event["currency"],
                     "estimate": event["estimate"],
                     "source": UPCOMING_EARNINGS_SOURCE,
-                    "fetched_at": now,
+                    "fetched_at": now_utc,
                     "window_start": window_start,
                     "window_end": window_end,
                 }},
@@ -1132,7 +1152,7 @@ async def sync_upcoming_earnings_calendar_for_visible_tickers(db) -> Dict[str, A
                     "currency": None,
                     "estimate": None,
                     "source": UPCOMING_EARNINGS_SOURCE,
-                    "fetched_at": now,
+                    "fetched_at": now_utc,
                     "window_start": window_start,
                     "window_end": window_end,
                 }},
@@ -1256,3 +1276,362 @@ async def get_earnings_for_ticker(db, ticker: str) -> Dict[str, Any]:
         "upcoming_earnings": upcoming_earnings,
         "earnings_history": earnings_history,
     }
+
+
+# ==============================================================================
+# UPCOMING SPLITS CALENDAR — mirrors upcoming_earnings pattern exactly
+# ==============================================================================
+
+async def create_upcoming_splits_indexes(db) -> None:
+    """Create indexes for the upcoming_splits collection."""
+    await db.upcoming_splits.create_index(
+        [("ticker", 1)], unique=True, name="upcoming_splits_ticker_unique"
+    )
+    await db.upcoming_splits.create_index(
+        [("split_date", 1)], name="upcoming_splits_split_date"
+    )
+
+
+async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any]:
+    """Daily job: fetch EODHD /calendar/splits and persist one doc per visible
+    ticker into the upcoming_splits collection.
+
+    Pattern mirrors sync_upcoming_earnings_calendar_for_visible_tickers exactly:
+    - One document per visible ticker (upsert).
+    - Visible tickers with no upcoming split get all payload fields set to None.
+    - Visibility definition: tracked_tickers.is_visible = True.
+    - window_start / window_end use Europe/Prague date-only. fetched_at stays UTC.
+
+    EODHD fields:
+      split_date  ← row["Date"] or row["date"] or row["split_date"]
+      split_ratio ← row["Split"] or row["split"] or row["split_ratio"]
+    """
+    if not EODHD_API_KEY:
+        logger.error("[splits_upcoming_calendar] EODHD_API_KEY not configured")
+        return {"success": False, "error": "EODHD_API_KEY not configured"}
+
+    now_utc = datetime.now(timezone.utc)
+    now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
+    window_start = now_prague.strftime("%Y-%m-%d")
+    window_end = (now_prague + timedelta(days=UPCOMING_SPLITS_WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+    visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
+    visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
+
+    url = f"{EODHD_BASE_URL}/calendar/splits"
+    params = {
+        "api_token": EODHD_API_KEY,
+        "fmt": "json",
+        "from": window_start,
+        "to": window_end,
+    }
+
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+    if isinstance(payload, dict):
+        rows = payload.get("splits") or payload.get("data") or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+
+    # Group rows by ticker; keep only the nearest upcoming split per ticker.
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = _normalize_ticker_symbol(
+            row.get("Code")
+            or row.get("code")
+            or row.get("symbol")
+            or row.get("ticker")
+        )
+        if not ticker:
+            continue
+        if visible_tickers and ticker not in visible_tickers:
+            continue
+        split_date = _parse_date_ymd(
+            row.get("Date")
+            or row.get("date")
+            or row.get("split_date")
+        )
+        if not split_date:
+            continue
+        if ticker not in grouped or split_date < grouped[ticker]["_split_date"]:
+            grouped[ticker] = {
+                "_split_date": split_date,
+                "split_date": split_date,
+                "split_ratio": (
+                    row.get("Split")
+                    or row.get("split")
+                    or row.get("split_ratio")
+                    or None
+                ),
+            }
+
+    write_ops: List[UpdateOne] = []
+
+    for ticker, event in grouped.items():
+        write_ops.append(
+            UpdateOne(
+                {"ticker": ticker},
+                {"$set": {
+                    "ticker": ticker,
+                    "split_date": event["split_date"],
+                    "split_ratio": event["split_ratio"],
+                    "source": UPCOMING_SPLITS_SOURCE,
+                    "fetched_at": now_utc,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }},
+                upsert=True,
+            )
+        )
+
+    null_tickers = sorted(visible_tickers - set(grouped.keys()))
+    for ticker in null_tickers:
+        write_ops.append(
+            UpdateOne(
+                {"ticker": ticker},
+                {"$set": {
+                    "ticker": ticker,
+                    "split_date": None,
+                    "split_ratio": None,
+                    "source": UPCOMING_SPLITS_SOURCE,
+                    "fetched_at": now_utc,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }},
+                upsert=True,
+            )
+        )
+
+    if write_ops:
+        await db.upcoming_splits.bulk_write(write_ops, ordered=False)
+
+    return {
+        "success": True,
+        "source": UPCOMING_SPLITS_SOURCE,
+        "window_start": window_start,
+        "window_end": window_end,
+        "visible_tickers": len(visible_tickers),
+        "tickers_with_upcoming": len(grouped),
+        "tickers_without_upcoming": len(null_tickers),
+        "records_written": len(write_ops),
+    }
+
+
+async def get_splits_for_ticker(db, ticker: str) -> Dict[str, Any]:
+    """Return the upcoming stock split for the given ticker.
+
+    Served by GET /v1/ticker/{ticker}/splits.
+    Returns upcoming_split = None if no split is scheduled in the 90-day window.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    doc = await db.upcoming_splits.find_one({"ticker": ticker_full}, {"_id": 0})
+
+    upcoming_split = None
+    if doc and doc.get("split_date"):
+        upcoming_split = {
+            "split_date": doc["split_date"],
+            "split_ratio": doc.get("split_ratio"),
+        }
+
+    return {
+        "ticker": ticker_full,
+        "upcoming_split": upcoming_split,
+    }
+
+
+# ==============================================================================
+# UPCOMING IPOS CALENDAR — mirrors upcoming_splits pattern exactly
+# ==============================================================================
+
+async def create_upcoming_ipos_indexes(db) -> None:
+    """Create indexes for the upcoming_ipos collection."""
+    await db.upcoming_ipos.create_index(
+        [("ticker", 1)], unique=True, name="upcoming_ipos_ticker_unique"
+    )
+    await db.upcoming_ipos.create_index(
+        [("ipo_date", 1)], name="upcoming_ipos_ipo_date"
+    )
+
+
+async def sync_upcoming_ipos_calendar_for_visible_tickers(db) -> Dict[str, Any]:
+    """Daily job: fetch EODHD /calendar/ipos and persist one doc per visible
+    ticker into the upcoming_ipos collection.
+
+    Pattern mirrors sync_upcoming_splits_calendar_for_visible_tickers exactly:
+    - One document per visible ticker (upsert).
+    - Visible tickers with no upcoming IPO get all payload fields set to None.
+    - Visibility definition: tracked_tickers.is_visible = True.
+    - window_start / window_end use Europe/Prague date-only. fetched_at stays UTC.
+
+    Note: IPO entries are pre-seeded into tracked_tickers before the listing date
+    so that the visibility filter can match them.
+
+    EODHD fields:
+      ipo_date    ← row["Date"] or row["date"] or row["ipo_date"]
+      description ← row["Description"] or row["description"] or row["name"]
+      exchange    ← row["Exchange"] or row["exchange"]
+      ipo_price   ← row["IPO_Price"] or row["ipo_price"] or row["ipoPrice"]
+    """
+    if not EODHD_API_KEY:
+        logger.error("[ipos_upcoming_calendar] EODHD_API_KEY not configured")
+        return {"success": False, "error": "EODHD_API_KEY not configured"}
+
+    now_utc = datetime.now(timezone.utc)
+    now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
+    window_start = now_prague.strftime("%Y-%m-%d")
+    window_end = (now_prague + timedelta(days=UPCOMING_IPOS_WINDOW_DAYS)).strftime("%Y-%m-%d")
+
+    visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
+    visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
+
+    url = f"{EODHD_BASE_URL}/calendar/ipos"
+    params = {
+        "api_token": EODHD_API_KEY,
+        "fmt": "json",
+        "from": window_start,
+        "to": window_end,
+    }
+
+    async with httpx.AsyncClient(timeout=45) as client:
+        response = await client.get(url, params=params)
+        response.raise_for_status()
+        payload = response.json()
+
+    if isinstance(payload, dict):
+        rows = payload.get("ipos") or payload.get("data") or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+
+    # Group rows by ticker; keep only the nearest upcoming IPO per ticker.
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ticker = _normalize_ticker_symbol(
+            row.get("Code")
+            or row.get("code")
+            or row.get("symbol")
+            or row.get("ticker")
+        )
+        if not ticker:
+            continue
+        if visible_tickers and ticker not in visible_tickers:
+            continue
+        ipo_date = _parse_date_ymd(
+            row.get("Date")
+            or row.get("date")
+            or row.get("ipo_date")
+        )
+        if not ipo_date:
+            continue
+        if ticker not in grouped or ipo_date < grouped[ticker]["_ipo_date"]:
+            grouped[ticker] = {
+                "_ipo_date": ipo_date,
+                "ipo_date": ipo_date,
+                "description": (
+                    row.get("Description")
+                    or row.get("description")
+                    or row.get("name")
+                    or None
+                ),
+                "exchange": row.get("Exchange") or row.get("exchange") or None,
+                "ipo_price": (
+                    row.get("IPO_Price")
+                    or row.get("ipo_price")
+                    or row.get("ipoPrice")
+                    or None
+                ),
+            }
+
+    write_ops: List[UpdateOne] = []
+
+    for ticker, event in grouped.items():
+        write_ops.append(
+            UpdateOne(
+                {"ticker": ticker},
+                {"$set": {
+                    "ticker": ticker,
+                    "ipo_date": event["ipo_date"],
+                    "description": event["description"],
+                    "exchange": event["exchange"],
+                    "ipo_price": event["ipo_price"],
+                    "source": UPCOMING_IPOS_SOURCE,
+                    "fetched_at": now_utc,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }},
+                upsert=True,
+            )
+        )
+
+    null_tickers = sorted(visible_tickers - set(grouped.keys()))
+    for ticker in null_tickers:
+        write_ops.append(
+            UpdateOne(
+                {"ticker": ticker},
+                {"$set": {
+                    "ticker": ticker,
+                    "ipo_date": None,
+                    "description": None,
+                    "exchange": None,
+                    "ipo_price": None,
+                    "source": UPCOMING_IPOS_SOURCE,
+                    "fetched_at": now_utc,
+                    "window_start": window_start,
+                    "window_end": window_end,
+                }},
+                upsert=True,
+            )
+        )
+
+    if write_ops:
+        await db.upcoming_ipos.bulk_write(write_ops, ordered=False)
+
+    return {
+        "success": True,
+        "source": UPCOMING_IPOS_SOURCE,
+        "window_start": window_start,
+        "window_end": window_end,
+        "visible_tickers": len(visible_tickers),
+        "tickers_with_upcoming": len(grouped),
+        "tickers_without_upcoming": len(null_tickers),
+        "records_written": len(write_ops),
+    }
+
+
+async def get_ipos_for_ticker(db, ticker: str) -> Dict[str, Any]:
+    """Return the upcoming IPO for the given ticker.
+
+    Served by GET /v1/ticker/{ticker}/ipo.
+    Returns upcoming_ipo = None if no IPO is scheduled in the 90-day window.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    doc = await db.upcoming_ipos.find_one({"ticker": ticker_full}, {"_id": 0})
+
+    upcoming_ipo = None
+    if doc and doc.get("ipo_date"):
+        upcoming_ipo = {
+            "ipo_date": doc["ipo_date"],
+            "description": doc.get("description"),
+            "exchange": doc.get("exchange"),
+            "ipo_price": doc.get("ipo_price"),
+        }
+
+    return {
+        "ticker": ticker_full,
+        "upcoming_ipo": upcoming_ipo,
+    }
+

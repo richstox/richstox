@@ -163,6 +163,14 @@ UPCOMING_DIVIDEND_CALENDAR_MINUTE = 50
 UPCOMING_EARNINGS_CALENDAR_HOUR = 4
 UPCOMING_EARNINGS_CALENDAR_MINUTE = 55
 
+# UPCOMING SPLITS CALENDAR: Daily refresh at 04:57 (date-window endpoint)
+UPCOMING_SPLITS_CALENDAR_HOUR = 4
+UPCOMING_SPLITS_CALENDAR_MINUTE = 57
+
+# UPCOMING IPOS CALENDAR: Daily refresh at 04:58 (date-window endpoint)
+UPCOMING_IPOS_CALENDAR_HOUR = 4
+UPCOMING_IPOS_CALENDAR_MINUTE = 58
+
 # GAPFILL REMEDIATION: Detect & fill missing bulk dates at 05:00
 GAPFILL_REMEDIATION_HOUR = 5
 GAPFILL_REMEDIATION_MINUTE = 0
@@ -180,6 +188,8 @@ KNOWN_JOBS = sorted([
     "bulk_gapfill_remediation",
     "dividend_upcoming_calendar",
     "earnings_upcoming_calendar",
+    "splits_upcoming_calendar",
+    "ipos_upcoming_calendar",
     "fundamentals_sync",
     "key_metrics",
     "market_calendar",
@@ -1285,6 +1295,56 @@ async def scheduler_loop():
                 except Exception as exc:
                     logger.error(
                         "[scheduler] earnings_upcoming_calendar unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+
+            # UPCOMING SPLITS CALENDAR at 04:57 (catch-up enabled)
+            if should_run(
+                "splits_upcoming_calendar",
+                UPCOMING_SPLITS_CALENDAR_HOUR,
+                UPCOMING_SPLITS_CALENDAR_MINUTE,
+                last_run,
+                today_str,
+                current_hour,
+                current_minute,
+            ):
+                logger.info(
+                    "Triggering splits_upcoming_calendar "
+                    f"(hour={current_hour}, scheduled={UPCOMING_SPLITS_CALENDAR_HOUR}:{UPCOMING_SPLITS_CALENDAR_MINUTE:02d})"
+                )
+                try:
+                    from dividend_history_service import sync_upcoming_splits_calendar_for_visible_tickers
+                    await run_job_with_retry("splits_upcoming_calendar", sync_upcoming_splits_calendar_for_visible_tickers, db)
+                    last_run["splits_upcoming_calendar"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        "[scheduler] splits_upcoming_calendar unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+
+            # UPCOMING IPOS CALENDAR at 04:58 (catch-up enabled)
+            if should_run(
+                "ipos_upcoming_calendar",
+                UPCOMING_IPOS_CALENDAR_HOUR,
+                UPCOMING_IPOS_CALENDAR_MINUTE,
+                last_run,
+                today_str,
+                current_hour,
+                current_minute,
+            ):
+                logger.info(
+                    "Triggering ipos_upcoming_calendar "
+                    f"(hour={current_hour}, scheduled={UPCOMING_IPOS_CALENDAR_HOUR}:{UPCOMING_IPOS_CALENDAR_MINUTE:02d})"
+                )
+                try:
+                    from dividend_history_service import sync_upcoming_ipos_calendar_for_visible_tickers
+                    await run_job_with_retry("ipos_upcoming_calendar", sync_upcoming_ipos_calendar_for_visible_tickers, db)
+                    last_run["ipos_upcoming_calendar"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        "[scheduler] ipos_upcoming_calendar unhandled error "
                         f"(will retry next minute): {exc}"
                     )
             

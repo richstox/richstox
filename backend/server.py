@@ -2019,6 +2019,12 @@ from dividend_history_service import (
     sync_upcoming_earnings_calendar_for_visible_tickers,
     create_upcoming_earnings_indexes,
     get_earnings_for_ticker,
+    sync_upcoming_splits_calendar_for_visible_tickers,
+    create_upcoming_splits_indexes,
+    get_splits_for_ticker,
+    sync_upcoming_ipos_calendar_for_visible_tickers,
+    create_upcoming_ipos_indexes,
+    get_ipos_for_ticker,
 )
 
 from canonical_dividend import compute_canonical_dividend_yield
@@ -6643,6 +6649,57 @@ async def get_ticker_earnings(ticker: str):
         raise HTTPException(404, f"Ticker {ticker} is not available")
 
     return await get_earnings_for_ticker(db, ticker_full)
+
+
+@api_router.get("/v1/ticker/{ticker}/splits")
+async def get_ticker_splits(ticker: str):
+    """
+    Get upcoming stock split for a ticker.
+
+    Returns:
+    - upcoming_split: next scheduled split (from upcoming_splits collection), or null
+
+    upcoming_split fields: split_date (YYYY-MM-DD), split_ratio (e.g. "4:1")
+
+    Visibility gate: 404 for non-visible tickers.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker} is not available")
+
+    return await get_splits_for_ticker(db, ticker_full)
+
+
+@api_router.get("/v1/ticker/{ticker}/ipo")
+async def get_ticker_ipo(ticker: str):
+    """
+    Get upcoming IPO for a ticker.
+
+    Returns:
+    - upcoming_ipo: next scheduled IPO (from upcoming_ipos collection), or null
+
+    upcoming_ipo fields: ipo_date (YYYY-MM-DD), description, exchange, ipo_price
+
+    Note: IPO entries are matched against visible tracked_tickers only.
+    Visibility gate: 404 for non-visible tickers.
+    """
+    ticker_upper = ticker.upper()
+    ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
+
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": ticker_full, "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(404, f"Ticker {ticker} is not available")
+
+    return await get_ipos_for_ticker(db, ticker_full)
 
 
 # ----- News Endpoints (FROM CACHE - updated daily) -----
@@ -11647,6 +11704,8 @@ async def startup():
     await create_notification_indexes(db)
     await create_upcoming_dividends_indexes(db)
     await create_upcoming_earnings_indexes(db)
+    await create_upcoming_splits_indexes(db)
+    await create_upcoming_ipos_indexes(db)
 
     # ⚠️ Expire orphaned "running" manual_ad_hoc job docs from previous process.
     expired_jobs = await _expire_orphaned_running_jobs(db)

@@ -87,10 +87,11 @@ interface FinancialsData {
 
 interface EarningsData {
   quarter_date: string;
-  reported_eps: number;
-  estimated_eps: number;
-  surprise_pct: number;
-  beat_miss: string;
+  reported_eps: number | null;
+  estimated_eps: number | null;
+  surprise_pct: number | null;
+  show_badge?: boolean;
+  is_upcoming?: boolean;
 }
 
 interface InsiderData {
@@ -3442,7 +3443,18 @@ export default function StockDetail() {
                     <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                   </TouchableOpacity>
                   {data.earnings.slice(0, 8).map((e, i) => {
-                    const hasNA = !e.reported_eps || !e.estimated_eps || !e.surprise_pct;
+                    // show_badge may come from new /earnings endpoint or be derived
+                    // from existing fields. Never rely on beat_miss.
+                    const showBadge = e.show_badge != null
+                      ? e.show_badge
+                      : (
+                          e.reported_eps != null &&
+                          e.estimated_eps != null &&
+                          e.estimated_eps !== 0 &&
+                          e.surprise_pct != null &&
+                          !(e.is_upcoming ?? false)
+                        );
+                    const badgeIsPositive = (e.surprise_pct ?? 0) >= 0;
                     return (
                       <View key={i} style={styles.earningsRow}>
                         <View style={styles.earningsLeft}>
@@ -3452,7 +3464,7 @@ export default function StockDetail() {
                               <Text style={styles.earningsEpsLabel}>Act</Text>
                             </TouchableOpacity>
                             <Text style={styles.earningsEpsValue}>
-                              {'$'}{e.reported_eps
+                              {'$'}{e.reported_eps != null
                                 ? toEU(e.reported_eps, 2)
                                 : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
                             </Text>
@@ -3461,7 +3473,7 @@ export default function StockDetail() {
                               <Text style={styles.earningsEpsLabel}>Exp</Text>
                             </TouchableOpacity>
                             <Text style={styles.earningsEpsValue}>
-                              {'$'}{e.estimated_eps
+                              {'$'}{e.estimated_eps != null
                                 ? toEU(e.estimated_eps, 2)
                                 : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
                             </Text>
@@ -3470,22 +3482,30 @@ export default function StockDetail() {
                         <TouchableOpacity
                           style={[
                             styles.beatMissBadge,
-                            e.beat_miss === 'beat' ? styles.beatBadge : styles.missBadge
+                            showBadge
+                              ? (badgeIsPositive ? styles.beatBadge : styles.missBadge)
+                              : styles.dividendYoYBadgeNeutralBase,
                           ]}
-                          onPress={() => showTooltip(hasNA ? 'earningsNA' : 'earningsBeatMiss')}
+                          onPress={() => showTooltip(showBadge ? 'earningsBeatMiss' : 'earningsNA')}
                           accessibilityRole="button"
                           accessibilityLabel="Show beat or miss help"
                         >
-                          <Ionicons 
-                            name={e.beat_miss === 'beat' ? 'checkmark' : 'close'} 
-                            size={14} 
-                            color={e.beat_miss === 'beat' ? '#10B981' : '#EF4444'} 
-                          />
+                          {showBadge && (
+                            <Ionicons
+                              name={badgeIsPositive ? 'checkmark' : 'close'}
+                              size={14}
+                              color={badgeIsPositive ? '#10B981' : '#EF4444'}
+                            />
+                          )}
                           <Text style={[
                             styles.beatMissText,
-                            e.beat_miss === 'beat' ? styles.beatText : styles.missText
+                            showBadge
+                              ? (badgeIsPositive ? styles.beatText : styles.missText)
+                              : styles.dividendYoYBadgeTextNeutral,
                           ]}>
-                            {e.surprise_pct ? `${toEU(e.surprise_pct, 1)}%` : 'N/A'}
+                            {showBadge && e.surprise_pct != null
+                              ? `${toEU(e.surprise_pct, 1)}%`
+                              : '—'}
                           </Text>
                         </TouchableOpacity>
                       </View>
