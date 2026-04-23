@@ -265,6 +265,19 @@ const parseDividendExDateMs = (exDate: string): number | null => {
   return Number.isFinite(ms) ? ms : null;
 };
 
+const MONTH_ABBR = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+
+const parseExDateParts = (dateStr: string | null | undefined): { day: string; month: string; year: string } => {
+  if (!dateStr) return { day: '—', month: '—', year: '—' };
+  const d = new Date(dateStr.includes('T') ? dateStr : `${dateStr}T00:00:00Z`);
+  if (isNaN(d.getTime())) return { day: '—', month: '—', year: '—' };
+  return {
+    day: String(d.getUTCDate()).padStart(2, '0'),
+    month: MONTH_ABBR[d.getUTCMonth()],
+    year: String(d.getUTCFullYear()),
+  };
+};
+
 const resolveDividendCurrency = (eventCurrency?: string | null, fallbackCurrency?: string | null): string | null => {
   if (typeof eventCurrency === 'string' && eventCurrency.trim()) return eventCurrency;
   if (typeof fallbackCurrency === 'string' && fallbackCurrency.trim()) return fallbackCurrency;
@@ -502,6 +515,8 @@ export default function StockDetail() {
   const [upcomingEarnings, setUpcomingEarnings] = useState<UpcomingEarningsData | null>(null);
   const [earningsHistory, setEarningsHistory] = useState<EarningsData[]>([]);
   const [earningsLoading, setEarningsLoading] = useState(true);
+  const [earningsCurrency, setEarningsCurrency] = useState<string | null>(null);
+  const [earningsDivMode, setEarningsDivMode] = useState<'earnings' | 'dividends'>('earnings');
   
   // Financials period toggle - handled internally by FinancialHub component
   
@@ -689,6 +704,7 @@ export default function StockDetail() {
     try {
       const response = await axios.get<EarningsApiResponse>(`${API_URL}/api/v1/ticker/${ticker}/earnings`);
       setUpcomingEarnings(response.data.upcoming_earnings || null);
+      setEarningsCurrency(response.data.metadata?.default_currency || null);
       // Exclude is_upcoming rows from the history list — upcoming rows belong only
       // in the "Next earnings" section, not the history table.
       const history = (response.data.earnings_history || []).filter(
@@ -702,6 +718,7 @@ export default function StockDetail() {
       }
       setUpcomingEarnings(null);
       setEarningsHistory([]);
+      setEarningsCurrency(null);
     } finally {
       setEarningsLoading(false);
     }
@@ -806,6 +823,7 @@ export default function StockDetail() {
     setDividendsLoading(true);
     setEarningsLoading(true);
     setDividendViewMode('payments');
+    setEarningsDivMode('earnings');
     fetchStock(false);
     fetchDividends();
     fetchEarningsData();
@@ -1191,22 +1209,6 @@ export default function StockDetail() {
     if (events.length === 0) return [];
 
     const nowDate = new Date();
-    const now = nowDate.getTime();
-    const ttmStartDate = new Date(nowDate.getTime());
-    ttmStartDate.setUTCFullYear(ttmStartDate.getUTCFullYear() - 1);
-    const priorTtmStartDate = new Date(ttmStartDate.getTime());
-    priorTtmStartDate.setUTCFullYear(priorTtmStartDate.getUTCFullYear() - 1);
-    const ttmStart = ttmStartDate.getTime();
-    const priorTtmStart = priorTtmStartDate.getTime();
-    const priorTtmEnd = ttmStart;
-
-    const ttmTotal = events
-      .filter((e) => e.exDateMs >= ttmStart && e.exDateMs <= now)
-      .reduce((sum, e) => sum + e.amount, 0);
-
-    const priorTtmTotal = events
-      .filter((e) => e.exDateMs >= priorTtmStart && e.exDateMs < priorTtmEnd)
-      .reduce((sum, e) => sum + e.amount, 0);
 
     const yearTotals = new Map<number, number>();
     for (const event of events) {
@@ -1214,14 +1216,7 @@ export default function StockDetail() {
       yearTotals.set(year, (yearTotals.get(year) || 0) + event.amount);
     }
 
-    const periods: AnnualDividendPeriod[] = [{
-      key: 'TTM',
-      label: 'TTM',
-      total: round4(ttmTotal),
-      previousTotal: round4(priorTtmTotal),
-      isTTM: true,
-      isPartial: false,
-    }];
+    const periods: AnnualDividendPeriod[] = [];
 
     const currentYear = nowDate.getUTCFullYear();
     const years = Array.from(yearTotals.keys()).sort((a, b) => b - a).slice(0, 10);
@@ -3486,314 +3481,335 @@ export default function StockDetail() {
           
           {earningsDividendsExpanded && (
             <>
-              {/* Next Earnings */}
-              {upcomingEarnings && (
-                <>
-                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show next earnings help">
-                    <Text style={styles.subsectionTitle}>Next Earnings</Text>
-                    <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                  </TouchableOpacity>
-                  <View style={styles.earningsRow}>
-                    <View style={styles.earningsLeft}>
-                      <Text style={styles.earningsDate}>{formatDateDMY(upcomingEarnings.report_date)}</Text>
-                      <View style={styles.earningsEpsRow}>
-                        {upcomingEarnings.before_after_market ? (
-                          <Text style={styles.earningsEpsLabel}>{upcomingEarnings.before_after_market}</Text>
-                        ) : null}
-                        {upcomingEarnings.estimate != null && (
-                          <>
-                            {upcomingEarnings.before_after_market ? <Text style={styles.earningsEpsSep}>·</Text> : null}
-                            <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button" accessibilityLabel="Show expected earnings help">
-                              <Text style={styles.earningsEpsLabel}>Est</Text>
-                            </TouchableOpacity>
-                            <Text style={styles.earningsEpsValue}>{upcomingEarnings.currency && upcomingEarnings.currency !== 'USD' ? upcomingEarnings.currency + ' ' : '$'}{toEU(upcomingEarnings.estimate, 2)}</Text>
-                          </>
-                        )}
-                      </View>
-                    </View>
-                    <View style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase]}>
-                      <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>Scheduled</Text>
-                    </View>
-                  </View>
-                </>
-              )}
+              {/* ── Main tab selector: Earnings | Dividends ── */}
+              <View style={styles.earningsDivTabRow}>
+                <TouchableOpacity
+                  style={[styles.earningsDivTab, earningsDivMode === 'earnings' && styles.earningsDivTabActive]}
+                  onPress={() => setEarningsDivMode('earnings')}
+                >
+                  <Text style={[styles.earningsDivTabText, earningsDivMode === 'earnings' && styles.earningsDivTabTextActive]}>
+                    Earnings
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.earningsDivTab, earningsDivMode === 'dividends' && styles.earningsDivTabActive]}
+                  onPress={() => setEarningsDivMode('dividends')}
+                >
+                  <Text style={[styles.earningsDivTabText, earningsDivMode === 'dividends' && styles.earningsDivTabTextActive]}>
+                    Dividends
+                  </Text>
+                </TouchableOpacity>
+              </View>
 
-              {/* Earnings History — upcoming rows excluded; sourced from /v1/ticker/{ticker}/earnings */}
-              {earningsHistory.length > 0 ? (
+              {/* ══════════ EARNINGS TAB ══════════ */}
+              {earningsDivMode === 'earnings' && (
                 <>
-                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: upcomingEarnings ? 12 : 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show earnings history help">
-                    <Text style={styles.subsectionTitle}>Earnings History</Text>
-                    <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                  </TouchableOpacity>
-                  {earningsHistory.slice(0, 8).map((e, i) => {
-                    // show_badge from the /earnings endpoint; fall back to field derivation.
-                    // Upcoming rows never reach here (filtered in fetchEarningsData).
-                    const showBadge = e.show_badge != null
-                      ? e.show_badge
-                      : (
-                          e.reported_eps != null &&
-                          e.estimated_eps != null &&
-                          e.estimated_eps !== 0 &&
-                          e.surprise_pct != null
-                        );
-                    const badgeIsPositive = (e.surprise_pct ?? 0) >= 0;
-                    return (
-                      <View key={i} style={styles.earningsRow}>
-                        <View style={styles.earningsLeft}>
-                          <Text style={styles.earningsDate}>{formatDateDMY(e.quarter_date)}</Text>
-                          <View style={styles.earningsEpsRow}>
-                            <TouchableOpacity onPress={() => showTooltip('earningsActual')} accessibilityRole="button" accessibilityLabel="Show actual earnings help">
-                              <Text style={styles.earningsEpsLabel}>Act</Text>
-                            </TouchableOpacity>
-                            <Text style={styles.earningsEpsValue}>
-                              {'$'}{e.reported_eps != null
-                                ? toEU(e.reported_eps, 2)
-                                : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
-                            </Text>
-                            <Text style={styles.earningsEpsSep}>·</Text>
-                            <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button" accessibilityLabel="Show expected earnings help">
-                              <Text style={styles.earningsEpsLabel}>Exp</Text>
-                            </TouchableOpacity>
-                            <Text style={styles.earningsEpsValue}>
-                              {'$'}{e.estimated_eps != null
-                                ? toEU(e.estimated_eps, 2)
-                                : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
-                            </Text>
-                          </View>
-                        </View>
-                        <TouchableOpacity
-                          style={[
-                            styles.beatMissBadge,
-                            showBadge
-                              ? (badgeIsPositive ? styles.beatBadge : styles.missBadge)
-                              : styles.dividendYoYBadgeNeutralBase,
-                          ]}
-                          onPress={() => showTooltip(showBadge ? 'earningsBeatMiss' : 'earningsNA')}
-                          accessibilityRole="button"
-                          accessibilityLabel="Show beat or miss help"
-                        >
-                          {showBadge && (
-                            <Ionicons
-                              name={badgeIsPositive ? 'checkmark' : 'close'}
-                              size={14}
-                              color={badgeIsPositive ? '#10B981' : '#EF4444'}
-                            />
-                          )}
-                          <Text style={[
-                            styles.beatMissText,
-                            showBadge
-                              ? (badgeIsPositive ? styles.beatText : styles.missText)
-                              : styles.dividendYoYBadgeTextNeutral,
-                          ]}>
-                            {showBadge && e.surprise_pct != null
-                              ? `${toEU(e.surprise_pct, 1)}%`
-                              : '—'}
+                  {/* Header tiles: Currency + Next Earnings */}
+                  <View style={styles.dividendMetaRow}>
+                    {earningsCurrency ? (
+                      <View style={styles.dividendMetaPill}>
+                        <Text style={styles.dividendMetaPillLabel}>Currency</Text>
+                        <Text style={styles.dividendMetaPillValue}>{earningsCurrency}</Text>
+                      </View>
+                    ) : null}
+                    {/* Next Earnings calendar-style tile */}
+                    <View style={[styles.dividendMetaPill, styles.earningsNextTilePill]}>
+                      <View style={styles.earningsNextTileHeader}>
+                        <Ionicons name="calendar-outline" size={12} color={COLORS.textMuted} />
+                        <Text style={styles.earningsNextTileLabel}>NEXT EARNINGS</Text>
+                      </View>
+                      <View style={styles.earningsNextTileBody}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.earningsNextTilePrimary}>
+                            {upcomingEarnings?.estimate != null
+                              ? `Est. ${upcomingEarnings.currency && upcomingEarnings.currency !== 'USD' ? upcomingEarnings.currency + ' ' : '$'}${toEU(upcomingEarnings.estimate, 2)}`
+                              : '—'
+                            }
                           </Text>
-                        </TouchableOpacity>
-                      </View>
-                    );
-                  })}
-                </>
-              ) : !earningsLoading && !upcomingEarnings ? (
-                <View style={styles.noDataPlaceholder}>
-                  <Text style={styles.noDataText}>No earnings data available</Text>
-                </View>
-              ) : null}
-               
-              {/* Dividends - always show from canonical source (dividend_history) */}
-              <TouchableOpacity style={styles.dividendsSubsectionTitleRow} onPress={() => showTooltip('dividendsHeader')} accessibilityRole="button" accessibilityLabel="Show dividends help">
-                <Text style={styles.dividendsSubsectionTitle}>Dividends</Text>
-                <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-              </TouchableOpacity>
-              <View style={styles.dividendMetaRow}>
-                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsFrequency')} accessibilityRole="button" accessibilityLabel="Show dividend frequency help">
-                  <Text style={styles.dividendMetaPillLabel}>Frequency</Text>
-                  <Text style={styles.dividendMetaPillValue}>{dividendFrequencyLabel}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsCurrency')} accessibilityRole="button" accessibilityLabel="Show dividend currency help">
-                  <Text style={styles.dividendMetaPillLabel}>Currency</Text>
-                  <Text style={styles.dividendMetaPillValue}>{dividendDisplayCurrency}</Text>
-                </TouchableOpacity>
-                {dividendFrequencyFlags.hasSpecial && (
-                  <View style={[styles.dividendMetaPill, styles.dividendMetaPillAccent]}>
-                    <Text style={styles.dividendMetaPillValue}>Special</Text>
-                  </View>
-                )}
-                {dividendFrequencyFlags.hasIrregular && (
-                  <View style={[styles.dividendMetaPill, styles.dividendMetaPillAccent]}>
-                    <Text style={styles.dividendMetaPillValue}>Irregular</Text>
-                  </View>
-                )}
-              </View>
-              <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 12 }]} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
-                <Text style={styles.subsectionTitle}>Next dividend</Text>
-                <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                {nextDividendInfo?.event_type_label && (
-                  <View style={[styles.dividendEventTag, { marginLeft: 4 }]}>
-                    <Text style={styles.dividendEventTagText}>{nextDividendInfo.event_type_label}</Text>
-                  </View>
-                )}
-              </TouchableOpacity>
-              {nextDividendInfo?.next_ex_date ? (
-                <View style={styles.earningsRow}>
-                  <View style={styles.earningsLeft}>
-                    <View style={[styles.earningsEpsRow, { marginBottom: 3 }]}>
-                      <Text style={styles.earningsEpsLabel}>Ex-date</Text>
-                      <Text style={styles.earningsEpsValue}>{formatDividendDate(nextDividendInfo.next_ex_date)}</Text>
-                    </View>
-                    {nextDividendInfo?.next_pay_date && (
-                      <View style={styles.earningsEpsRow}>
-                        <Text style={styles.earningsEpsLabel}>Pay date</Text>
-                        <Text style={styles.earningsEpsValue}>{formatDividendDate(nextDividendInfo.next_pay_date)}</Text>
-                      </View>
-                    )}
-                  </View>
-                  {typeof nextDividendInfo?.next_dividend_amount === 'number' && (
-                    <Text style={styles.nextDividendMetricValue}>
-                      {formatDividendAmount(
-                        nextDividendInfo.next_dividend_amount,
-                        resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency)
-                      )}
-                    </Text>
-                  )}
-                </View>
-              ) : (
-                <Text style={styles.nextDividendEmptyText}>
-                  No upcoming dividend information available.
-                </Text>
-              )}
-              <View style={styles.dividendViewSwitch}>
-                <TouchableOpacity
-                  style={[styles.dividendViewButton, dividendViewMode === 'payments' && styles.dividendViewButtonActive]}
-                  onPress={() => setDividendViewMode('payments')}
-                >
-                  <Text style={[styles.dividendViewButtonText, dividendViewMode === 'payments' && styles.dividendViewButtonTextActive]}>
-                    Payments
-                  </Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.dividendViewButton, dividendViewMode === 'annual' && styles.dividendViewButtonActive]}
-                  onPress={() => setDividendViewMode('annual')}
-                >
-                  <Text style={[styles.dividendViewButtonText, dividendViewMode === 'annual' && styles.dividendViewButtonTextActive]}>
-                    Annual
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {dividendViewMode === 'payments' ? (
-                dividendPayments && dividendPayments.length > 0 ? (
-                  <>
-                    {paymentItems.map(({ key, event: d }, idx) => {
-                      const previous = idx + 1 < paymentItems.length ? paymentItems[idx + 1].event : null;
-                      const growth = getPaymentGrowthDisplay(d, previous);
-                      const rowCurrency = resolveDividendCurrency(d.currency, dividendDisplayCurrency);
-                      return (
-                        <View key={key} style={styles.earningsRow}>
-                          <View style={styles.earningsLeft}>
-                            <View style={[styles.earningsEpsRow, { marginBottom: 2 }]}>
-                              <Text style={styles.earningsEpsLabel}>Payment date:</Text>
-                              <Text style={styles.earningsEpsValue}>{d.payment_date ? formatDividendDate(d.payment_date) : '—'}</Text>
-                              <Text style={[styles.earningsEpsSep, { marginHorizontal: 6 }]}>·</Text>
-                              <Text style={styles.earningsEpsLabel}>Ex-date:</Text>
-                              <Text style={styles.earningsEpsValue}>{d.ex_date ? formatDividendDate(d.ex_date) : '—'}</Text>
-                            </View>
-                            <View style={styles.earningsEpsRow}>
-                              <Text style={styles.earningsEpsLabel}>Amt</Text>
-                              <Text style={styles.earningsEpsValue}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
-                              {d.event_type_label && (
-                                <View style={[styles.dividendEventTag, { marginLeft: 4 }]}>
-                                  <Text style={styles.dividendEventTagText}>{d.event_type_label}</Text>
-                                </View>
-                              )}
-                            </View>
-                          </View>
-                          <View style={[
-                            styles.beatMissBadge,
-                            growth.tone === 'positive' ? styles.beatBadge
-                            : growth.tone === 'negative' ? styles.missBadge
-                            : styles.dividendYoYBadgeNeutralBase,
-                          ]}>
-                            <Text style={[
-                              styles.beatMissText,
-                              growth.tone === 'positive' ? styles.beatText
-                              : growth.tone === 'negative' ? styles.missText
-                              : styles.dividendYoYBadgeTextNeutral,
-                            ]}>
-                              {growth.badgeLabel ?? '—'}
+                          <Text style={styles.earningsNextTileDate}>
+                            {upcomingEarnings ? formatDateDMY(upcomingEarnings.report_date) : 'No date'}
+                          </Text>
+                        </View>
+                        <View style={{ alignItems: 'flex-end', gap: 4 }}>
+                          <View style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase]}>
+                            <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>
+                              {upcomingEarnings ? 'Scheduled' : '—'}
                             </Text>
                           </View>
+                          {(() => {
+                            if (!upcomingEarnings?.report_date) return null;
+                            const daysLeft = Math.ceil(
+                              (new Date(upcomingEarnings.report_date + 'T00:00:00Z').getTime() - Date.now()) / 86400000
+                            );
+                            if (daysLeft > 0 && daysLeft <= 365) {
+                              return (
+                                <View style={styles.earningsCountdownBadge}>
+                                  <Ionicons name="time-outline" size={11} color="#6B7280" />
+                                  <Text style={styles.earningsCountdownText}>{daysLeft}d</Text>
+                                </View>
+                              );
+                            }
+                            return null;
+                          })()}
                         </View>
-                      );
-                    })}
-                  </>
-                ) : (
-                  <View style={styles.noDataPlaceholder}>
-                    <Text style={styles.noDataText}>No dividend payments</Text>
+                      </View>
+                    </View>
                   </View>
-                )
-              ) : (
-                <>
-                  {hasAnnualDividendData ? (
+
+                  {/* Earnings History — upcoming rows excluded */}
+                  {earningsHistory.length > 0 ? (
                     <>
-                      {annualDividendPeriods.map((period) => {
-                        const yoy = getAnnualYoyDisplay(period.total, period.previousTotal, period.isPartial === true, period.isTTM === true);
-                        const isTTM = period.isTTM === true;
+                      <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 8 }]} onPress={() => showTooltip('earningsHeader')} accessibilityRole="button" accessibilityLabel="Show earnings history help">
+                        <Text style={styles.subsectionTitle}>Earnings History</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
+                      {earningsHistory.slice(0, 8).map((e, i) => {
+                        const showBadge = e.show_badge != null
+                          ? (e.show_badge === true && e.surprise_pct != null)
+                          : (
+                              e.reported_eps != null &&
+                              e.estimated_eps != null &&
+                              e.estimated_eps !== 0 &&
+                              e.surprise_pct != null
+                            );
+                        const badgeIsPositive = (e.surprise_pct ?? 0) >= 0;
                         return (
-                          <View key={period.key} style={styles.earningsRow}>
+                          <View key={i} style={styles.earningsRow}>
                             <View style={styles.earningsLeft}>
+                              <Text style={styles.earningsDate}>{formatDateDMY(e.quarter_date)}</Text>
                               <View style={styles.earningsEpsRow}>
-                                <Text style={styles.earningsDate}>{period.label}</Text>
-                                {isTTM && (
-                                  <TouchableOpacity onPress={() => showTooltip('dividendsTTM')} accessibilityRole="button" accessibilityLabel="Show trailing twelve months help">
-                                    <Ionicons name="help-circle-outline" size={13} color={COLORS.textMuted} />
-                                  </TouchableOpacity>
-                                )}
-                              </View>
-                              <Text style={styles.earningsEpsValue}>
-                                {formatDividendAmount(period.total, dividendDisplayCurrency)}
-                              </Text>
-                            </View>
-                            {period.isPartial ? (
-                              <TouchableOpacity
-                                style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase]}
-                                onPress={() => showTooltip('dividendsPartialYear')}
-                                accessibilityRole="button"
-                                accessibilityLabel="Show partial year help"
-                              >
-                                <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>Partial</Text>
-                                <Ionicons name="help-circle-outline" size={11} color="#6B7280" />
-                              </TouchableOpacity>
-                            ) : (
-                              <TouchableOpacity
-                                style={[
-                                  styles.beatMissBadge,
-                                  yoy.tone === 'positive' ? styles.beatBadge
-                                  : yoy.tone === 'negative' ? styles.missBadge
-                                  : styles.dividendYoYBadgeNeutralBase,
-                                ]}
-                                onPress={() => showTooltip('dividendsYoY')}
-                                accessibilityRole="button"
-                                accessibilityLabel="Show year over year change help"
-                              >
-                                <Text style={[
-                                  styles.beatMissText,
-                                  yoy.tone === 'positive' ? styles.beatText
-                                  : yoy.tone === 'negative' ? styles.missText
-                                  : styles.dividendYoYBadgeTextNeutral,
-                                ]}>
-                                  {yoy.label}
+                                <TouchableOpacity onPress={() => showTooltip('earningsActual')} accessibilityRole="button" accessibilityLabel="Show actual earnings help">
+                                  <Text style={styles.earningsEpsLabel}>Act</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.earningsEpsValue}>
+                                  {'$'}{e.reported_eps != null
+                                    ? toEU(e.reported_eps, 2)
+                                    : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
                                 </Text>
-                              </TouchableOpacity>
-                            )}
+                                <Text style={styles.earningsEpsSep}>·</Text>
+                                <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button" accessibilityLabel="Show expected earnings help">
+                                  <Text style={styles.earningsEpsLabel}>Exp</Text>
+                                </TouchableOpacity>
+                                <Text style={styles.earningsEpsValue}>
+                                  {'$'}{e.estimated_eps != null
+                                    ? toEU(e.estimated_eps, 2)
+                                    : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
+                                </Text>
+                              </View>
+                            </View>
+                            <TouchableOpacity
+                              style={[
+                                styles.beatMissBadge,
+                                showBadge
+                                  ? (badgeIsPositive ? styles.beatBadge : styles.missBadge)
+                                  : styles.dividendYoYBadgeNeutralBase,
+                              ]}
+                              onPress={() => showTooltip(showBadge ? 'earningsBeatMiss' : 'earningsNA')}
+                              accessibilityRole="button"
+                              accessibilityLabel="Show beat or miss help"
+                            >
+                              {showBadge && (
+                                <Ionicons
+                                  name={badgeIsPositive ? 'checkmark' : 'close'}
+                                  size={14}
+                                  color={badgeIsPositive ? '#10B981' : '#EF4444'}
+                                />
+                              )}
+                              <Text style={[
+                                styles.beatMissText,
+                                showBadge
+                                  ? (badgeIsPositive ? styles.beatText : styles.missText)
+                                  : styles.dividendYoYBadgeTextNeutral,
+                              ]}>
+                                {showBadge && e.surprise_pct != null
+                                  ? `${toEU(e.surprise_pct, 1)}%`
+                                  : '—'}
+                              </Text>
+                            </TouchableOpacity>
                           </View>
                         );
                       })}
                     </>
-                  ) : (
+                  ) : !earningsLoading ? (
                     <View style={styles.noDataPlaceholder}>
-                      <Text style={styles.noDataText}>Not enough dividend history for annual view</Text>
+                      <Text style={styles.noDataText}>No earnings data available</Text>
                     </View>
+                  ) : null}
+                </>
+              )}
+
+              {/* ══════════ DIVIDENDS TAB ══════════ */}
+              {earningsDivMode === 'dividends' && (
+                <>
+                  {/* Meta tiles: Frequency, Currency */}
+                  <View style={styles.dividendMetaRow}>
+                    <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsFrequency')} accessibilityRole="button" accessibilityLabel="Show dividend frequency help">
+                      <Text style={styles.dividendMetaPillLabel}>Frequency</Text>
+                      <Text style={styles.dividendMetaPillValue}>{dividendFrequencyLabel}</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.dividendMetaPill} onPress={() => showTooltip('dividendsCurrency')} accessibilityRole="button" accessibilityLabel="Show dividend currency help">
+                      <Text style={styles.dividendMetaPillLabel}>Currency</Text>
+                      <Text style={styles.dividendMetaPillValue}>{dividendDisplayCurrency}</Text>
+                    </TouchableOpacity>
+                    {dividendFrequencyFlags.hasSpecial && (
+                      <View style={[styles.dividendMetaPill, styles.dividendMetaPillAccent]}>
+                        <Text style={styles.dividendMetaPillValue}>Special</Text>
+                      </View>
+                    )}
+                    {dividendFrequencyFlags.hasIrregular && (
+                      <View style={[styles.dividendMetaPill, styles.dividendMetaPillAccent]}>
+                        <Text style={styles.dividendMetaPillValue}>Irregular</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Next dividend section */}
+                  <TouchableOpacity style={[styles.subsectionTitleRow, { marginTop: 12 }]} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
+                    <Text style={styles.subsectionTitle}>Next dividend</Text>
+                    <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                    {nextDividendInfo?.event_type_label && (
+                      <View style={[styles.dividendEventTag, { marginLeft: 4 }]}>
+                        <Text style={styles.dividendEventTagText}>{nextDividendInfo.event_type_label}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                  {nextDividendInfo?.next_ex_date ? (
+                    <View style={styles.earningsRow}>
+                      <View style={styles.earningsLeft}>
+                        <View style={[styles.earningsEpsRow, { marginBottom: 3 }]}>
+                          <Text style={styles.earningsEpsLabel}>Ex-date</Text>
+                          <Text style={styles.earningsEpsValue}>{formatDividendDate(nextDividendInfo.next_ex_date)}</Text>
+                        </View>
+                        {nextDividendInfo?.next_pay_date && (
+                          <View style={styles.earningsEpsRow}>
+                            <Text style={styles.earningsEpsLabel}>Pay date</Text>
+                            <Text style={styles.earningsEpsValue}>{formatDividendDate(nextDividendInfo.next_pay_date)}</Text>
+                          </View>
+                        )}
+                      </View>
+                      {typeof nextDividendInfo?.next_dividend_amount === 'number' && (
+                        <Text style={styles.nextDividendMetricValue}>
+                          {formatDividendAmount(
+                            nextDividendInfo.next_dividend_amount,
+                            resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency)
+                          )}
+                        </Text>
+                      )}
+                    </View>
+                  ) : (
+                    <Text style={styles.nextDividendNeutralText}>No upcoming dividend scheduled.</Text>
+                  )}
+
+                  {/* Payments / Annual sub-tab switcher */}
+                  <View style={styles.dividendViewSwitch}>
+                    <TouchableOpacity
+                      style={[styles.dividendViewButton, dividendViewMode === 'payments' && styles.dividendViewButtonActive]}
+                      onPress={() => setDividendViewMode('payments')}
+                    >
+                      <Text style={[styles.dividendViewButtonText, dividendViewMode === 'payments' && styles.dividendViewButtonTextActive]}>
+                        Payments
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.dividendViewButton, dividendViewMode === 'annual' && styles.dividendViewButtonActive]}
+                      onPress={() => setDividendViewMode('annual')}
+                    >
+                      <Text style={[styles.dividendViewButtonText, dividendViewMode === 'annual' && styles.dividendViewButtonTextActive]}>
+                        Annual
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* ── Payments list (EX tile + amount + pay date) ── */}
+                  {dividendViewMode === 'payments' ? (
+                    dividendPayments && dividendPayments.length > 0 ? (
+                      <>
+                        {paymentItems.map(({ key, event: d }) => {
+                          const exParts = parseExDateParts(d.ex_date);
+                          const rowCurrency = resolveDividendCurrency(d.currency, dividendDisplayCurrency);
+                          return (
+                            <View key={key} style={styles.paymentRow}>
+                              {/* EX calendar tile */}
+                              <View style={styles.exCalendarTile}>
+                                <Text style={styles.exCalLabel}>EX</Text>
+                                <Text style={styles.exCalDay}>{exParts.day}</Text>
+                                <Text style={styles.exCalMonth}>{exParts.month}</Text>
+                              </View>
+                              {/* Amount + pay-date */}
+                              <View style={styles.paymentRowBody}>
+                                <Text style={styles.paymentAmount}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
+                                <Text style={styles.paymentSubLabel}>
+                                  Pay {d.payment_date ? formatDividendDate(d.payment_date) : '—'} · {exParts.year}
+                                </Text>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </>
+                    ) : (
+                      <View style={styles.noDataPlaceholder}>
+                        <Text style={styles.noDataText}>No dividend payments</Text>
+                      </View>
+                    )
+                  ) : (
+                    /* ── Annual list (no TTM) ── */
+                    <>
+                      {hasAnnualDividendData ? (
+                        <>
+                          {annualDividendPeriods.map((period) => {
+                            const yoy = getAnnualYoyDisplay(period.total, period.previousTotal, period.isPartial === true);
+                            return (
+                              <View key={period.key} style={styles.earningsRow}>
+                                <View style={styles.earningsLeft}>
+                                  <View style={styles.earningsEpsRow}>
+                                    <Text style={styles.earningsDate}>{period.label}</Text>
+                                  </View>
+                                  <Text style={styles.earningsEpsValue}>
+                                    {formatDividendAmount(period.total, dividendDisplayCurrency)}
+                                  </Text>
+                                </View>
+                                {period.isPartial ? (
+                                  <TouchableOpacity
+                                    style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase]}
+                                    onPress={() => showTooltip('dividendsPartialYear')}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Show partial year help"
+                                  >
+                                    <Text style={[styles.beatMissText, styles.dividendYoYBadgeTextNeutral]}>Partial</Text>
+                                    <Ionicons name="help-circle-outline" size={11} color="#6B7280" />
+                                  </TouchableOpacity>
+                                ) : (
+                                  <TouchableOpacity
+                                    style={[
+                                      styles.beatMissBadge,
+                                      yoy.tone === 'positive' ? styles.beatBadge
+                                      : yoy.tone === 'negative' ? styles.missBadge
+                                      : styles.dividendYoYBadgeNeutralBase,
+                                    ]}
+                                    onPress={() => showTooltip('dividendsYoY')}
+                                    accessibilityRole="button"
+                                    accessibilityLabel="Show year over year change help"
+                                  >
+                                    <Text style={[
+                                      styles.beatMissText,
+                                      yoy.tone === 'positive' ? styles.beatText
+                                      : yoy.tone === 'negative' ? styles.missText
+                                      : styles.dividendYoYBadgeTextNeutral,
+                                    ]}>
+                                      {yoy.label}
+                                    </Text>
+                                  </TouchableOpacity>
+                                )}
+                              </View>
+                            );
+                          })}
+                        </>
+                      ) : (
+                        <View style={styles.noDataPlaceholder}>
+                          <Text style={styles.noDataText}>Not enough dividend history for annual view</Text>
+                        </View>
+                      )}
+                    </>
                   )}
                 </>
               )}
@@ -4469,7 +4485,35 @@ const styles = StyleSheet.create({
   dividendValuePositive: { color: '#10B981' },
   dividendValueNegative: { color: '#EF4444' },
   dividendValueNeutral: { color: '#111827' },
-  
+  nextDividendNeutralText: { fontSize: 14, color: '#6B7280', lineHeight: 20, marginBottom: 8 },
+
+  // Earnings | Dividends main tab bar
+  earningsDivTabRow: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#E5E7EB', marginBottom: 14 },
+  earningsDivTab: { paddingHorizontal: 16, paddingVertical: 10, marginBottom: -1 },
+  earningsDivTabActive: { borderBottomWidth: 2, borderBottomColor: COLORS.primary },
+  earningsDivTabText: { fontSize: 15, fontWeight: '600', color: '#9CA3AF' },
+  earningsDivTabTextActive: { fontSize: 15, fontWeight: '700', color: '#111827' },
+
+  // Next Earnings header tile (wider pill)
+  earningsNextTilePill: { flex: 1, minWidth: 180 },
+  earningsNextTileHeader: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
+  earningsNextTileLabel: { fontSize: 11, fontWeight: '700', color: '#6B7280', letterSpacing: 0.5 },
+  earningsNextTileBody: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
+  earningsNextTilePrimary: { fontSize: 16, fontWeight: '800', color: '#111827', marginBottom: 2 },
+  earningsNextTileDate: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+  earningsCountdownBadge: { flexDirection: 'row', alignItems: 'center', gap: 2, backgroundColor: '#F3F4F6', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 10 },
+  earningsCountdownText: { fontSize: 12, fontWeight: '700', color: '#6B7280' },
+
+  // Dividend Payments row — EX calendar tile
+  paymentRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6', gap: 12 },
+  exCalendarTile: { width: 52, borderRadius: 8, borderWidth: 1, borderColor: '#D1D5DB', backgroundColor: '#F9FAFB', alignItems: 'center', paddingVertical: 6 },
+  exCalLabel: { fontSize: 10, fontWeight: '700', color: '#6B7280', letterSpacing: 0.5 },
+  exCalDay: { fontSize: 20, fontWeight: '900', color: '#111827', lineHeight: 24 },
+  exCalMonth: { fontSize: 11, fontWeight: '700', color: '#6B7280' },
+  paymentRowBody: { flex: 1 },
+  paymentAmount: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 2 },
+  paymentSubLabel: { fontSize: 13, color: '#6B7280', fontWeight: '500' },
+
   // P4: Tab styles removed - Single vertical scroll, no tabs
   
   // Metrics Card
