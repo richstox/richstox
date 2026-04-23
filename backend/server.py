@@ -7451,7 +7451,8 @@ async def admin_get_job_status(job_name: str):
         "backfill_all", "recompute_visibility_all", "clean_zombie_tickers",
         "recompute_visibility_with_zombies", "benchmark_update",
         "market_calendar", "news_refresh", "peer_medians",
-        "dividend_upcoming_calendar",
+        "dividend_upcoming_calendar", "earnings_upcoming_calendar",
+        "splits_upcoming_calendar", "ipos_upcoming_calendar",
     }
     if config:
         enabled = config.get("value", False)
@@ -7849,6 +7850,9 @@ async def admin_run_job_now(
         "news_refresh": refresh_hot_tickers_news,
         "peer_medians": compute_peer_benchmarks_v3,
         "dividend_upcoming_calendar": sync_upcoming_dividend_calendar_for_visible_tickers,
+        "earnings_upcoming_calendar": sync_upcoming_earnings_calendar_for_visible_tickers,
+        "splits_upcoming_calendar": sync_upcoming_splits_calendar_for_visible_tickers,
+        "ipos_upcoming_calendar": sync_upcoming_ipos_calendar,
     }
 
     if job_name not in JOB_RUNNERS:
