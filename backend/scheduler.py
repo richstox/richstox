@@ -159,6 +159,10 @@ PAIN_CACHE_MINUTE = 0
 UPCOMING_DIVIDEND_CALENDAR_HOUR = 4
 UPCOMING_DIVIDEND_CALENDAR_MINUTE = 50
 
+# UPCOMING EARNINGS CALENDAR: Daily refresh at 04:55 (date-window endpoint)
+UPCOMING_EARNINGS_CALENDAR_HOUR = 4
+UPCOMING_EARNINGS_CALENDAR_MINUTE = 55
+
 # GAPFILL REMEDIATION: Detect & fill missing bulk dates at 05:00
 GAPFILL_REMEDIATION_HOUR = 5
 GAPFILL_REMEDIATION_MINUTE = 0
@@ -175,6 +179,7 @@ KNOWN_JOBS = sorted([
     "benchmark_update",
     "bulk_gapfill_remediation",
     "dividend_upcoming_calendar",
+    "earnings_upcoming_calendar",
     "fundamentals_sync",
     "key_metrics",
     "market_calendar",
@@ -1255,6 +1260,31 @@ async def scheduler_loop():
                 except Exception as exc:
                     logger.error(
                         "[scheduler] dividend_upcoming_calendar unhandled error "
+                        f"(will retry next minute): {exc}"
+                    )
+
+            # UPCOMING EARNINGS CALENDAR at 04:55 (catch-up enabled)
+            if should_run(
+                "earnings_upcoming_calendar",
+                UPCOMING_EARNINGS_CALENDAR_HOUR,
+                UPCOMING_EARNINGS_CALENDAR_MINUTE,
+                last_run,
+                today_str,
+                current_hour,
+                current_minute,
+            ):
+                logger.info(
+                    "Triggering earnings_upcoming_calendar "
+                    f"(hour={current_hour}, scheduled={UPCOMING_EARNINGS_CALENDAR_HOUR}:{UPCOMING_EARNINGS_CALENDAR_MINUTE:02d})"
+                )
+                try:
+                    from dividend_history_service import sync_upcoming_earnings_calendar_for_visible_tickers
+                    await run_job_with_retry("earnings_upcoming_calendar", sync_upcoming_earnings_calendar_for_visible_tickers, db)
+                    last_run["earnings_upcoming_calendar"] = today_str
+                    await set_last_run_state(last_run)
+                except Exception as exc:
+                    logger.error(
+                        "[scheduler] earnings_upcoming_calendar unhandled error "
                         f"(will retry next minute): {exc}"
                     )
             

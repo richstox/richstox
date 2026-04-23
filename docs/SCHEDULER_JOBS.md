@@ -13,12 +13,13 @@
 | 4 | SP500TR Update | Mon-Sat | 04:15 | `/eod/SP500TR.INDX` | 1 | `not run today` |
 | 5 | Backfill Gaps | Mon-Sat | 04:45 | `/eod/{TICKER}.US` | 0-50 | `tickers with gaps exist` |
 | 6 | Upcoming Dividend Calendar | Mon-Sat | 04:50 | `/calendar/dividends?from=..&to=..` | 1 | `not run today` |
-| 7 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `tickers without full history` |
-| 8 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 9 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
-| 10 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
-| 11 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
-| 12 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
+| 7 | Upcoming Earnings Calendar | Mon-Sat | 04:55 | `/calendar/earnings?from=..&to=..` | 1 | `not run today` |
+| 8 | Backfill All | Mon-Sat | 05:00 | `/eod/{TICKER}.US` | 0-N | `tickers without full history` |
+| 9 | Key Metrics | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 10 | PAIN Cache | Mon-Sat | 05:00 | None (DB only) | 0 | `not run today` |
+| 11 | Peer Medians | Mon-Sat | 05:30 | None (DB only) | 0 | `not run today` |
+| 12 | **Admin Report** | Mon-Sat | 06:00 | None (DB only) | 0 | `not run today` |
+| 13 | **News Refresh** | Sun-Sat | 13:00 | `/news?s={TICKER}.US` | N unique tickers | `not run today` |
 
 ## Configuration Constants
 
@@ -35,6 +36,8 @@ BACKFILL_HOUR = 4
 BACKFILL_MINUTE = 45
 UPCOMING_DIVIDEND_CALENDAR_HOUR = 4
 UPCOMING_DIVIDEND_CALENDAR_MINUTE = 50
+UPCOMING_EARNINGS_CALENDAR_HOUR = 4
+UPCOMING_EARNINGS_CALENDAR_MINUTE = 55
 BACKFILL_ALL_HOUR = 5
 BACKFILL_ALL_MINUTE = 0
 NEWS_REFRESH_HOUR = 13
@@ -101,6 +104,14 @@ ADMIN_REPORT_MINUTE = 0
 - **API**: `GET https://eodhd.com/api/calendar/dividends?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
 - **Cost**: 1 API call/day
 - **Persistence**: `upcoming_dividends` collection with one document per visible ticker (upsert/null-safe)
+
+### 7b. Upcoming Earnings Calendar (Mon-Sat 04:55)
+- **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_earnings_calendar_for_visible_tickers()`
+- **Purpose**: Fetch date-window upcoming earnings report dates (today..+90d) and persist per visible ticker for UI display. **Independent of Step 2.6** (`_detect_earnings_candidates_eodhd` in `scheduler_service.py`), which solely flags tickers for fundamentals refresh.
+- **API**: `GET https://eodhd.com/api/calendar/earnings?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
+- **Cost**: 1 API call/day
+- **Persistence**: `upcoming_earnings` collection with one document per visible ticker (upsert/null-safe)
+- **Served by**: `GET /api/v1/ticker/{ticker}/earnings`
 
 ### 8. Backfill All (Mon-Sat 05:00)
 - **File**: `/app/backend/parallel_batch_service.py` → `run_scheduled_backfill_all_prices()`
