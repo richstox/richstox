@@ -1209,6 +1209,19 @@ export default function StockDetail() {
     isTTM?: boolean;
   };
 
+  type AnnualEarningsPeriod = {
+    key: string;
+    label: string;
+    annualReportedEps: number;
+    reportsCount: number;
+    beatCount: number;
+    missCount: number;
+    inlineCount: number;
+    naCount: number;
+    previousAnnualReportedEps: number | null;
+    previousReportsCount: number | null;
+  };
+
   const annualDividendPeriods = useMemo<AnnualDividendPeriod[]>(() => {
     const events = dividendHistory
       .map((d) => ({ amount: d.amount, exDateMs: parseDividendExDateMs(d.ex_date) }))
@@ -1260,6 +1273,83 @@ export default function StockDetail() {
     return {
       label: `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
       tone: pct > 0 ? ('positive' as const) : pct < 0 ? ('negative' as const) : ('neutral' as const),
+    };
+  };
+
+  const annualEarningsPeriods = useMemo<AnnualEarningsPeriod[]>(() => {
+    const yearBuckets = new Map<number, {
+      annualReportedEps: number;
+      reportsCount: number;
+      beatCount: number;
+      missCount: number;
+      inlineCount: number;
+      naCount: number;
+    }>();
+
+    for (const row of earningsHistory) {
+      if (row.reported_eps == null) continue;
+      const yearText = typeof row.quarter_date === 'string' ? row.quarter_date.slice(0, 4) : '';
+      const year = Number.parseInt(yearText, 10);
+      if (!Number.isFinite(year)) continue;
+
+      const bucket = yearBuckets.get(year) ?? {
+        annualReportedEps: 0,
+        reportsCount: 0,
+        beatCount: 0,
+        missCount: 0,
+        inlineCount: 0,
+        naCount: 0,
+      };
+
+      bucket.annualReportedEps += row.reported_eps;
+      bucket.reportsCount += 1;
+
+      if (row.show_badge === true && row.surprise_pct != null && row.estimated_eps != null && row.estimated_eps !== 0) {
+        if (row.surprise_pct > 0) bucket.beatCount += 1;
+        else if (row.surprise_pct < 0) bucket.missCount += 1;
+        else bucket.inlineCount += 1;
+      } else {
+        bucket.naCount += 1;
+      }
+
+      yearBuckets.set(year, bucket);
+    }
+
+    const years = Array.from(yearBuckets.keys()).sort((a, b) => b - a);
+    return years.map((year) => {
+      const current = yearBuckets.get(year)!;
+      const previous = yearBuckets.get(year - 1) ?? null;
+      return {
+        key: String(year),
+        label: String(year),
+        annualReportedEps: round4(current.annualReportedEps),
+        reportsCount: current.reportsCount,
+        beatCount: current.beatCount,
+        missCount: current.missCount,
+        inlineCount: current.inlineCount,
+        naCount: current.naCount,
+        previousAnnualReportedEps: previous ? round4(previous.annualReportedEps) : null,
+        previousReportsCount: previous ? previous.reportsCount : null,
+      };
+    });
+  }, [earningsHistory]);
+
+  const getAnnualEarningsYoyDisplay = (period: AnnualEarningsPeriod) => {
+    const previous = period.previousAnnualReportedEps;
+    const previousReportsCount = period.previousReportsCount;
+    if (
+      previous == null ||
+      previousReportsCount == null ||
+      period.reportsCount !== previousReportsCount ||
+      previous === 0
+    ) {
+      return { label: '—', tone: 'neutral' as const };
+    }
+
+    const pct = ((period.annualReportedEps - previous) / Math.abs(previous)) * 100;
+    return {
+      label: `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
+      tone: pct >= 0 ? ('positive' as const) : ('negative' as const),
     };
   };
 
@@ -3601,11 +3691,53 @@ export default function StockDetail() {
                   {earningsViewMode === 'annual' ? (
                     <>
                       <Text style={styles.subsectionTitle}>Annual Earnings</Text>
-                      {!earningsLoading && (
+                      {annualEarningsPeriods.length > 0 ? (
+                        <View style={styles.dividendAnnualSection}>
+                          <View style={styles.dividendAnnualList}>
+                            {annualEarningsPeriods.map((period) => {
+                              const yoy = getAnnualEarningsYoyDisplay(period);
+                              return (
+                                <View key={period.key} style={styles.earningsRow}>
+                                  <View style={styles.earningsLeft}>
+                                    <View style={styles.earningsEpsRow}>
+                                      <Text style={styles.earningsDate}>{period.label}</Text>
+                                    </View>
+                                    <Text style={styles.earningsAnnualPrimaryValue}>
+                                      Act ${toEU(period.annualReportedEps, 2)}
+                                    </Text>
+                                    <Text style={styles.earningsAnnualSummary}>
+                                      Reports: {period.reportsCount} · Beat {period.beatCount} · Miss {period.missCount} · Inline {period.inlineCount} · N/A {period.naCount}
+                                    </Text>
+                                  </View>
+                                  <View
+                                    style={[
+                                      styles.beatMissBadge,
+                                      yoy.tone === 'positive' ? styles.beatBadge
+                                      : yoy.tone === 'negative' ? styles.missBadge
+                                      : styles.dividendYoYBadgeNeutralBase,
+                                    ]}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.beatMissText,
+                                        yoy.tone === 'positive' ? styles.beatText
+                                        : yoy.tone === 'negative' ? styles.missText
+                                        : styles.dividendYoYBadgeTextNeutral,
+                                      ]}
+                                    >
+                                      {yoy.label}
+                                    </Text>
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        </View>
+                      ) : !earningsLoading ? (
                         <View style={styles.noDataPlaceholder}>
                           <Text style={styles.noDataText}>No earnings data available</Text>
                         </View>
-                      )}
+                      ) : null}
                     </>
                   ) : earningsHistory.length > 0 ? (
                     <>
@@ -4674,6 +4806,8 @@ const styles = StyleSheet.create({
   earningsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
   earningsLeft: { flex: 1, marginRight: 8 },
   earningsDate: { fontSize: 14, color: COLORS.textMuted, marginBottom: 3 },
+  earningsAnnualPrimaryValue: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 2 },
+  earningsAnnualSummary: { fontSize: 13, color: '#6B7280', fontWeight: '500', lineHeight: 18 },
   earningsEpsRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   earningsEpsLabel: { fontSize: 14, fontWeight: '600', color: COLORS.textMuted, letterSpacing: 0.3 },
   earningsEpsValue: { fontSize: 14, fontWeight: '600', color: '#374151' },
