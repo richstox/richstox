@@ -3682,7 +3682,7 @@ export default function StockDetail() {
                         <Text style={styles.dividendMetaPillValue}>Irregular</Text>
                       </View>
                     )}
-                    <View style={[styles.dividendMetaPill, styles.earningsNextTilePill]}>
+                    <View style={[styles.dividendMetaPill, styles.dividendNextTilePill]}>
                       <TouchableOpacity style={styles.earningsNextTileHeader} onPress={() => showTooltip('dividendsNextDividend')} accessibilityRole="button" accessibilityLabel="Show next dividend help">
                         <Ionicons name="calendar-outline" size={12} color={COLORS.textMuted} />
                         <Text style={styles.earningsNextTileLabel}>NEXT DIVIDEND</Text>
@@ -4528,6 +4528,7 @@ const styles = StyleSheet.create({
 
   // Next Earnings header tile (wider pill)
   earningsNextTilePill: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 220, alignSelf: 'stretch' },
+  dividendNextTilePill: { flexGrow: 1, flexShrink: 1, flexBasis: 140, minWidth: 140, alignSelf: 'stretch' },
   earningsNextTileHeader: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
   earningsNextTileLabel: { fontSize: 11, fontWeight: '700', color: '#6B7280', letterSpacing: 0.5 },
   earningsNextTileBody: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },

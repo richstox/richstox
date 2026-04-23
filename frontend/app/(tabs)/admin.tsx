@@ -255,6 +255,10 @@ function formatPragueDisplay(value?: string | null): string {
   return value.replace('T', ' ').slice(0, 16);
 }
 
+function asArray<T>(value: unknown): T[] {
+  return Array.isArray(value) ? value : [];
+}
+
 const UPCOMING_CALENDAR_JOB_NAMES = [
   'dividend_upcoming_calendar',
   'earnings_upcoming_calendar',
@@ -464,7 +468,8 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   // out of the jobs window) failed, ensure it is counted.  Check whether
   // peer_medians is already in the jobs.failed list to avoid double-counting.
   const baseFailedCount = health?.jobs_failed ?? 0;
-  const failedJobsList: { name?: string; error_summary?: string }[] = overview?.jobs?.failed ?? [];
+  const failedJobsList = asArray<{ name?: string; error_summary?: string }>(overview?.jobs?.failed);
+  const allSortedJobs = asArray<AdminJobSummary>(overview?.jobs?.all_sorted);
   const step4AlreadyCounted = failedJobsList.some(fj => fj.name === 'peer_medians');
   const failedCount = step4LatestFailed && !step4AlreadyCounted
     ? baseFailedCount + 1
@@ -482,7 +487,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const eodhd = overview?.eodhd_api_usage;
   const upcomingCalendarJobs = UPCOMING_CALENDAR_JOB_NAMES
     .map((jobName) => {
-      const job = overview?.jobs?.all_sorted?.find((item) => item.name === jobName);
+      const job = allSortedJobs.find((item) => item.name === jobName);
       const lastRun = overview?.job_last_runs?.[jobName];
       return {
         jobName,
@@ -589,6 +594,13 @@ function DashboardTab({ sessionToken }: DashboardProps) {
     !bcHasBaseline ? 'yellow' : bcGapFree ? 'green' : 'red';
   const bcStatusLabel = !bcHasBaseline ? 'NO BASELINE' : bcGapFree ? 'GAP-FREE' : 'GAPS PRESENT';
   const bcMissingDates = bcHasBaseline ? (bc?.missing_bulk_dates_since_baseline ?? []) : [];
+  const ctdhDays = asArray<{ date: string; ok: boolean }>(ctdhData?.days);
+  const ctdhMissingDates = asArray<string>(ctdhData?.missing_dates);
+  const nonGapFreeSample = asArray<{ ticker: string; missing_dates: string[] }>(pi?.non_gap_free_sample);
+  const gapExcludedSample = asArray<{ ticker: string; excluded_dates: { date: string; reason: string; bulk_found?: boolean | null; bulk_close?: number | null; bulk_adjusted_close?: number | null; bulk_volume?: number | null }[] }>(pi?.gap_excluded_sample);
+  const topMissingDates = asArray<{ date: string; missing_ticker_count: number }>(pi?.top_missing_dates);
+  const sampleIncomplete = asArray<NonNullable<HistoryCompleteness['sample_incomplete']>[number]>(hc?.sample_incomplete);
+  const ingestedDates = asArray<string>(bc?.ingested_dates);
 
   // ── Visible Coverage ──
   const vc = overview?.visible_coverage;
@@ -862,7 +874,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         </View>
 
         {/* Collapsed: Last 10 Completed Trading Days – single row + toggle */}
-        {ctdhData?.days && ctdhData.days.length > 0 && (
+        {ctdhDays.length > 0 && (
           <View style={{ marginBottom: 4 }}>
             <TouchableOpacity
               style={d.compactToggleRow}
@@ -872,7 +884,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
               <Ionicons name={statusIcon(ctdhStatus) as any} size={12} color={statusColor(ctdhStatus)} />
               <Text style={d.compactToggleText}>
                 Last 10 completed days: {ctdhMissing} missing
-                {ctdhData.days.length > 0 ? ` · last=${ctdhData.days[0].date}` : ''}
+                {ctdhDays.length > 0 ? ` · last=${ctdhDays[0].date}` : ''}
               </Text>
               <Text style={d.compactToggleBtn}>{showTradingDays ? 'Hide' : 'Show'}</Text>
             </TouchableOpacity>
@@ -881,12 +893,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                 {ctdhStale && (
                   <Text style={[d.cpHint, { color: '#F59E0B', marginBottom: 2 }]}>⚠ {ctdhStaleMsg}</Text>
                 )}
-                {ctdhData.missing_dates && ctdhData.missing_dates.length > 0 && (
+                {ctdhMissingDates.length > 0 && (
                   <Text style={[d.cpHint, { color: '#EF4444', marginBottom: 2 }]}>
-                    Missing: {ctdhData.missing_dates.join(', ')}
+                    Missing: {ctdhMissingDates.join(', ')}
                   </Text>
                 )}
-                {ctdhData.days.map((day) => (
+                {ctdhDays.map((day) => (
                   <View key={day.date} style={d.cpRow}>
                     <View style={[d.cpDot, { backgroundColor: day.ok ? '#22C55E' : '#EF4444' }]} />
                     <Text style={d.cpLabel}>{day.date}</Text>
@@ -940,29 +952,29 @@ function DashboardTab({ sessionToken }: DashboardProps) {
           value={gfValue}
           status={gfStatus}
         />
-        {((pi?.non_gap_free_sample ?? []).length > 0 || (pi?.gap_excluded_sample ?? []).length > 0) && (
+        {(nonGapFreeSample.length > 0 || gapExcludedSample.length > 0) && (
           <View style={{ marginTop: 6 }}>
-            {(pi?.non_gap_free_sample ?? []).length > 0 && (
+            {nonGapFreeSample.length > 0 && (
               <>
                 <Text style={[d.subSection, { marginTop: 2 }]}>Why not gap-free?</Text>
                 <Text style={d.cpHint}>True gaps: bulk found, close {'>'} 0, DB row still missing</Text>
-                {(pi?.non_gap_free_sample ?? []).map((item) => (
+                {nonGapFreeSample.map((item) => (
                   <View key={item.ticker} style={d.cpRow}>
                     <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
-                    <Text style={[d.cpDate, { flex: 1, color: '#EF4444' }]}>{item.missing_dates.join(', ')}</Text>
+                    <Text style={[d.cpDate, { flex: 1, color: '#EF4444' }]}>{asArray<string>(item.missing_dates).join(', ')}</Text>
                   </View>
                 ))}
               </>
             )}
-            {(pi?.gap_excluded_sample ?? []).length > 0 && (
+            {gapExcludedSample.length > 0 && (
               <>
                 <Text style={[d.subSection, { marginTop: 6 }]}>Not applicable (not a gap)</Text>
                 <Text style={d.cpHint}>Ticker absent from bulk or close=0 — halted/delisted/no trade</Text>
-                {(pi?.gap_excluded_sample ?? []).map((item) => (
+                {gapExcludedSample.map((item) => (
                   <View key={item.ticker} style={d.cpRow}>
                     <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
                     <Text style={[d.cpDate, { flex: 1, color: '#9CA3AF' }]}>
-                      {item.excluded_dates.map(ed => {
+                      {asArray(item.excluded_dates).map(ed => {
                         const reason = ed.reason || 'not_applicable';
                         let label: string;
                         if (reason === 'not_in_bulk_data') {
@@ -984,11 +996,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                 ))}
               </>
             )}
-            {(pi?.top_missing_dates ?? []).length > 0 && (
+            {topMissingDates.length > 0 && (
               <>
                 <Text style={[d.subSection, { marginTop: 6 }]}>Top missing dates</Text>
                 <Text style={d.cpHint}>Dates most commonly absent across all non-gap-free tickers (desc)</Text>
-                {(pi?.top_missing_dates ?? []).map((item) => (
+                {topMissingDates.map((item) => (
                   <View key={item.date} style={d.cpRow}>
                     <Text style={[d.cpLabel, { width: 90 }]}>{item.date}</Text>
                     <Text style={[d.cpDate, { flex: 1 }]}>
@@ -1028,10 +1040,10 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         {hc?.last_verified_at_prague && (
           <Text style={d.cpHint}>Last verified: {hc.last_verified_at_prague}</Text>
         )}
-        {(hc?.sample_incomplete ?? []).length > 0 && (
+        {sampleIncomplete.length > 0 && (
           <View style={{ marginTop: 4 }}>
             <Text style={[d.subSection, { marginTop: 2 }]}>Sample incomplete tickers</Text>
-            {(hc?.sample_incomplete ?? []).map((item) => (
+            {sampleIncomplete.map((item) => (
               <View key={item.ticker} style={d.cpRow}>
                 <Text style={[d.cpLabel, { width: 90 }]}>{item.ticker}</Text>
                 <Text style={[d.cpDate, { flex: 1, color: '#F59E0B' }]}>
@@ -1105,10 +1117,10 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                   <Text style={d.cpLabel}>Latest Daily Bulk Date</Text>
                   <Text style={d.cpDate}>{bc?.latest_bulk_date_ingested ?? '—'}</Text>
                 </View>
-                {(bc?.ingested_dates ?? []).length > 0 && (
+                {ingestedDates.length > 0 && (
                   <>
                     <Text style={[d.subSection, { marginTop: 6 }]}>Ingested Bulk Dates</Text>
-                    {(bc?.ingested_dates ?? []).map((dt) => (
+                    {ingestedDates.map((dt) => (
                       <View key={dt} style={d.cpRow}>
                         <View style={[d.cpDot, { backgroundColor: '#22C55E' }]} />
                         <Text style={d.cpLabel}>{dt}</Text>
