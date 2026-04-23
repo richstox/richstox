@@ -406,6 +406,7 @@ JOB_REGISTRY = {
         "hour": 4, "minute": 45, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/eod/{SYMBOL}.US?api_token=YOUR_API_TOKEN&from={date}&fmt=json"
     },
+    # Calendar endpoints use an explicit date window: {from_date} .. {to_date}.
     "dividend_upcoming_calendar": {
         "hour": 4, "minute": 50, "sunday_only": False, "has_api_calls": True,
         "api_endpoint": "https://eodhd.com/api/calendar/dividends?from={from_date}&to={to_date}"

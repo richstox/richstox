@@ -1,4 +1,5 @@
 import ast
+from functools import lru_cache
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -12,6 +13,32 @@ CALENDAR_JOBS = {
     "splits_upcoming_calendar": (4, 57),
     "ipos_upcoming_calendar": (4, 58),
 }
+
+
+@lru_cache(maxsize=1)
+def _get_server_job_sets():
+    server_path = Path(__file__).resolve().parents[1] / "server.py"
+    tree = ast.parse(server_path.read_text())
+
+    always_runnable_jobs = set()
+    manual_runner_jobs = set()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id == "_ALWAYS_RUNNABLE_JOBS" and isinstance(node.value, ast.Set):
+                always_runnable_jobs = {
+                    elt.value for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                }
+            if isinstance(target, ast.Name) and target.id == "JOB_RUNNERS" and isinstance(node.value, ast.Dict):
+                manual_runner_jobs = {
+                    key.value for key in node.value.keys
+                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                }
+
+    return always_runnable_jobs, manual_runner_jobs
 
 
 def test_calendar_jobs_present_in_admin_job_registry():
@@ -36,26 +63,7 @@ def test_calendar_jobs_next_run_uses_registry_schedule():
 
 
 def test_calendar_jobs_exposed_in_manual_run_and_status_maps():
-    server_path = Path(__file__).resolve().parents[1] / "server.py"
-    tree = ast.parse(server_path.read_text())
-
-    always_runnable_jobs = set()
-    manual_runner_jobs = set()
-
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        for target in node.targets:
-            if isinstance(target, ast.Name) and target.id == "_ALWAYS_RUNNABLE_JOBS" and isinstance(node.value, ast.Set):
-                always_runnable_jobs = {
-                    elt.value for elt in node.value.elts
-                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                }
-            if isinstance(target, ast.Name) and target.id == "JOB_RUNNERS" and isinstance(node.value, ast.Dict):
-                manual_runner_jobs = {
-                    key.value for key in node.value.keys
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                }
+    always_runnable_jobs, manual_runner_jobs = _get_server_job_sets()
 
     expected = set(CALENDAR_JOBS.keys())
     assert expected.issubset(always_runnable_jobs)

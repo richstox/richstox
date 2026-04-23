@@ -216,6 +216,13 @@ function formatPragueDisplay(value?: string | null): string {
   return value.replace('T', ' ').slice(0, 16);
 }
 
+const UPCOMING_CALENDAR_JOB_NAMES = [
+  'dividend_upcoming_calendar',
+  'earnings_upcoming_calendar',
+  'splits_upcoming_calendar',
+  'ipos_upcoming_calendar',
+] as const;
+
 // ─── Dashboard Tab ────────────────────────────────────────────────────────────
 
 interface DashboardProps {
@@ -434,7 +441,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const pi = overview?.price_integrity;
   const cp = pi?.coverage_checkpoints || {};
   const eodhd = overview?.eodhd_api_usage;
-  const upcomingCalendarJobs = ['dividend_upcoming_calendar', 'earnings_upcoming_calendar', 'splits_upcoming_calendar', 'ipos_upcoming_calendar']
+  const upcomingCalendarJobs = UPCOMING_CALENDAR_JOB_NAMES
     .map((jobName) => {
       const job = overview?.jobs?.all_sorted?.find((item) => item.name === jobName);
       const lastRun = overview?.job_last_runs?.[jobName];
@@ -450,7 +457,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         running: calendarJobRunning[jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time),
       };
     })
-    .filter((job) => !!job.nextRun || !!job.lastRunIso || !!job.lastRunPrague || !!overview);
+    .filter((job) => !!job.nextRun || !!job.lastRunIso || !!job.lastRunPrague);
 
   // ── Bulk Completeness (since last full backfill) ──
   const bc = overview?.bulk_completeness;
