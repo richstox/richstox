@@ -255,6 +255,20 @@ function formatPragueDisplay(value?: string | null): string {
   return value.replace('T', ' ').slice(0, 16);
 }
 
+function formatTime(value: any): string {
+  if (value == null) return '—';
+  const raw = String(value).trim();
+  if (!raw) return '—';
+  if (/^\d{2}:\d{2}$/.test(raw)) return raw;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
 }
