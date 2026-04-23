@@ -1192,6 +1192,12 @@ export default function StockDetail() {
     return normalizedCurrency ? `${normalizedCurrency} ${toEU(value, 2)}` : toEU(value, 2);
   };
 
+  const formatUpcomingEarningsEstimate = (estimate?: number | null, currency?: string | null): string => {
+    if (estimate == null) return 'Estimate —';
+    const currencyPrefix = currency && currency !== 'USD' ? `${currency} ` : '$';
+    return `Est. ${currencyPrefix}${toEU(estimate, 2)}`;
+  };
+
   type AnnualDividendPeriod = {
     key: string;
     label: string;
@@ -3524,10 +3530,7 @@ export default function StockDetail() {
                             {upcomingEarnings ? formatDateDMY(upcomingEarnings.report_date) : 'No date'}
                           </Text>
                           <Text style={styles.earningsNextTileSecondary}>
-                            {upcomingEarnings?.estimate != null
-                              ? `Est. ${upcomingEarnings.currency && upcomingEarnings.currency !== 'USD' ? upcomingEarnings.currency + ' ' : '$'}${toEU(upcomingEarnings.estimate, 2)}`
-                              : 'Estimate —'
-                            }
+                            {formatUpcomingEarningsEstimate(upcomingEarnings?.estimate, upcomingEarnings?.currency)}
                           </Text>
                         </View>
                         <View style={{ alignItems: 'flex-end', gap: 4 }}>
@@ -4524,7 +4527,7 @@ const styles = StyleSheet.create({
   earningsDivTabTextActive: { fontSize: 15, fontWeight: '700', color: '#111827', textAlign: 'center' },
 
   // Next Earnings header tile (wider pill)
-  earningsNextTilePill: { flexGrow: 1, flexShrink: 1, flexBasis: 220, minWidth: 220, alignSelf: 'stretch' },
+  earningsNextTilePill: { flexGrow: 1, flexShrink: 1, flexBasis: 0, minWidth: 220, alignSelf: 'stretch' },
   earningsNextTileHeader: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
   earningsNextTileLabel: { fontSize: 11, fontWeight: '700', color: '#6B7280', letterSpacing: 0.5 },
   earningsNextTileBody: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 },
