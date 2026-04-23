@@ -1013,7 +1013,7 @@ async def create_upcoming_earnings_indexes(db) -> None:
 
 
 def _parse_earnings_report_date(row: Dict[str, Any]) -> Optional[str]:
-    """Extract and normalise the report date from an EODHD earnings calendar row.
+    """Extract and normalize the report date from an EODHD earnings calendar row.
 
     EODHD uses 'Report_Date' (capital R and D) for the earnings announcement date.
     'date' / 'Date' is the fiscal period end — it must NOT be used as report_date.
