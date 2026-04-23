@@ -1237,10 +1237,7 @@ async def get_earnings_for_ticker(db, ticker: str) -> Dict[str, Any]:
         estimated_eps = row.get("estimated_eps")
 
         # Classification (Prague date-only)
-        if quarter_date > today_prague or reported_eps is None:
-            is_upcoming = True
-        else:
-            is_upcoming = False
+        is_upcoming = quarter_date > today_prague or reported_eps is None
 
         # Badge eligibility
         show_badge = (

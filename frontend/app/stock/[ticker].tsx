@@ -3506,7 +3506,7 @@ export default function StockDetail() {
                             <TouchableOpacity onPress={() => showTooltip('earningsExpected')} accessibilityRole="button" accessibilityLabel="Show expected earnings help">
                               <Text style={styles.earningsEpsLabel}>Est</Text>
                             </TouchableOpacity>
-                            <Text style={styles.earningsEpsValue}>{'$'}{toEU(upcomingEarnings.estimate, 2)}</Text>
+                            <Text style={styles.earningsEpsValue}>{upcomingEarnings.currency && upcomingEarnings.currency !== 'USD' ? upcomingEarnings.currency + ' ' : '$'}{toEU(upcomingEarnings.estimate, 2)}</Text>
                           </>
                         )}
                       </View>
