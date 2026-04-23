@@ -3532,9 +3532,9 @@ export default function StockDetail() {
                         </View>
                         <View style={{ alignItems: 'flex-end', gap: 4 }}>
                           {upcomingEarnings ? (() => {
-                            const bam = (upcomingEarnings.before_after_market ?? '').toLowerCase();
-                            const isBefore = bam.includes('before');
-                            const isAfter = bam.includes('after');
+                            const marketTiming = (upcomingEarnings.before_after_market ?? '').toLowerCase();
+                            const isBefore = marketTiming.startsWith('before');
+                            const isAfter = marketTiming.startsWith('after');
                             return (
                               <View style={[styles.beatMissBadge, styles.dividendYoYBadgeNeutralBase, { flexDirection: 'row', alignItems: 'center', gap: 4 }]}>
                                 {(isBefore || isAfter) && (
