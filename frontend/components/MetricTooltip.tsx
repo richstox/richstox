@@ -222,6 +222,11 @@ export const TOOLTIP_CONTENT = {
     body: "Either the analyst estimate (Exp) or the reported figure (Act) is missing for this quarter. This can happen for very small companies, recent IPOs, or periods with no analyst coverage.",
     howToRead: "N/A in Exp means no analyst consensus existed. N/A in Act means the result was not captured. Context only, not advice."
   },
+  earningsNoEstimate: {
+    title: "No Analyst Estimate Available",
+    body: "No analyst estimate available for this quarter.",
+    howToRead: "When Exp shows N/A or the badge shows —, analyst consensus was not available for that quarter."
+  },
 
   // ── Dividends tooltips ─────────────────────────────────────────────────────
   dividendsHeader: {

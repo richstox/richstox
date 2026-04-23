@@ -3585,15 +3585,16 @@ export default function StockDetail() {
                         <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
                       </TouchableOpacity>
                       {earningsHistory.slice(0, 8).map((e, i) => {
+                        const hasEstimate = e.estimated_eps != null && e.estimated_eps !== 0;
                         const showBadge = e.show_badge != null
-                          ? (e.show_badge === true && e.surprise_pct != null)
+                          ? (e.show_badge === true && hasEstimate && e.surprise_pct != null)
                           : (
                               e.reported_eps != null &&
-                              e.estimated_eps != null &&
-                              e.estimated_eps !== 0 &&
+                              hasEstimate &&
                               e.surprise_pct != null
                             );
                         const badgeIsPositive = (e.surprise_pct ?? 0) >= 0;
+                        const neutralTooltipKey = hasEstimate ? 'earningsNA' : 'earningsNoEstimate';
                         return (
                           <View key={i} style={styles.earningsRow}>
                             <View style={styles.earningsLeft}>
@@ -3612,9 +3613,9 @@ export default function StockDetail() {
                                   <Text style={styles.earningsEpsLabel}>Exp</Text>
                                 </TouchableOpacity>
                                 <Text style={styles.earningsEpsValue}>
-                                  {'$'}{e.estimated_eps != null
-                                    ? toEU(e.estimated_eps, 2)
-                                    : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNA')}>N/A</Text>}
+                                  {hasEstimate
+                                    ? <>{'$'}{toEU(e.estimated_eps as number, 2)}</>
+                                    : <Text style={styles.earningsNAText} onPress={() => showTooltip('earningsNoEstimate')}>N/A</Text>}
                                 </Text>
                               </View>
                             </View>
@@ -3625,7 +3626,7 @@ export default function StockDetail() {
                                   ? (badgeIsPositive ? styles.beatBadge : styles.missBadge)
                                   : styles.dividendYoYBadgeNeutralBase,
                               ]}
-                              onPress={() => showTooltip(showBadge ? 'earningsBeatMiss' : 'earningsNA')}
+                              onPress={() => showTooltip(showBadge ? 'earningsBeatMiss' : neutralTooltipKey)}
                               accessibilityRole="button"
                               accessibilityLabel="Show beat or miss help"
                             >
