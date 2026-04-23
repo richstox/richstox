@@ -211,6 +211,11 @@ function adminJobLabel(jobName: string): string {
   return labels[jobName] ?? jobName;
 }
 
+function formatPragueDisplay(value?: string | null): string {
+  if (!value) return 'Never';
+  return value.replace('T', ' ').slice(0, 16);
+}
+
 // ─── Dashboard Tab ────────────────────────────────────────────────────────────
 
 interface DashboardProps {
@@ -740,7 +745,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             const healthStatus = job.running ? 'yellow' : jobStatusToHealth(job.status);
             const nextRunText = job.nextRunIso ? formatTime(job.nextRunIso) : (job.nextRun ?? '—');
             const lastRunText = job.lastRunPrague
-              ? String(job.lastRunPrague).replace('T', ' ').slice(0, 16)
+              ? formatPragueDisplay(String(job.lastRunPrague))
               : formatTime(job.lastRunIso ?? undefined);
             return (
               <View key={job.jobName} style={d.calendarJobItem}>
