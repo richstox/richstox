@@ -105,7 +105,7 @@ ADMIN_REPORT_MINUTE = 0
 - **Cost**: 1 API call/day
 - **Persistence**: `upcoming_dividends` collection with one document per visible ticker (upsert/null-safe)
 
-### 7b. Upcoming Earnings Calendar (Mon-Sat 04:55)
+### 8. Upcoming Earnings Calendar (Mon-Sat 04:55)
 - **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_earnings_calendar_for_visible_tickers()`
 - **Purpose**: Fetch date-window upcoming earnings report dates (today..+90d) and persist per visible ticker for UI display. **Independent of Step 2.6** (`_detect_earnings_candidates_eodhd` in `scheduler_service.py`), which solely flags tickers for fundamentals refresh.
 - **API**: `GET https://eodhd.com/api/calendar/earnings?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
@@ -113,26 +113,26 @@ ADMIN_REPORT_MINUTE = 0
 - **Persistence**: `upcoming_earnings` collection with one document per visible ticker (upsert/null-safe)
 - **Served by**: `GET /api/v1/ticker/{ticker}/earnings`
 
-### 8. Backfill All (Mon-Sat 05:00)
+### 9. Backfill All (Mon-Sat 05:00)
 - **File**: `/app/backend/parallel_batch_service.py` → `run_scheduled_backfill_all_prices()`
 - **Purpose**: Full parallel price backfill for tickers without complete history
 - **API**: `GET https://eodhd.com/api/eod/{TICKER}.US`
 - **Cost**: 0-N API calls/day (0 after all tickers backfilled)
 - **Safety**: Rate-limit backoff >30s, error rate >5%, max 4 hours runtime
 
-### 9. Key Metrics (Mon-Sat 05:00)
+### 10. Key Metrics (Mon-Sat 05:00)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Compute per-ticker metrics (52w high/low, etc.)
 - **API**: None (DB-only computation)
 - **Cost**: 0 API calls
 
-### 10. Peer Medians (Mon-Sat 05:30)
+### 11. Peer Medians (Mon-Sat 05:30)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Compute peer/sector median values
 - **API**: None (DB-only computation)
 - **Cost**: 0 API calls
 
-### 11. PAIN Cache (Mon-Sat 05:00)
+### 12. PAIN Cache (Mon-Sat 05:00)
 - **File**: `/app/backend/scheduler_service.py`
 - **Purpose**: Refresh max drawdown cache
 - **API**: None (DB-only computation)

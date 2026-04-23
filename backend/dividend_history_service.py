@@ -41,7 +41,7 @@ UPCOMING_EARNINGS_SOURCE = "eodhd_earnings_calendar"
 # Same 90-day horizon as dividends.
 UPCOMING_EARNINGS_WINDOW_DAYS = 90
 
-_PRAGUE_TZ_NAME = "Europe/Prague"
+PRAGUE_TZ_NAME = "Europe/Prague"
 MIN_PROVIDER_CONSENSUS_COUNT = 2
 PROVIDER_CONSENSUS_RATIO = 0.6
 MAX_FREQUENCY_CONSISTENCY_RATIO = 0.35
@@ -1181,7 +1181,7 @@ async def get_earnings_for_ticker(db, ticker: str) -> Dict[str, Any]:
     ticker_upper = ticker.upper()
     ticker_full = ticker_upper if ticker_upper.endswith(".US") else f"{ticker_upper}.US"
 
-    today_prague = datetime.now(ZoneInfo(_PRAGUE_TZ_NAME)).strftime("%Y-%m-%d")
+    today_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME)).strftime("%Y-%m-%d")
 
     # --- metadata: pull default_currency from tracked_tickers ---
     tracked = await db.tracked_tickers.find_one(
