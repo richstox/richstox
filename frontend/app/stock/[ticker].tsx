@@ -3565,7 +3565,7 @@ export default function StockDetail() {
                       </TouchableOpacity>
                       {earningsHistory.slice(0, 8).map((e, i) => {
                         const showBadge = e.show_badge != null
-                          ? e.show_badge && e.surprise_pct != null
+                          ? (e.show_badge === true && e.surprise_pct != null)
                           : (
                               e.reported_eps != null &&
                               e.estimated_eps != null &&
@@ -3757,7 +3757,7 @@ export default function StockDetail() {
                       {hasAnnualDividendData ? (
                         <>
                           {annualDividendPeriods.map((period) => {
-                            const yoy = getAnnualYoyDisplay(period.total, period.previousTotal, period.isPartial === true, false);
+                            const yoy = getAnnualYoyDisplay(period.total, period.previousTotal, period.isPartial === true);
                             return (
                               <View key={period.key} style={styles.earningsRow}>
                                 <View style={styles.earningsLeft}>
