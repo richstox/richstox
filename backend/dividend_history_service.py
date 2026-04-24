@@ -143,19 +143,18 @@ def _format_split_ratio(
     old_shares: Any = None,
     new_shares: Any = None,
 ) -> Optional[str]:
+    def _stringify(value: float) -> str:
+        return str(int(value)) if value.is_integer() else format(value, ".15g")
+
     if isinstance(split_ratio, str) and split_ratio.strip():
         normalized = split_ratio.strip().replace(" for ", ":").replace("/", ":")
         return normalized
-    numeric_ratio = _safe_float(split_ratio)
-    if numeric_ratio is not None:
-        return str(int(numeric_ratio)) if numeric_ratio.is_integer() else f"{numeric_ratio:.6f}".rstrip("0").rstrip(".")
+    if isinstance(split_ratio, (int, float)) and not isinstance(split_ratio, bool) and split_ratio > 0:
+        return _stringify(float(split_ratio))
     old_value = _safe_float(old_shares)
     new_value = _safe_float(new_shares)
     if old_value is None or new_value is None:
         return None
-
-    def _stringify(value: float) -> str:
-        return str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
 
     return f"{_stringify(old_value)}:{_stringify(new_value)}"
 
