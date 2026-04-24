@@ -1858,17 +1858,16 @@ async def get_splits_for_ticker(db, ticker: str) -> Dict[str, Any]:
 
     bare_ticker = _bare_ticker(ticker_full)
     docs = await db.upcoming_splits.find({}, {"_id": 0}).to_list(length=None)
-    matching_docs = [
-        row for row in docs
+    matching_docs = []
+    for row in docs:
         if _bare_ticker(
             _normalize_ticker_symbol(row.get("ticker") or row.get("code") or row.get("Code"))
-        ) == bare_ticker and _extract_split_date(row)
-    ]
-    doc = min(
-        matching_docs,
-        key=lambda row: _extract_split_date(row) or "9999-99-99",
-        default=None,
-    )
+        ) != bare_ticker:
+            continue
+        split_date = _extract_split_date(row)
+        if split_date:
+            matching_docs.append((split_date, row))
+    doc = min(matching_docs, key=lambda item: item[0], default=(None, None))[1]
 
     upcoming_split = None
     if doc:
