@@ -86,7 +86,13 @@ const formatEventMessage = (title: string, subtitle?: string): string => {
   return `${title}: ${subtitle.split(EVENT_SUBTITLE_SEPARATOR).join(', ')}`;
 };
 
-const formatSplitRatio = (split?: UpcomingSplitInfo): string | null => {
+const formatDividendEventDate = (dateStr: string | null | undefined): string => {
+  if (!dateStr) return 'Unknown';
+  const formatted = formatDateDMY(dateStr);
+  return formatted === 'N/A' ? 'Unknown' : formatted;
+};
+
+const getFormattedSplitRatio = (split?: UpcomingSplitInfo): string | null => {
   if (!split) return null;
   if (typeof split.split_ratio === 'string' && split.split_ratio.trim()) {
     return split.split_ratio.trim();
@@ -1465,12 +1471,6 @@ export default function StockDetail() {
     return `${dd}/${mm}/${yyyy}`;
   };
 
-  const formatDividendDate = (dateStr: string | null | undefined): string => {
-    if (!dateStr) return 'Unknown';
-    const formatted = formatDateDMY(dateStr);
-    return formatted === 'N/A' ? 'Unknown' : formatted;
-  };
-
   const formatDividendAmount = (value: number | null | undefined, currency?: string | null): string => {
     if (typeof value !== 'number' || !Number.isFinite(value)) return 'N/A';
     const normalizedCurrency = resolveDividendCurrency(currency, null);
@@ -1525,9 +1525,9 @@ export default function StockDetail() {
           ),
         );
       }
-      dividendSubtitleParts.push(`Ex ${formatDividendDate(nextDividendInfo.next_ex_date)}`);
+      dividendSubtitleParts.push(`Ex ${formatDividendEventDate(nextDividendInfo.next_ex_date)}`);
       if (nextDividendInfo.next_pay_date) {
-        dividendSubtitleParts.push(`Pay ${formatDividendDate(nextDividendInfo.next_pay_date)}`);
+        dividendSubtitleParts.push(`Pay ${formatDividendEventDate(nextDividendInfo.next_pay_date)}`);
       }
       eventItems.push({
         kind: 'event',
@@ -1545,7 +1545,7 @@ export default function StockDetail() {
         id: `split-${upcomingSplit.split_date}`,
         eventType: 'Split',
         title: 'Upcoming Split',
-        subtitle: formatSplitRatio(upcomingSplit) || 'Upcoming split',
+        subtitle: getFormattedSplitRatio(upcomingSplit) || 'Upcoming split',
         date: upcomingSplit.split_date,
       });
     }
@@ -1565,7 +1565,6 @@ export default function StockDetail() {
     newsArticles,
     dividendDisplayCurrency,
     formatDividendAmount,
-    formatDividendDate,
     formatUpcomingEarningsEstimate,
   ]);
 
@@ -4311,11 +4310,11 @@ export default function StockDetail() {
                                 : '—'}
                             </Text>
                             <Text style={styles.earningsNextTileDate}>
-                              Ex {formatDividendDate(nextDividendInfo.next_ex_date)}
+                              Ex {formatDividendEventDate(nextDividendInfo.next_ex_date)}
                             </Text>
                             {nextDividendInfo.next_pay_date && (
                               <Text style={styles.earningsNextTileDate}>
-                                Pay {formatDividendDate(nextDividendInfo.next_pay_date)}
+                                Pay {formatDividendEventDate(nextDividendInfo.next_pay_date)}
                               </Text>
                             )}
                           </View>
@@ -4381,7 +4380,7 @@ export default function StockDetail() {
                               <View style={styles.paymentRowBody}>
                                 <Text style={styles.paymentAmount}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
                                 <Text style={styles.paymentSubLabel}>
-                                  Pay {d.payment_date ? formatDividendDate(d.payment_date) : '—'} · {exParts.year}
+                                  Pay {d.payment_date ? formatDividendEventDate(d.payment_date) : '—'} · {exParts.year}
                                 </Text>
                               </View>
                             </View>
