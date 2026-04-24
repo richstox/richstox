@@ -41,9 +41,111 @@ import { API_URL } from '../../utils/config';
 // Delay before fetching below-the-fold content (talk posts) to prioritize critical data
 const DEFERRED_FETCH_MS = 800;
 const EARNINGS_NEUTRAL_COLOR = '#6B7280';
-const INITIAL_NEWS_EVENTS_LIMIT = 10;
+const INITIAL_NEWS_EVENTS_LIMIT = 5;
 const NEWS_EVENTS_PAGE_SIZE = 5;
 const NEWS_EVENTS_MAX_TOTAL = 25;
+
+type SentimentCategory = 'positive' | 'negative' | 'neutral';
+
+type AggregateSentiment = {
+  score: number;
+  label: SentimentCategory;
+  color: string;
+};
+
+const getSentimentText = (label?: SentimentCategory | null): string => {
+  if (label === 'positive') return 'Positive';
+  if (label === 'negative') return 'Negative';
+  return 'Neutral';
+};
+
+const getSentimentTone = (label?: SentimentCategory | null) => {
+  if (label === 'positive') {
+    return { backgroundColor: '#D1FAE5', textColor: COLORS.accent };
+  }
+  if (label === 'negative') {
+    return { backgroundColor: '#FEE2E2', textColor: COLORS.danger };
+  }
+  return { backgroundColor: '#FEF3C7', textColor: '#D97706' };
+};
+
+const getSentimentLabelFromScores = (
+  sentiment?: { pos?: number; neg?: number; neu?: number } | null,
+  fallbackLabel?: SentimentCategory | null,
+): SentimentCategory => {
+  const pos = sentiment?.pos ?? 0;
+  const neg = sentiment?.neg ?? 0;
+  if (pos > neg) return 'positive';
+  if (neg > pos) return 'negative';
+  return fallbackLabel ?? 'neutral';
+};
+
+const getMarketTimingLabel = (value?: string | null): string | null => {
+  if (!value) return null;
+  const normalized = value.toLowerCase().replace(/[\s_-]+/g, '');
+  if (normalized.startsWith('before')) return 'Before Market';
+  if (normalized.startsWith('after')) return 'After Market';
+  return null;
+};
+
+const getNewsFallbackKey = (
+  fallbackKey?: string | null,
+  symbol?: string | null,
+): string => {
+  if (fallbackKey && fallbackKey.trim()) return fallbackKey.trim().toUpperCase();
+  if (symbol && symbol.trim()) return symbol.trim().charAt(0).toUpperCase();
+  return '?';
+};
+
+const hashSymbolToColor = (symbol: string) => {
+  const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
+  let hash = 0;
+  for (let i = 0; i < symbol.length; i++) {
+    hash = ((hash << 5) - hash + symbol.charCodeAt(i)) | 0;
+  }
+  return colors[Math.abs(hash) % colors.length];
+};
+
+const NewsLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: string }) => {
+  const [imageError, setImageError] = useState(false);
+
+  if (!logoUrl || imageError) {
+    return (
+      <View style={[newsLogoStyles.fallback, { backgroundColor: hashSymbolToColor(fallbackKey) }]}>
+        <Text style={newsLogoStyles.fallbackText}>{fallbackKey}</Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: logoUrl }}
+      style={newsLogoStyles.logo}
+      onError={() => setImageError(true)}
+    />
+  );
+};
+
+const newsLogoStyles = StyleSheet.create({
+  logo: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: '#F3F4F6',
+  },
+  fallback: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fallbackText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+});
 
 interface CompanyData {
   ticker: string;
@@ -262,12 +364,21 @@ type NextDividendInfo = {
 type NewsArticle = {
   id: string;
   title: string;
+  content?: string | null;
   source?: string | null;
   link?: string | null;
   date?: string | null;
   ticker?: string | null;
+  company_name?: string | null;
   logo_url?: string | null;
   fallback_logo_key?: string | null;
+  sentiment?: {
+    pos?: number;
+    neg?: number;
+    neu?: number;
+  } | null;
+  sentiment_label?: SentimentCategory | null;
+  tags?: string[];
   time_ago?: string | null;
 };
 
@@ -569,6 +680,8 @@ export default function StockDetail() {
   const [newsArticles, setNewsArticles] = useState<NewsArticle[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsVisibleCount, setNewsVisibleCount] = useState(INITIAL_NEWS_EVENTS_LIMIT);
+  const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
+  const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(null);
   const [upcomingSplit, setUpcomingSplit] = useState<UpcomingSplitInfo>(null);
   const scrollViewRef = useRef<ScrollView>(null);
   const [sectionAnchors, setSectionAnchors] = useState<Record<string, number>>({});
@@ -943,10 +1056,13 @@ export default function StockDetail() {
     try {
       setNewsLoading(true);
       const response = await axios.get(`${API_URL}/api/news?tickers=${ticker}&offset=0&limit=${NEWS_EVENTS_MAX_TOTAL}`);
-      setNewsArticles(Array.isArray(response.data?.news) ? response.data.news : []);
+      const articles = Array.isArray(response.data?.news) ? response.data.news : [];
+      setNewsArticles(articles);
+      setAggregateSentiment(response.data?.aggregate_sentiment ?? null);
     } catch (err) {
       console.error('Error fetching ticker news:', err);
       setNewsArticles([]);
+      setAggregateSentiment(null);
     } finally {
       setNewsLoading(false);
     }
@@ -1279,12 +1395,15 @@ export default function StockDetail() {
     const eventItems: NewsEventFeedItem[] = [];
 
     if (upcomingEarnings?.report_date && upcomingEarnings.report_date >= todayPrague) {
+      const marketLabel = getMarketTimingLabel(upcomingEarnings.before_after_market);
       eventItems.push({
         kind: 'event',
         id: `earnings-${upcomingEarnings.report_date}`,
         eventType: 'Earnings',
-        title: formatDateDMY(upcomingEarnings.report_date),
-        subtitle: formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency),
+        title: 'Upcoming Earnings',
+        subtitle: marketLabel
+          ? `${formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency)} • ${marketLabel}`
+          : formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency),
         date: upcomingEarnings.report_date,
         target: 'earnings',
       });
@@ -1295,7 +1414,7 @@ export default function StockDetail() {
         kind: 'event',
         id: `dividend-${nextDividendInfo.next_ex_date}`,
         eventType: 'Dividend',
-        title: formatDateDMY(nextDividendInfo.next_ex_date),
+        title: 'Upcoming Ex-Dividend',
         subtitle: typeof nextDividendInfo.next_dividend_amount === 'number'
           ? formatDividendAmount(
               nextDividendInfo.next_dividend_amount,
@@ -1312,7 +1431,7 @@ export default function StockDetail() {
         kind: 'event',
         id: `split-${upcomingSplit.split_date}`,
         eventType: 'Split',
-        title: formatDateDMY(upcomingSplit.split_date),
+        title: 'Upcoming Split',
         subtitle: upcomingSplit.split_ratio || 'Upcoming split',
         date: upcomingSplit.split_date,
       });
@@ -1857,6 +1976,37 @@ export default function StockDetail() {
   const logoUrl = rawLogoUrl
     ? (rawLogoUrl.startsWith('http') ? rawLogoUrl : `${API_URL}${rawLogoUrl}`)
     : null;
+
+  const resolveNewsLogoUrl = (rawUrl?: string | null): string | undefined => {
+    if (!rawUrl) return logoUrl ?? undefined;
+    return rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`;
+  };
+
+  const formatNewsDate = (dateStr?: string | null): string => {
+    if (!dateStr) return '';
+    const d = dateStr.includes('T')
+      ? new Date(dateStr)
+      : new Date(`${dateStr}T12:00:00Z`);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  };
+
+  const openArticle = (article: NewsArticle) => {
+    setSelectedArticle(article);
+  };
+
+  const closeArticle = () => {
+    setSelectedArticle(null);
+  };
+
+  const openExternalLink = (url: string) => {
+    Linking.openURL(url);
+  };
+
+  const selectedArticleSentimentLabel = selectedArticle
+    ? getSentimentLabelFromScores(selectedArticle.sentiment, selectedArticle.sentiment_label)
+    : 'neutral';
+  const selectedArticleSentimentTone = getSentimentTone(selectedArticleSentimentLabel);
 
   // =============================================================================
   // P5: SUMMARY PILLS LOGIC (Honest Data - never guess)
@@ -4313,12 +4463,27 @@ export default function StockDetail() {
 
         {/* ===== SECTION 8: NEWS & EVENTS ===== */}
         <View 
-          style={[styles.sectionCard]} 
+          style={styles.perfCheckCard} 
           data-testid="news-talk-section"
         >
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionIcon}>📰</Text>
-            <Text style={styles.sectionTitleBold}>News & Events</Text>
+          <View style={styles.newsSectionHeader}>
+            <View style={[styles.sectionHeader, styles.newsSectionTitleWrap]}>
+              <Text style={styles.sectionIcon}>📰</Text>
+              <Text style={styles.sectionTitleBold}>News & Events</Text>
+            </View>
+            {aggregateSentiment && (
+              <View
+                style={[
+                  styles.aggregateSentimentBadge,
+                  { backgroundColor: `${aggregateSentiment.color}20` },
+                ]}
+              >
+                <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
+                <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
+                  {getSentimentText(aggregateSentiment.label)}
+                </Text>
+              </View>
+            )}
           </View>
 
           {newsLoading ? (
@@ -4345,99 +4510,193 @@ export default function StockDetail() {
                       : '#8B5CF6';
                   const isPressable = item.target === 'earnings' || item.target === 'dividends';
                   return (
-                    <View
+                    <TouchableOpacity
                       key={item.id}
                       style={[styles.newsRow, isLastVisible && styles.lastNewsRow]}
+                      onPress={() => {
+                        if (isPressable && item.target) scrollToStockSection(item.target);
+                      }}
+                      disabled={!isPressable}
                     >
-                      <View style={[styles.newsEventIconWrap, { backgroundColor: `${eventColor}15` }]}>
-                        <Ionicons name="calendar-outline" size={16} color={eventColor} />
-                      </View>
+                      <NewsLogo
+                        logoUrl={logoUrl ?? undefined}
+                        fallbackKey={getNewsFallbackKey(null, ticker)}
+                      />
                       <View style={styles.newsContent}>
                         <View style={styles.newsTickerRow}>
-                          <Text style={styles.newsTickerText}>{ticker}</Text>
-                          {isPressable ? (
-                            <TouchableOpacity
-                              style={[styles.eventPill, { backgroundColor: `${eventColor}15` }]}
-                              onPress={() => scrollToStockSection(item.target!)}
-                            >
-                              <Text style={[styles.eventPillText, { color: eventColor }]}>{item.eventType}</Text>
-                            </TouchableOpacity>
-                          ) : (
-                            <View style={[styles.eventPill, { backgroundColor: `${eventColor}15` }]}>
-                              <Text style={[styles.eventPillText, { color: eventColor }]}>{item.eventType}</Text>
-                            </View>
-                          )}
+                          <Text style={styles.newsTickerText}>{ticker.toUpperCase()}</Text>
+                          <View style={[styles.eventPill, { backgroundColor: `${eventColor}15` }]}>
+                            <Text style={[styles.eventPillText, { color: eventColor }]}>{item.eventType}</Text>
+                          </View>
+                          <View style={styles.newsTickerSpacer} />
+                          <Text style={styles.newsMeta}>{formatDateDMY(item.date)}</Text>
                         </View>
                         <Text style={styles.newsTitle} numberOfLines={2}>{item.title}</Text>
-                        <Text style={styles.newsMeta}>{item.subtitle}</Text>
+                        <Text style={styles.newsSubmeta}>{item.subtitle}</Text>
                       </View>
-                    </View>
+                      {isPressable && <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />}
+                    </TouchableOpacity>
                   );
                 }
 
                 const article = item.article;
+                const articleTone = getSentimentTone(article.sentiment_label);
                 return (
                   <TouchableOpacity
                     key={item.id}
                     style={[styles.newsRow, isLastVisible && styles.lastNewsRow]}
-                    onPress={() => article.link && Linking.openURL(article.link)}
-                    disabled={!article.link}
+                    onPress={() => openArticle(article)}
                   >
-                    {article.logo_url ? (
-                      <Image source={{ uri: article.logo_url }} style={styles.newsLogo} resizeMode="contain" />
-                    ) : (
-                      <View style={styles.newsLogoFallback}>
-                        <Text style={styles.newsLogoText}>{(article.fallback_logo_key || ticker.charAt(0) || '?').toUpperCase()}</Text>
-                      </View>
-                    )}
+                    <NewsLogo
+                      logoUrl={resolveNewsLogoUrl(article.logo_url)}
+                      fallbackKey={getNewsFallbackKey(article.fallback_logo_key, article.ticker || ticker)}
+                    />
                     <View style={styles.newsContent}>
                       <View style={styles.newsTickerRow}>
-                        <Text style={styles.newsTickerText}>{article.ticker || ticker}</Text>
+                        <Text style={styles.newsTickerText}>{(article.ticker || ticker).toUpperCase()}</Text>
+                        {article.sentiment_label && (
+                          <View style={[
+                            styles.sentimentBadgeSmall,
+                            { backgroundColor: articleTone.backgroundColor },
+                          ]}>
+                            <Text style={[
+                              styles.sentimentTextSmall,
+                              { color: articleTone.textColor },
+                            ]}>
+                              {getSentimentText(article.sentiment_label)}
+                            </Text>
+                          </View>
+                        )}
+                        <View style={styles.newsTickerSpacer} />
+                        {article.date ? (
+                          <Text style={styles.newsMeta}>{formatNewsDate(article.date)}</Text>
+                        ) : null}
                       </View>
                       <Text style={styles.newsTitle} numberOfLines={2}>{article.title}</Text>
-                      <Text style={styles.newsMeta}>
-                        {article.date ? formatDateDMY(article.date) : 'N/A'} · {article.source || 'Unknown'}
-                      </Text>
                     </View>
+                    <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
                   </TouchableOpacity>
                 );
               });
               })()}
 
-              {(newsVisibleCount < newsEventItems.length || newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT) && (
+              {newsVisibleCount < newsEventItems.length && (
                 <View style={styles.newsActionsRow}>
-                  {newsVisibleCount < newsEventItems.length && (
-                    <TouchableOpacity
-                      style={styles.newsActionButton}
-                      onPress={() => setNewsVisibleCount((prev) => Math.min(prev + NEWS_EVENTS_PAGE_SIZE, newsEventItems.length))}
-                    >
-                      <Text style={styles.newsActionText}>Load more</Text>
-                    </TouchableOpacity>
-                  )}
-                  {newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT && (
-                    <TouchableOpacity
-                      style={styles.newsActionButton}
-                      onPress={() => setNewsVisibleCount(INITIAL_NEWS_EVENTS_LIMIT)}
-                    >
-                      <Text style={styles.newsActionText}>See less</Text>
-                    </TouchableOpacity>
-                  )}
+                  <TouchableOpacity
+                    style={styles.newsActionButton}
+                    onPress={() => setNewsVisibleCount((prev) => Math.min(prev + NEWS_EVENTS_PAGE_SIZE, newsEventItems.length))}
+                  >
+                    <Text style={styles.newsActionText}>Load more</Text>
+                  </TouchableOpacity>
                 </View>
               )}
             </>
           )}
         </View>
-
-        {/* Footer */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            Data from tracked_tickers.fundamentals • {data.lite_mode ? 'Lite' : 'Full'} mode
-          </Text>
-        </View>
         
         {/* Bottom padding for navigation */}
         <View style={{ height: 84 }} />
       </ScrollView>
+
+      <Modal
+        visible={!!selectedArticle}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={closeArticle}
+      >
+        <SafeAreaView style={styles.articleModalContainer}>
+          <View style={styles.articleModalHeader}>
+            <TouchableOpacity onPress={closeArticle} style={styles.articleModalCloseButton}>
+              <Ionicons name="close" size={28} color={COLORS.text} />
+            </TouchableOpacity>
+            <Text style={styles.articleModalHeaderTitle}>Article</Text>
+            <TouchableOpacity
+              onPress={() => selectedArticle?.link && openExternalLink(selectedArticle.link)}
+              style={styles.articleModalExternalButton}
+              disabled={!selectedArticle?.link}
+            >
+              <Ionicons name="open-outline" size={22} color={selectedArticle?.link ? COLORS.primary : COLORS.textMuted} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.articleModalScroll} contentContainerStyle={styles.articleModalScrollContent}>
+            {selectedArticle && (
+              <>
+                <View style={styles.articleHeader}>
+                  <TouchableOpacity
+                    style={styles.articleTickerRow}
+                    onPress={() => {
+                      closeArticle();
+                      if (selectedArticle.ticker) {
+                        router.push(`/stock/${selectedArticle.ticker}`);
+                      }
+                    }}
+                  >
+                    <NewsLogo
+                      logoUrl={resolveNewsLogoUrl(selectedArticle.logo_url)}
+                      fallbackKey={getNewsFallbackKey(selectedArticle.fallback_logo_key, selectedArticle.ticker || ticker)}
+                    />
+                    <View>
+                      <Text style={styles.articleTicker}>{(selectedArticle.ticker || ticker).toUpperCase()}</Text>
+                      <Text style={styles.articleCompany}>{selectedArticle.company_name || company.name}</Text>
+                    </View>
+                  </TouchableOpacity>
+                  {selectedArticle.date ? (
+                    <Text style={styles.articleMeta}>{formatNewsDate(selectedArticle.date)}</Text>
+                  ) : null}
+                </View>
+
+                <Text style={styles.articleTitle}>{selectedArticle.title}</Text>
+
+                {selectedArticle.sentiment && (
+                  <View style={styles.articleSentimentRow}>
+                    <View style={[
+                      styles.articleSentimentBadge,
+                      { backgroundColor: selectedArticleSentimentTone.backgroundColor },
+                    ]}>
+                      <Text style={[
+                        styles.articleSentimentText,
+                        { color: selectedArticleSentimentTone.textColor },
+                      ]}>
+                        {getSentimentText(selectedArticleSentimentLabel)} Sentiment
+                      </Text>
+                    </View>
+                  </View>
+                )}
+
+                {selectedArticle.tags && selectedArticle.tags.length > 0 && (
+                  <View style={styles.articleTagsRow}>
+                    {selectedArticle.tags.slice(0, 5).map((tag, index) => (
+                      <View key={index} style={styles.articleTagBadge}>
+                        <Text style={styles.articleTagText}>{tag}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                <Text
+                  style={styles.articleContent}
+                  accessibilityLabel={selectedArticle.content?.trim()
+                    ? 'Article content'
+                    : 'Article preview unavailable. Open the original article to read the full story'}
+                >
+                  {selectedArticle.content?.trim() || 'Open the original article to read the full story'}
+                </Text>
+
+                {selectedArticle.link && (
+                  <TouchableOpacity
+                    style={styles.readOriginalButton}
+                    onPress={() => openExternalLink(selectedArticle.link)}
+                  >
+                    <Ionicons name="open-outline" size={18} color={COLORS.primary} />
+                    <Text style={styles.readOriginalText}>Read original article</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
       
       {/* P1 UX: Native BottomSheet Tooltip */}
       <MetricTooltip 
@@ -5086,42 +5345,46 @@ const styles = StyleSheet.create({
   
   // News & Events
   newsLoading: { padding: 24, alignItems: 'center' },
-  newsEmpty: { backgroundColor: COLORS.card, borderRadius: 12, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
+  newsSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 },
+  newsSectionTitleWrap: { marginBottom: 0, flex: 1 },
+  aggregateSentimentBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
+    gap: 6,
+  },
+  aggregateSentimentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  aggregateSentimentText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  newsEmpty: { padding: 24, alignItems: 'center' },
   newsEmptyText: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginTop: 8 },
   newsEmptySubtext: { fontSize: 13, color: COLORS.textMuted, textAlign: 'center', marginTop: 4 },
   newsRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     gap: 12,
     paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   lastNewsRow: { borderBottomWidth: 0, paddingBottom: 4 },
-  newsLogo: { width: 32, height: 32, borderRadius: 16, backgroundColor: COLORS.card, marginTop: 2 },
-  newsLogoFallback: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#E0E7FF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
-  newsLogoText: { fontSize: 12, fontWeight: '700', color: COLORS.primary },
-  newsEventIconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 2,
-  },
   newsContent: { flex: 1, gap: 4 },
-  newsTickerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  newsTickerText: { fontSize: 12, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase' },
-  newsTitle: { fontSize: 14, fontWeight: '600', lineHeight: 20, color: COLORS.text },
-  newsMeta: { fontSize: 12, color: COLORS.textMuted, lineHeight: 18 },
+  newsTickerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  newsTickerSpacer: { flex: 1 },
+  newsTickerText: { fontSize: 12, fontWeight: '700', color: COLORS.primary },
+  sentimentBadgeSmall: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  sentimentTextSmall: { fontSize: 10, fontWeight: '700' },
+  newsTitle: { fontSize: 14, fontWeight: '500', lineHeight: 20, color: COLORS.text },
+  newsMeta: { fontSize: 11, color: COLORS.textMuted, marginLeft: 'auto' },
+  newsSubmeta: { fontSize: 12, color: COLORS.textMuted, lineHeight: 18 },
   eventPill: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
   eventPillText: { fontSize: 11, fontWeight: '700' },
   newsActionsRow: { flexDirection: 'row', gap: 10, paddingTop: 12 },
@@ -5129,13 +5392,127 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
+    paddingVertical: 14,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    backgroundColor: COLORS.card,
+    borderColor: `${COLORS.primary}30`,
+    backgroundColor: `${COLORS.primary}10`,
   },
-  newsActionText: { fontSize: 13, fontWeight: '600', color: COLORS.primary },
+  newsActionText: { fontSize: 14, fontWeight: '600', color: COLORS.primary },
+  articleModalContainer: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  articleModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: COLORS.card,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  articleModalCloseButton: {
+    padding: 12,
+    marginLeft: -8,
+  },
+  articleModalHeaderTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  articleModalExternalButton: {
+    padding: 4,
+  },
+  articleModalScroll: {
+    flex: 1,
+  },
+  articleModalScrollContent: {
+    padding: 16,
+  },
+  articleHeader: {
+    marginBottom: 16,
+  },
+  articleTickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 8,
+  },
+  articleTicker: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  articleCompany: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+  },
+  articleMeta: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+  },
+  articleTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.text,
+    lineHeight: 30,
+    marginBottom: 16,
+  },
+  articleSentimentRow: {
+    flexDirection: 'row',
+    marginBottom: 12,
+  },
+  articleSentimentBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+  },
+  articleSentimentText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  articleTagsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  articleTagBadge: {
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  articleTagText: {
+    fontSize: 11,
+    color: '#6B7280',
+  },
+  articleContent: {
+    fontSize: 16,
+    lineHeight: 26,
+    color: COLORS.text,
+    marginBottom: 24,
+  },
+  readOriginalButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+  },
+  readOriginalText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
   
   // ============================================================================
   // NEW: Reality Check Card Styles - MORE COMPACT
