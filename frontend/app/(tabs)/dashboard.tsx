@@ -37,6 +37,68 @@ const COLORS = {
   border: '#E5E7EB',
 };
 
+const HOMEPAGE_EVENT_SEPARATOR = ' • ';
+
+type HomepageEvent = {
+  id: string;
+  ticker: string;
+  company_name: string;
+  logo_url?: string | null;
+  event_type: 'Earnings' | 'Dividend' | 'Split';
+  title: string;
+  date: string;
+  before_after_market?: string | null;
+  estimate?: number | null;
+  currency?: string | null;
+  amount?: number | null;
+  pay_date?: string | null;
+  split_ratio?: string | null;
+};
+
+type DashboardFeedItem =
+  | { kind: 'event'; id: string; event: HomepageEvent }
+  | { kind: 'article'; id: string; article: any };
+
+const formatDashboardDate = (dateStr?: string | null): string => {
+  if (!dateStr) return '';
+  const parsed = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return '';
+  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const formatDashboardCurrency = (value?: number | null, currency?: string | null): string | null => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
+  return `${prefix}${value.toFixed(2)}`;
+};
+
+const getDashboardMarketTimingLabel = (value?: string | null): string | null => {
+  if (!value) return null;
+  const normalized = value.toLowerCase().replace(/[\s_-]+/g, '');
+  if (normalized.startsWith('before')) return 'Before Market';
+  if (normalized.startsWith('after')) return 'After Market';
+  return null;
+};
+
+const formatHomepageEventSubtitle = (event: HomepageEvent): string => {
+  if (event.event_type === 'Earnings') {
+    const details = [
+      formatDashboardCurrency(event.estimate, event.currency) ? `Est. ${formatDashboardCurrency(event.estimate, event.currency)}` : null,
+      getDashboardMarketTimingLabel(event.before_after_market),
+    ].filter(Boolean);
+    return details.join(HOMEPAGE_EVENT_SEPARATOR) || 'Scheduled earnings';
+  }
+  if (event.event_type === 'Dividend') {
+    const details = [
+      formatDashboardCurrency(event.amount, event.currency),
+      event.date ? `Ex ${formatDashboardDate(event.date)}` : null,
+      event.pay_date ? `Pay ${formatDashboardDate(event.pay_date)}` : null,
+    ].filter(Boolean);
+    return details.join(HOMEPAGE_EVENT_SEPARATOR) || 'Upcoming dividend';
+  }
+  return event.split_ratio || 'Upcoming split';
+};
+
 // P31 LOGO GUARANTEE: Component that always renders logo or fallback badge
 // DO NOT REMOVE WITHOUT RICHARD APPROVAL (kurtarichard@gmail.com)
 const NewsLogo = ({ logoUrl, fallbackKey, ticker }: { logoUrl?: string; fallbackKey: string; ticker?: string }) => {
@@ -407,6 +469,25 @@ export default function Dashboard() {
       fetchNews(newsOffset, true);
     }
   };
+
+  const homepageEvents = useMemo<HomepageEvent[]>(
+    () => (Array.isArray(data?.upcoming_events) ? data.upcoming_events : []),
+    [data?.upcoming_events],
+  );
+
+  const newsFeedItems = useMemo<DashboardFeedItem[]>(() => {
+    const eventItems = homepageEvents.map((event) => ({
+      kind: 'event' as const,
+      id: event.id,
+      event,
+    }));
+    const articleItems = newsItems.map((article) => ({
+      kind: 'article' as const,
+      id: article.id,
+      article,
+    }));
+    return [...eventItems, ...articleItems];
+  }, [homepageEvents, newsItems]);
 
   const formatPercent = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   const formatDrawdown = (v: number) => `-${Math.abs(v).toFixed(2)}%`;
@@ -838,7 +919,7 @@ export default function Dashboard() {
           )}
         </View>
 
-        {/* ===== P35: NEWS & SENTIMENT FEED with section icon ===== */}
+        {/* ===== Homepage News & Events feed ===== */}
         <View style={styles.card} data-testid="news-feed">
           {/* Fixed Header - stays visible */}
           <View style={styles.newsHeader}>
@@ -847,8 +928,8 @@ export default function Dashboard() {
                 {/* P35 Item 1: Section icon */}
                 <Ionicons name="newspaper" size={18} color={COLORS.primary} />
                 <View>
-                  <Text style={styles.sectionTitle}>News & Sentiment</Text>
-                  <Text style={styles.newsSubtitle}>Morning refresh from companies you follow</Text>
+                  <Text style={styles.sectionTitle}>News & Events</Text>
+                  <Text style={styles.newsSubtitle}>News plus upcoming followed-ticker events</Text>
                 </View>
               </View>
               {/* Aggregate Sentiment Badge */}
@@ -872,20 +953,24 @@ export default function Dashboard() {
           
           {/* News List */}
 
-          {newsLoading && newsItems.length === 0 ? (
+          {newsLoading && newsItems.length === 0 && homepageEvents.length === 0 ? (
             <View style={styles.newsLoadingContainer}>
               <ActivityIndicator size="small" color={COLORS.primary} />
               <Text style={styles.newsLoadingText}>Loading news...</Text>
             </View>
-          ) : newsItems.length === 0 ? (
-            <Text style={styles.noNewsText}>No news available</Text>
+          ) : newsFeedItems.length === 0 ? (
+            <Text style={styles.noNewsText}>No news or events available</Text>
           ) : (
-            newsItems.slice(0, newsLimit).map((news, index) => (
-              <View 
-                key={news.id}
+            newsFeedItems.slice(0, newsLimit).map((item, index) => {
+              const isEvent = item.kind === 'event';
+              const news = isEvent ? item.event : item.article;
+              const eventSubtitle = isEvent ? formatHomepageEventSubtitle(item.event) : null;
+              return (
+              <View
+                key={item.id}
                 style={[
                   styles.newsRow,
-                  index === Math.min(newsLimit, newsItems.length) - 1 && styles.lastRow
+                  index === Math.min(newsLimit, newsFeedItems.length) - 1 && styles.lastRow
                 ]}
               >
                 {/* P31 LOGO GUARANTEE: Always show logo or fallback badge */}
@@ -903,12 +988,21 @@ export default function Dashboard() {
                 {/* Article content - clickable to open full article */}
                 <TouchableOpacity 
                   style={styles.newsContent}
-                  onPress={() => openArticle(news)}
+                  onPress={() => {
+                    if (isEvent) {
+                      if (news.ticker) router.push(`/stock/${news.ticker}`);
+                      return;
+                    }
+                    openArticle(news);
+                  }}
                 >
                   <View style={styles.newsTickerRow}>
                     <Text style={styles.newsTickerText}>{news.ticker || 'Market'}</Text>
-                    {/* Sentiment Badge */}
-                    {news.sentiment_label && (
+                    {isEvent ? (
+                      <View style={styles.homepageEventBadge}>
+                        <Text style={styles.homepageEventBadgeText}>{item.event.event_type}</Text>
+                      </View>
+                    ) : news.sentiment_label ? (
                       <View style={[
                         styles.sentimentBadgeSmall,
                         news.sentiment_label === 'positive' && { backgroundColor: '#D1FAE5' },
@@ -925,28 +1019,30 @@ export default function Dashboard() {
                            news.sentiment_label === 'negative' ? 'Negative' : 'Neutral'}
                         </Text>
                       </View>
-                    )}
-                    {/* P12: Show only date, not "X min ago" */}
+                    ) : null}
                     <Text style={styles.newsMeta}>
-                      {news.date ? new Date(news.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                      {isEvent ? formatDashboardDate(news.date) : (news.date ? new Date(news.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '')}
                     </Text>
                   </View>
                   <Text style={styles.newsTitle} numberOfLines={2}>{news.title}</Text>
+                  {eventSubtitle ? (
+                    <Text style={styles.homepageEventSubtitle} numberOfLines={2}>{eventSubtitle}</Text>
+                  ) : null}
                 </TouchableOpacity>
                 
                 <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
               </View>
-            ))
+            )})
           )}
 
           {/* Fix 3: Load More + See Less for News */}
-          {newsItems.length > 0 && (
+          {newsFeedItems.length > 0 && (
             <View style={styles.stocksButtonsRow}>
-              {(hasMoreNews || newsLimit < newsItems.length) && (
+              {(hasMoreNews || newsLimit < newsFeedItems.length) && (
                 <TouchableOpacity 
                   style={styles.loadMoreButtonFull}
                   onPress={() => {
-                    if (newsLimit >= newsItems.length) {
+                    if (newsLimit >= newsFeedItems.length) {
                       loadMoreNews();
                     }
                     setNewsLimit(prev => prev + 5);
@@ -957,7 +1053,7 @@ export default function Dashboard() {
                   {newsLoading ? (
                     <ActivityIndicator size="small" color={COLORS.primary} />
                   ) : (
-                    <Text style={styles.loadMoreText}>Load more news</Text>
+                    <Text style={styles.loadMoreText}>Load more news & events</Text>
                   )}
                 </TouchableOpacity>
               )}
@@ -1947,11 +2043,28 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
   },
+  homepageEventBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: '#DBEAFE',
+  },
+  homepageEventBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#2563EB',
+  },
   newsTitle: {
     fontSize: 14,
     fontWeight: '500',
     color: COLORS.text,
     lineHeight: 20,
+  },
+  homepageEventSubtitle: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    lineHeight: 18,
+    marginTop: 4,
   },
   newsMeta: {
     fontSize: 11,

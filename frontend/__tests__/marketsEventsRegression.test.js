@@ -21,6 +21,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const TICKER_FILTER_THRESHOLD = 6;');
     expect(fileContent).toContain('const shouldShowTickerFilter = tickerOptions.length >= TICKER_FILTER_THRESHOLD;');
     expect(fileContent).toContain('placeholder="Search ticker or company"');
+    expect(fileContent).toContain("Platform.OS === 'web' ? ({ outlineStyle: 'none', outlineWidth: 0 } as any) : null");
   });
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {
@@ -34,6 +35,15 @@ describe('Markets events regressions', () => {
   it('formats event dates in DD/MM/YYYY on Markets event cards', () => {
     expect(fileContent).toContain("const formatDateDMY = (dateStr: string | null | undefined): string => {");
     expect(fileContent).toContain('details.push(`Pay ${formatDateDMY(payDate)}`)');
-    expect(fileContent).toContain('<Text style={styles.eventsDateTitle}>{formatDateDMY(selectedDateKey)}</Text>');
+    expect(fileContent).toContain('<Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>');
+  });
+
+  it('supports daily monthly and yearly calendar views and keeps the logo clickable', () => {
+    expect(fileContent).toContain("type CalendarViewMode = 'daily' | 'monthly' | 'yearly';");
+    expect(fileContent).toContain("const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];");
+    expect(fileContent).toContain("calendarView === 'daily' ? (");
+    expect(fileContent).toContain("calendarView === 'monthly' ? (");
+    expect(fileContent).toContain("setSelectedYear(year);");
+    expect(fileContent).toContain("router.push('/(tabs)/dashboard')");
   });
 });
