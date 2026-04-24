@@ -63,11 +63,24 @@ const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const TICKER_FILTER_THRESHOLD = 6;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 
-const EVENT_META: Record<EventType, { label: string; singularLabel: string; color: string; icon: keyof typeof Ionicons.glyphMap }> = {
-  earnings: { label: 'Earnings', singularLabel: 'Earnings', color: '#3B82F6', icon: 'bar-chart-outline' },
-  dividend: { label: 'Dividends', singularLabel: 'Dividend', color: '#10B981', icon: 'cash-outline' },
-  split: { label: 'Splits', singularLabel: 'Split', color: '#F59E0B', icon: 'git-compare-outline' },
-  ipo: { label: 'IPOs', singularLabel: 'IPO', color: '#A855F7', icon: 'rocket-outline' },
+const formatDateDMY = (dateStr: string | null | undefined): string => {
+  if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
+  const d = parseYmd(dateStr);
+  return format(d, 'dd/MM/yyyy');
+};
+
+const EVENT_META: Record<EventType, {
+  label: string;
+  shortLabel: string;
+  legendLabel: string;
+  singularLabel: string;
+  color: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}> = {
+  earnings: { label: 'Earnings', shortLabel: 'E', legendLabel: 'E = Earnings', singularLabel: 'Earnings', color: '#3B82F6', icon: 'bar-chart-outline' },
+  dividend: { label: 'Dividends', shortLabel: 'D', legendLabel: 'D = Dividends', singularLabel: 'Dividend', color: '#10B981', icon: 'cash-outline' },
+  split: { label: 'Splits', shortLabel: 'S', legendLabel: 'S = Splits', singularLabel: 'Split', color: '#F59E0B', icon: 'git-compare-outline' },
+  ipo: { label: 'IPOs', shortLabel: 'IPO', legendLabel: 'IPO = IPOs', singularLabel: 'IPO', color: '#A855F7', icon: 'rocket-outline' },
 };
 
 const getPragueDateString = (value: Date = new Date()): string => {
@@ -105,7 +118,9 @@ const getEventFallbackKey = (ticker?: string | null, companyName?: string | null
   return '?';
 };
 
-const resolveEventLogoUrl = (rawUrl?: string | null): string | undefined => {
+const resolveEventLogoUrl = (rawUrl?: string | null, ticker?: string | null): string | undefined => {
+  const normalizedTicker = ticker?.trim().toUpperCase();
+  if (!rawUrl && normalizedTicker) return `${API_URL}/api/logo/${normalizedTicker}`;
   if (!rawUrl) return undefined;
   return rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`;
 };
@@ -266,7 +281,7 @@ export default function Markets() {
       const details: string[] = [];
       if (event.amount != null) details.push(formatEventAmount(event.amount, event.currency));
       const payDate = typeof event.metadata?.pay_date === 'string' ? event.metadata.pay_date : null;
-      if (payDate && isValidYmd(payDate)) details.push(`Pay ${format(parseYmd(payDate), 'dd MMM yyyy')}`);
+      if (payDate && isValidYmd(payDate)) details.push(`Pay ${formatDateDMY(payDate)}`);
       return details.join(' • ') || (event.description || 'Upcoming dividend');
     }
     if (event.type === 'split') {
@@ -374,7 +389,7 @@ export default function Markets() {
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
             <View>
-              <Text style={styles.eventsDateTitle}>{format(selectedDate, 'EEEE, MMMM d')}</Text>
+              <Text style={styles.eventsDateTitle}>{formatDateDMY(selectedDateKey)}</Text>
               <Text style={styles.sectionSubtitle}>{selectedEvents.length} events</Text>
             </View>
             <Text style={styles.eventsCount}>{selectedEvents.length}</Text>
@@ -393,7 +408,7 @@ export default function Markets() {
                 >
                   <View style={[styles.eventTabDot, { backgroundColor: meta.color }]} />
                   <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive]}>
-                    {meta.label}
+                    {meta.shortLabel}
                   </Text>
                   <View style={[styles.eventTabCountPill, isActive && styles.eventTabCountPillActive]}>
                     <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive]}>
@@ -404,6 +419,9 @@ export default function Markets() {
               );
             })}
           </View>
+          <Text style={styles.eventLegendText}>
+            {EVENT_TYPE_ORDER.map((type) => EVENT_META[type].legendLabel).join(' • ')}
+          </Text>
 
           {shouldShowTickerFilter && (
             <View style={styles.filterSearchWrap}>
@@ -460,7 +478,7 @@ export default function Markets() {
                   activeOpacity={canOpenTicker ? 0.8 : 1}
                 >
                   <EventLogo
-                    logoUrl={resolveEventLogoUrl(event.logo_url)}
+                    logoUrl={resolveEventLogoUrl(event.logo_url, event.ticker)}
                     fallbackKey={fallbackKey}
                   />
                   <View style={styles.eventContent}>
@@ -645,6 +663,13 @@ const styles = StyleSheet.create({
   },
   eventTabCountTextActive: {
     color: '#2563EB',
+  },
+  eventLegendText: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    lineHeight: 16,
+    marginTop: -6,
+    marginBottom: 14,
   },
   filterSearchWrap: {
     flexDirection: 'row',

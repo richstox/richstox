@@ -33,6 +33,8 @@ describe('News & Events regressions', () => {
   it('keeps split events enriched with the split ratio', () => {
     expect(fileContent).toContain("title: 'Upcoming Split'");
     expect(fileContent).toContain("subtitle: getFormattedSplitRatio(upcomingSplit) || 'Upcoming split'");
+    expect(fileContent).toContain('typeof split.old_shares === \'number\'');
+    expect(fileContent).toContain('typeof split.new_shares === \'number\'');
   });
 
   it('renders event subtitles into the News & Events card text', () => {
