@@ -717,10 +717,8 @@ export default function StockDetail() {
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsHasMore, setNewsHasMore] = useState(false);
   const [newsVisibleCount, setNewsVisibleCount] = useState(INITIAL_NEWS_EVENTS_LIMIT);
-  const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(null);
   const [upcomingSplit, setUpcomingSplit] = useState<UpcomingSplitInfo>(null);
-  const newsArticlesRef = useRef<NewsArticle[]>([]);
   const scrollViewRef = useRef<ScrollView>(null);
 
   // Valuation details expandable state
@@ -1089,15 +1087,55 @@ export default function StockDetail() {
     }, [ticker, checkIfFollowed])
   );
 
-  useEffect(() => {
-    newsArticlesRef.current = newsArticles;
-  }, [newsArticles]);
+  const mapTickerNewsArticles = useCallback((rawArticles: TickerNewsApiArticle[], offset: number): NewsArticle[] => {
+    return rawArticles.map((article, index) => ({
+      id:
+        article.article_id ||
+        article.source_link ||
+        article.link ||
+        `${ticker}-fallback-${article.published_at ?? article.date ?? 'unknown'}-${offset + index}`,
+      title: article.title || 'Untitled',
+      content: article.content ?? null,
+      source: article.source ?? null,
+      link: article.source_link ?? article.link ?? null,
+      date: article.published_at ?? article.date ?? null,
+      ticker,
+      company_name: data?.company?.name ?? null,
+      logo_url: null,
+      fallback_logo_key: ticker.charAt(0).toUpperCase(),
+      sentiment: article.sentiment ?? null,
+      sentiment_label: article.sentiment_label ?? 'neutral',
+      tags: article.tags ?? [],
+      time_ago: article.time_ago ?? null,
+    }));
+  }, [ticker, data?.company?.name]);
 
-  const fetchNewsArticles = useCallback(async (append = false) => {
+  const fetchInitialNews = useCallback(async () => {
     try {
       setNewsLoading(true);
-      const currentArticles = append ? newsArticlesRef.current : [];
-      const offset = append ? currentArticles.length : 0;
+      const response = await axios.get(`${API_URL}/api/news/ticker/${ticker}`, {
+        params: {
+          offset: 0,
+          limit: NEWS_ARTICLES_FETCH_PAGE_SIZE,
+        },
+      });
+      const rawArticles: TickerNewsApiArticle[] = Array.isArray(response.data?.articles) ? response.data.articles : [];
+      setNewsArticles(mapTickerNewsArticles(rawArticles, 0));
+      setNewsHasMore(Boolean(response.data?.has_more));
+    } catch (err) {
+      console.error('Error fetching ticker news:', err);
+      setNewsArticles([]);
+      setNewsHasMore(false);
+    } finally {
+      setNewsLoading(false);
+    }
+  }, [ticker, mapTickerNewsArticles]);
+
+  const fetchMoreNews = useCallback(async () => {
+    if (newsLoading) return;
+    try {
+      setNewsLoading(true);
+      const offset = newsArticles.length;
       const response = await axios.get(`${API_URL}/api/news/ticker/${ticker}`, {
         params: {
           offset,
@@ -1105,40 +1143,18 @@ export default function StockDetail() {
         },
       });
       const rawArticles: TickerNewsApiArticle[] = Array.isArray(response.data?.articles) ? response.data.articles : [];
-      const incomingArticles: NewsArticle[] = rawArticles.map((article, index: number) => ({
-        id: article.article_id || `${ticker}-${offset + index}`,
-        title: article.title || 'Untitled',
-        content: article.content ?? null,
-        source: article.source ?? null,
-        link: article.source_link ?? article.link ?? null,
-        date: article.published_at ?? article.date ?? null,
-        ticker,
-        company_name: data?.company?.name ?? null,
-        logo_url: null,
-        fallback_logo_key: ticker.charAt(0).toUpperCase(),
-        sentiment: article.sentiment ?? null,
-        sentiment_label: article.sentiment_label ?? 'neutral',
-        tags: article.tags ?? [],
-        time_ago: article.time_ago ?? null,
-      }));
-      const existingIds = new Set(currentArticles.map((article) => article.id));
-      const nextArticles = append
-        ? [...currentArticles, ...incomingArticles.filter((article) => !existingIds.has(article.id))]
-        : incomingArticles;
-      setNewsArticles(nextArticles);
-      setAggregateSentiment(getAggregateSentimentFromArticles(nextArticles));
+      const incomingArticles = mapTickerNewsArticles(rawArticles, offset);
+      setNewsArticles((prev) => {
+        const existingIds = new Set(prev.map((article) => article.id));
+        return [...prev, ...incomingArticles.filter((article) => !existingIds.has(article.id))];
+      });
       setNewsHasMore(Boolean(response.data?.has_more));
     } catch (err) {
-      console.error('Error fetching ticker news:', err);
-      if (!append) {
-        setNewsArticles([]);
-        setAggregateSentiment(null);
-        setNewsHasMore(false);
-      }
+      console.error('Error fetching more ticker news:', err);
     } finally {
       setNewsLoading(false);
     }
-  }, [ticker, data?.company?.name]);
+  }, [ticker, newsArticles.length, newsLoading, mapTickerNewsArticles]);
 
   const fetchUpcomingSplit = useCallback(async () => {
     try {
@@ -1217,14 +1233,13 @@ export default function StockDetail() {
     if (!ticker) return;
     setNewsArticles([]);
     setNewsHasMore(false);
-    setAggregateSentiment(null);
     setNewsVisibleCount(INITIAL_NEWS_EVENTS_LIMIT);
     const timer = setTimeout(() => {
-      fetchNewsArticles();
+      fetchInitialNews();
       fetchUpcomingSplit();
     }, DEFERRED_FETCH_MS);
     return () => clearTimeout(timer);
-  }, [ticker, fetchNewsArticles, fetchUpcomingSplit]);
+  }, [ticker, fetchInitialNews, fetchUpcomingSplit]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -1234,7 +1249,7 @@ export default function StockDetail() {
     fetchChartData(priceRange);
     fetchDividends();
     fetchEarningsData();
-    fetchNewsArticles();
+    fetchInitialNews();
     fetchUpcomingSplit();
   };
   
@@ -1520,7 +1535,12 @@ export default function StockDetail() {
     formatUpcomingEarningsEstimate,
   ]);
 
-  const shouldFetchMoreNews =
+  const aggregateSentiment = useMemo(
+    () => getAggregateSentimentFromArticles(newsArticles),
+    [newsArticles],
+  );
+
+  const shouldFetchMoreNews = () =>
     newsVisibleCount + NEWS_EVENTS_PAGE_SIZE > newsEventItems.length && newsHasMore && !newsLoading;
 
   type AnnualDividendPeriod = {
@@ -4569,7 +4589,7 @@ export default function StockDetail() {
                         ? COLORS.accent
                         : '#8B5CF6';
                     const eventText = item.subtitle
-                      ? `${item.title}: ${item.subtitle.replaceAll(EVENT_SUBTITLE_SEPARATOR, ', ')}`
+                      ? `${item.title}: ${item.subtitle.split(EVENT_SUBTITLE_SEPARATOR).join(', ')}`
                       : item.title;
                     return (
                       <View
@@ -4641,8 +4661,8 @@ export default function StockDetail() {
                   <TouchableOpacity
                     style={styles.newsActionButton}
                     onPress={() => {
-                      if (shouldFetchMoreNews) {
-                        fetchNewsArticles(true);
+                      if (shouldFetchMoreNews()) {
+                        fetchMoreNews();
                       }
                       setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
                     }}
