@@ -55,7 +55,8 @@ describe('P4 Regression: Single Vertical Scroll Layout', () => {
       'financials-section',      // 5. Financials
       'earnings-section',        // 6. Earnings & Dividends
       'insider-section',         // 7. Insider Transactions
-      'news-talk-section',       // 8. News & Talk
+      'news-talk-section',       // 8. News & Events
+      'calculator-section',      // 9. Calculators
     ];
     
     it('should have all required sections with data-testid', () => {
@@ -112,6 +113,19 @@ describe('P4 Regression: Single Vertical Scroll Layout', () => {
       expect(fileContent).toContain('No insider activity data');
     });
     
+  });
+
+  describe('Calculators Section Placement', () => {
+    it('should render calculators as the final ticker detail section', () => {
+      const calculatorPosition = fileContent.indexOf('data-testid="calculator-section"');
+      const newsPosition = fileContent.indexOf('data-testid="news-talk-section"');
+      expect(calculatorPosition).toBeGreaterThan(newsPosition);
+    });
+
+    it('should render a dedicated calculators header icon', () => {
+      expect(fileContent).toContain('<Text style={styles.sectionIcon}>🧮</Text>');
+      expect(fileContent).toContain('<Text style={styles.sectionTitleBold}>Calculators</Text>');
+    });
   });
   
 });

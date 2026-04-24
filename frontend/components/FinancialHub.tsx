@@ -1400,7 +1400,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
+    paddingHorizontal: 0,
     paddingBottom: 8,
   },
   periodSwitcher: {
@@ -1439,7 +1439,7 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
   },
   chartSection: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 0,
     paddingBottom: 16,
   },
   chartHeader: {
@@ -1566,7 +1566,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   tableSection: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 0,
     paddingBottom: 16,
   },
   tableTitle: {
