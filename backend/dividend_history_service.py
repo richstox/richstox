@@ -1756,16 +1756,20 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
         ipos_task,
     )
 
-    tickers_for_metadata = {
-        _bare_ticker(row.get("ticker"))
-        for row in [*earnings_rows, *dividend_rows, *split_rows, *ipo_rows]
-        if _bare_ticker(row.get("ticker"))
-    }
+    ticker_variants = set()
+    for row in [*earnings_rows, *dividend_rows, *split_rows, *ipo_rows]:
+        raw_ticker = (row.get("ticker") or "").upper().strip()
+        bare_ticker = _bare_ticker(raw_ticker)
+        if not bare_ticker:
+            continue
+        if raw_ticker:
+            ticker_variants.add(raw_ticker)
+        ticker_variants.add(f"{bare_ticker}.US")
+        ticker_variants.add(f"{bare_ticker}.CC")
     fundamentals_rows = []
-    if tickers_for_metadata:
-        ticker_variants = [f"{ticker}.US" for ticker in tickers_for_metadata]
+    if ticker_variants:
         fundamentals_rows = await db.company_fundamentals_cache.find(
-            {"ticker": {"$in": ticker_variants}},
+            {"ticker": {"$in": list(ticker_variants)}},
             {"_id": 0, "ticker": 1, "name": 1, "logo_url": 1},
         ).to_list(length=None)
 

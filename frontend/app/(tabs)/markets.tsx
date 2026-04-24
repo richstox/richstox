@@ -110,6 +110,8 @@ const resolveEventLogoUrl = (rawUrl?: string | null): string | undefined => {
   return rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`;
 };
 
+const isValidYmd = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value);
+
 const EventLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: string }) => {
   const [imageError, setImageError] = useState(false);
 
@@ -198,12 +200,16 @@ export default function Markets() {
   }, [selectedEvents]);
 
   useEffect(() => {
+    setTickerFilter('');
+  }, [selectedDateKey]);
+
+  useEffect(() => {
     const nextType = EVENT_TYPE_ORDER.find((type) => selectedEventCounts[type] > 0) ?? 'earnings';
     if (selectedEventCounts[selectedEventType] === 0 && nextType !== selectedEventType) {
       setSelectedEventType(nextType);
+      setTickerFilter('');
     }
-    setTickerFilter('');
-  }, [selectedDateKey, selectedEventCounts, selectedEventType]);
+  }, [selectedEventCounts, selectedEventType]);
 
   const typeFilteredEvents = useMemo(
     () => selectedEvents.filter((event) => event.type === selectedEventType),
@@ -256,7 +262,7 @@ export default function Markets() {
       const details: string[] = [];
       if (event.amount != null) details.push(formatEventAmount(event.amount, event.currency));
       const payDate = typeof event.metadata?.pay_date === 'string' ? event.metadata.pay_date : null;
-      if (payDate) details.push(`Pay ${format(parseYmd(payDate), 'dd MMM yyyy')}`);
+      if (payDate && isValidYmd(payDate)) details.push(`Pay ${format(parseYmd(payDate), 'dd MMM yyyy')}`);
       return details.join(' • ') || (event.description || 'Upcoming dividend');
     }
     if (event.type === 'split') {

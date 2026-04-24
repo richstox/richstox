@@ -52,7 +52,9 @@ class _LookupCollection:
         self._docs = list(docs)
 
     def find(self, query, projection=None):
-        (field, lookup), = query.items()
+        items = list(query.items())
+        assert len(items) == 1, "Expected a single-field lookup query"
+        field, lookup = items[0]
         allowed = set(lookup.get("$in", []))
         docs = [doc for doc in self._docs if doc.get(field) in allowed]
         if projection and any(key != "_id" for key in projection):
