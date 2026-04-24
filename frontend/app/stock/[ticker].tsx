@@ -1358,12 +1358,12 @@ export default function StockDetail() {
     };
   };
 
-  const showAnnualEarningsBreakdown = useCallback((period: AnnualEarningsPeriod) => {
+  const showAnnualEarningsBreakdown = (period: AnnualEarningsPeriod) => {
     void dialog.alert(
       `Annual Earnings · ${period.label}`,
       `Beat ${period.beatCount}, Miss ${period.missCount}, Other ${period.otherCount}`,
     );
-  }, [dialog]);
+  };
 
   const getDividendToneStyle = (tone: 'positive' | 'negative' | 'neutral') => {
     if (tone === 'positive') return styles.dividendValuePositive;
