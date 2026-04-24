@@ -2,11 +2,7 @@
  * WebRails – desktop side-rail wrapper (web-only).
  *
  * On viewports wider than the app shell (430px), the extra horizontal space
- * becomes left/right "rails".  Content of the rails depends on the user's
- * subscription tier:
- *
- *   FREE  → may show ads, upgrade promos, or branded surfaces
- *   PRO / PRO+  → clean / branded empty rails (no ads)
+ * becomes left/right "rails".
  *
  * On native (iOS / Android) this component is a no-op pass-through.
  *
@@ -17,17 +13,16 @@
  */
 
 import React from 'react';
-import { View, Text, StyleSheet, Platform, useWindowDimensions } from 'react-native';
+import { View, StyleSheet, Platform, useWindowDimensions } from 'react-native';
 import {
   APP_SHELL_MAX_WIDTH,
   RAIL_BACKGROUND,
   RAIL_BREAKPOINT,
-  SPACING,
 } from '../constants/layout';
 
 interface WebRailsProps {
   children: React.ReactNode;
-  /** 'free' | 'pro' | 'pro_plus' – drives rail content visibility. */
+  /** Retained for compatibility while tier behavior is disabled. */
   subscriptionTier?: 'free' | 'pro' | 'pro_plus';
 }
 
@@ -41,12 +36,12 @@ export default function WebRails({ children, subscriptionTier = 'free' }: WebRai
     return <>{children}</>;
   }
 
-  return <WebRailsInner subscriptionTier={subscriptionTier}>{children}</WebRailsInner>;
+  void subscriptionTier;
+  return <WebRailsInner>{children}</WebRailsInner>;
 }
 
 function WebRailsInner({
   children,
-  subscriptionTier,
 }: WebRailsProps) {
   const { width: windowWidth } = useWindowDimensions();
 
@@ -62,7 +57,6 @@ function WebRailsInner({
   React.useEffect(() => { setMounted(true); }, []);
 
   const showRails = mounted && windowWidth >= RAIL_BREAKPOINT;
-  const isPaid = subscriptionTier === 'pro' || subscriptionTier === 'pro_plus';
 
   if (!showRails) {
     // Narrow web — no rails, shell fills viewport.
@@ -72,29 +66,13 @@ function WebRailsInner({
   return (
     <View style={railStyles.wrapper}>
       {/* ── Left rail ── */}
-      <View style={railStyles.rail}>
-        {!isPaid && <RailPromoPlaceholder side="left" />}
-      </View>
+      <View style={railStyles.rail} />
 
       {/* ── App shell (children rendered by parent) ── */}
       <View style={railStyles.center}>{children}</View>
 
       {/* ── Right rail ── */}
-      <View style={railStyles.rail}>
-        {!isPaid && <RailPromoPlaceholder side="right" />}
-      </View>
-    </View>
-  );
-}
-
-/**
- * Placeholder for future ad / promo surfaces.
- * Replace with real ad SDK or promo component later.
- */
-function RailPromoPlaceholder({ side }: { side: 'left' | 'right' }) {
-  return (
-    <View style={railStyles.promoBox}>
-      <Text style={railStyles.promoText}>Ad / Promo</Text>
+      <View style={railStyles.rail} />
     </View>
   );
 }
@@ -109,28 +87,13 @@ const railStyles = StyleSheet.create({
   },
   rail: {
     flex: 1,
-    alignItems: 'center',
+    alignItems: 'stretch',
     justifyContent: 'flex-start',
-    paddingTop: 120,
     // Rails MUST NOT have a fixed width; they take remaining space.
   },
   center: {
     width: '100%',
     maxWidth: APP_SHELL_MAX_WIDTH,
     flexShrink: 0,
-  },
-  promoBox: {
-    width: 140,
-    padding: SPACING.lg,
-    borderRadius: 12,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    opacity: 0.6,
-  },
-  promoText: {
-    fontSize: 12,
-    color: '#95A5A6',
-    fontStyle: 'italic',
   },
 });

@@ -171,44 +171,9 @@ async def create_talk_post(
 ) -> Dict[str, Any]:
     """
     Create a new talk post with support for multiple symbols.
-    
-    Rate limits by subscription tier:
-    - FREE: 5 posts/day
-    - PRO/PRO+: 100 posts/day (practically unlimited)
-    
+
     Requires authentication. Returns 401 if not logged in.
     """
-    # Get user subscription tier
-    user = await db.users.find_one({"user_id": user_id}, {"subscription_tier": 1})
-    subscription_tier = user.get("subscription_tier", "free") if user else "free"
-    
-    # Set rate limit based on tier
-    if subscription_tier in ["pro", "pro_plus"]:
-        max_posts_per_day = 100  # Practically unlimited for PRO users
-    else:
-        max_posts_per_day = 5   # FREE users
-    
-    # Check rate limit
-    today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    posts_today = await db.talk_posts.count_documents({
-        "user_id": user_id,
-        "created_at": {"$gte": today_start}
-    })
-    
-    if posts_today >= max_posts_per_day:
-        if subscription_tier == "free":
-            return {
-                "success": False,
-                "error": "rate_limit",
-                "message": f"Free users can post {max_posts_per_day} times per day. Upgrade to PRO for unlimited posts!",
-            }
-        else:
-            return {
-                "success": False,
-                "error": "rate_limit",
-                "message": f"Maximum {max_posts_per_day} posts per day reached",
-            }
-    
     # Validate text
     text = text.strip()
     if len(text) < 10:

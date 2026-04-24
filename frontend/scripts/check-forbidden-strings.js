@@ -1,20 +1,22 @@
 #!/usr/bin/env node
 /**
- * BINDING: Frontend Forbidden Strings Guard
- * ==========================================
- * This script MUST run in CI and locally on build/test.
- * It fails if any frontend source file contains forbidden patterns
- * that indicate direct external API calls.
+ * BINDING: Frontend External API Guard
+ * ====================================
+ * This script MUST run in CI and locally on build/lint.
+ * Frontend source files MUST NEVER call external providers directly.
+ * All third-party data must be preloaded into MongoDB and exposed only
+ * through internal backend endpoints.
  * 
  * FORBIDDEN PATTERNS:
  * - api_token= (EODHD API token parameter)
  * - X-RapidAPI (RapidAPI headers)
- * - fetch("https://eodhd.com/api (direct API calls)
- * - httpx.get("https://eodhd (direct API calls)
+ * - fetch("https://...") / axios.get("https://...") in frontend runtime code
+ * - Any direct provider-specific EODHD/CDN access
  * - Logo/CDN URLs pointing to eodhd.com or eodhistoricaldata.com
  * 
  * ALLOWED (not flagged):
  * - UI text mentions of "EODHD" in admin pipeline docs (apiUrl text fields)
+ * - Internal backend calls via API_URL
  * - Backend files (this only checks frontend)
  * 
  * Exit codes:
@@ -25,7 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// Forbidden patterns that indicate direct API calls
+// Forbidden patterns that indicate direct external API calls
 const FORBIDDEN_PATTERNS = [
   {
     pattern: /api_token\s*[=:]/gi,
@@ -35,6 +37,16 @@ const FORBIDDEN_PATTERNS = [
   {
     pattern: /X-RapidAPI/gi,
     description: 'RapidAPI header',
+    allowedContexts: []
+  },
+  {
+    pattern: /fetch\s*\(\s*["'`]https?:\/\//gi,
+    description: 'Direct fetch to absolute external URL',
+    allowedContexts: []
+  },
+  {
+    pattern: /axios\s*\.\s*(get|post|put|delete|patch)\s*\(\s*["'`]https?:\/\//gi,
+    description: 'Direct axios call to absolute external URL',
     allowedContexts: []
   },
   {
@@ -152,7 +164,7 @@ function checkFile(filepath) {
 
 function main() {
   console.log('========================================');
-  console.log('FRONTEND FORBIDDEN STRINGS GUARD');
+  console.log('FRONTEND EXTERNAL API GUARD');
   console.log('========================================\n');
   
   const frontendRoot = path.resolve(__dirname, '..');
@@ -167,12 +179,12 @@ function main() {
   }
   
   if (allViolations.length === 0) {
-    console.log('✅ PASS: No forbidden strings found in frontend source files\n');
+    console.log('✅ PASS: No direct external API calls found in frontend source files\n');
     console.log('Checked directories:', FRONTEND_DIRS.join(', '));
     console.log('Forbidden patterns checked:', FORBIDDEN_PATTERNS.length);
     process.exit(0);
   } else {
-    console.log('❌ FAIL: Forbidden strings detected!\n');
+    console.log('❌ FAIL: External API rule violations detected!\n');
     console.log('VIOLATIONS:');
     console.log('-'.repeat(60));
     

@@ -4,13 +4,14 @@
   "version": "1.0.0",
   "scripts": {
     "dev": "expo start",
-    "build": "npx expo export -p web && node scripts/copy-favicons.js && node scripts/verify-favicons.js",
+    "guard:no-external-api": "node scripts/check-forbidden-strings.js",
+    "build": "npm run guard:no-external-api && npx expo export -p web && node scripts/copy-favicons.js && node scripts/verify-favicons.js",
     "start": "npx serve -s dist",
     "reset-project": "node ./scripts/reset-project.js",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "npm run guard:no-external-api && expo lint"
   },
   "dependencies": {
     "@babel/runtime": "^7.20.6",

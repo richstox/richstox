@@ -1756,6 +1756,33 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
         ipos_task,
     )
 
+    ticker_variants = set()
+    for row in [*earnings_rows, *dividend_rows, *split_rows, *ipo_rows]:
+        raw_ticker = (row.get("ticker") or "").upper().strip()
+        bare_ticker = _bare_ticker(raw_ticker)
+        if not bare_ticker:
+            continue
+        if raw_ticker:
+            ticker_variants.add(raw_ticker)
+        ticker_variants.add(f"{bare_ticker}.US")
+        ticker_variants.add(f"{bare_ticker}.CC")
+    fundamentals_rows = []
+    if ticker_variants:
+        fundamentals_rows = await db.company_fundamentals_cache.find(
+            {"ticker": {"$in": list(ticker_variants)}},
+            {"_id": 0, "ticker": 1, "name": 1, "logo_url": 1},
+        ).to_list(length=None)
+
+    fundamentals_by_ticker: Dict[str, Dict[str, Any]] = {}
+    for row in fundamentals_rows:
+        ticker = _bare_ticker(row.get("ticker"))
+        if not ticker:
+            continue
+        fundamentals_by_ticker[ticker] = {
+            "company_name": row.get("name"),
+            "logo_url": row.get("logo_url"),
+        }
+
     events: List[Dict[str, Any]] = []
 
     for row in earnings_rows:
@@ -1763,10 +1790,13 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
         report_date = _parse_date_ymd(row.get("report_date"))
         if not report_date:
             continue
+        company_meta = fundamentals_by_ticker.get(ticker or "", {})
         events.append({
             "date": report_date,
             "type": "earnings",
             "ticker": ticker,
+            "company_name": company_meta.get("company_name"),
+            "logo_url": company_meta.get("logo_url"),
             "label": f"{ticker} earnings" if ticker else "Earnings",
             "description": row.get("before_after_market") or "Scheduled earnings",
             "estimate": row.get("estimate"),
@@ -1782,10 +1812,13 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
         ex_date = _parse_date_ymd(row.get("next_ex_date"))
         if not ex_date:
             continue
+        company_meta = fundamentals_by_ticker.get(ticker or "", {})
         events.append({
             "date": ex_date,
             "type": "dividend",
             "ticker": ticker,
+            "company_name": company_meta.get("company_name"),
+            "logo_url": company_meta.get("logo_url"),
             "label": f"{ticker} ex-dividend" if ticker else "Dividend",
             "description": row.get("event_type_label") or "Upcoming dividend",
             "amount": row.get("next_dividend_amount"),
@@ -1801,10 +1834,13 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
         split_date = _parse_date_ymd(row.get("split_date"))
         if not split_date:
             continue
+        company_meta = fundamentals_by_ticker.get(ticker or "", {})
         events.append({
             "date": split_date,
             "type": "split",
             "ticker": ticker,
+            "company_name": company_meta.get("company_name"),
+            "logo_url": company_meta.get("logo_url"),
             "label": f"{ticker} split" if ticker else "Split",
             "description": row.get("split_ratio") or "Upcoming split",
             "ratio": row.get("split_ratio"),
@@ -1816,10 +1852,13 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
         if not ipo_date:
             continue
         ticker = _bare_ticker(row.get("ticker"))
+        company_meta = fundamentals_by_ticker.get(ticker or "", {})
         events.append({
             "date": ipo_date,
             "type": "ipo",
             "ticker": ticker,
+            "company_name": company_meta.get("company_name") or row.get("description"),
+            "logo_url": company_meta.get("logo_url"),
             "label": row.get("description") or (f"{ticker} IPO" if ticker else "IPO"),
             "description": row.get("exchange") or "Upcoming IPO",
             "amount": row.get("ipo_price"),
