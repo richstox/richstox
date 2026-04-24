@@ -128,3 +128,61 @@ async def test_sync_upcoming_ipos_accepts_start_date_payload(monkeypatch):
     assert db.upcoming_ipos.inserted[0]["price_to"] == 6
     assert db.upcoming_ipos.inserted[0]["offer_price"] == 0
     assert db.upcoming_ipos.inserted[0]["deal_type"] == "Expected"
+
+
+@pytest.mark.asyncio
+async def test_sync_upcoming_splits_accepts_nested_data_and_splitratio_alias(monkeypatch):
+    payload = {
+        "data": {
+            "splits": [
+                {
+                    "Symbol": "CUE",
+                    "Date": "2026-04-24",
+                    "SplitRatio": "3:2",
+                }
+            ]
+        }
+    }
+    db = _Db(tracked_tickers=["CUE.US"])
+
+    monkeypatch.setattr(svc, "EODHD_API_KEY", "test-key")
+    monkeypatch.setattr(svc.httpx, "AsyncClient", lambda *args, **kwargs: _FakeAsyncClient(payload))
+
+    result = await svc.sync_upcoming_splits_calendar_for_visible_tickers(db)
+
+    assert result["tickers_with_upcoming"] == 1
+    assert db.upcoming_splits.docs["CUE.US"]["split_ratio"] == "3:2"
+
+
+@pytest.mark.asyncio
+async def test_sync_upcoming_ipos_accepts_nested_data_and_symbol_company_price(monkeypatch):
+    payload = {
+        "data": {
+            "ipos": [
+                {
+                    "Symbol": "RIKU",
+                    "company": "RIKU DINING GROUP Ltd",
+                    "date": "2026-04-24",
+                    "exchange": "NASDAQ",
+                    "price": 5,
+                    "currency": "USD",
+                    "amount": 25000000,
+                }
+            ]
+        }
+    }
+    db = _Db()
+
+    monkeypatch.setattr(svc, "EODHD_API_KEY", "test-key")
+    monkeypatch.setattr(svc.httpx, "AsyncClient", lambda *args, **kwargs: _FakeAsyncClient(payload))
+
+    result = await svc.sync_upcoming_ipos_calendar(db)
+
+    assert result["records_written"] == 1
+    assert db.upcoming_ipos.inserted[0]["ticker"] == "RIKU.US"
+    assert db.upcoming_ipos.inserted[0]["ipo_date"] == "2026-04-24"
+    assert db.upcoming_ipos.inserted[0]["name"] == "RIKU DINING GROUP Ltd"
+    assert db.upcoming_ipos.inserted[0]["description"] == "RIKU DINING GROUP Ltd"
+    assert db.upcoming_ipos.inserted[0]["ipo_price"] == 5
+    assert db.upcoming_ipos.inserted[0]["currency"] == "USD"
+    assert db.upcoming_ipos.inserted[0]["amount"] == 25000000

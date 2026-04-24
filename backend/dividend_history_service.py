@@ -23,6 +23,7 @@ import asyncio
 import os
 import logging
 import re
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 from collections import Counter
@@ -143,18 +144,30 @@ def _format_split_ratio(
     old_shares: Any = None,
     new_shares: Any = None,
 ) -> Optional[str]:
+    def _stringify(value: Any) -> Optional[str]:
+        try:
+            normalized = format(Decimal(str(value)).normalize(), "f")
+        except (InvalidOperation, ValueError):
+            return None
+        if "." in normalized:
+            normalized = normalized.rstrip("0").rstrip(".")
+        return normalized or "0"
+
     if isinstance(split_ratio, str) and split_ratio.strip():
         normalized = split_ratio.strip().replace(" for ", ":").replace("/", ":")
         return normalized
+    if isinstance(split_ratio, (int, float)) and not isinstance(split_ratio, bool) and split_ratio > 0:
+        return _stringify(split_ratio)
     old_value = _safe_float(old_shares)
     new_value = _safe_float(new_shares)
     if old_value is None or new_value is None:
         return None
 
-    def _stringify(value: float) -> str:
-        return str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
-
-    return f"{_stringify(old_value)}:{_stringify(new_value)}"
+    old_text = _stringify(old_value)
+    new_text = _stringify(new_value)
+    if not old_text or not new_text:
+        return None
+    return f"{old_text}:{new_text}"
 
 
 def _extract_split_fields(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -182,6 +195,7 @@ def _extract_split_fields(row: Dict[str, Any]) -> Dict[str, Any]:
             row.get("split"),
             row.get("split_ratio"),
             row.get("splitRatio"),
+            row.get("SplitRatio"),
             row.get("Ratio"),
             row.get("ratio"),
         ),
@@ -210,6 +224,8 @@ def _extract_ipo_price_fields(row: Dict[str, Any]) -> Dict[str, Optional[float]]
         row.get("IPO_Price"),
         row.get("ipo_price"),
         row.get("ipoPrice"),
+        row.get("Price"),
+        row.get("price"),
         row.get("Offer_Price"),
         row.get("offer_price"),
         row.get("offerPrice"),
@@ -251,6 +267,36 @@ def _extract_ipo_date(row: Dict[str, Any]) -> Optional[str]:
         row.get("ExpectedDate"),
         row.get("expectedDate"),
     ))
+
+
+def _extract_calendar_rows(payload: Any, *keys: str) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [row for row in payload if isinstance(row, dict)]
+    if not isinstance(payload, dict):
+        return []
+
+    for key in keys:
+        candidate = payload.get(key)
+        if isinstance(candidate, list):
+            return [row for row in candidate if isinstance(row, dict)]
+        if isinstance(candidate, dict):
+            nested = _extract_calendar_rows(candidate, *keys)
+            if nested:
+                return nested
+
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [row for row in data if isinstance(row, dict)]
+    if isinstance(data, dict):
+        nested = _extract_calendar_rows(data, *keys)
+        if nested:
+            return nested
+
+    dict_values = [value for value in payload.values() if isinstance(value, dict)]
+    if dict_values and len(dict_values) == len(payload):
+        return dict_values
+
+    return []
 
 
 def _normalize_frequency_label(raw: Any) -> Optional[str]:
@@ -1564,12 +1610,7 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
         response.raise_for_status()
         payload = response.json()
 
-    if isinstance(payload, dict):
-        rows = payload.get("splits") or payload.get("data") or []
-    elif isinstance(payload, list):
-        rows = payload
-    else:
-        rows = []
+    rows = _extract_calendar_rows(payload, "splits")
 
     # Group rows by ticker; keep only the nearest upcoming split per ticker.
     grouped: Dict[str, Dict[str, Any]] = {}
@@ -1579,7 +1620,9 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
         ticker = _normalize_ticker_symbol(
             row.get("Code")
             or row.get("code")
+            or row.get("Symbol")
             or row.get("symbol")
+            or row.get("Ticker")
             or row.get("ticker")
         )
         if not ticker:
@@ -1755,12 +1798,7 @@ async def sync_upcoming_ipos_calendar(db) -> Dict[str, Any]:
         response.raise_for_status()
         payload = response.json()
 
-    if isinstance(payload, dict):
-        rows = payload.get("ipos") or payload.get("data") or []
-    elif isinstance(payload, list):
-        rows = payload
-    else:
-        rows = []
+    rows = _extract_calendar_rows(payload, "ipos")
 
     # Build documents for every valid row; no visibility filter.
     docs: List[Dict[str, Any]] = []
@@ -1770,7 +1808,9 @@ async def sync_upcoming_ipos_calendar(db) -> Dict[str, Any]:
         ticker = _normalize_ticker_symbol(
             row.get("Code")
             or row.get("code")
+            or row.get("Symbol")
             or row.get("symbol")
+            or row.get("Ticker")
             or row.get("ticker")
         )
         if not ticker:
@@ -1786,16 +1826,20 @@ async def sync_upcoming_ipos_calendar(db) -> Dict[str, Any]:
                 _first_present(
                     row.get("Description"),
                     row.get("description"),
+                    row.get("Company"),
+                    row.get("company"),
                     row.get("name"),
                     row.get("Name"),
                 )
             ),
-            "name": _first_present(row.get("name"), row.get("Name")),
+            "name": _first_present(row.get("name"), row.get("Name"), row.get("Company"), row.get("company")),
             "exchange": _first_present(row.get("Exchange"), row.get("exchange")),
             "ipo_price": ipo_prices["ipo_price"],
             "price_from": ipo_prices["price_from"],
             "price_to": ipo_prices["price_to"],
             "offer_price": ipo_prices["offer_price"],
+            "currency": _first_present(row.get("Currency"), row.get("currency")),
+            "amount": _safe_float(_first_present(row.get("Amount"), row.get("amount")), allow_non_positive=True),
             "filing_date": _parse_date_ymd(_first_present(
                 row.get("filing_date"),
                 row.get("FilingDate"),

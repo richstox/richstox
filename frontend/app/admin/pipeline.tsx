@@ -400,6 +400,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   const [newsRefreshRunning, setNewsRefreshRunning] = useState(false);
   const newsRefreshPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // ── Calendar jobs manual run state ─────────────────────────────────────────
+  const [calendarJobRunning, setCalendarJobRunning] = useState<Record<string, boolean>>({});
+
   // ── Peer Medians (Step 4) manual run state ─────────────────────────────────
   const [peerMediansRunning, setPeerMediansRunning] = useState(false);
   const peerMediansPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -925,6 +928,30 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     }
   };
 
+  const handleRunCalendarJob = async (jobName: string, label: string) => {
+    if (!sessionToken || calendarJobRunning[jobName]) return;
+    setCalendarJobRunning(prev => ({ ...prev, [jobName]: true }));
+    try {
+      const res = await authenticatedFetch(
+        `${API_URL}/api/admin/job/${jobName}/run`,
+        { method: 'POST' },
+        sessionToken,
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const detail = payload?.detail;
+        const msg = typeof detail === 'object' ? detail?.message : detail || payload?.message || res.statusText;
+        throw new Error(msg);
+      }
+      dialog.alert(label, `${label} job started in background.`);
+      await fetchSnapshotOnce();
+    } catch (e: any) {
+      dialog.alert(label, e?.message || `Could not start ${label.toLowerCase()} job`);
+    } finally {
+      setCalendarJobRunning(prev => ({ ...prev, [jobName]: false }));
+    }
+  };
+
   const handleRunAudit = async () => {
     const raw = auditTicker.trim().toUpperCase();
     if (!raw) return;
@@ -1157,7 +1184,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
       .map((meta) => {
         const scheduledJob = scheduledJobs.find((job) => job?.name === meta.jobName);
         const lastRun = jobRuns[meta.jobName];
-        const running = lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time;
+        const running = calendarJobRunning[meta.jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time);
         return {
           ...meta,
           schedule: formatAdminJobSchedule(meta.hour, meta.minute),
@@ -1170,7 +1197,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           errorMessage: lastRun?.error_message ?? scheduledJob?.error_summary ?? null,
         };
       });
-  }, [jobRuns, scheduledJobs]);
+  }, [calendarJobRunning, jobRuns, scheduledJobs]);
 
   // On first data load: expand any step that is currently running
   useEffect(() => {
@@ -2818,9 +2845,23 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
                   </Text>
                 ) : null}
               </View>
-              <Text style={[s.calendarJobBadge, { color: getStatusColor(job.status) }]}>
-                {job.running ? 'Running' : String(job.status).toUpperCase()}
-              </Text>
+              <View style={{ alignItems: 'flex-end', gap: 8 }}>
+                <Text style={[s.calendarJobBadge, { color: getStatusColor(job.status) }]}>
+                  {job.running ? 'Running' : String(job.status).toUpperCase()}
+                </Text>
+                <TouchableOpacity
+                  style={[
+                    { paddingHorizontal: 12, paddingVertical: 6, borderRadius: 6, backgroundColor: '#64748B' },
+                    job.running && { opacity: 0.5 },
+                  ]}
+                  onPress={() => handleRunCalendarJob(job.jobName, job.label)}
+                  disabled={job.running}
+                >
+                  {job.running
+                    ? <ActivityIndicator size="small" color="#fff" />
+                    : <Text style={{ color: '#fff', fontSize: 11, fontWeight: '700' }}>Run Now</Text>}
+                </TouchableOpacity>
+              </View>
             </View>
           ))}
         </View>
