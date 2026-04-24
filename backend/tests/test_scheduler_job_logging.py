@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import scheduler
+import scheduler  # noqa: E402
 
 
 class _InsertOneResult:
@@ -29,7 +29,7 @@ class _Db:
 
 
 @pytest.mark.asyncio
-async def test_run_job_with_retry_persists_finished_fields_and_split_counters():
+async def test_run_job_with_retry_persists_split_counters():
     db = _Db()
 
     async def _job(_db):
