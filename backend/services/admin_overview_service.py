@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from services.admin_jobs_service import recover_stale_job_run
 from services.universe_counts_service import get_universe_counts
 from services.market_calendar_service import (
     get_last_10_completed_trading_days_health,
@@ -203,7 +204,7 @@ async def get_step3_live_telemetry(db) -> Dict[str, Any]:
     return response
 
 
-async def get_job_last_runs(db) -> Dict[str, Any]:
+async def get_job_last_runs(db, auto_recover_job_names: Optional[List[str]] = None) -> Dict[str, Any]:
     """
     Get last run status for all scheduled jobs from ops_job_runs.
     Uses single aggregation instead of N sequential find_one calls — O(1) latency.
@@ -211,6 +212,12 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
     PERF: 1 MongoDB round-trip regardless of job count.
     Requires index: { job_name: 1, started_at: -1 } on ops_job_runs.
     """
+    if auto_recover_job_names:
+        await asyncio.gather(
+            *(recover_stale_job_run(db, job_name) for job_name in auto_recover_job_names),
+            return_exceptions=True,
+        )
+
     pipeline = [
         {"$sort": {"started_at": -1}},
         {"$group": {
@@ -238,6 +245,24 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
         }},
     ]
     docs = await db.ops_job_runs.aggregate(pipeline).to_list(None)
+
+    completed_pipeline = [
+        {"$match": {"status": {"$in": ["success", "completed"]}}},
+        {"$sort": {"started_at": -1}},
+        {"$group": {
+            "_id": "$job_name",
+            "result": {"$first": "$result"},
+            "details": {"$first": "$details"},
+            "finished_at": {"$first": "$finished_at"},
+            "completed_at": {"$first": "$completed_at"},
+            "finished_at_prague": {"$first": "$finished_at_prague"},
+            "completed_at_prague": {"$first": "$completed_at_prague"},
+            "duration_sec": {"$first": "$duration_sec"},
+            "duration_seconds": {"$first": "$duration_seconds"},
+        }},
+    ]
+    completed_docs = await db.ops_job_runs.aggregate(completed_pipeline).to_list(None)
+    completed_by_job = {doc.get("_id"): doc for doc in completed_docs if doc.get("_id")}
 
     def _to_iso_utc(dt) -> Optional[str]:
         if dt is None:
@@ -294,6 +319,18 @@ async def get_job_last_runs(db) -> Dict[str, Any]:
             if _seeded is None:
                 _seeded = details.get("seeded_total")
             doc["seeded_total"] = _seeded
+        completed_doc = completed_by_job.get(job_name) or {}
+        completed_result = (completed_doc.get("result") or completed_doc.get("details")) if completed_doc else None
+        doc["latest_completed_result"] = completed_result if isinstance(completed_result, dict) else None
+        doc["latest_completed_finished_at"] = _to_iso_utc(
+            completed_doc.get("finished_at") or completed_doc.get("completed_at")
+        ) if completed_doc else None
+        doc["latest_completed_finished_at_prague"] = (
+            completed_doc.get("finished_at_prague") or completed_doc.get("completed_at_prague")
+        ) if completed_doc else None
+        doc["latest_completed_duration_seconds"] = (
+            completed_doc.get("duration_sec") or completed_doc.get("duration_seconds")
+        ) if completed_doc else None
         last_runs[job_name] = doc
 
     return last_runs
@@ -1900,7 +1937,7 @@ async def _compute_admin_overview(db) -> Dict[str, Any]:
     )
     
     # NEW: Job last runs from system_job_logs (observability layer)
-    job_last_runs_task = get_job_last_runs(db)
+    job_last_runs_task = get_job_last_runs(db, auto_recover_job_names=list(JOB_REGISTRY.keys()))
 
     # NEW: System health from system_job_logs
     system_health_task = compute_system_health(db)

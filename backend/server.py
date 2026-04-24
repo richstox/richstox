@@ -58,6 +58,7 @@ import httpx
 import json
 import hashlib
 import re
+from services.admin_jobs_service import recover_stale_job_run, resolve_db_job_name
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -7560,7 +7561,7 @@ async def admin_get_job_status(job_name: str):
         await _finalize_stuck(db, job_names=[job_name])
 
     # Resolve the DB job_name (handles API↔DB name mismatches).
-    db_job_name = _resolve_db_job_name(job_name)
+    db_job_name = resolve_db_job_name(job_name)
 
     config_key = f"job_{job_name}_enabled"
     config = await db.ops_config.find_one({"key": config_key}, {"_id": 0})
@@ -7685,122 +7686,6 @@ async def admin_get_job_status(job_name: str):
 # ---------------------------------------------------------------------------
 # Stale-run recovery helper (shared by status + run endpoints)
 # ---------------------------------------------------------------------------
-# Some jobs write a different ``job_name`` into ``ops_job_runs`` than the
-# API-facing key used by JOB_RUNNERS.  This map resolves the discrepancy.
-_JOB_NAME_DB_MAP: dict[str, str] = {
-    "recompute_visibility_all": "compute_visible_universe",
-}
-
-
-def _resolve_db_job_name(api_job_name: str) -> str:
-    """Return the ``ops_job_runs.job_name`` for a given API-facing job name."""
-    return _JOB_NAME_DB_MAP.get(api_job_name, api_job_name)
-
-
-# Per-job maximum expected runtime in minutes. If a run stays "running"
-# longer than this, it is auto-finalized as a timeout error so the system
-# self-heals and manual re-runs are unblocked.
-_JOB_MAX_RUNTIME_MINUTES: dict[str, int] = {
-    "peer_medians": 20,
-    "compute_visible_universe": 20,
-}
-_DEFAULT_MAX_RUNTIME_MINUTES = 120
-
-
-async def recover_stale_job_run(database, job_name: str) -> dict | None:
-    """Check for a stale 'running' job and auto-finalize it as a timeout error.
-
-    Returns the recovered document dict (with added ``recovered: True``) if a
-    stale run was finalized, or ``None`` if no recovery was needed.
-
-    This is the **single** timeout-recovery code-path; both the status and run
-    endpoints call it so the system self-heals regardless of which API is hit
-    first.
-
-    Staleness is measured from ``updated_at`` (heartbeat) when available,
-    falling back to ``started_at``.  This lets heartbeat-emitting jobs like
-    ``compute_visible_universe`` be detected as hung within minutes rather
-    than waiting for the full started_at-based timeout.
-    """
-    from zoneinfo import ZoneInfo as _RecoverZI
-
-    # Resolve API-facing name → DB job_name (handles mismatches like
-    # ``recompute_visibility_all`` → ``compute_visible_universe``).
-    db_job_name = _resolve_db_job_name(job_name)
-    max_minutes = _JOB_MAX_RUNTIME_MINUTES.get(db_job_name,
-                  _JOB_MAX_RUNTIME_MINUTES.get(job_name, _DEFAULT_MAX_RUNTIME_MINUTES))
-
-    existing = await database.ops_job_runs.find_one(
-        {"job_name": db_job_name, "status": "running"},
-        sort=[("started_at", -1)],
-    )
-    if not existing:
-        return None
-
-    def _ensure_utc(dt):
-        if isinstance(dt, datetime) and dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt
-
-    started = _ensure_utc(existing.get("started_at"))
-    updated = _ensure_utc(existing.get("updated_at"))
-
-    # Prefer updated_at (heartbeat) over started_at for staleness.
-    freshness_ref = updated or started
-
-    try:
-        stale_minutes = (
-            (datetime.now(timezone.utc) - freshness_ref).total_seconds() / 60.0
-            if isinstance(freshness_ref, datetime)
-            else float("inf")
-        )
-    except Exception as _age_err:
-        logger.debug(f"recover_stale_job_run: could not compute age for {db_job_name}: {_age_err}")
-        stale_minutes = float("inf")
-
-    if stale_minutes <= max_minutes:
-        return None  # still within expected runtime
-
-    expire_at = datetime.now(timezone.utc)
-    try:
-        duration_seconds = (expire_at - started).total_seconds() if isinstance(started, datetime) else None
-    except (TypeError, AttributeError):
-        duration_seconds = None
-
-    started_iso = started.isoformat() if isinstance(started, datetime) else str(started)
-    updated_iso = updated.isoformat() if isinstance(updated, datetime) else str(updated)
-    error_msg = (
-        f"Stale run auto-finalized (timeout). No heartbeat for {int(stale_minutes)} min "
-        f"(threshold={max_minutes} min). "
-        f"started_at={started_iso}, last updated_at={updated_iso}."
-    )
-
-    update_fields: dict = {
-        "status": "error",
-        "error_code": "timeout",
-        "finished_at": expire_at,
-        "finished_at_prague": expire_at.astimezone(_RecoverZI("Europe/Prague")).isoformat(),
-        "error_message": error_msg,
-        "error_traceback": "Timeout recovery by recover_stale_job_run",
-    }
-    if duration_seconds is not None:
-        update_fields["duration_seconds"] = round(duration_seconds, 1)
-    update_fields["details.timeout_recovery"] = True
-    update_fields["details.timeout_recovered_at"] = expire_at.isoformat()
-    update_fields["details.stale_auto_finalized"] = True
-
-    await database.ops_job_runs.update_one(
-        {"_id": existing["_id"]},
-        {"$set": update_fields},
-    )
-    logger.warning(
-        f"recover_stale_job_run: auto-finalized stale '{db_job_name}' run "
-        f"{existing['_id']} (stale for {int(stale_minutes)} min, max={max_minutes})"
-    )
-
-    existing.update(update_fields)
-    existing["recovered"] = True
-    return existing
 
 
 # C2: Enhanced audit trail helper functions
@@ -8013,7 +7898,7 @@ async def admin_run_job_now(
     recovered = await recover_stale_job_run(db, job_name)
 
     # Resolve API-facing name → DB job_name for the concurrency check.
-    db_job_name = _resolve_db_job_name(job_name)
+    db_job_name = resolve_db_job_name(job_name)
 
     # Even after recovery, re-check: there may still be a legitimately
     # running job (different doc, or recovery returned None).
@@ -8443,7 +8328,7 @@ async def admin_job_status(job_name: str):
         await _finalize_stuck(db, job_names=[job_name])
 
     # Resolve the DB job_name (handles API↔DB name mismatches).
-    db_job_name = _resolve_db_job_name(job_name)
+    db_job_name = resolve_db_job_name(job_name)
 
     run = await db.ops_job_runs.find_one(
         {"job_name": db_job_name},

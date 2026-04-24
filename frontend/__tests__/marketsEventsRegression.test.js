@@ -25,19 +25,17 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null");
   });
 
-  it('keeps earnings subtitles on the expected label and shows compact horizontal day cards with type dots', () => {
+  it('keeps earnings subtitles on the expected label and shows simplified compact horizontal day cards', () => {
     expect(fileContent).toContain('details.push(`Exp. ${formattedEstimate}`)');
-    expect(fileContent).toContain('const ACTIVE_DAY_DOT_LAYOUT: EventType[][] = [');
-    expect(fileContent).toContain("['dividend', 'earnings']");
-    expect(fileContent).toContain("['split', 'ipo']");
-    expect(fileContent).toContain('const activeDayTypes = new Set(dayEvents.map((event) => event.type));');
-    expect(fileContent).toContain('{dayEvents.length}');
-    expect(fileContent).not.toContain('{dayEvents.length} events');
+    expect(fileContent).not.toContain('const ACTIVE_DAY_DOT_LAYOUT: EventType[][] = [');
+    expect(fileContent).not.toContain('const activeDayTypes = new Set(dayEvents.map((event) => event.type));');
+    expect(fileContent).not.toContain('{dayEvents.length}');
     expect(fileContent).toContain('const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;');
     expect(fileContent).toContain('const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;');
     expect(fileContent).toContain("const scrollActiveDaysBy = (scrollDirection: 'left' | 'right') => {");
     expect(fileContent).toContain("scrollActiveDaysBy('left')");
     expect(fileContent).toContain("scrollActiveDaysBy('right')");
+    expect(fileContent).toContain('minWidth: 58,');
   });
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {
