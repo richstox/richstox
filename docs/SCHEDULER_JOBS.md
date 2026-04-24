@@ -12,7 +12,7 @@
 | 3 | **Fundamentals Sync** | Mon-Sat | after Step 2 | `/fundamentals/{TICKER}.US` | 0-50 | `price_sync completed today` |
 | 4 | SP500TR Update | Mon-Sat | 04:15 | `/eod/SP500TR.INDX` | 1 | `not run today` |
 | 5 | Backfill Gaps | Mon-Sat | 04:45 | `/eod/{TICKER}.US` | 0-50 | `tickers with gaps exist` |
-| 6 | Upcoming Dividend Calendar | Mon-Sat | 04:50 | `/calendar/dividends?from=..&to=..` | 1 | `not run today` |
+| 6 | Upcoming Dividend Calendar | Mon-Sat | 04:50 | `/eod-bulk-last-day/US?type=dividends&date=YYYY-MM-DD` | up to 91 | `not run today` |
 | 7 | Upcoming Earnings Calendar | Mon-Sat | 04:55 | `/calendar/earnings?from=..&to=..` | 1 | `not run today` |
 | 8 | Upcoming Splits Calendar | Mon-Sat | 04:57 | `/calendar/splits?from=..&to=..` | 1 | `not run today` |
 | 9 | Upcoming IPOs Calendar | Mon-Sat | 04:58 | `/calendar/ipos?from=..&to=..` | 1 | `not run today` |
@@ -106,10 +106,11 @@ ADMIN_REPORT_MINUTE = 0
 
 ### 7. Upcoming Dividend Calendar (Mon-Sat 04:50)
 - **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_dividend_calendar_for_visible_tickers()`
-- **Purpose**: Fetch date-window upcoming ex-dividend events (today..+90d) and persist per ticker for UI next-dividend display
-- **API**: `GET https://eodhd.com/api/calendar/dividends?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
-- **Cost**: 1 API call/day
-- **Persistence**: `upcoming_dividends` collection with one document per visible ticker (upsert/null-safe)
+- **Purpose**: Fetch Prague today..+90d upcoming ex-dividend events and persist the nearest upcoming event per visible ticker for UI next-dividend display
+- **API**: `GET https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date={YYYY-MM-DD}` (one bounded per-day fetch for each day in the window)
+- **Cost**: up to 91 API calls/day for a full Prague today..+90d window
+- **Persistence**: `upcoming_dividends` collection with one document per visible ticker for fully covered runs; partial runs are marked incomplete in job results and do not null unknown tickers
+- **Completeness metadata**: job result records `window_start`, `window_end`, `days_fetched_ok`, `days_failed`, `total_rows`, and `fetched_at`
 
 ### 8. Upcoming Earnings Calendar (Mon-Sat 04:55)
 - **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_earnings_calendar_for_visible_tickers()`

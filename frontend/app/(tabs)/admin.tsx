@@ -226,6 +226,7 @@ function formatHours(h?: number | null): string {
 function jobStatusToHealth(status?: string | null): string | undefined {
   if (!status) return undefined;
   if (status === 'success' || status === 'completed') return 'green';
+  if (status === 'incomplete' || status === 'partial') return 'yellow';
   if (status === 'failed' || status === 'error' || status === 'overdue') return 'red';
   if (status === 'running' || status === 'pending') return 'yellow';
   return undefined;
@@ -234,6 +235,7 @@ function jobStatusToHealth(status?: string | null): string | undefined {
 function jobStatusLabel(status?: string | null): string {
   if (!status) return 'Unknown';
   if (status === 'success' || status === 'completed') return 'OK';
+  if (status === 'incomplete' || status === 'partial') return 'Incomplete';
   if (status === 'failed' || status === 'error') return 'Failed';
   if (status === 'overdue') return 'Overdue';
   if (status === 'running') return 'Running';
@@ -515,6 +517,7 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         lastRunIso: lastRun?.finished_at ?? lastRun?.end_time ?? lastRun?.started_at ?? lastRun?.start_time ?? null,
         lastRunPrague: lastRun?.finished_at_prague ?? lastRun?.started_at_prague ?? job?.last_run_finished ?? job?.last_run_started ?? null,
         errorMessage: lastRun?.error_message ?? job?.error_summary,
+        result: lastRun?.result ?? null,
         running: calendarJobRunning[jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time),
       };
     })
@@ -822,6 +825,12 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             const lastRunText = job.lastRunPrague
               ? formatPragueDisplay(String(job.lastRunPrague))
               : formatTime(job.lastRunIso ?? undefined);
+            const requestedDays = Array.isArray(job.result?.requested_days) ? job.result.requested_days.length : undefined;
+            const daysOk = Array.isArray(job.result?.days_fetched_ok) ? job.result.days_fetched_ok.length : undefined;
+            const daysFailed = Array.isArray(job.result?.days_failed) ? job.result.days_failed.length : undefined;
+            const coverageText = requestedDays != null && daysOk != null
+              ? `Coverage: ${daysOk}/${requestedDays} day${requestedDays === 1 ? '' : 's'}`
+              : null;
             return (
               <View key={job.jobName} style={d.calendarJobItem}>
                 <View style={d.calendarJobHeader}>
@@ -848,6 +857,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                   <Text style={d.calendarJobMeta}>Next: {nextRunText}</Text>
                 </View>
                 <Text style={d.calendarJobMeta}>Last: {lastRunText || 'Never'}</Text>
+                {!!coverageText && (
+                  <Text style={d.calendarJobMeta}>
+                    {coverageText}{daysFailed ? ` · failed ${daysFailed}` : ''}
+                  </Text>
+                )}
                 {!!job.errorMessage && (
                   <Text style={d.opsErrorDetail} numberOfLines={2}>⚠️ {job.errorMessage}</Text>
                 )}

@@ -19,6 +19,7 @@ Used for:
 - Dividends tab visualization (annual chart, YoY growth)
 """
 
+import asyncio
 import os
 import logging
 from datetime import datetime, timezone, timedelta
@@ -517,6 +518,47 @@ def _select_next_upcoming_event(events: List[Dict[str, Any]]) -> Optional[Dict[s
     return candidates[0]
 
 
+def _coerce_calendar_rows(payload: Any, primary_key: str) -> List[Dict[str, Any]]:
+    if isinstance(payload, dict):
+        rows = payload.get(primary_key) or payload.get("data") or []
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+    return [row for row in rows if isinstance(row, dict)]
+
+
+async def _fetch_dividend_bulk_rows_for_day(
+    client: httpx.AsyncClient,
+    date_str: str,
+) -> List[Dict[str, Any]]:
+    """Fetch one exchange-wide dividend day from the documented bulk endpoint.
+
+    We intentionally do NOT use /calendar/dividends here: EODHD documents the
+    calendar API for earnings/splits/IPOs, while dividend support is documented
+    under the bulk exchange endpoint with ``type=dividends`` and an explicit
+    ``date`` parameter.
+    """
+    url = f"{EODHD_BASE_URL}/eod-bulk-last-day/US"
+    params = {
+        "api_token": EODHD_API_KEY,
+        "fmt": "json",
+        "type": "dividends",
+        "date": date_str,
+    }
+    response = await client.get(url, params=params)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body_preview = response.text[:200].replace("\n", " ").strip()
+        raise RuntimeError(
+            f"GET {response.request.url} returned HTTP {response.status_code}"
+            f"{f' body={body_preview}' if body_preview else ''}"
+        ) from exc
+
+    return _coerce_calendar_rows(response.json(), "dividends")
+
+
 async def create_upcoming_dividends_indexes(db) -> None:
     """Create indexes for the upcoming_dividends collection.
 
@@ -533,42 +575,62 @@ async def create_upcoming_dividends_indexes(db) -> None:
 
 
 async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, Any]:
+    """Refresh upcoming ex-dividend data for visible tickers.
+
+    Root-cause note:
+    - The old implementation called ``/calendar/dividends?from=..&to=..``.
+    - That code immediately executed ``response.raise_for_status()`` on the
+      EODHD response, so the failure mode was an ``httpx.HTTPStatusError`` on
+      the GET request to ``https://eodhd.com/api/calendar/dividends?...``; the
+      scheduler then retried the same failing request three times and finally
+      surfaced ``RuntimeError: dividend_upcoming_calendar: Max retries (3)
+      exceeded`` in Admin.
+    - EODHD's documented dividend support is the exchange bulk endpoint
+      ``/eod-bulk-last-day/US?type=dividends&date=YYYY-MM-DD`` rather than the
+      earnings/splits-style calendar window endpoint.
+    - We therefore fetch a bounded Prague-date window day-by-day, aggregate by
+      ticker, and persist only the nearest upcoming event per ticker.
+    """
     if not EODHD_API_KEY:
         logger.error("[dividend_upcoming_calendar] EODHD_API_KEY not configured")
         return {"success": False, "error": "EODHD_API_KEY not configured"}
 
-    now = datetime.now(timezone.utc)
-    window_start = now.strftime("%Y-%m-%d")
-    window_end = (now + timedelta(days=UPCOMING_DIVIDEND_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    now_utc = datetime.now(timezone.utc)
+    now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
+    window_start = now_prague.strftime("%Y-%m-%d")
+    window_end = (now_prague + timedelta(days=UPCOMING_DIVIDEND_WINDOW_DAYS)).strftime("%Y-%m-%d")
 
     # Canonical universe source: tracked_tickers.is_visible.
     visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
     visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
 
-    url = f"{EODHD_BASE_URL}/calendar/dividends"
-    params = {
-        "api_token": EODHD_API_KEY,
-        "fmt": "json",
-        "from": window_start,
-        "to": window_end,
-    }
-
+    day_cursor = now_prague.date()
+    last_day = (now_prague + timedelta(days=UPCOMING_DIVIDEND_WINDOW_DAYS)).date()
+    requested_days: List[str] = []
+    days_fetched_ok: List[str] = []
+    days_failed: List[str] = []
+    failed_day_errors: List[Dict[str, str]] = []
+    rows: List[Dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=45) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
-        payload = response.json()
-
-    if isinstance(payload, dict):
-        rows = payload.get("dividends") or payload.get("data") or []
-    elif isinstance(payload, list):
-        rows = payload
-    else:
-        rows = []
+        while day_cursor <= last_day:
+            day_str = day_cursor.strftime("%Y-%m-%d")
+            requested_days.append(day_str)
+            try:
+                rows.extend(await _fetch_dividend_bulk_rows_for_day(client, day_str))
+                days_fetched_ok.append(day_str)
+            except Exception as exc:
+                logger.warning(
+                    "[dividend_upcoming_calendar] %s fetch failed via /eod-bulk-last-day/US?type=dividends&date=%s: %s",
+                    day_str,
+                    day_str,
+                    exc,
+                )
+                days_failed.append(day_str)
+                failed_day_errors.append({"date": day_str, "error": str(exc)[:300]})
+            day_cursor += timedelta(days=1)
 
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for row in rows:
-        if not isinstance(row, dict):
-            continue
         ticker = _normalize_ticker_symbol(
             row.get("Code")
             or row.get("code")
@@ -580,6 +642,16 @@ async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, A
         if visible_tickers and ticker not in visible_tickers:
             continue
         grouped.setdefault(ticker, []).append(row)
+
+    total_rows = len(rows)
+    coverage_complete = not days_failed
+    if not days_fetched_ok:
+        failed_preview = "; ".join(f"{item['date']}: {item['error']}" for item in failed_day_errors[:3])
+        raise RuntimeError(
+            "dividend_upcoming_calendar failed: unable to fetch any day in the requested window from "
+            "/eod-bulk-last-day/US?type=dividends&date=YYYY-MM-DD"
+            + (f" ({failed_preview})" if failed_preview else "")
+        )
 
     write_ops: List[UpdateOne] = []
     for ticker, ticker_rows in grouped.items():
@@ -600,50 +672,70 @@ async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, A
                     "is_special": bool(next_event.get("is_special")),
                     "is_irregular": bool(next_event.get("is_irregular")),
                     "source": UPCOMING_DIVIDEND_SOURCE,
-                    "fetched_at": now,
+                    "fetched_at": now_utc,
                     "window_start": window_start,
                     "window_end": window_end,
+                    "coverage_complete": coverage_complete,
+                    "days_fetched_ok_count": len(days_fetched_ok),
+                    "days_failed_count": len(days_failed),
                 }},
                 upsert=True,
             )
         )
 
-    null_tickers = sorted(visible_tickers - set(grouped.keys()))
-    for ticker in null_tickers:
-        write_ops.append(
-            UpdateOne(
-                {"ticker": ticker},
-                {"$set": {
-                    "ticker": ticker,
-                    "next_ex_date": None,
-                    "next_pay_date": None,
-                    "next_dividend_amount": None,
-                    "next_dividend_currency": None,
-                    "dividend_type": None,
-                    "period": None,
-                    "is_special": False,
-                    "is_irregular": False,
-                    "source": UPCOMING_DIVIDEND_SOURCE,
-                    "fetched_at": now,
-                    "window_start": window_start,
-                    "window_end": window_end,
-                }},
-                upsert=True,
+    null_tickers: List[str] = []
+    if coverage_complete:
+        null_tickers = sorted(visible_tickers - set(grouped.keys()))
+        for ticker in null_tickers:
+            write_ops.append(
+                UpdateOne(
+                    {"ticker": ticker},
+                    {"$set": {
+                        "ticker": ticker,
+                        "next_ex_date": None,
+                        "next_pay_date": None,
+                        "next_dividend_amount": None,
+                        "next_dividend_currency": None,
+                        "dividend_type": None,
+                        "period": None,
+                        "is_special": False,
+                        "is_irregular": False,
+                        "source": UPCOMING_DIVIDEND_SOURCE,
+                        "fetched_at": now_utc,
+                        "window_start": window_start,
+                        "window_end": window_end,
+                        "coverage_complete": True,
+                        "days_fetched_ok_count": len(days_fetched_ok),
+                        "days_failed_count": 0,
+                    }},
+                    upsert=True,
+                )
             )
-        )
 
     if write_ops:
         await db.upcoming_dividends.bulk_write(write_ops, ordered=False)
 
+    status = "completed" if coverage_complete else "incomplete"
     return {
-        "success": True,
+        "success": coverage_complete,
+        "status": status,
         "source": UPCOMING_DIVIDEND_SOURCE,
+        "strategy": "per_day_exchange_bulk_dividends",
         "window_start": window_start,
         "window_end": window_end,
+        "requested_days": requested_days,
+        "days_fetched_ok": days_fetched_ok,
+        "days_failed": days_failed,
+        "failed_day_errors": failed_day_errors,
+        "coverage_complete": coverage_complete,
+        "fetched_at": now_utc.isoformat(),
+        "total_rows": total_rows,
         "visible_tickers": len(visible_tickers),
         "tickers_with_upcoming": len(grouped),
         "tickers_without_upcoming": len(null_tickers),
         "records_written": len(write_ops),
+        "api_calls": len(requested_days),
+        "api_credits_estimated": len(requested_days),
     }
 
 
@@ -1621,3 +1713,126 @@ async def get_ipos_for_ticker(db, ticker: str) -> Dict[str, Any]:
         "upcoming_ipo": upcoming_ipo,
     }
 
+
+def _bare_ticker(value: Any) -> Optional[str]:
+    if not value or not isinstance(value, str):
+        return None
+    symbol = value.strip().upper()
+    if not symbol:
+        return None
+    return symbol.split(".", 1)[0]
+
+
+async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any]:
+    """Return a unified event list across upcoming earnings/dividends/splits/IPOs."""
+    start = _parse_date_ymd(from_date)
+    end = _parse_date_ymd(to_date)
+    if not start or not end:
+        raise ValueError("from and to must use YYYY-MM-DD format")
+    if start > end:
+        raise ValueError("Start date (from) must be on or before end date (to)")
+
+    earnings_task = db.upcoming_earnings.find(
+        {"report_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("report_date", 1).to_list(length=None)
+    dividends_task = db.upcoming_dividends.find(
+        {"next_ex_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("next_ex_date", 1).to_list(length=None)
+    splits_task = db.upcoming_splits.find(
+        {"split_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("split_date", 1).to_list(length=None)
+    ipos_task = db.upcoming_ipos.find(
+        {"ipo_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("ipo_date", 1).to_list(length=None)
+
+    earnings_rows, dividend_rows, split_rows, ipo_rows = await asyncio.gather(
+        earnings_task,
+        dividends_task,
+        splits_task,
+        ipos_task,
+    )
+
+    events: List[Dict[str, Any]] = []
+
+    for row in earnings_rows:
+        ticker = _bare_ticker(row.get("ticker"))
+        report_date = _parse_date_ymd(row.get("report_date"))
+        if not report_date:
+            continue
+        events.append({
+            "date": report_date,
+            "type": "earnings",
+            "ticker": ticker,
+            "label": f"{ticker} earnings" if ticker else "Earnings",
+            "description": row.get("before_after_market") or "Scheduled earnings",
+            "estimate": row.get("estimate"),
+            "currency": row.get("currency"),
+            "metadata": {
+                "before_after_market": row.get("before_after_market"),
+                "fiscal_period_end": row.get("fiscal_period_end"),
+            },
+        })
+
+    for row in dividend_rows:
+        ticker = _bare_ticker(row.get("ticker"))
+        ex_date = _parse_date_ymd(row.get("next_ex_date"))
+        if not ex_date:
+            continue
+        events.append({
+            "date": ex_date,
+            "type": "dividend",
+            "ticker": ticker,
+            "label": f"{ticker} ex-dividend" if ticker else "Dividend",
+            "description": row.get("event_type_label") or "Upcoming dividend",
+            "amount": row.get("next_dividend_amount"),
+            "currency": row.get("next_dividend_currency"),
+            "metadata": {
+                "pay_date": row.get("next_pay_date"),
+                "coverage_complete": row.get("coverage_complete"),
+            },
+        })
+
+    for row in split_rows:
+        ticker = _bare_ticker(row.get("ticker"))
+        split_date = _parse_date_ymd(row.get("split_date"))
+        if not split_date:
+            continue
+        events.append({
+            "date": split_date,
+            "type": "split",
+            "ticker": ticker,
+            "label": f"{ticker} split" if ticker else "Split",
+            "description": row.get("split_ratio") or "Upcoming split",
+            "ratio": row.get("split_ratio"),
+            "metadata": {},
+        })
+
+    for row in ipo_rows:
+        ipo_date = _parse_date_ymd(row.get("ipo_date"))
+        if not ipo_date:
+            continue
+        ticker = _bare_ticker(row.get("ticker"))
+        events.append({
+            "date": ipo_date,
+            "type": "ipo",
+            "ticker": ticker,
+            "label": row.get("description") or (f"{ticker} IPO" if ticker else "IPO"),
+            "description": row.get("exchange") or "Upcoming IPO",
+            "amount": row.get("ipo_price"),
+            "metadata": {
+                "exchange": row.get("exchange"),
+            },
+        })
+
+    events.sort(key=lambda item: (item["date"], item["type"], item.get("ticker") or ""))
+    return {
+        "from": start,
+        "to": end,
+        "timezone": PRAGUE_TZ_NAME,
+        "events": events,
+        "count": len(events),
+    }
