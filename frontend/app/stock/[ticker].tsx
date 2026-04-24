@@ -1400,7 +1400,7 @@ export default function StockDetail() {
         kind: 'event',
         id: `earnings-${upcomingEarnings.report_date}`,
         eventType: 'Earnings',
-        title: 'Upcoming earnings',
+        title: 'Upcoming Earnings',
         subtitle: marketLabel
           ? `${formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency)} • ${marketLabel}`
           : formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency),
@@ -1414,7 +1414,7 @@ export default function StockDetail() {
         kind: 'event',
         id: `dividend-${nextDividendInfo.next_ex_date}`,
         eventType: 'Dividend',
-        title: 'Upcoming ex-dividend',
+        title: 'Upcoming Ex-Dividend',
         subtitle: typeof nextDividendInfo.next_dividend_amount === 'number'
           ? formatDividendAmount(
               nextDividendInfo.next_dividend_amount,
@@ -1431,7 +1431,7 @@ export default function StockDetail() {
         kind: 'event',
         id: `split-${upcomingSplit.split_date}`,
         eventType: 'Split',
-        title: 'Upcoming split',
+        title: 'Upcoming Split',
         subtitle: upcomingSplit.split_ratio || 'Upcoming split',
         date: upcomingSplit.split_date,
       });
@@ -4524,7 +4524,7 @@ export default function StockDetail() {
                       />
                       <View style={styles.newsContent}>
                         <View style={styles.newsTickerRow}>
-                          <Text style={styles.newsTickerText}>{ticker}</Text>
+                          <Text style={styles.newsTickerText}>{ticker.toUpperCase()}</Text>
                           <View style={[styles.eventPill, { backgroundColor: `${eventColor}15` }]}>
                             <Text style={[styles.eventPillText, { color: eventColor }]}>{item.eventType}</Text>
                           </View>
@@ -4553,7 +4553,7 @@ export default function StockDetail() {
                     />
                     <View style={styles.newsContent}>
                       <View style={styles.newsTickerRow}>
-                        <Text style={styles.newsTickerText}>{article.ticker || ticker}</Text>
+                        <Text style={styles.newsTickerText}>{(article.ticker || ticker).toUpperCase()}</Text>
                         {article.sentiment_label && (
                           <View style={[
                             styles.sentimentBadgeSmall,
@@ -4637,7 +4637,7 @@ export default function StockDetail() {
                       fallbackKey={getNewsFallbackKey(selectedArticle.fallback_logo_key, selectedArticle.ticker || ticker)}
                     />
                     <View>
-                      <Text style={styles.articleTicker}>{selectedArticle.ticker || ticker}</Text>
+                      <Text style={styles.articleTicker}>{(selectedArticle.ticker || ticker).toUpperCase()}</Text>
                       <Text style={styles.articleCompany}>{selectedArticle.company_name || company.name}</Text>
                     </View>
                   </TouchableOpacity>
@@ -4674,7 +4674,10 @@ export default function StockDetail() {
                   </View>
                 )}
 
-                <Text style={styles.articleContent}>
+                <Text
+                  style={styles.articleContent}
+                  accessibilityLabel={selectedArticle.content?.trim() ? undefined : 'Article preview unavailable. Open the original article to read the full story'}
+                >
                   {selectedArticle.content?.trim() || 'Open the original article to read the full story'}
                 </Text>
 
@@ -5378,7 +5381,7 @@ const styles = StyleSheet.create({
   newsContent: { flex: 1, gap: 4 },
   newsTickerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
   newsTickerSpacer: { flex: 1 },
-  newsTickerText: { fontSize: 12, fontWeight: '700', color: COLORS.primary, textTransform: 'uppercase' },
+  newsTickerText: { fontSize: 12, fontWeight: '700', color: COLORS.primary },
   sentimentBadgeSmall: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   sentimentTextSmall: { fontSize: 10, fontWeight: '700' },
   newsTitle: { fontSize: 14, fontWeight: '500', lineHeight: 20, color: COLORS.text },
@@ -5443,7 +5446,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: COLORS.text,
-    textTransform: 'uppercase',
   },
   articleCompany: {
     fontSize: 13,
