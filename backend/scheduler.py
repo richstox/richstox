@@ -30,7 +30,7 @@
 # 4. NEWS:         https://eodhd.com/api/news?s={TICKER}.US
 # 5. EOD:          https://eodhd.com/api/eod/{TICKER}.US (backfill)
 # 6. DIVIDENDS:    https://eodhd.com/api/div/{TICKER}.US (dividend history sync)
-# 7. DIV CALENDAR: https://eodhd.com/api/calendar/dividends?from=..&to=.. (upcoming ex-dates)
+# 7. DIV CALENDAR: https://eodhd.com/api/eod-bulk-last-day/US?type=dividends&date=YYYY-MM-DD (bounded per-day upcoming ex-dates)
 #
 # VISIBLE UNIVERSE RULE:
 # is_visible = is_seeded && has_price_data && has_classification
@@ -422,7 +422,8 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
         try:
             logger.info(f"Running {job_name} (attempt {attempt + 1}/{max_retries})")
             result = await job_func(db)
-            logger.info(f"{job_name} completed: {result.get('status', 'unknown')}")
+            result_status = result.get("status", "completed") if isinstance(result, dict) else "completed"
+            logger.info(f"{job_name} completed: {result_status}")
             
             # Extract records count from result
             records_processed = 0
@@ -438,7 +439,7 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
             
             # NEW: Log to system_job_logs (primary observability)
             await log_job_execution(
-                db, job_name, "success", started_at, completed_at,
+                db, job_name, result_status, started_at, completed_at,
                 records_processed=records_processed,
                 details=result if isinstance(result, dict) else {}
             )
@@ -446,7 +447,7 @@ async def run_job_with_retry(job_name: str, job_func, db, max_retries: int = 3):
             # LEGACY: Log to ops_job_runs (backward compatibility)
             await db.ops_job_runs.insert_one({
                 "job_name": job_name,
-                "status": result.get("status", "completed"),
+                "status": result_status,
                 "started_at": started_at,
                 "completed_at": completed_at,
                 "started_at_prague": to_prague_iso(started_at),
