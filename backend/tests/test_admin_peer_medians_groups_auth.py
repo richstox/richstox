@@ -136,7 +136,15 @@ def anyio_backend():
 
 
 @pytest.mark.anyio
-async def test_peer_medians_groups_returns_200_for_admin_session_cookie():
+@pytest.mark.parametrize(
+    ("level", "expected_groups"),
+    [
+        ("industry", ["Semiconductors", "Software"]),
+        ("sector", ["Technology"]),
+        ("market", ["US Market"]),
+    ],
+)
+async def test_peer_medians_groups_returns_200_for_admin_session_cookie(level, expected_groups):
     fake_db = _build_db()
     app, srv = _build_app(fake_db)
     original_db = srv.db
@@ -144,11 +152,11 @@ async def test_peer_medians_groups_returns_200_for_admin_session_cookie():
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             client.cookies.set("session_token", fake_db._session_token)
-            response = await client.get("/api/admin/peer-medians/groups?level=industry")
+            response = await client.get(f"/api/admin/peer-medians/groups?level={level}")
         assert response.status_code == 200
         assert response.json() == {
-            "level": "industry",
-            "groups": ["Semiconductors", "Software"],
+            "level": level,
+            "groups": expected_groups,
         }
     finally:
         srv.db = original_db

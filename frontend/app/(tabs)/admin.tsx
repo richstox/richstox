@@ -1576,7 +1576,11 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     (async () => {
       setGroupsLoading(true);
       try {
-        const res = await authenticatedFetch(`${API_URL}/api/admin/peer-medians/groups?level=${level}`, {}, sessionToken);
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/peer-medians/groups?level=${level}`,
+          { method: 'GET' },
+          sessionToken,
+        );
         if (res.ok) {
           const j = await res.json();
           setGroups(j.groups || []);
@@ -1603,7 +1607,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
       try {
         const res = await authenticatedFetch(
           `${API_URL}/api/admin/peer-medians?level=${level}&key=${encodeURIComponent(selectedKey)}`,
-          {},
+          { method: 'GET' },
           sessionToken,
         );
         if (res.ok && !cancelled) setData(await res.json());
