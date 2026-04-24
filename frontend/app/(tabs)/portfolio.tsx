@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -10,70 +10,56 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
-import { COLORS } from '../_layout';
-import { useAppDialog } from '../../contexts/AppDialogContext';
+import AppHeader from '../../components/AppHeader';
+import { useAuth } from '../../contexts/AuthContext';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
 
-export default function Portfolio() {
+const COLORS = {
+  primary: '#1E3A5F',
+  accent: '#10B981',
+  text: '#1F2937',
+  textLight: '#6B7280',
+  textMuted: '#9CA3AF',
+  background: '#F5F7FA',
+  card: '#FFFFFF',
+  border: '#E5E7EB',
+};
+
+export default function TracklistPage() {
   const router = useRouter();
-  const dialog = useAppDialog();
+  const { sessionToken } = useAuth();
   const sp = useLayoutSpacing();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [portfolioData, setPortfolioData] = useState<any>(null);
+  const [tracklistData, setTracklistData] = useState<any>(null);
 
-  const fetchPortfolio = async () => {
+  const fetchTracklist = useCallback(async () => {
+    if (!sessionToken) return;
     try {
-      const portfolioId = await AsyncStorage.getItem('portfolioId');
-      if (!portfolioId) return;
-
-      const response = await axios.get(`${API_URL}/api/portfolios/${portfolioId}`);
-      setPortfolioData(response.data);
+      const response = await axios.get(`${API_URL}/api/v1/tracklist`, {
+        headers: { Authorization: `Bearer ${sessionToken}` },
+      });
+      setTracklistData(response.data);
     } catch (error) {
-      console.error('Error fetching portfolio:', error);
+      console.error('Error fetching tracklist:', error);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [sessionToken]);
 
   useFocusEffect(
     useCallback(() => {
-      fetchPortfolio();
-    }, [])
+      fetchTracklist();
+    }, [fetchTracklist])
   );
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchPortfolio();
-  };
-
-  const handleAddPosition = () => {
-    if (portfolioData && portfolioData.position_count >= 7) {
-      dialog.alert(
-        'Position Limit Reached',
-        'You can have a maximum of 7 positions. Consider consolidating or closing an existing position.',
-      );
-      return;
-    }
-    router.push('/add-position');
-  };
-
-  const formatCurrency = (value: number) => {
-    return new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-    }).format(value);
-  };
-
-  const formatPercent = (value: number) => {
-    const sign = value >= 0 ? '+' : '';
-    return `${sign}${value.toFixed(2)}%`;
+    fetchTracklist();
   };
 
   if (loading) {
@@ -84,142 +70,68 @@ export default function Portfolio() {
     );
   }
 
-  if (!portfolioData) {
-    return (
-      <View style={styles.errorContainer}>
-        <Text style={styles.errorText}>Portfolio not found</Text>
-      </View>
-    );
-  }
+  const positions = tracklistData?.positions || [];
+  const slotsRemaining = tracklistData?.slots_remaining || 0;
 
   return (
-    <SafeAreaView style={styles.container} edges={['left', 'right']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <AppHeader title="Tracklist" showSubscriptionBadge={false} />
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
       >
-        {/* Portfolio Header */}
-        <View style={styles.headerCard}>
-          <View style={styles.headerTop}>
+        <View style={styles.heroCard}>
+          <View style={styles.heroTop}>
             <View>
-              <Text style={styles.portfolioName}>{portfolioData.name}</Text>
-              <Text style={styles.portfolioType}>
-                {portfolioData.portfolio_type} portfolio
-              </Text>
+              <Text style={styles.heroTitle}>Your Tracklist</Text>
+              <Text style={styles.heroSubtitle}>Virtual 100,000 USD · equal-weight · changes apply at next close.</Text>
             </View>
-            <View style={styles.positionBadge}>
-              <Text style={styles.positionBadgeText}>
-                {portfolioData.position_count}/7
-              </Text>
+            <View style={styles.countBadge}>
+              <Text style={styles.countBadgeText}>{positions.length}/7</Text>
             </View>
           </View>
+          <Text style={styles.heroHint}>
+            Manage replacements here. Search is read-only unless you open it in replace mode.
+          </Text>
         </View>
 
-        {/* Cash Position */}
-        <View style={styles.cashCard}>
-          <View style={styles.cashLeft}>
-            <Ionicons name="wallet-outline" size={20} color={COLORS.textLight} />
-            <Text style={styles.cashLabel}>Cash</Text>
-          </View>
-          <View style={styles.cashRight}>
-            <Text style={styles.cashAmount}>
-              {formatCurrency(portfolioData.cash)}
-            </Text>
-            <Text style={styles.cashAllocation}>
-              {portfolioData.cash_allocation.toFixed(1)}% of portfolio
-            </Text>
-          </View>
-        </View>
-
-        {/* Positions List */}
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Positions</Text>
-          <TouchableOpacity
-            style={styles.addButton}
-            onPress={handleAddPosition}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="add" size={20} color={COLORS.primary} />
-            <Text style={styles.addButtonText}>Add</Text>
-          </TouchableOpacity>
+          <Text style={styles.sectionTitle}>Managed stocks</Text>
         </View>
 
-        {portfolioData.positions.length === 0 ? (
+        {positions.map((position: any) => (
+          <View key={position.ticker} style={styles.positionCard}>
+            <View>
+              <Text style={styles.positionTicker}>{position.ticker}</Text>
+              <Text style={styles.positionMeta}>Added {position.added_at || '—'}</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.replaceButton}
+              onPress={() => router.push({ pathname: '/(tabs)/search', params: { mode: 'tracklist-replace', oldTicker: position.ticker } })}
+            >
+              <Text style={styles.replaceButtonText}>Replace</Text>
+            </TouchableOpacity>
+          </View>
+        ))}
+
+        {Array.from({ length: slotsRemaining }).map((_, index) => (
+          <View key={`slot-${index}`} style={[styles.positionCard, styles.emptySlotCard]}>
+            <View>
+              <Text style={styles.positionTicker}>Empty slot</Text>
+              <Text style={styles.positionMeta}>Add from a stock detail page to move toward 7 positions.</Text>
+            </View>
+          </View>
+        ))}
+
+        {!positions.length ? (
           <View style={styles.emptyState}>
-            <Ionicons name="layers-outline" size={48} color={COLORS.textMuted} />
-            <Text style={styles.emptyText}>No positions yet</Text>
-            <Text style={styles.emptySubtext}>
-              Add your first position to start tracking
-            </Text>
+            <Ionicons name="analytics-outline" size={40} color={COLORS.textMuted} />
+            <Text style={styles.emptyTitle}>Tracklist is empty</Text>
+            <Text style={styles.emptyText}>Pick stocks from the detail page using the new + Add to control.</Text>
           </View>
-        ) : (
-          <View style={styles.positionsList}>
-            {portfolioData.positions.map((position: any) => (
-              <TouchableOpacity
-                key={position.id}
-                style={styles.positionCard}
-                onPress={() => router.push(`/position/${position.id}`)}
-                activeOpacity={0.7}
-              >
-                <View style={styles.positionTop}>
-                  <View style={styles.positionTicker}>
-                    <Text style={styles.tickerText}>{position.ticker}</Text>
-                    <Text style={styles.sharesText}>
-                      {position.shares} shares
-                    </Text>
-                  </View>
-                  <View style={styles.positionValue}>
-                    <Text style={styles.marketValue}>
-                      {formatCurrency(position.market_value)}
-                    </Text>
-                    <Text style={styles.allocationText}>
-                      {position.allocation.toFixed(1)}%
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.positionMetrics}>
-                  <View style={styles.metricBox}>
-                    <Text style={styles.metricLabel}>Return</Text>
-                    <Text
-                      style={[
-                        styles.metricValue,
-                        position.return_pct >= 0
-                          ? styles.positiveValue
-                          : styles.negativeValue,
-                      ]}
-                    >
-                      {formatPercent(position.return_pct)}
-                    </Text>
-                  </View>
-                  <View style={styles.metricBox}>
-                    <Text style={styles.metricLabel}>Drawdown</Text>
-                    <Text style={[styles.metricValue, styles.neutralValue]}>
-                      -{position.drawdown.toFixed(1)}%
-                    </Text>
-                  </View>
-                  <View style={styles.metricBox}>
-                    <Text style={styles.metricLabel}>Dividends</Text>
-                    <Text style={styles.metricValue}>
-                      {formatCurrency(position.dividends)}
-                    </Text>
-                  </View>
-                </View>
-
-                <View style={styles.thesisContainer}>
-                  <Ionicons name="document-text-outline" size={14} color={COLORS.textMuted} />
-                  <Text style={styles.thesisText} numberOfLines={1}>
-                    {position.thesis}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -234,7 +146,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: 16,
     paddingBottom: 32,
   },
   loadingContainer: {
@@ -243,196 +154,108 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: COLORS.background,
   },
-  errorContainer: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.background,
-  },
-  errorText: {
-    fontSize: 16,
-    color: COLORS.textLight,
-  },
-  headerCard: {
+  heroCard: {
     backgroundColor: COLORS.card,
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 12,
+    borderRadius: 18,
+    padding: 18,
+    marginBottom: 16,
   },
-  headerTop: {
+  heroTop: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    gap: 12,
   },
-  portfolioName: {
+  heroTitle: {
     fontSize: 22,
     fontWeight: '700',
     color: COLORS.text,
   },
-  portfolioType: {
-    fontSize: 14,
-    color: COLORS.textMuted,
+  heroSubtitle: {
     marginTop: 4,
-    textTransform: 'capitalize',
-  },
-  positionBadge: {
-    backgroundColor: '#F5F8FC',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-  },
-  positionBadgeText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.primary,
-  },
-  cashCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: COLORS.card,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 24,
-  },
-  cashLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  cashLabel: {
-    fontSize: 14,
+    fontSize: 13,
+    lineHeight: 19,
     color: COLORS.textLight,
   },
-  cashRight: {
-    alignItems: 'flex-end',
-  },
-  cashAmount: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  cashAllocation: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-    marginTop: 2,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  addButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#F5F8FC',
-    borderRadius: 8,
-  },
-  addButtonText: {
-    fontSize: 14,
-    fontWeight: '500',
+  heroHint: {
+    marginTop: 12,
+    fontSize: 13,
     color: COLORS.primary,
   },
-  emptyState: {
-    alignItems: 'center',
-    paddingVertical: 48,
+  countBadge: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#EEF2FF',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
   },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginTop: 16,
+  countBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
-  emptySubtext: {
+  sectionHeader: {
+    marginBottom: 10,
+  },
+  sectionTitle: {
     fontSize: 14,
-    color: COLORS.textMuted,
-    marginTop: 8,
-  },
-  positionsList: {
-    gap: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    color: COLORS.text,
   },
   positionCard: {
     backgroundColor: COLORS.card,
     borderRadius: 16,
     padding: 16,
-  },
-  positionTop: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 12,
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    alignItems: 'center',
+    gap: 12,
   },
-  positionTicker: {},
-  tickerText: {
+  emptySlotCard: {
+    borderStyle: 'dashed',
+  },
+  positionTicker: {
     fontSize: 18,
     fontWeight: '700',
     color: COLORS.text,
   },
-  sharesText: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-    marginTop: 2,
-  },
-  positionValue: {
-    alignItems: 'flex-end',
-  },
-  marketValue: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  allocationText: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-    marginTop: 2,
-  },
-  positionMetrics: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.background,
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 12,
-  },
-  metricBox: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  metricLabel: {
-    fontSize: 11,
-    color: COLORS.textMuted,
-    marginBottom: 4,
-  },
-  metricValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  positiveValue: {
-    color: COLORS.positive,
-  },
-  negativeValue: {
-    color: COLORS.negative,
-  },
-  neutralValue: {
-    color: COLORS.textLight,
-  },
-  thesisContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  thesisText: {
-    flex: 1,
+  positionMeta: {
+    marginTop: 4,
     fontSize: 13,
     color: COLORS.textLight,
-    fontStyle: 'italic',
+    maxWidth: 220,
+  },
+  replaceButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary + '12',
+  },
+  replaceButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  emptyState: {
+    alignItems: 'center',
+    paddingVertical: 36,
+    paddingHorizontal: 18,
+  },
+  emptyTitle: {
+    marginTop: 12,
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  emptyText: {
+    marginTop: 6,
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: 'center',
+    color: COLORS.textLight,
   },
 });

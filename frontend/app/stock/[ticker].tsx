@@ -1,7 +1,6 @@
 /**
- * P34 (BINDING): Stock Detail Page
- * Fix 5: Star mismatch - refresh star state on focus (after returning from search)
- * Star reads from user_watchlist via /api/v1/watchlist/check/{ticker}
+ * Stock Detail Page
+ * Canonical add-to entry point lives in the Last close card.
  * 
  * DO NOT CHANGE WITHOUT RICHARD APPROVAL (kurtarichard@gmail.com)
  */
@@ -698,9 +697,10 @@ export default function StockDetail() {
   // NEW: Mobile detail data (RAW FACTS ONLY)
   const [mobileData, setMobileData] = useState<MobileDetailData | null>(null);
   
-  // P32: Watchlist/Follow state
-  const [isFollowed, setIsFollowed] = useState(false);
-  const [followLoading, setFollowLoading] = useState(false);
+  const [listMemberships, setListMemberships] = useState<{ watchlist: boolean; tracklist: boolean }>({ watchlist: false, tracklist: false });
+  const [listActionLoading, setListActionLoading] = useState(false);
+  const [tracklistIsFull, setTracklistIsFull] = useState(false);
+  const [addToVisible, setAddToVisible] = useState(false);
   
   // Company details accordion state
   const [companyDetailsExpanded, setCompanyDetailsExpanded] = useState(false);
@@ -1068,65 +1068,67 @@ export default function StockDetail() {
     }
   }, [ticker, priceRange]);
 
-  // P34 Fix 5: Check if ticker is in watchlist
-  const checkIfFollowed = useCallback(async () => {
+  const fetchListMemberships = useCallback(async () => {
     if (!sessionToken) {
-      setIsFollowed(false);
+      setListMemberships({ watchlist: false, tracklist: false });
+      setTracklistIsFull(false);
       return;
     }
     try {
-      // P33/P34: Use watchlist endpoint - source of truth
-      const response = await axios.get(`${API_URL}/api/v1/watchlist/check/${ticker}`, {
+      const response = await axios.get(`${API_URL}/api/v1/lists/check/${ticker}`, {
         headers: { Authorization: `Bearer ${sessionToken}` },
       });
-      setIsFollowed(response.data.is_followed || false);
+      setListMemberships(response.data.memberships || { watchlist: false, tracklist: false });
+      setTracklistIsFull(response.data.tracklist_is_full || false);
     } catch (err) {
-      console.error('Error checking follow status:', err);
-      setIsFollowed(false);
+      console.error('Error checking list memberships:', err);
+      setListMemberships({ watchlist: false, tracklist: false });
+      setTracklistIsFull(false);
     }
   }, [ticker, sessionToken]);
 
-  // P34 Fix 5: Toggle follow status (Watchlist only, NOT Portfolio) – optimistic UI
-  const toggleFollow = async () => {
-    if (followLoading) return;
-    
-    setFollowLoading(true);
-    if (!sessionToken) {
-      setFollowLoading(false);
+  const handleAddTo = async (target: 'watchlist' | 'tracklist') => {
+    if (listActionLoading || !sessionToken) {
       return;
     }
-    const wasFollowed = isFollowed;
-    // Optimistic: flip UI immediately
-    setIsFollowed(!wasFollowed);
-
+    if (target === 'watchlist' && listMemberships.tracklist) return;
+    if (target === 'tracklist' && listMemberships.watchlist) return;
+    if (target === 'tracklist' && !listMemberships.tracklist && tracklistIsFull) {
+      dialog.alert('Tracklist is full', 'Tracklist is full (7). Manage it on the Tracklist page.');
+      return;
+    }
+    setListActionLoading(true);
     const authHeaders = { Authorization: `Bearer ${sessionToken}` };
     try {
-      if (wasFollowed) {
+      if (target === 'watchlist' && listMemberships.watchlist) {
         await axios.delete(`${API_URL}/api/v1/watchlist/${ticker}`, {
           headers: authHeaders,
         });
-      } else {
+      } else if (target === 'watchlist') {
         await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`, {}, {
           headers: authHeaders,
         });
+      } else {
+        await axios.post(`${API_URL}/api/v1/tracklist/add/${ticker}`, {}, {
+          headers: authHeaders,
+        });
       }
+      await fetchListMemberships();
+      setAddToVisible(false);
     } catch (err) {
-      // Revert optimistic update on error
-      setIsFollowed(wasFollowed);
-      console.error('Error toggling follow:', err);
-      dialog.alert('Error', `Failed to ${wasFollowed ? 'unfollow' : 'follow'} ${ticker}. Please try again.`);
+      console.error('Error updating list membership:', err);
+      dialog.alert('Error', `Failed to update ${ticker}. Please try again.`);
     } finally {
-      setFollowLoading(false);
+      setListActionLoading(false);
     }
   };
 
-  // P34 Fix 5: Refresh star state when screen gains focus (after returning from search)
   useFocusEffect(
     useCallback(() => {
       if (ticker) {
-        checkIfFollowed();
+        fetchListMemberships();
       }
-    }, [ticker, checkIfFollowed])
+    }, [ticker, fetchListMemberships])
   );
 
   const transformTickerNewsArticles = useCallback((rawArticles: TickerNewsApiArticle[], offset: number): NewsArticle[] => {
@@ -2370,22 +2372,6 @@ export default function StockDetail() {
       <AppHeader
         title={company.code}
         showSubscriptionBadge={false}
-        rightAction={
-          <TouchableOpacity
-            onPress={toggleFollow}
-            disabled={followLoading}
-            style={{ padding: 4 }}
-            accessibilityLabel={isFollowed ? `Unfollow ${company.code}` : `Follow ${company.code}`}
-            accessibilityRole="button"
-            data-testid="header-follow-star"
-          >
-            <Ionicons
-              name={isFollowed ? 'star' : 'star-outline'}
-              size={22}
-              color={isFollowed ? COLORS.warning : COLORS.textMuted}
-            />
-          </TouchableOpacity>
-        }
       />
 
       {/* Navigation row below AppHeader */}
@@ -2605,26 +2591,47 @@ export default function StockDetail() {
         {/* ===== PRICE CARD ===== */}
         {price && (
           <View style={styles.priceCard}>
+            <View style={styles.lastCloseHeader}>
+              <View style={styles.lastCloseTitleRow}>
+                <Ionicons name="time-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.lastCloseTitle}>Last close</Text>
+              </View>
+              <TouchableOpacity
+                style={[styles.addToButton, (listMemberships.watchlist || listMemberships.tracklist) && styles.addToButtonActive]}
+                onPress={() => setAddToVisible(true)}
+              >
+                <Ionicons name="add" size={16} color={COLORS.text} />
+                <Text style={styles.addToButtonText}>
+                  {listMemberships.watchlist || listMemberships.tracklist ? 'Added · 1' : 'Add to'}
+                </Text>
+              </TouchableOpacity>
+            </View>
             <View style={styles.priceRow}>
               <Text style={styles.priceValue}>{formatCurrency(price.last_close)}</Text>
-              <View style={[
-                styles.changeChip,
-                (price.change_pct || 0) >= 0 ? styles.positiveChip : styles.negativeChip
-              ]}>
-                <Ionicons 
-                  name={(price.change_pct || 0) >= 0 ? 'trending-up' : 'trending-down'} 
-                  size={14} 
-                  color={(price.change_pct || 0) >= 0 ? '#10B981' : '#EF4444'} 
-                />
-                <Text style={[
-                  styles.changeText,
-                  (price.change_pct || 0) >= 0 ? styles.positiveText : styles.negativeText
+              <View style={styles.lastCloseChangeRow}>
+                <View style={[
+                  styles.changeChip,
+                  (price.change_pct || 0) >= 0 ? styles.positiveChip : styles.negativeChip
                 ]}>
-                  {formatPercent(price.change_pct)}
+                  <Ionicons 
+                    name={(price.change_pct || 0) >= 0 ? 'trending-up' : 'trending-down'} 
+                    size={14} 
+                    color={(price.change_pct || 0) >= 0 ? '#10B981' : '#EF4444'} 
+                  />
+                  <Text style={[
+                    styles.changeText,
+                    (price.change_pct || 0) >= 0 ? styles.positiveText : styles.negativeText
+                  ]}>
+                    {formatPercent(price.change_pct)}
+                  </Text>
+                </View>
+                <Text style={(price.change || 0) >= 0 ? styles.lastCloseDeltaPositive : styles.lastCloseDeltaNegative}>
+                  {(price.change || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(price.change || 0)).replace('$', '$')}
                 </Text>
               </View>
             </View>
             <Text style={styles.priceDate}>as of {formatDateDMY(price.date)}</Text>
+            <Text style={styles.lastCloseNote}>Changes apply at next close.</Text>
           </View>
         )}
 
@@ -4841,7 +4848,76 @@ export default function StockDetail() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
-      
+
+      <Modal
+        visible={addToVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setAddToVisible(false)}
+      >
+        <Pressable style={styles.periodSelectorOverlay} onPress={() => setAddToVisible(false)}>
+          <Pressable style={styles.addToSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.periodSelectorHandle} />
+            <View style={styles.addToSheetHeader}>
+              <Text style={styles.addToSheetTitle}>Add to</Text>
+              <TouchableOpacity onPress={() => setAddToVisible(false)}>
+                <Ionicons name="close" size={22} color={COLORS.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.addToSheetItem,
+                listMemberships.tracklist && styles.addToSheetItemDisabled,
+                listMemberships.watchlist && styles.addToSheetItemActive,
+              ]}
+              onPress={() => handleAddTo('watchlist')}
+              disabled={listActionLoading || listMemberships.tracklist}
+            >
+              <View style={styles.addToSheetIcon}>
+                <Ionicons name="eye-outline" size={18} color={COLORS.primary} />
+              </View>
+              <View style={styles.addToSheetTextWrap}>
+                <Text style={styles.addToSheetItemTitle}>Watchlist</Text>
+                <Text style={styles.addToSheetItemText}>
+                  {listMemberships.tracklist
+                    ? 'Unavailable while this stock is in your Tracklist.'
+                    : 'Just keep an eye on it — no performance tracking.'}
+                </Text>
+              </View>
+              {listMemberships.watchlist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[
+                styles.addToSheetItem,
+                (listMemberships.watchlist || (tracklistIsFull && !listMemberships.tracklist)) && styles.addToSheetItemDisabled,
+                listMemberships.tracklist && styles.addToSheetItemActive,
+              ]}
+              onPress={() => handleAddTo('tracklist')}
+              disabled={listActionLoading || listMemberships.watchlist || (tracklistIsFull && !listMemberships.tracklist) || listMemberships.tracklist}
+            >
+              <View style={styles.addToSheetIcon}>
+                <Ionicons name="analytics-outline" size={18} color={COLORS.primary} />
+              </View>
+              <View style={styles.addToSheetTextWrap}>
+                <Text style={styles.addToSheetItemTitle}>Tracklist</Text>
+                <Text style={styles.addToSheetItemText}>
+                  {listMemberships.tracklist
+                    ? 'Already managed in your Tracklist. Use Replace on the Tracklist page.'
+                    : listMemberships.watchlist
+                      ? 'Unavailable while this stock is in your Watchlist.'
+                      : tracklistIsFull
+                        ? 'Tracklist is full (7). Manage it on the Tracklist page.'
+                        : 'Track performance from the day you add it.'}
+                </Text>
+              </View>
+              {listMemberships.tracklist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+       
       {/* P1 UX: Native BottomSheet Tooltip */}
       <MetricTooltip 
         visible={tooltipVisible} 
@@ -5163,8 +5239,15 @@ const styles = StyleSheet.create({
   
   // Price Card - MORE COMPACT
   priceCard: { backgroundColor: COLORS.card, borderRadius: 12, padding: 12, marginBottom: 8 },  // Reduced padding and margin
+  lastCloseHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  lastCloseTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  lastCloseTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+  addToButton: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: '#F3F4F6' },
+  addToButtonActive: { backgroundColor: '#E0E7FF' },
+  addToButtonText: { fontSize: 13, fontWeight: '700', color: COLORS.text },
   priceRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   priceValue: { fontSize: 28, fontWeight: '700', color: COLORS.text },  // Slightly smaller
+  lastCloseChangeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   changeChip: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, gap: 4 },
   positiveChip: { backgroundColor: '#D1FAE5' },
   negativeChip: { backgroundColor: '#FEE2E2' },
@@ -5172,6 +5255,9 @@ const styles = StyleSheet.create({
   positiveText: { color: '#10B981' },
   negativeText: { color: '#EF4444' },
   priceDate: { fontSize: 14, color: '#374151', lineHeight: 20, marginTop: 4 },
+  lastCloseDeltaPositive: { fontSize: 14, fontWeight: '700', color: '#10B981' },
+  lastCloseDeltaNegative: { fontSize: 14, fontWeight: '700', color: '#EF4444' },
+  lastCloseNote: { fontSize: 12, color: COLORS.textMuted, marginTop: 6 },
   
   // Price Chart - MORE COMPACT
   chartCard: { backgroundColor: COLORS.card, borderRadius: 12, padding: 12, marginBottom: 8 },  // Reduced
@@ -5895,6 +5981,60 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 20,
     padding: 24,
     paddingBottom: 40,
+  },
+  addToSheet: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 32,
+  },
+  addToSheetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  addToSheetTitle: {
+    fontSize: 22,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  addToSheetItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F3F4F6',
+  },
+  addToSheetItemActive: {
+    backgroundColor: '#F8FAFF',
+  },
+  addToSheetItemDisabled: {
+    opacity: 0.5,
+  },
+  addToSheetIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EEF2FF',
+  },
+  addToSheetTextWrap: {
+    flex: 1,
+  },
+  addToSheetItemTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  addToSheetItemText: {
+    fontSize: 13,
+    lineHeight: 19,
+    color: COLORS.textLight,
+    marginTop: 2,
   },
   periodSelectorHandle: {
     width: 40,
