@@ -553,7 +553,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     setNewsLimit(INITIAL_NEWS_LIMIT);
-  }, [homepageFeedSort, includeHomepageEvents, newsFeedFilter]);
+  }, [homepageFeedSort, includeHomepageEvents]);
 
   const formatPercent = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   const formatDrawdown = (v: number) => `-${Math.abs(v).toFixed(2)}%`;

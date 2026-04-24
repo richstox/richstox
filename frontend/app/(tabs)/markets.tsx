@@ -110,13 +110,13 @@ const getPragueDateString = (value: Date = new Date()): string => {
 
 const parseYmd = (value: string): Date => parseISO(`${value}T00:00:00Z`);
 
-const parseEventNumericValue = (value?: number | string | null): number | null => {
+const toFiniteEventNumber = (value?: number | string | null): number | null => {
   const numericValue = typeof value === 'string' ? Number(value) : value;
   return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : null;
 };
 
 const formatEventAmount = (amount?: number | string | null, currency?: string | null): string | null => {
-  const numericAmount = parseEventNumericValue(amount);
+  const numericAmount = toFiniteEventNumber(amount);
   if (numericAmount == null) return null;
   const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
   return `${prefix}${numericAmount.toFixed(2)}`;
@@ -345,7 +345,6 @@ export default function Markets() {
 
   useEffect(() => {
     activeDaysScrollRef.current?.scrollTo({ x: 0, animated: false });
-    setActiveDaysScrollX(0);
   }, [selectedMonthKey]);
 
   const typeFilteredEvents = useMemo(
