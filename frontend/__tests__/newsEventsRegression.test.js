@@ -40,5 +40,3 @@ describe('News & Events regressions', () => {
     expect(fileContent).toContain('<Text style={styles.newsTitle} numberOfLines={3}>{eventText}</Text>');
   });
 });
-
-module.exports = {};
