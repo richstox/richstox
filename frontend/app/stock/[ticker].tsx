@@ -698,8 +698,8 @@ export default function StockDetail() {
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<NewsArticle | null>(null);
   const [upcomingSplit, setUpcomingSplit] = useState<UpcomingSplitInfo>(null);
+  const newsArticlesRef = useRef<NewsArticle[]>([]);
   const scrollViewRef = useRef<ScrollView>(null);
-  const [, setSectionAnchors] = useState<Record<string, number>>({});
 
   // Valuation details expandable state
   const [valuationDetailsExpanded, setValuationDetailsExpanded] = useState(false);
@@ -1067,10 +1067,15 @@ export default function StockDetail() {
     }, [ticker, checkIfFollowed])
   );
 
+  useEffect(() => {
+    newsArticlesRef.current = newsArticles;
+  }, [newsArticles]);
+
   const fetchNewsArticles = useCallback(async (append = false) => {
     try {
       setNewsLoading(true);
-      const offset = append ? newsArticles.length : 0;
+      const currentArticles = append ? newsArticlesRef.current : [];
+      const offset = append ? currentArticles.length : 0;
       const response = await axios.get(`${API_URL}/api/news/ticker/${ticker}`, {
         params: {
           offset,
@@ -1094,8 +1099,9 @@ export default function StockDetail() {
         tags: article.tags ?? [],
         time_ago: article.time_ago ?? null,
       }));
+      const existingIds = new Set(currentArticles.map((article) => article.id));
       const nextArticles = append
-        ? [...newsArticles, ...incomingArticles.filter((article) => !newsArticles.some((existing) => existing.id === article.id))]
+        ? [...currentArticles, ...incomingArticles.filter((article) => !existingIds.has(article.id))]
         : incomingArticles;
       setNewsArticles(nextArticles);
       setAggregateSentiment(getAggregateSentimentFromArticles(nextArticles));
@@ -1110,7 +1116,7 @@ export default function StockDetail() {
     } finally {
       setNewsLoading(false);
     }
-  }, [ticker, newsArticles, data?.company?.name]);
+  }, [ticker, data?.company?.name]);
 
   const fetchUpcomingSplit = useCallback(async () => {
     try {
@@ -3886,14 +3892,6 @@ export default function StockDetail() {
         <View 
           style={styles.perfCheckCard} 
           data-testid="earnings-section"
-          onLayout={(event) => {
-            const y = event.nativeEvent.layout.y;
-            setSectionAnchors((prev) => (
-              prev.earnings === y
-                ? prev
-                : { ...prev, earnings: y }
-            ));
-          }}
         >
           <TouchableOpacity 
             style={styles.collapsibleHeader} 
@@ -4546,7 +4544,7 @@ export default function StockDetail() {
                         ? COLORS.accent
                         : '#8B5CF6';
                     const eventText = item.subtitle
-                      ? `${item.title}: ${item.subtitle.replace(' • ', ', ')}`
+                      ? `${item.title}: ${item.subtitle.replace(/ • /g, ', ')}`
                       : item.title;
                     return (
                       <View
