@@ -3597,7 +3597,7 @@ export default function StockDetail() {
 
         {/* ===== SECTION 4: KEY METRICS (Hybrid 7) - Collapsed by default ===== */}
         <View 
-          style={[styles.sectionCard]} 
+          style={styles.sectionSurfaceCard} 
           data-testid="key-metrics-section"
           
         >
@@ -3959,7 +3959,7 @@ export default function StockDetail() {
 
         {/* ===== SECTION 5: FINANCIAL HUB (P9) - Replaces old Financials ===== */}
         <View 
-          style={styles.sectionCard}
+          style={styles.sectionSurfaceCard}
           data-testid="financials-section"
         >
           <FinancialHub
@@ -4466,7 +4466,7 @@ export default function StockDetail() {
 
         {/* ===== SECTION 7: INSIDER TRANSACTIONS - Collapsible ===== */}
         <View 
-          style={styles.sectionCard} 
+          style={styles.sectionSurfaceCard} 
           data-testid="insider-section"
         >
           <TouchableOpacity 
@@ -4561,31 +4561,10 @@ export default function StockDetail() {
           )}
         </View>
 
-        {/* ===== CALCULATOR BUTTONS ===== */}
-        <View style={styles.calculatorSection}>
-          <Text style={styles.sectionTitle}>Calculators</Text>
-          <View style={styles.calculatorButtons}>
-            <TouchableOpacity 
-              style={styles.calcButton}
-              onPress={() => router.push(`/calculator/buy-hold?ticker=${company.code}`)}
-            >
-              <Ionicons name="trending-up" size={20} color={COLORS.primary} />
-              <Text style={styles.calcButtonText}>Buy & Hold</Text>
-            </TouchableOpacity>
-            <TouchableOpacity 
-              style={styles.calcButton}
-              onPress={() => router.push(`/calculator/dca?ticker=${company.code}`)}
-            >
-              <Ionicons name="repeat" size={20} color={COLORS.primary} />
-              <Text style={styles.calcButtonText}>DCA</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
         {/* ===== SECTION 8: NEWS & EVENTS ===== */}
         <View 
           style={styles.perfCheckCard} 
-          data-testid="news-talk-section"
+          data-testid="news-events-section"
         >
           <View style={styles.newsSectionHeader}>
             <View style={[styles.sectionHeader, styles.newsSectionTitleWrap]}>
@@ -4728,7 +4707,37 @@ export default function StockDetail() {
             </>
           )}
         </View>
-        
+
+        {/* ===== SECTION 9: CALCULATORS ===== */}
+        <View style={styles.sectionSurfaceCard} data-testid="calculator-section">
+          <View style={styles.sectionHeader}>
+            <Ionicons
+              name="calculator-outline"
+              size={18}
+              color={COLORS.textMuted}
+              accessibilityElementsHidden
+              importantForAccessibility="no"
+            />
+            <Text style={styles.sectionTitleBold}>Calculators</Text>
+          </View>
+          <View style={styles.calculatorButtons}>
+            <TouchableOpacity 
+              style={styles.calcButton}
+              onPress={() => router.push(`/calculator/buy-hold?ticker=${company.code}`)}
+            >
+              <Ionicons name="trending-up" size={20} color={COLORS.primary} />
+              <Text style={styles.calcButtonText}>Buy & Hold</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={styles.calcButton}
+              onPress={() => router.push(`/calculator/dca?ticker=${company.code}`)}
+            >
+              <Ionicons name="repeat" size={20} color={COLORS.primary} />
+              <Text style={styles.calcButtonText}>DCA</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+         
         {/* Bottom padding for navigation */}
         <View style={{ height: 84 }} />
       </ScrollView>
@@ -4927,6 +4936,14 @@ const styles = StyleSheet.create({
   // Clean section styling (no borders)
   sectionCard: {
     marginBottom: 16,
+  },
+  sectionSurfaceCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   // Price History chart card with white background and rounded corners
   priceChartCard: {
@@ -5473,7 +5490,6 @@ const styles = StyleSheet.create({
   insiderLabel: { fontSize: 12, color: COLORS.textMuted },
   
   // Calculator
-  calculatorSection: { marginBottom: 16 },
   calculatorButtons: { flexDirection: 'row', gap: 12 },
   calcButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.card, borderRadius: 12, paddingVertical: 14, gap: 8, borderWidth: 1, borderColor: COLORS.border },
   calcButtonText: { fontSize: 14, fontWeight: '600', color: COLORS.primary },
