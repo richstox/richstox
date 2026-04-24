@@ -141,9 +141,15 @@ def make_fake_db():
 # ---------------------------------------------------------------------------
 PEER_MEDIANS_RESULT = {
     "status": "success",
+    "tickers_targeted": 5432,
     "tickers_processed": 5432,
     "tickers_included_any_metric": 4891,
     "tickers_excluded_all_metrics": 541,
+    "tickers_updated": 180,
+    "tickers_skipped_invalid": 12,
+    "tickers_skipped_not_in_universe": 34,
+    "api_calls": 0,
+    "api_credits_estimated": 0,
     "exclusion_reasons": {
         "missing_or_null_financial_currency": 312,
         "excluded_by_usd_only_metrics_only": 98,
@@ -212,11 +218,18 @@ async def test_finalize_stores_result():
         "finished_at": finished_at,
         "finished_at_prague": finished_at.astimezone(PRAGUE).isoformat(),
         "inventory_snapshot_after": None,
-        "status": "completed",
+        "status": result.get("status", "completed"),
     }
     if result:
-        update_doc["tickers_updated"] = result.get("tickers_updated", 0)
-        update_doc["api_calls"] = result.get("api_calls", 0)
+        for field in (
+            "tickers_targeted",
+            "tickers_updated",
+            "tickers_skipped_invalid",
+            "tickers_skipped_not_in_universe",
+            "api_calls",
+            "api_credits_estimated",
+        ):
+            update_doc[field] = result.get(field, 0)
         # THE FIX — this line was missing before:
         update_doc["result"] = result if isinstance(result, dict) else {"value": str(result)}
         # Duration computation
@@ -234,7 +247,11 @@ async def test_finalize_stores_result():
     # Step 3: Verify the document NOW has the full result
     doc_after = await db.ops_job_runs.find_one({"_id": insert_result.inserted_id})
     assert doc_after is not None
-    assert doc_after["status"] == "completed"
+    assert doc_after["status"] == "success"
+    assert doc_after["tickers_targeted"] == 5432
+    assert doc_after["tickers_updated"] == 180
+    assert doc_after["tickers_skipped_invalid"] == 12
+    assert doc_after["tickers_skipped_not_in_universe"] == 34
     assert "result" in doc_after, "CRITICAL: result must be stored after finalize!"
     assert isinstance(doc_after["result"], dict)
     assert doc_after["result"]["tickers_processed"] == 5432
