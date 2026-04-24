@@ -23,6 +23,7 @@ import asyncio
 import os
 import logging
 import re
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Any, Optional
 from collections import Counter
@@ -143,20 +144,28 @@ def _format_split_ratio(
     old_shares: Any = None,
     new_shares: Any = None,
 ) -> Optional[str]:
-    def _stringify(value: float) -> str:
-        return str(int(value)) if value.is_integer() else format(value, ".15g")
+    def _stringify(value: Any) -> Optional[str]:
+        try:
+            normalized = format(Decimal(str(value)).normalize(), "f")
+        except (InvalidOperation, ValueError):
+            return None
+        return normalized.rstrip("0").rstrip(".") or "0"
 
     if isinstance(split_ratio, str) and split_ratio.strip():
         normalized = split_ratio.strip().replace(" for ", ":").replace("/", ":")
         return normalized
     if isinstance(split_ratio, (int, float)) and not isinstance(split_ratio, bool) and split_ratio > 0:
-        return _stringify(float(split_ratio))
+        return _stringify(split_ratio)
     old_value = _safe_float(old_shares)
     new_value = _safe_float(new_shares)
     if old_value is None or new_value is None:
         return None
 
-    return f"{_stringify(old_value)}:{_stringify(new_value)}"
+    old_text = _stringify(old_value)
+    new_text = _stringify(new_value)
+    if not old_text or not new_text:
+        return None
+    return f"{old_text}:{new_text}"
 
 
 def _extract_split_fields(row: Dict[str, Any]) -> Dict[str, Any]:
