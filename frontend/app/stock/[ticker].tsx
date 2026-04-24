@@ -81,6 +81,11 @@ const getAggregateSentimentFromArticles = (
   return { score: Number(score.toFixed(2)), label: 'neutral', color: '#F59E0B' };
 };
 
+const formatEventMessage = (title: string, subtitle?: string): string => {
+  if (!subtitle) return title;
+  return `${title}: ${subtitle.split(EVENT_SUBTITLE_SEPARATOR).join(', ')}`;
+};
+
 const getSentimentTone = (label?: SentimentCategory | null) => {
   if (label === 'positive') {
     return { backgroundColor: '#D1FAE5', textColor: COLORS.accent };
@@ -1087,13 +1092,13 @@ export default function StockDetail() {
     }, [ticker, checkIfFollowed])
   );
 
-  const mapTickerNewsArticles = useCallback((rawArticles: TickerNewsApiArticle[], offset: number): NewsArticle[] => {
+  const transformTickerNewsArticles = useCallback((rawArticles: TickerNewsApiArticle[], offset: number): NewsArticle[] => {
     return rawArticles.map((article, index) => ({
       id:
         article.article_id ||
         article.source_link ||
         article.link ||
-        `${ticker}-fallback-${article.published_at ?? article.date ?? 'unknown'}-${offset + index}`,
+        `${ticker}-fallback-${article.title ?? 'untitled'}-${article.published_at ?? article.date ?? 'unknown'}-${offset + index}`,
       title: article.title || 'Untitled',
       content: article.content ?? null,
       source: article.source ?? null,
@@ -1120,7 +1125,7 @@ export default function StockDetail() {
         },
       });
       const rawArticles: TickerNewsApiArticle[] = Array.isArray(response.data?.articles) ? response.data.articles : [];
-      setNewsArticles(mapTickerNewsArticles(rawArticles, 0));
+      setNewsArticles(transformTickerNewsArticles(rawArticles, 0));
       setNewsHasMore(Boolean(response.data?.has_more));
     } catch (err) {
       console.error('Error fetching ticker news:', err);
@@ -1129,7 +1134,7 @@ export default function StockDetail() {
     } finally {
       setNewsLoading(false);
     }
-  }, [ticker, mapTickerNewsArticles]);
+  }, [ticker, transformTickerNewsArticles]);
 
   const fetchMoreNews = useCallback(async () => {
     if (newsLoading) return;
@@ -1143,7 +1148,7 @@ export default function StockDetail() {
         },
       });
       const rawArticles: TickerNewsApiArticle[] = Array.isArray(response.data?.articles) ? response.data.articles : [];
-      const incomingArticles = mapTickerNewsArticles(rawArticles, offset);
+      const incomingArticles = transformTickerNewsArticles(rawArticles, offset);
       setNewsArticles((prev) => {
         const existingIds = new Set(prev.map((article) => article.id));
         return [...prev, ...incomingArticles.filter((article) => !existingIds.has(article.id))];
@@ -1154,7 +1159,7 @@ export default function StockDetail() {
     } finally {
       setNewsLoading(false);
     }
-  }, [ticker, newsArticles.length, newsLoading, mapTickerNewsArticles]);
+  }, [ticker, newsArticles.length, newsLoading, transformTickerNewsArticles]);
 
   const fetchUpcomingSplit = useCallback(async () => {
     try {
@@ -1540,8 +1545,10 @@ export default function StockDetail() {
     [newsArticles],
   );
 
-  const shouldFetchMoreNews = () =>
-    newsVisibleCount + NEWS_EVENTS_PAGE_SIZE > newsEventItems.length && newsHasMore && !newsLoading;
+  const shouldFetchMoreNews = useMemo(
+    () => newsVisibleCount + NEWS_EVENTS_PAGE_SIZE > newsEventItems.length && newsHasMore && !newsLoading,
+    [newsVisibleCount, newsEventItems.length, newsHasMore, newsLoading],
+  );
 
   type AnnualDividendPeriod = {
     key: string;
@@ -4588,9 +4595,7 @@ export default function StockDetail() {
                       : item.eventType === 'Dividend'
                         ? COLORS.accent
                         : '#8B5CF6';
-                    const eventText = item.subtitle
-                      ? `${item.title}: ${item.subtitle.split(EVENT_SUBTITLE_SEPARATOR).join(', ')}`
-                      : item.title;
+                    const eventText = formatEventMessage(item.title, item.subtitle);
                     return (
                       <View
                         key={item.id}
@@ -4661,7 +4666,7 @@ export default function StockDetail() {
                   <TouchableOpacity
                     style={styles.newsActionButton}
                     onPress={() => {
-                      if (shouldFetchMoreNews()) {
+                      if (shouldFetchMoreNews) {
                         fetchMoreNews();
                       }
                       setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
