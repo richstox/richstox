@@ -66,6 +66,8 @@ const TICKER_FILTER_THRESHOLD = 6;
 const INITIAL_VISIBLE_EVENTS = 10;
 const MAX_VISIBLE_MONTH_CARDS = 4;
 const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;
+const ACTIVE_DAYS_SCROLL_PERCENTAGE = 0.8;
+const MIN_ACTIVE_DAYS_SCROLL_STEP = 140;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 
@@ -110,13 +112,13 @@ const getPragueDateString = (value: Date = new Date()): string => {
 
 const parseYmd = (value: string): Date => parseISO(`${value}T00:00:00Z`);
 
-const toFiniteEventNumber = (value?: number | string | null): number | null => {
+const normalizeEventNumber = (value?: number | string | null): number | null => {
   const numericValue = typeof value === 'string' ? Number(value) : value;
   return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : null;
 };
 
 const formatEventAmount = (amount?: number | string | null, currency?: string | null): string | null => {
-  const numericAmount = toFiniteEventNumber(amount);
+  const numericAmount = normalizeEventNumber(amount);
   if (numericAmount == null) return null;
   const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
   return `${prefix}${numericAmount.toFixed(2)}`;
@@ -386,7 +388,7 @@ export default function Markets() {
   const canScrollActiveDaysRight =
     activeDaysContentWidth - activeDaysLayoutWidth - activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
   const scrollActiveDaysBy = (direction: -1 | 1) => {
-    const step = Math.max(activeDaysLayoutWidth * 0.8, 140);
+    const step = Math.max(activeDaysLayoutWidth * ACTIVE_DAYS_SCROLL_PERCENTAGE, MIN_ACTIVE_DAYS_SCROLL_STEP);
     activeDaysScrollRef.current?.scrollTo({
       x: Math.max(0, activeDaysScrollX + direction * step),
       animated: true,
