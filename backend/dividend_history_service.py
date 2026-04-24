@@ -149,7 +149,9 @@ def _format_split_ratio(
             normalized = format(Decimal(str(value)).normalize(), "f")
         except (InvalidOperation, ValueError):
             return None
-        return normalized.rstrip("0").rstrip(".") or "0"
+        if "." in normalized:
+            normalized = normalized.rstrip("0").rstrip(".")
+        return normalized or "0"
 
     if isinstance(split_ratio, str) and split_ratio.strip():
         normalized = split_ratio.strip().replace(" for ", ":").replace("/", ":")
