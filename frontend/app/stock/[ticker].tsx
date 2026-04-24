@@ -4690,7 +4690,7 @@ export default function StockDetail() {
               });
               })()}
 
-              {((newsVisibleCount < newsEventItems.length || newsHasMore) || newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT) && (
+              {(newsVisibleCount < newsEventItems.length || newsHasMore || newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT) && (
                 <View style={styles.newsActionsRow}>
                   {(newsVisibleCount < newsEventItems.length || newsHasMore) && (
                     <TouchableOpacity
