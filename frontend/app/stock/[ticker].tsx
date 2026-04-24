@@ -4564,7 +4564,7 @@ export default function StockDetail() {
         {/* ===== SECTION 8: NEWS & EVENTS ===== */}
         <View 
           style={styles.perfCheckCard} 
-          data-testid="news-talk-section"
+          data-testid="news-events-section"
         >
           <View style={styles.newsSectionHeader}>
             <View style={[styles.sectionHeader, styles.newsSectionTitleWrap]}>
@@ -4711,7 +4711,13 @@ export default function StockDetail() {
         {/* ===== SECTION 9: CALCULATORS ===== */}
         <View style={styles.sectionSurfaceCard} data-testid="calculator-section">
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionIcon}>🧮</Text>
+            <Ionicons
+              name="calculator-outline"
+              size={18}
+              color={COLORS.textMuted}
+              accessibilityElementsHidden
+              importantForAccessibility="no"
+            />
             <Text style={styles.sectionTitleBold}>Calculators</Text>
           </View>
           <View style={styles.calculatorButtons}>
