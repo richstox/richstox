@@ -1,5 +1,12 @@
 # RICHSTOX — Operations Guide
 
+## 0. Binding Runtime Architecture Rule
+
+- Frontend MUST NEVER call external APIs/providers directly.
+- User-facing backend endpoints MUST NEVER call external APIs/providers directly.
+- All provider data must be ingested into MongoDB first, then served from internal backend endpoints only.
+- Missing data is a pipeline/backfill problem, not a reason to add a live provider call in runtime code.
+
 ## 1. Local Development
 
 ### Prerequisites
