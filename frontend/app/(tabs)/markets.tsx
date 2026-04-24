@@ -65,6 +65,7 @@ const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const TICKER_FILTER_THRESHOLD = 6;
 const INITIAL_VISIBLE_EVENTS = 10;
 const MAX_VISIBLE_MONTH_CARDS = 4;
+const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 
@@ -381,9 +382,10 @@ export default function Markets() {
     [visibleEventLimit, visibleEvents],
   );
 
-  const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + 4;
-  const canScrollActiveDaysLeft = activeDaysScrollX > 4;
-  const canScrollActiveDaysRight = activeDaysContentWidth - activeDaysLayoutWidth - activeDaysScrollX > 4;
+  const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;
+  const canScrollActiveDaysLeft = activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
+  const canScrollActiveDaysRight =
+    activeDaysContentWidth - activeDaysLayoutWidth - activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
   const scrollActiveDaysBy = (direction: -1 | 1) => {
     const step = Math.max(activeDaysLayoutWidth * 0.8, 140);
     activeDaysScrollRef.current?.scrollTo({

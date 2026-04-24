@@ -27,7 +27,8 @@ describe('Markets events regressions', () => {
 
   it('keeps earnings subtitles on the expected label and shows scroll arrows for horizontal day cards', () => {
     expect(fileContent).toContain('details.push(`Exp. ${formattedEstimate}`)');
-    expect(fileContent).toContain('const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + 4;');
+    expect(fileContent).toContain('const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;');
+    expect(fileContent).toContain('const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;');
     expect(fileContent).toContain("scrollActiveDaysBy(-1)");
     expect(fileContent).toContain("scrollActiveDaysBy(1)");
   });

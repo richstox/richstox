@@ -69,7 +69,7 @@ const formatDashboardDate = (dateStr?: string | null): string => {
   return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
 
-const formatDashboardCurrency = (value?: number | null, currency?: string | null): string | null => {
+const formatDashboardCurrency = (value?: number | string | null, currency?: string | null): string | null => {
   const numericValue = typeof value === 'string' ? Number(value) : value;
   if (typeof numericValue !== 'number' || !Number.isFinite(numericValue)) return null;
   const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
