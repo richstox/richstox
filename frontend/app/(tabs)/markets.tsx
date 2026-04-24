@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -41,10 +42,14 @@ const COLORS = {
   border: '#E5E7EB',
 };
 
+type EventType = 'earnings' | 'dividend' | 'split' | 'ipo';
+
 type CalendarEvent = {
   date: string;
-  type: 'earnings' | 'dividend' | 'split' | 'ipo';
+  type: EventType;
   ticker: string | null;
+  company_name?: string | null;
+  logo_url?: string | null;
   label: string;
   description?: string | null;
   amount?: number | null;
@@ -52,6 +57,17 @@ type CalendarEvent = {
   estimate?: number | null;
   currency?: string | null;
   metadata?: Record<string, unknown>;
+};
+
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const TICKER_FILTER_THRESHOLD = 6;
+const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
+
+const EVENT_META: Record<EventType, { label: string; singularLabel: string; color: string; icon: keyof typeof Ionicons.glyphMap }> = {
+  earnings: { label: 'Earnings', singularLabel: 'Earnings', color: '#3B82F6', icon: 'bar-chart-outline' },
+  dividend: { label: 'Dividends', singularLabel: 'Dividend', color: '#10B981', icon: 'cash-outline' },
+  split: { label: 'Splits', singularLabel: 'Split', color: '#F59E0B', icon: 'git-compare-outline' },
+  ipo: { label: 'IPOs', singularLabel: 'IPO', color: '#A855F7', icon: 'rocket-outline' },
 };
 
 const getPragueDateString = (value: Date = new Date()): string => {
@@ -74,14 +90,45 @@ const formatEventAmount = (amount: number, currency?: string | null): string => 
   return `${prefix}${amount.toFixed(2)}`;
 };
 
-const EVENT_META: Record<CalendarEvent['type'], { label: string; color: string; icon: keyof typeof Ionicons.glyphMap }> = {
-  earnings: { label: 'Earnings', color: COLORS.primary, icon: 'bar-chart-outline' },
-  dividend: { label: 'Dividend', color: COLORS.accent, icon: 'cash-outline' },
-  split: { label: 'Split', color: '#8B5CF6', icon: 'git-compare-outline' },
-  ipo: { label: 'IPO', color: COLORS.warning, icon: 'rocket-outline' },
+const hashSymbolToColor = (symbol: string) => {
+  const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
+  let hash = 0;
+  for (let i = 0; i < symbol.length; i++) {
+    hash = ((hash << 5) - hash + symbol.charCodeAt(i)) | 0;
+  }
+  return colors[Math.abs(hash) % colors.length];
 };
 
-const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Prague calendar uses Monday-start weeks.
+const getEventFallbackKey = (ticker?: string | null, companyName?: string | null): string => {
+  if (ticker?.trim()) return ticker.trim().charAt(0).toUpperCase();
+  if (companyName?.trim()) return companyName.trim().charAt(0).toUpperCase();
+  return '?';
+};
+
+const resolveEventLogoUrl = (rawUrl?: string | null): string | undefined => {
+  if (!rawUrl) return undefined;
+  return rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`;
+};
+
+const EventLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: string }) => {
+  const [imageError, setImageError] = useState(false);
+
+  if (!logoUrl || imageError) {
+    return (
+      <View style={[styles.eventLogoFallback, { backgroundColor: hashSymbolToColor(fallbackKey) }]}>
+        <Text style={styles.eventLogoFallbackText}>{fallbackKey}</Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri: logoUrl }}
+      style={styles.eventLogo}
+      onError={() => setImageError(true)}
+    />
+  );
+};
 
 export default function Markets() {
   const router = useRouter();
@@ -98,6 +145,8 @@ export default function Markets() {
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<Date>(todayPrague);
   const [displayMonth, setDisplayMonth] = useState<Date>(startOfMonth(todayPrague));
+  const [selectedEventType, setSelectedEventType] = useState<EventType>('earnings');
+  const [tickerFilter, setTickerFilter] = useState('');
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -133,6 +182,55 @@ export default function Markets() {
   const selectedDateKey = format(selectedDate, 'yyyy-MM-dd');
   const selectedEvents = eventsByDate[selectedDateKey] || [];
 
+  const selectedEventCounts = useMemo(() => {
+    return selectedEvents.reduce<Record<EventType, number>>((acc, event) => {
+      acc[event.type] += 1;
+      return acc;
+    }, {
+      earnings: 0,
+      dividend: 0,
+      split: 0,
+      ipo: 0,
+    });
+  }, [selectedEvents]);
+
+  useEffect(() => {
+    const nextType = EVENT_TYPE_ORDER.find((type) => selectedEventCounts[type] > 0) ?? 'earnings';
+    if (selectedEventCounts[selectedEventType] === 0 && nextType !== selectedEventType) {
+      setSelectedEventType(nextType);
+    }
+    setTickerFilter('');
+  }, [selectedDateKey, selectedEventCounts, selectedEventType]);
+
+  const typeFilteredEvents = useMemo(
+    () => selectedEvents.filter((event) => event.type === selectedEventType),
+    [selectedEventType, selectedEvents],
+  );
+
+  const tickerOptions = useMemo(() => {
+    const options = typeFilteredEvents.map((event) => event.ticker || event.company_name || '').filter(Boolean);
+    return Array.from(new Set(options));
+  }, [typeFilteredEvents]);
+
+  const shouldShowTickerFilter = tickerOptions.length >= TICKER_FILTER_THRESHOLD;
+
+  const normalizedTickerFilter = tickerFilter.trim().toLowerCase();
+  const visibleEvents = useMemo(() => {
+    if (!normalizedTickerFilter) return typeFilteredEvents;
+    return typeFilteredEvents.filter((event) => {
+      const haystack = [
+        event.ticker,
+        event.company_name,
+        event.label,
+        event.description,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(normalizedTickerFilter);
+    });
+  }, [normalizedTickerFilter, typeFilteredEvents]);
+
   const calendarDays = useMemo(() => {
     const monthStart = startOfMonth(displayMonth);
     const monthEnd = endOfMonth(displayMonth);
@@ -151,17 +249,27 @@ export default function Markets() {
   const canGoNext = startOfMonth(displayMonth) < startOfMonth(rangeEnd);
 
   const formatEventSecondary = (event: CalendarEvent): string => {
-    if (event.type === 'dividend' && event.amount != null) {
-      return formatEventAmount(event.amount, event.currency);
+    if (event.type === 'dividend') {
+      const details: string[] = [];
+      if (event.amount != null) details.push(formatEventAmount(event.amount, event.currency));
+      const payDate = typeof event.metadata?.pay_date === 'string' ? event.metadata.pay_date : null;
+      if (payDate) details.push(`Pay ${format(parseYmd(payDate), 'dd MMM yyyy')}`);
+      return details.join(' • ') || (event.description || 'Upcoming dividend');
     }
-    if (event.type === 'split' && event.ratio) {
-      return event.ratio;
+    if (event.type === 'split') {
+      return event.ratio || event.description || 'Upcoming split';
     }
-    if (event.type === 'earnings' && event.estimate != null) {
-      return `Est. ${formatEventAmount(event.estimate, event.currency)}`;
+    if (event.type === 'earnings') {
+      const details: string[] = [];
+      if (event.estimate != null) details.push(`Est. ${formatEventAmount(event.estimate, event.currency)}`);
+      if (event.description) details.push(event.description);
+      return details.join(' • ') || 'Scheduled earnings';
     }
-    if (event.type === 'ipo' && event.amount != null) {
-      return `IPO ${formatEventAmount(event.amount, null)}`;
+    if (event.type === 'ipo') {
+      const details: string[] = [];
+      if (event.amount != null) details.push(`IPO ${formatEventAmount(event.amount, null)}`);
+      if (event.description) details.push(event.description);
+      return details.join(' • ') || 'Upcoming IPO';
     }
     return event.description || 'Scheduled';
   };
@@ -251,13 +359,58 @@ export default function Markets() {
         </View>
 
         <View style={styles.card}>
-          <View style={styles.cardHeader}>
+          <View style={styles.eventsHeader}>
             <View>
-              <Text style={styles.sectionTitle}>Events</Text>
-              <Text style={styles.sectionSubtitle}>{format(selectedDate, 'dd MMM yyyy')}</Text>
+              <Text style={styles.eventsDateTitle}>{format(selectedDate, 'EEEE, MMMM d')}</Text>
+              <Text style={styles.sectionSubtitle}>{selectedEvents.length} events</Text>
             </View>
             <Text style={styles.eventsCount}>{selectedEvents.length}</Text>
           </View>
+
+          <View style={styles.eventTabsRow}>
+            {EVENT_TYPE_ORDER.map((type) => {
+              const meta = EVENT_META[type];
+              const isActive = selectedEventType === type;
+              return (
+                <TouchableOpacity
+                  key={type}
+                  style={[styles.eventTab, isActive && styles.eventTabActive]}
+                  onPress={() => setSelectedEventType(type)}
+                  accessibilityRole="button"
+                >
+                  <View style={[styles.eventTabDot, { backgroundColor: meta.color }]} />
+                  <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive]}>
+                    {meta.label}
+                  </Text>
+                  <View style={[styles.eventTabCountPill, isActive && styles.eventTabCountPillActive]}>
+                    <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive]}>
+                      {selectedEventCounts[type]}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {shouldShowTickerFilter && (
+            <View style={styles.filterSearchWrap}>
+              <Ionicons name="search" size={20} color={COLORS.textMuted} />
+              <TextInput
+                style={styles.filterSearchInput}
+                placeholder="Search ticker or company"
+                placeholderTextColor={COLORS.textMuted}
+                value={tickerFilter}
+                onChangeText={setTickerFilter}
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+              {tickerFilter.length > 0 && (
+                <TouchableOpacity onPress={() => setTickerFilter('')}>
+                  <Ionicons name="close-circle" size={20} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
 
           {loading ? (
             <View style={styles.loadingWrap}>
@@ -270,28 +423,52 @@ export default function Markets() {
               <Ionicons name="calendar-outline" size={28} color={COLORS.textMuted} />
               <Text style={styles.emptyText}>No events for this date</Text>
             </View>
+          ) : typeFilteredEvents.length === 0 ? (
+            <View style={styles.emptyWrap}>
+              <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this date</Text>
+            </View>
+          ) : visibleEvents.length === 0 ? (
+            <View style={styles.emptyWrap}>
+              <Text style={styles.emptyText}>No matches for “{tickerFilter}”</Text>
+            </View>
           ) : (
-            selectedEvents.map((event, index) => {
+            visibleEvents.map((event, index) => {
               const meta = EVENT_META[event.type];
+              const fallbackKey = getEventFallbackKey(event.ticker, event.company_name);
+              const canOpenTicker = Boolean(event.ticker);
               return (
-                <View
+                <TouchableOpacity
                   key={`${event.type}-${event.ticker || 'na'}-${event.date}-${index}`}
-                  style={[styles.eventRow, index === selectedEvents.length - 1 && styles.lastEventRow]}
+                  style={[styles.eventRow, index === visibleEvents.length - 1 && styles.lastEventRow]}
+                  onPress={() => {
+                    if (event.ticker) router.push(`/stock/${event.ticker}`);
+                  }}
+                  disabled={!canOpenTicker}
+                  activeOpacity={canOpenTicker ? 0.8 : 1}
                 >
-                  <View style={[styles.eventIconWrap, { backgroundColor: `${meta.color}15` }]}>
-                    <Ionicons name={meta.icon} size={16} color={meta.color} />
-                  </View>
+                  <EventLogo
+                    logoUrl={resolveEventLogoUrl(event.logo_url)}
+                    fallbackKey={fallbackKey}
+                  />
                   <View style={styles.eventContent}>
                     <View style={styles.eventTopRow}>
-                      <Text style={styles.eventTicker}>{event.ticker || 'Market'}</Text>
+                      <View style={styles.eventTickerBlock}>
+                        <Text style={styles.eventTicker}>{event.ticker || 'Market'}</Text>
+                        {event.company_name ? (
+                          <Text style={styles.eventCompanyName} numberOfLines={1}>{event.company_name}</Text>
+                        ) : null}
+                      </View>
                       <View style={[styles.eventPill, { backgroundColor: `${meta.color}15` }]}>
-                        <Text style={[styles.eventPillText, { color: meta.color }]}>{meta.label}</Text>
+                        <Text style={[styles.eventPillText, { color: meta.color }]}>{meta.singularLabel}</Text>
                       </View>
                     </View>
-                    <Text style={styles.eventTitle}>{event.label}</Text>
+                    <Text style={styles.eventTitle} numberOfLines={2}>{event.label}</Text>
                     <Text style={styles.eventMeta}>{formatEventSecondary(event)}</Text>
                   </View>
-                </View>
+                  {canOpenTicker ? (
+                    <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                  ) : null}
+                </TouchableOpacity>
               );
             })
           )}
@@ -396,26 +573,112 @@ const styles = StyleSheet.create({
   dayDotSelected: { backgroundColor: '#FFFFFF' },
   dayDotText: { fontSize: 10, color: COLORS.textLight, fontWeight: '700' },
   dayDotTextSelected: { color: COLORS.primary },
+  eventsHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  eventsDateTitle: { fontSize: 17, fontWeight: '800', color: COLORS.text },
   eventsCount: { fontSize: 20, fontWeight: '800', color: COLORS.primary },
+  eventTabsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    paddingBottom: 12,
+    marginBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  eventTab: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingBottom: 8,
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  eventTabActive: {
+    borderBottomColor: '#3B82F6',
+  },
+  eventTabDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  eventTabText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
+  eventTabTextActive: {
+    color: '#2563EB',
+  },
+  eventTabCountPill: {
+    minWidth: 28,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    alignItems: 'center',
+    backgroundColor: '#F3F4F6',
+  },
+  eventTabCountPillActive: {
+    backgroundColor: '#DBEAFE',
+  },
+  eventTabCountText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
+  eventTabCountTextActive: {
+    color: '#2563EB',
+  },
+  filterSearchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#F3F4F6',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 16,
+  },
+  filterSearchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: COLORS.text,
+    paddingVertical: 0,
+  },
   loadingWrap: { paddingVertical: 32, alignItems: 'center' },
   errorText: { fontSize: 13, color: COLORS.danger, paddingVertical: 8 },
   emptyWrap: { paddingVertical: 28, alignItems: 'center', gap: 8 },
-  emptyText: { fontSize: 14, color: COLORS.textMuted },
+  emptyText: { fontSize: 14, color: COLORS.textMuted, textAlign: 'center' },
   eventRow: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 12,
-    paddingVertical: 12,
+    paddingVertical: 14,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   lastEventRow: { borderBottomWidth: 0, paddingBottom: 0 },
-  eventIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  eventLogo: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#F3F4F6',
+  },
+  eventLogoFallback: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 2,
+  },
+  eventLogoFallbackText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   eventContent: { flex: 1, gap: 4 },
   eventTopRow: {
@@ -424,8 +687,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
-  eventTicker: { fontSize: 12, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase' },
-  eventPill: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  eventTickerBlock: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 1,
+  },
+  eventTicker: { fontSize: 13, fontWeight: '700', color: COLORS.primary, textTransform: 'uppercase' },
+  eventCompanyName: { fontSize: 13, fontWeight: '600', color: COLORS.textMuted, flexShrink: 1 },
+  eventPill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   eventPillText: { fontSize: 11, fontWeight: '700' },
   eventTitle: { fontSize: 14, fontWeight: '600', color: COLORS.text, lineHeight: 20 },
   eventMeta: { fontSize: 12, color: COLORS.textLight, lineHeight: 18 },

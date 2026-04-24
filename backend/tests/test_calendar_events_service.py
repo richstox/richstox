@@ -47,6 +47,26 @@ class _Collection:
         return _Cursor(docs)
 
 
+class _LookupCollection:
+    def __init__(self, docs):
+        self._docs = list(docs)
+
+    def find(self, query, projection=None):
+        (field, lookup), = query.items()
+        allowed = set(lookup.get("$in", []))
+        docs = [doc for doc in self._docs if doc.get(field) in allowed]
+        if projection and any(key != "_id" for key in projection):
+            projected = []
+            for doc in docs:
+                projected.append({
+                    key: value
+                    for key, value in doc.items()
+                    if key != "_id" and key in projection
+                })
+            docs = projected
+        return _Cursor(docs)
+
+
 class _Db:
     def __init__(self):
         self.upcoming_earnings = _Collection([
@@ -86,6 +106,11 @@ class _Db:
                 "ipo_price": 18.0,
             },
         ])
+        self.company_fundamentals_cache = _LookupCollection([
+            {"ticker": "AAPL.US", "name": "Apple Inc.", "logo_url": "/logos/AAPL.png"},
+            {"ticker": "MSFT.US", "name": "Microsoft", "logo_url": "/logos/MSFT.png"},
+            {"ticker": "NVDA.US", "name": "NVIDIA", "logo_url": "/logos/NVDA.png"},
+        ])
 
 
 @pytest.mark.asyncio
@@ -99,9 +124,15 @@ async def test_get_calendar_events_merges_and_sorts_sources():
     assert result["count"] == 4
     assert [event["type"] for event in result["events"]] == ["ipo", "dividend", "earnings", "split"]
     assert result["events"][0]["ticker"] == "FIGR"
+    assert result["events"][0]["company_name"] == "Figure Technology Solutions IPO"
+    assert result["events"][0]["logo_url"] is None
     assert result["events"][1]["amount"] == 0.75
+    assert result["events"][1]["company_name"] == "Microsoft"
+    assert result["events"][1]["logo_url"] == "/logos/MSFT.png"
     assert result["events"][2]["estimate"] == 1.23
+    assert result["events"][2]["company_name"] == "Apple Inc."
     assert result["events"][3]["ratio"] == "10:1"
+    assert result["events"][3]["logo_url"] == "/logos/NVDA.png"
 
 
 @pytest.mark.asyncio

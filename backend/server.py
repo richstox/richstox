@@ -7242,8 +7242,6 @@ async def get_ticker_news(
     P53: Get news for a specific ticker (detail view).
 
     - Returns up to 100 articles for the ticker (pagination with limit/offset)
-    - PRO users: can see all 100
-    - Free users: only first 10 (then "Upgrade to PRO")
     """
     db = request.app.state.db
     # Normalise to bare ticker (e.g. "AAPL.US" → "AAPL") so it matches
@@ -7254,21 +7252,9 @@ async def get_ticker_news(
             ticker = ticker[: -len(_sfx)]
             break
 
-    # Get user subscription tier
-    user = None
-    is_pro = False
-    try:
-        if hasattr(request.state, "user"):
-            user = request.state.user
-            is_pro = user.get("subscription_tier") in ["pro", "pro_plus"]
-    except:
-        pass
-
-    # Free users limited to 10 articles
-    FREE_LIMIT = 10
-    PRO_LIMIT = 100
-
-    max_limit = PRO_LIMIT if is_pro else FREE_LIMIT
+    # Temporary policy: no free/pro content restrictions here.
+    MAX_LIMIT = 100
+    max_limit = MAX_LIMIT
     effective_limit = min(limit, max_limit - offset)
 
     if effective_limit <= 0:
@@ -7279,7 +7265,7 @@ async def get_ticker_news(
             "limit": limit,
             "total": 0,
             "has_more": False,
-            "upgrade_required": not is_pro,
+            "upgrade_required": False,
         }
 
     # Get mappings for this ticker (sorted by published_at desc)
@@ -7345,7 +7331,6 @@ async def get_ticker_news(
 
     # Determine if there are more articles
     has_more = (offset + len(result_articles)) < min(total_count, max_limit)
-    upgrade_required = not is_pro and total_count > FREE_LIMIT and (offset + limit) >= FREE_LIMIT
 
     return {
         "ticker": ticker,
@@ -7354,7 +7339,7 @@ async def get_ticker_news(
         "limit": limit,
         "total": total_count,
         "has_more": has_more,
-        "upgrade_required": upgrade_required,
+        "upgrade_required": False,
     }
 
 
