@@ -71,7 +71,7 @@ class _Db:
                 "ticker": "AAPL.US",
                 "report_date": "2026-04-28",
                 "before_after_market": "After Market",
-                "estimate": 1.23,
+                "estimate": -0.11,
                 "currency": "USD",
                 "fiscal_period_end": "2026-03-31",
             },
@@ -91,7 +91,8 @@ class _Db:
             {
                 "ticker": "NVDA.US",
                 "split_date": "2026-04-29",
-                "split_ratio": "10:1",
+                "old_shares": 10,
+                "new_shares": 1,
             },
         ])
         self.upcoming_ipos = _Collection([
@@ -104,9 +105,9 @@ class _Db:
             },
         ])
         self.company_fundamentals_cache = _LookupCollection([
-            {"ticker": "AAPL.US", "name": "Apple Inc.", "logo_url": "/logos/AAPL.png"},
-            {"ticker": "MSFT.US", "name": "Microsoft", "logo_url": "/logos/MSFT.png"},
-            {"ticker": "NVDA.US", "name": "NVIDIA", "logo_url": "/logos/NVDA.png"},
+            {"ticker": "AAPL.US", "name": "Apple Inc.", "logo_url": "/logos/AAPL.png", "logo_status": "present"},
+            {"ticker": "MSFT.US", "name": "Microsoft", "logo_url": "/logos/MSFT.png", "logo_status": "present"},
+            {"ticker": "NVDA.US", "name": "NVIDIA", "logo_url": "/logos/NVDA.png", "logo_status": "present"},
         ])
 
 
@@ -125,11 +126,13 @@ async def test_get_calendar_events_merges_and_sorts_sources():
     assert result["events"][0]["logo_url"] is None
     assert result["events"][1]["amount"] == 0.75
     assert result["events"][1]["company_name"] == "Microsoft"
-    assert result["events"][1]["logo_url"] == "/logos/MSFT.png"
-    assert result["events"][2]["estimate"] == 1.23
+    assert result["events"][1]["logo_url"] == "/api/logo/MSFT"
+    assert result["events"][2]["estimate"] == -0.11
     assert result["events"][2]["company_name"] == "Apple Inc."
+    assert result["events"][2]["logo_url"] == "/api/logo/AAPL"
     assert result["events"][3]["ratio"] == "10:1"
-    assert result["events"][3]["logo_url"] == "/logos/NVDA.png"
+    assert result["events"][3]["logo_url"] == "/api/logo/NVDA"
+    assert result["events"][3]["metadata"] == {"old_shares": 10, "new_shares": 1}
 
 
 @pytest.mark.asyncio

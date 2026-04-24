@@ -98,16 +98,48 @@ def _normalize_ticker_symbol(value: Any) -> Optional[str]:
     return symbol if "." in symbol else f"{symbol}.US"
 
 
-def _safe_float(value: Any) -> Optional[float]:
+def _safe_float(value: Any, *, allow_non_positive: bool = False) -> Optional[float]:
     if value is None:
         return None
     try:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
-    if not (parsed > 0):
+    if not allow_non_positive and not (parsed > 0):
         return None
     return round(parsed, 6)
+
+
+def _internal_logo_url(ticker_or_path: Any) -> Optional[str]:
+    if not ticker_or_path or not isinstance(ticker_or_path, str):
+        return None
+    raw = ticker_or_path.strip()
+    if not raw:
+        return None
+    if "/" in raw:
+        basename = raw.rsplit("/", 1)[-1]
+        code = basename.split(".")[0].upper()
+        return f"/api/logo/{code}" if code else None
+    code = raw.replace(".US", "").replace(".CC", "").upper()
+    return f"/api/logo/{code}" if code else None
+
+
+def _format_split_ratio(
+    split_ratio: Any,
+    old_shares: Any = None,
+    new_shares: Any = None,
+) -> Optional[str]:
+    if isinstance(split_ratio, str) and split_ratio.strip():
+        return split_ratio.strip()
+    old_value = _safe_float(old_shares)
+    new_value = _safe_float(new_shares)
+    if old_value is None or new_value is None:
+        return None
+
+    def _stringify(value: float) -> str:
+        return str(int(value)) if float(value).is_integer() else f"{value:g}"
+
+    return f"{_stringify(old_value)}:{_stringify(new_value)}"
 
 
 def _normalize_frequency_label(raw: Any) -> Optional[str]:
@@ -1205,7 +1237,8 @@ async def sync_upcoming_earnings_calendar_for_visible_tickers(db) -> Dict[str, A
                 "estimate": _safe_float(
                     row.get("estimate")
                     or row.get("epsMean")
-                    or row.get("epsEstimate")
+                    or row.get("epsEstimate"),
+                    allow_non_positive=True,
                 ),
             }
 
@@ -1450,15 +1483,31 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
         if not split_date:
             continue
         if ticker not in grouped or split_date < grouped[ticker]["_split_date"]:
+            old_shares = _safe_float(
+                row.get("Old_Shares")
+                or row.get("OldShares")
+                or row.get("old_shares")
+                or row.get("oldShares")
+            )
+            new_shares = _safe_float(
+                row.get("New_Shares")
+                or row.get("NewShares")
+                or row.get("new_shares")
+                or row.get("newShares")
+            )
             grouped[ticker] = {
                 "_split_date": split_date,
                 "split_date": split_date,
-                "split_ratio": (
+                "split_ratio": _format_split_ratio(
                     row.get("Split")
                     or row.get("split")
                     or row.get("split_ratio")
-                    or None
+                    or None,
+                    old_shares=old_shares,
+                    new_shares=new_shares,
                 ),
+                "old_shares": old_shares,
+                "new_shares": new_shares,
             }
 
     write_ops: List[UpdateOne] = []
@@ -1471,6 +1520,8 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
                     "ticker": ticker,
                     "split_date": event["split_date"],
                     "split_ratio": event["split_ratio"],
+                    "old_shares": event["old_shares"],
+                    "new_shares": event["new_shares"],
                     "source": UPCOMING_SPLITS_SOURCE,
                     "fetched_at": now_utc,
                     "window_start": window_start,
@@ -1489,6 +1540,8 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
                     "ticker": ticker,
                     "split_date": None,
                     "split_ratio": None,
+                    "old_shares": None,
+                    "new_shares": None,
                     "source": UPCOMING_SPLITS_SOURCE,
                     "fetched_at": now_utc,
                     "window_start": window_start,
@@ -1528,7 +1581,13 @@ async def get_splits_for_ticker(db, ticker: str) -> Dict[str, Any]:
     if doc and doc.get("split_date"):
         upcoming_split = {
             "split_date": doc["split_date"],
-            "split_ratio": doc.get("split_ratio"),
+            "split_ratio": _format_split_ratio(
+                doc.get("split_ratio"),
+                old_shares=doc.get("old_shares"),
+                new_shares=doc.get("new_shares"),
+            ),
+            "old_shares": doc.get("old_shares"),
+            "new_shares": doc.get("new_shares"),
         }
 
     return {
@@ -1770,7 +1829,7 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
     if ticker_variants:
         fundamentals_rows = await db.company_fundamentals_cache.find(
             {"ticker": {"$in": list(ticker_variants)}},
-            {"_id": 0, "ticker": 1, "name": 1, "logo_url": 1},
+            {"_id": 0, "ticker": 1, "name": 1, "logo_url": 1, "logo_status": 1},
         ).to_list(length=None)
 
     fundamentals_by_ticker: Dict[str, Dict[str, Any]] = {}
@@ -1780,7 +1839,11 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
             continue
         fundamentals_by_ticker[ticker] = {
             "company_name": row.get("name"),
-            "logo_url": row.get("logo_url"),
+            "logo_url": (
+                _internal_logo_url(row.get("logo_url") or row.get("ticker"))
+                if row.get("logo_status") == "present"
+                else row.get("logo_url")
+            ),
         }
 
     events: List[Dict[str, Any]] = []
@@ -1835,6 +1898,11 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
         if not split_date:
             continue
         company_meta = fundamentals_by_ticker.get(ticker or "", {})
+        ratio = _format_split_ratio(
+            row.get("split_ratio"),
+            old_shares=row.get("old_shares"),
+            new_shares=row.get("new_shares"),
+        )
         events.append({
             "date": split_date,
             "type": "split",
@@ -1842,9 +1910,12 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
             "company_name": company_meta.get("company_name"),
             "logo_url": company_meta.get("logo_url"),
             "label": f"{ticker} split" if ticker else "Split",
-            "description": row.get("split_ratio") or "Upcoming split",
-            "ratio": row.get("split_ratio"),
-            "metadata": {},
+            "description": ratio or "Upcoming split",
+            "ratio": ratio,
+            "metadata": {
+                "old_shares": row.get("old_shares"),
+                "new_shares": row.get("new_shares"),
+            },
         })
 
     for row in ipo_rows:
