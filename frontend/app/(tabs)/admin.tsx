@@ -21,6 +21,7 @@ import CustomersTab from '../admin/customers';
 import RemediationTab from '../admin/remediation';
 import { API_URL } from '../../utils/config';
 import { authenticatedFetch } from '../../utils/api_client';
+import { ADMIN_CALENDAR_JOBS } from '../../constants/adminJobs';
 
 type Tab = 'dashboard' | 'pipeline' | 'customers' | 'remediation';
 
@@ -263,20 +264,6 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-const UPCOMING_CALENDAR_JOB_NAMES = [
-  'dividend_upcoming_calendar',
-  'earnings_upcoming_calendar',
-  'splits_upcoming_calendar',
-  'ipos_upcoming_calendar',
-] as const;
-
-const UPCOMING_CALENDAR_JOB_META = {
-  dividend_upcoming_calendar: { label: 'Dividends', hour: 4, minute: 50 },
-  earnings_upcoming_calendar: { label: 'Earnings', hour: 4, minute: 55 },
-  splits_upcoming_calendar: { label: 'Splits', hour: 4, minute: 57 },
-  ipos_upcoming_calendar: { label: 'IPOs', hour: 4, minute: 58 },
-} as const;
-
 function getCalendarJobNextRunFallback(hour: number, minute: number): string {
   try {
     const now = new Date();
@@ -514,9 +501,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const pi = overview?.price_integrity;
   const cp = pi?.coverage_checkpoints || {};
   const eodhd = overview?.eodhd_api_usage;
-  const upcomingCalendarJobs = UPCOMING_CALENDAR_JOB_NAMES
-    .map((jobName) => {
-      const meta = UPCOMING_CALENDAR_JOB_META[jobName];
+  const upcomingCalendarJobs = ADMIN_CALENDAR_JOBS
+    .map((meta) => {
+      const jobName = meta.jobName;
       const job = allSortedJobs.find((item) => item.name === jobName);
       const lastRun = overview?.job_last_runs?.[jobName];
       return {

@@ -14,6 +14,7 @@ import { useAppDialog } from '../../contexts/AppDialogContext';
 import { authenticatedFetch } from '../../utils/api_client';
 import BrandedLoading from '../../components/BrandedLoading';
 import { API_URL } from '../../utils/config';
+import { ADMIN_CALENDAR_JOBS, formatAdminJobSchedule } from '../../constants/adminJobs';
 
 interface PipelineProps {
   sessionToken: string | null;
@@ -191,12 +192,6 @@ function formatTime(iso?: string): string {
     })} Prague`;
   } catch { return '—'; }
 }
-
-const UPCOMING_CALENDAR_PIPELINE_JOBS = [
-  { jobName: 'earnings_upcoming_calendar', label: 'Earnings', schedule: 'Daily 04:55 Prague', hour: 4, minute: 55 },
-  { jobName: 'splits_upcoming_calendar', label: 'Splits', schedule: 'Daily 04:57 Prague', hour: 4, minute: 57 },
-  { jobName: 'ipos_upcoming_calendar', label: 'IPOs', schedule: 'Daily 04:58 Prague', hour: 4, minute: 58 },
-] as const;
 
 function getStatusColor(status?: string): string {
   if (!status) return COLORS.textMuted;
@@ -1152,12 +1147,15 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
   }, [jobRunsRaw, liveLastRuns]);
   const scheduledJobs = data?.jobs?.all_sorted || [];
   const calendarJobs = useMemo(() => {
-    return UPCOMING_CALENDAR_PIPELINE_JOBS.map((meta) => {
+    return ADMIN_CALENDAR_JOBS
+      .filter((meta) => meta.jobName !== 'dividend_upcoming_calendar')
+      .map((meta) => {
       const scheduledJob = scheduledJobs.find((job) => job.name === meta.jobName);
       const lastRun = jobRuns[meta.jobName];
       const running = lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time;
       return {
         ...meta,
+        schedule: formatAdminJobSchedule(meta.hour, meta.minute),
         status: lastRun?.status ?? scheduledJob?.status ?? 'pending',
         running,
         nextRun: scheduledJob?.next_run ?? getNextRun(meta.hour, meta.minute, true),
@@ -1166,7 +1164,7 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
           : 'Last: Never',
         errorMessage: lastRun?.error_message ?? scheduledJob?.error_summary ?? null,
       };
-    });
+      });
   }, [jobRuns, scheduledJobs]);
 
   // On first data load: expand any step that is currently running
