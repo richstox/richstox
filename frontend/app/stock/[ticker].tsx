@@ -2627,6 +2627,415 @@ export default function StockDetail() {
           </View>
         )}
 
+        {/* ===== UNIFIED PERFORMANCE CHECK (Dynamic based on period) ===== */}
+        {/* P1 CRITICAL: Single source of truth - stats change with period selector */}
+        {mobileData?.period_stats && (
+          <View 
+            style={styles.perfCheckCard} 
+            data-testid="reality-check-card"
+          >
+            {/* Header row: title left, period badge right */}
+            <View style={styles.perfCheckHeaderRow}>
+              <View style={styles.perfCheckTitleRow}>
+                <Text style={styles.sectionIcon}>📊</Text>
+                <Text style={styles.sectionTitleBold}>Performance Check</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.perfCheckPeriodTouchable}
+                onPress={() => setPerfCheckPeriodVisible(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Change performance period"
+              >
+                <Text style={styles.perfCheckPeriodBadge}>
+                  {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
+                </Text>
+                <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.perfCheckDateRange}>
+              {formatDateDMY(mobileData.period_stats.start_date)} – {formatDateDMY(mobileData.period_stats.end_date)}
+            </Text>
+            
+            {/* Two sub-cards: Reward | Risk */}
+            <View style={styles.perfCheckColumns}>
+              {/* REWARD sub-card - GREEN */}
+              <View style={styles.perfCheckRewardCard}>
+                <TouchableOpacity
+                  style={styles.perfCheckCardHeader}
+                  onPress={() => showTooltip('perfCheckReward')}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="trending-up" size={18} color="#059669" />
+                  <Text style={styles.perfCheckRewardTitle}>REWARD</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                
+                {/* Total Profit */}
+                <TouchableOpacity
+                  style={styles.perfCheckMetricLabelRow}
+                  onPress={() => showTooltip('perfCheckTotalProfit')}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.perfCheckMetricLabel}>Total Profit</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                <Text style={[
+                  styles.perfCheckMetricValueLarge,
+                  mobileData.period_stats.profit_pct >= 0 ? styles.positiveText : styles.negativeText
+                ]}>
+                  {formatLargePercent(mobileData.period_stats.profit_pct)}
+                </Text>
+                
+                {/* Average per year (CAGR) */}
+                {mobileData.period_stats.cagr_pct !== null && (
+                  <View style={styles.perfCheckMetricRow}>
+                    <TouchableOpacity
+                      style={styles.perfCheckMetricLabelRow}
+                      onPress={() => showTooltip('perfCheckAvgPerYear')}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
+                      <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                    </TouchableOpacity>
+                    <View style={styles.perfCheckMetricInlineRow}>
+                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={14} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
+                      <Text style={[
+                        styles.perfCheckMetricValue, 
+                        mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
+                      ]}>
+                        {formatLargePercent(mobileData.period_stats.cagr_pct)}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+                
+                {/* Reward / Risk (RRR) */}
+                {(() => {
+                  const rrr = computeRRR(chartData);
+                  if (rrr === null) return null;
+                  
+                  return (
+                    <View style={styles.perfCheckMetricRow} data-testid="rrr-performance-check">
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckRewardRisk')}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <View style={styles.perfCheckMetricInlineRow}>
+                        <Text style={[
+                          styles.perfCheckMetricValue,
+                          rrr > 2 ? styles.positiveText :
+                          rrr >= 1 ? styles.neutralText :
+                          styles.rrrNegativeText
+                        ]}>
+                          {formatRRR(rrr)}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })()}
+              </View>
+              
+              {/* RISK sub-card - RED */}
+              <View style={styles.perfCheckRiskCard}>
+                <TouchableOpacity
+                  style={styles.perfCheckCardHeader}
+                  onPress={() => showTooltip('perfCheckRisk')}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="alert-circle" size={18} color="#DC2626" />
+                  <Text style={styles.perfCheckRiskTitle}>RISK</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                
+                {/* Max Drawdown */}
+                <TouchableOpacity
+                  style={styles.perfCheckMetricLabelRow}
+                  onPress={() => showTooltip('perfCheckMaxDrawdown')}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.perfCheckMetricLabel}>Max. Drawdown</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                <Text style={[styles.perfCheckMetricValueLarge, styles.negativeText]}>
+                  {formatLargePercent(-Math.abs(mobileData.period_stats.max_drawdown_pct))}
+                </Text>
+                
+                {/* Drawdown details */}
+                {drawdownDetails && (
+                  <>
+                    <View style={styles.perfCheckMetricRow}>
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckDuration')}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.perfCheckMetricLabel}>Duration</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <Text style={styles.perfCheckMetricValue}>
+                        {drawdownDetails.durationDays} days
+                      </Text>
+                    </View>
+                    <View style={styles.perfCheckMetricRow}>
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckRecovered')}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <Text style={styles.perfCheckMetricValue}>
+                        {drawdownDetails.recoveryDate 
+                          ? formatDateDMY(drawdownDetails.recoveryDate)
+                          : 'Not yet'}
+                      </Text>
+                    </View>
+                  </>
+                )}
+              </View>
+            </View>
+            
+            {/* INDEX BLOCK - Index comparison (stacked, readable) */}
+            <View style={styles.perfCheckIndexBlock}>
+              <View style={styles.perfCheckIndexTitleRow}>
+                <Text style={styles.perfCheckIndexTitle}>Index (S&P 500 TR)</Text>
+                <TouchableOpacity onPress={() => showTooltip('perfCheckIndex')} accessibilityRole="button">
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </View>
+              {mobileData.period_stats.benchmark_total_pct !== null && (
+                <Text style={styles.perfCheckIndexRow}>
+                  Total return:{' '}
+                  <Text style={styles.perfCheckIndexRowValue}>
+                    {mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}{toEU(mobileData.period_stats.benchmark_total_pct, 1)}%
+                  </Text>
+                </Text>
+              )}
+              {/* P0 FIX: Use backend's Wealth Gap calculation (outperformance_pct) */}
+              {(() => {
+                const wealthGap = mobileData.period_stats.outperformance_pct;
+                if (wealthGap === null || wealthGap === undefined) return null;
+                const deltaClamped = Math.max(wealthGap, -100);
+                const sign = deltaClamped >= 0 ? '+' : '';
+                return (
+                  <Text style={styles.perfCheckIndexRow}>
+                    {'Stock vs. index: '}
+                    <Text style={[
+                      styles.perfCheckIndexRowValue,
+                      deltaClamped > 0 ? styles.positiveText :
+                      deltaClamped < 0 ? styles.negativeText : null
+                    ]}>
+                      {sign}{toEU(deltaClamped, 1)}%
+                    </Text>
+                  </Text>
+                );
+              })()}
+            </View>
+            
+            {/* Footer disclaimer */}
+            <Text style={styles.perfCheckDisclaimer}>
+              Past returns do not guarantee future gains. Context only, not advice.
+            </Text>
+          </View>
+        )}
+
+        {/* ===== VALUATION OVERVIEW (P1 UX: Collapsible with Pulse) ===== */}
+        {mobileData?.valuation?.available && (
+          <View style={[styles.sectionCard]} data-testid="valuation-card">
+            {/* Collapsible Header with Valuation Pulse */}
+            <TouchableOpacity 
+              style={styles.collapsibleHeader}
+              onPress={() => setValuationExpanded(!valuationExpanded)}
+              data-testid="valuation-toggle"
+            >
+              <View style={styles.collapsibleTitleRow}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionIcon}>🧾</Text>
+                  <Text style={styles.sectionTitleBold}>Valuation Overview</Text>
+                </View>
+                {/* Pulse summary when collapsed */}
+                {!valuationExpanded && (() => {
+                  const pulse = getValuationPulse(mobileData.valuation);
+                  const sourceLabel = pulse.source === 'peers' ? 'vs peers' : 
+                                     pulse.source === '5y_avg' ? 'vs 5Y avg' : '';
+                  return (
+                    <Text style={[styles.valuationPulse, { color: pulse.color }]}>
+                      {pulse.label}
+                      {pulse.delta !== null && ` (~${pulse.delta > 0 ? '+' : ''}${pulse.delta}% ${sourceLabel})`}
+                    </Text>
+                  );
+                })()}
+              </View>
+              <Ionicons 
+                name={valuationExpanded ? 'chevron-up' : 'chevron-down'} 
+                size={20} 
+                color={COLORS.textMuted} 
+              />
+            </TouchableOpacity>
+            
+            {/* Expanded Content */}
+            {valuationExpanded && (
+              <>
+                {/* Row 1: Cheaper vs peers */}
+                <View style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8, marginTop: 12 }}>
+                  <View style={[
+                    styles.valuationBadge,
+                    mobileData.valuation.overall_vs_peers === 'cheaper' ? styles.valuationBadgeGreen :
+                    mobileData.valuation.overall_vs_peers === 'more_expensive' ? styles.valuationBadgeRed :
+                    styles.valuationBadgeYellow
+                  ]}>
+                    <Text style={styles.valuationBadgeEmoji}>
+                      {mobileData.valuation.overall_vs_peers === 'cheaper' ? '🟢' :
+                       mobileData.valuation.overall_vs_peers === 'more_expensive' ? '🔴' : '🟡'}
+                    </Text>
+                  </View>
+                  <View style={styles.valuationTextBlock}>
+                    <Text style={styles.valuationMainText}>
+                      {mobileData.valuation.overall_vs_peers === 'cheaper' ? 'Cheaper vs peers' :
+                       mobileData.valuation.overall_vs_peers === 'more_expensive' ? 'More expensive vs peers' :
+                       'Around peers'}
+                    </Text>
+                    <Text style={styles.valuationSubText}>
+                      {(() => {
+                        const metrics = mobileData.valuation.metrics;
+                        const peMetric = metrics?.pe;
+                        const peerCount = peMetric?.peer_count || mobileData.valuation.peer_count || 0;
+                        const peerSource = peMetric?.peer_source || 'industry';
+                        const peerLabel = peerSource === 'sector' 
+                          ? (mobileData.company?.sector || 'sector')
+                          : (mobileData.peer_transparency?.industry || mobileData.company?.industry || 'industry');
+                        return `(vs ${peerCount} ${peerLabel} peers)`;
+                      })()}
+                    </Text>
+                  </View>
+                </View>
+                
+                {/* Row 2: vs 5Y Average */}
+                <View style={styles.valuationRow}>
+                  <View style={[
+                    styles.valuationBadge,
+                    mobileData.valuation.overall_vs_5y_avg === 'cheaper' ? styles.valuationBadgeGreen :
+                    mobileData.valuation.overall_vs_5y_avg === 'more_expensive' ? styles.valuationBadgeRed :
+                    mobileData.valuation.overall_vs_5y_avg === 'around' ? styles.valuationBadgeYellow :
+                    styles.valuationBadgeGray
+                  ]}>
+                    <Text style={styles.valuationBadgeEmoji}>
+                      {mobileData.valuation.overall_vs_5y_avg === 'cheaper' ? '🟢' :
+                       mobileData.valuation.overall_vs_5y_avg === 'more_expensive' ? '🔴' :
+                       mobileData.valuation.overall_vs_5y_avg === 'around' ? '🟡' : '⚪'}
+                    </Text>
+                  </View>
+                  <View style={styles.valuationTextBlock}>
+                    {mobileData.valuation.overall_vs_5y_avg ? (
+                      <Text style={styles.valuationMainText}>
+                        {mobileData.valuation.overall_vs_5y_avg === 'cheaper' ? 'Cheaper vs its 5Y average' :
+                         mobileData.valuation.overall_vs_5y_avg === 'more_expensive' ? 'More expensive vs its 5Y average' :
+                         'Around its 5Y average'}
+                      </Text>
+                    ) : (
+                      <>
+                        <Text style={styles.valuationMainText}>vs its 5Y average</Text>
+                        <Text style={styles.valuationNaReason}>N/A (Not calculated yet)</Text>
+                      </>
+                    )}
+                  </View>
+                </View>
+                
+                <Text style={styles.valuationMetricsCount}>
+                  Based on {mobileData.valuation.metrics_used} available metric{mobileData.valuation.metrics_used !== 1 ? 's' : ''}
+                </Text>
+                <Text style={styles.valuationDisclaimer}>Context only, not advice.</Text>
+                
+                {/* Details Table with TWO columns: vs Peers + vs 5Y Avg */}
+                <TouchableOpacity 
+                  style={styles.valuationDetailsToggle}
+                  onPress={() => setValuationDetailsExpanded(!valuationDetailsExpanded)}
+                >
+                  <Ionicons name={valuationDetailsExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={COLORS.textMuted} />
+                  <Text style={styles.valuationDetailsToggleText}>
+                    {valuationDetailsExpanded ? 'Hide details' : 'Show details'}
+                  </Text>
+                </TouchableOpacity>
+                
+                {valuationDetailsExpanded && mobileData.valuation.metrics && (
+                  <View style={styles.valuationDetailsContent}>
+                    <View style={styles.valuationTableHeader}>
+                      <Text style={styles.valuationColMetricHeader}>Metric</Text>
+                      <Text style={styles.valuationColPeersHeader}>vs Peers</Text>
+                      <Text style={styles.valuationCol5YHeader}>vs 5Y Avg</Text>
+                    </View>
+                    
+                    {Object.entries(mobileData.valuation.metrics).map(([key, metric]: [string, any]) => {
+                      const hasValue = metric.current !== null && metric.current !== undefined;
+                      const hasMedian = metric.peer_median !== null && metric.peer_median !== undefined;
+                      const history5y = mobileData.valuation.history_5y?.metrics?.[key];
+                      const has5YAvg = history5y?.avg_5y !== null && history5y?.avg_5y !== undefined;
+                      
+                      // Calculate deltas with explicit null checks
+                      let peerDelta: number | null = null;
+                      let fiveYDelta: number | null = null;
+                      
+                      if (hasValue && hasMedian && metric.peer_median !== 0) {
+                        peerDelta = ((metric.current - metric.peer_median) / metric.peer_median) * 100;
+                      }
+                      if (hasValue && has5YAvg && history5y.avg_5y !== 0) {
+                        fiveYDelta = ((metric.current - history5y.avg_5y) / history5y.avg_5y) * 100;
+                      }
+                      
+                      const getColor = (delta: number | null) => {
+                        if (delta === null) return COLORS.textMuted;
+                        if (delta <= -20) return '#10B981';
+                        if (delta >= 20) return '#EF4444';
+                        return '#F59E0B';
+                      };
+                      
+                      return (
+                        <View key={key} style={styles.valuationTableRow}>
+                          <View style={styles.valuationColMetric}>
+                            <Text style={styles.valuationMetricLabel}>{metric.name}</Text>
+                            {hasValue ? (
+                              <Text style={styles.valuationMetricCurrent}>{toEU(metric.current, 1)}</Text>
+                            ) : (
+                              <Text style={styles.naUnprofitable}>
+                                {metric.na_reason_display?.includes('Negative') ? 'Unprofitable' : 'N/A'}
+                              </Text>
+                            )}
+                          </View>
+                          
+                          <View style={styles.valuationColPeers}>
+                            {hasMedian ? (
+                              <Text style={[styles.valuationDeltaText, { color: getColor(peerDelta) }]}>
+                                {peerDelta !== null ? `${peerDelta > 0 ? '+' : ''}${Math.round(peerDelta)}%` : 'N/A'}
+                              </Text>
+                            ) : (
+                              <Text style={styles.valuationNaDash}>N/A</Text>
+                            )}
+                          </View>
+                          
+                          <View style={styles.valuationCol5Y}>
+                            {has5YAvg ? (
+                              <Text style={[styles.valuationDeltaText, { color: getColor(fiveYDelta) }]}>
+                                {fiveYDelta !== null ? `${fiveYDelta > 0 ? '+' : ''}${Math.round(fiveYDelta)}%` : 'N/A'}
+                              </Text>
+                            ) : (
+                              <Text style={styles.valuationNaDash}>N/A (Insufficient history)</Text>
+                            )}
+                          </View>
+                        </View>
+                      );
+                    })}
+                  </View>
+                )}
+              </>
+            )}
+          </View>
+        )}
+
         {/* ===== PRICE CHART (P1 UX: Chart-first flow) ===== */}
         <View 
           style={styles.priceChartCard} 
@@ -3184,414 +3593,6 @@ export default function StockDetail() {
           )}
         </View>
 
-        {/* ===== UNIFIED PERFORMANCE CHECK (Dynamic based on period) ===== */}
-        {/* P1 CRITICAL: Single source of truth - stats change with period selector */}
-        {mobileData?.period_stats && (
-          <View 
-            style={styles.perfCheckCard} 
-            data-testid="performance-check-card"
-          >
-            {/* Header row: title left, period badge right */}
-            <View style={styles.perfCheckHeaderRow}>
-              <View style={styles.perfCheckTitleRow}>
-                <Text style={styles.sectionIcon}>📊</Text>
-                <Text style={styles.sectionTitleBold}>Performance Check</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.perfCheckPeriodTouchable}
-                onPress={() => setPerfCheckPeriodVisible(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Change performance period"
-              >
-                <Text style={styles.perfCheckPeriodBadge}>
-                  {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
-                </Text>
-                <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.perfCheckDateRange}>
-              {formatDateDMY(mobileData.period_stats.start_date)} – {formatDateDMY(mobileData.period_stats.end_date)}
-            </Text>
-            
-            {/* Two sub-cards: Reward | Risk */}
-            <View style={styles.perfCheckColumns}>
-              {/* REWARD sub-card - GREEN */}
-              <View style={styles.perfCheckRewardCard}>
-                <TouchableOpacity
-                  style={styles.perfCheckCardHeader}
-                  onPress={() => showTooltip('perfCheckReward')}
-                  accessibilityRole="button"
-                >
-                  <Ionicons name="trending-up" size={18} color="#059669" />
-                  <Text style={styles.perfCheckRewardTitle}>REWARD</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                
-                {/* Total Profit */}
-                <TouchableOpacity
-                  style={styles.perfCheckMetricLabelRow}
-                  onPress={() => showTooltip('perfCheckTotalProfit')}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.perfCheckMetricLabel}>Total Profit</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                <Text style={[
-                  styles.perfCheckMetricValueLarge,
-                  mobileData.period_stats.profit_pct >= 0 ? styles.positiveText : styles.negativeText
-                ]}>
-                  {formatLargePercent(mobileData.period_stats.profit_pct)}
-                </Text>
-                
-                {/* Average per year (CAGR) */}
-                {mobileData.period_stats.cagr_pct !== null && (
-                  <View style={styles.perfCheckMetricRow}>
-                    <TouchableOpacity
-                      style={styles.perfCheckMetricLabelRow}
-                      onPress={() => showTooltip('perfCheckAvgPerYear')}
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
-                      <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                    </TouchableOpacity>
-                    <View style={styles.perfCheckMetricInlineRow}>
-                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={14} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
-                      <Text style={[
-                        styles.perfCheckMetricValue, 
-                        mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
-                      ]}>
-                        {formatLargePercent(mobileData.period_stats.cagr_pct)}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-                
-                {/* Reward / Risk (RRR) */}
-                {(() => {
-                  const rrr = computeRRR(chartData);
-                  if (rrr === null) return null;
-                  
-                  return (
-                    <View style={styles.perfCheckMetricRow} data-testid="rrr-performance-check">
-                      <TouchableOpacity
-                        style={styles.perfCheckMetricLabelRow}
-                        onPress={() => showTooltip('perfCheckRewardRisk')}
-                        accessibilityRole="button"
-                      >
-                        <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
-                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                      </TouchableOpacity>
-                      <View style={styles.perfCheckMetricInlineRow}>
-                        <Text style={[
-                          styles.perfCheckMetricValue,
-                          rrr > 2 ? styles.positiveText :
-                          rrr >= 1 ? styles.neutralText :
-                          styles.rrrNegativeText
-                        ]}>
-                          {formatRRR(rrr)}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                })()}
-              </View>
-              
-              {/* RISK sub-card - RED */}
-              <View style={styles.perfCheckRiskCard}>
-                <TouchableOpacity
-                  style={styles.perfCheckCardHeader}
-                  onPress={() => showTooltip('perfCheckRisk')}
-                  accessibilityRole="button"
-                >
-                  <Ionicons name="alert-circle" size={18} color="#DC2626" />
-                  <Text style={styles.perfCheckRiskTitle}>RISK</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                
-                {/* Max Drawdown */}
-                <TouchableOpacity
-                  style={styles.perfCheckMetricLabelRow}
-                  onPress={() => showTooltip('perfCheckMaxDrawdown')}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.perfCheckMetricLabel}>Max. Drawdown</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                <Text style={[styles.perfCheckMetricValueLarge, styles.negativeText]}>
-                  {formatLargePercent(-Math.abs(mobileData.period_stats.max_drawdown_pct))}
-                </Text>
-                
-                {/* Drawdown details */}
-                {drawdownDetails && (
-                  <>
-                    <View style={styles.perfCheckMetricRow}>
-                      <TouchableOpacity
-                        style={styles.perfCheckMetricLabelRow}
-                        onPress={() => showTooltip('perfCheckDuration')}
-                        accessibilityRole="button"
-                      >
-                        <Text style={styles.perfCheckMetricLabel}>Duration</Text>
-                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                      </TouchableOpacity>
-                      <Text style={styles.perfCheckMetricValue}>
-                        {drawdownDetails.durationDays} days
-                      </Text>
-                    </View>
-                    <View style={styles.perfCheckMetricRow}>
-                      <TouchableOpacity
-                        style={styles.perfCheckMetricLabelRow}
-                        onPress={() => showTooltip('perfCheckRecovered')}
-                        accessibilityRole="button"
-                      >
-                        <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
-                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                      </TouchableOpacity>
-                      <Text style={styles.perfCheckMetricValue}>
-                        {drawdownDetails.recoveryDate 
-                          ? formatDateDMY(drawdownDetails.recoveryDate)
-                          : 'Not yet'}
-                      </Text>
-                    </View>
-                  </>
-                )}
-              </View>
-            </View>
-            
-            {/* INDEX BLOCK - Index comparison (stacked, readable) */}
-            <View style={styles.perfCheckIndexBlock}>
-              <View style={styles.perfCheckIndexTitleRow}>
-                <Text style={styles.perfCheckIndexTitle}>Index (S&P 500 TR)</Text>
-                <TouchableOpacity onPress={() => showTooltip('perfCheckIndex')} accessibilityRole="button">
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-              </View>
-              {mobileData.period_stats.benchmark_total_pct !== null && (
-                <Text style={styles.perfCheckIndexRow}>
-                  Total return:{' '}
-                  <Text style={styles.perfCheckIndexRowValue}>
-                    {mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}{toEU(mobileData.period_stats.benchmark_total_pct, 1)}%
-                  </Text>
-                </Text>
-              )}
-              {/* P0 FIX: Use backend's Wealth Gap calculation (outperformance_pct) */}
-              {(() => {
-                const wealthGap = mobileData.period_stats.outperformance_pct;
-                if (wealthGap === null || wealthGap === undefined) return null;
-                const deltaClamped = Math.max(wealthGap, -100);
-                const sign = deltaClamped >= 0 ? '+' : '';
-                return (
-                  <Text style={styles.perfCheckIndexRow}>
-                    {'Stock vs. index: '}
-                    <Text style={[
-                      styles.perfCheckIndexRowValue,
-                      deltaClamped > 0 ? styles.positiveText :
-                      deltaClamped < 0 ? styles.negativeText : null
-                    ]}>
-                      {sign}{toEU(deltaClamped, 1)}%
-                    </Text>
-                  </Text>
-                );
-              })()}
-            </View>
-            
-            {/* Footer disclaimer */}
-            <Text style={styles.perfCheckDisclaimer}>
-              Past returns do not guarantee future gains. Context only, not advice.
-            </Text>
-          </View>
-        )}
-
-        {/* ===== VALUATION OVERVIEW (P1 UX: Collapsible with Pulse) ===== */}
-        {mobileData?.valuation?.available && (
-          <View style={[styles.sectionCard]} data-testid="valuation-card">
-            {/* Collapsible Header with Valuation Pulse */}
-            <TouchableOpacity 
-              style={styles.collapsibleHeader}
-              onPress={() => setValuationExpanded(!valuationExpanded)}
-              data-testid="valuation-toggle"
-            >
-              <View style={styles.collapsibleTitleRow}>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionIcon}>🧾</Text>
-                  <Text style={styles.sectionTitleBold}>Valuation Overview</Text>
-                </View>
-                {/* Pulse summary when collapsed */}
-                {!valuationExpanded && (() => {
-                  const pulse = getValuationPulse(mobileData.valuation);
-                  const sourceLabel = pulse.source === 'peers' ? 'vs peers' : 
-                                     pulse.source === '5y_avg' ? 'vs 5Y avg' : '';
-                  return (
-                    <Text style={[styles.valuationPulse, { color: pulse.color }]}>
-                      {pulse.label}
-                      {pulse.delta !== null && ` (~${pulse.delta > 0 ? '+' : ''}${pulse.delta}% ${sourceLabel})`}
-                    </Text>
-                  );
-                })()}
-              </View>
-              <Ionicons 
-                name={valuationExpanded ? 'chevron-up' : 'chevron-down'} 
-                size={20} 
-                color={COLORS.textMuted} 
-              />
-            </TouchableOpacity>
-            
-            {/* Expanded Content */}
-            {valuationExpanded && (
-              <>
-                {/* Row 1: Cheaper vs peers */}
-                <View style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 8, marginTop: 12 }}>
-                  <View style={[
-                    styles.valuationBadge,
-                    mobileData.valuation.overall_vs_peers === 'cheaper' ? styles.valuationBadgeGreen :
-                    mobileData.valuation.overall_vs_peers === 'more_expensive' ? styles.valuationBadgeRed :
-                    styles.valuationBadgeYellow
-                  ]}>
-                    <Text style={styles.valuationBadgeEmoji}>
-                      {mobileData.valuation.overall_vs_peers === 'cheaper' ? '🟢' :
-                       mobileData.valuation.overall_vs_peers === 'more_expensive' ? '🔴' : '🟡'}
-                    </Text>
-                  </View>
-                  <View style={styles.valuationTextBlock}>
-                    <Text style={styles.valuationMainText}>
-                      {mobileData.valuation.overall_vs_peers === 'cheaper' ? 'Cheaper vs peers' :
-                       mobileData.valuation.overall_vs_peers === 'more_expensive' ? 'More expensive vs peers' :
-                       'Around peers'}
-                    </Text>
-                    <Text style={styles.valuationSubText}>
-                      {(() => {
-                        const metrics = mobileData.valuation.metrics;
-                        const peMetric = metrics?.pe;
-                        const peerCount = peMetric?.peer_count || mobileData.valuation.peer_count || 0;
-                        const peerSource = peMetric?.peer_source || 'industry';
-                        const peerLabel = peerSource === 'sector' 
-                          ? (mobileData.company?.sector || 'sector')
-                          : (mobileData.peer_transparency?.industry || mobileData.company?.industry || 'industry');
-                        return `(vs ${peerCount} ${peerLabel} peers)`;
-                      })()}
-                    </Text>
-                  </View>
-                </View>
-                
-                {/* Row 2: vs 5Y Average */}
-                <View style={styles.valuationRow}>
-                  <View style={[
-                    styles.valuationBadge,
-                    mobileData.valuation.overall_vs_5y_avg === 'cheaper' ? styles.valuationBadgeGreen :
-                    mobileData.valuation.overall_vs_5y_avg === 'more_expensive' ? styles.valuationBadgeRed :
-                    mobileData.valuation.overall_vs_5y_avg === 'around' ? styles.valuationBadgeYellow :
-                    styles.valuationBadgeGray
-                  ]}>
-                    <Text style={styles.valuationBadgeEmoji}>
-                      {mobileData.valuation.overall_vs_5y_avg === 'cheaper' ? '🟢' :
-                       mobileData.valuation.overall_vs_5y_avg === 'more_expensive' ? '🔴' :
-                       mobileData.valuation.overall_vs_5y_avg === 'around' ? '🟡' : '⚪'}
-                    </Text>
-                  </View>
-                  <View style={styles.valuationTextBlock}>
-                    {mobileData.valuation.overall_vs_5y_avg ? (
-                      <Text style={styles.valuationMainText}>
-                        {mobileData.valuation.overall_vs_5y_avg === 'cheaper' ? 'Cheaper vs its 5Y average' :
-                         mobileData.valuation.overall_vs_5y_avg === 'more_expensive' ? 'More expensive vs its 5Y average' :
-                         'Around its 5Y average'}
-                      </Text>
-                    ) : (
-                      <>
-                        <Text style={styles.valuationMainText}>vs its 5Y average</Text>
-                        <Text style={styles.valuationNaReason}>N/A (Not calculated yet)</Text>
-                      </>
-                    )}
-                  </View>
-                </View>
-                
-                <Text style={styles.valuationMetricsCount}>
-                  Based on {mobileData.valuation.metrics_used} available metric{mobileData.valuation.metrics_used !== 1 ? 's' : ''}
-                </Text>
-                <Text style={styles.valuationDisclaimer}>Context only, not advice.</Text>
-                
-                {/* Details Table with TWO columns: vs Peers + vs 5Y Avg */}
-                <TouchableOpacity 
-                  style={styles.valuationDetailsToggle}
-                  onPress={() => setValuationDetailsExpanded(!valuationDetailsExpanded)}
-                >
-                  <Ionicons name={valuationDetailsExpanded ? 'chevron-up' : 'chevron-down'} size={14} color={COLORS.textMuted} />
-                  <Text style={styles.valuationDetailsToggleText}>
-                    {valuationDetailsExpanded ? 'Hide details' : 'Show details'}
-                  </Text>
-                </TouchableOpacity>
-                
-                {valuationDetailsExpanded && mobileData.valuation.metrics && (
-                  <View style={styles.valuationDetailsContent}>
-                    <View style={styles.valuationTableHeader}>
-                      <Text style={styles.valuationColMetricHeader}>Metric</Text>
-                      <Text style={styles.valuationColPeersHeader}>vs Peers</Text>
-                      <Text style={styles.valuationCol5YHeader}>vs 5Y Avg</Text>
-                    </View>
-                    
-                    {Object.entries(mobileData.valuation.metrics).map(([key, metric]: [string, any]) => {
-                      const hasValue = metric.current !== null && metric.current !== undefined;
-                      const hasMedian = metric.peer_median !== null && metric.peer_median !== undefined;
-                      const history5y = mobileData.valuation.history_5y?.metrics?.[key];
-                      const has5YAvg = history5y?.avg_5y !== null && history5y?.avg_5y !== undefined;
-                      
-                      // Calculate deltas with explicit null checks
-                      let peerDelta: number | null = null;
-                      let fiveYDelta: number | null = null;
-                      
-                      if (hasValue && hasMedian && metric.peer_median !== 0) {
-                        peerDelta = ((metric.current - metric.peer_median) / metric.peer_median) * 100;
-                      }
-                      if (hasValue && has5YAvg && history5y.avg_5y !== 0) {
-                        fiveYDelta = ((metric.current - history5y.avg_5y) / history5y.avg_5y) * 100;
-                      }
-                      
-                      const getColor = (delta: number | null) => {
-                        if (delta === null) return COLORS.textMuted;
-                        if (delta <= -20) return '#10B981';
-                        if (delta >= 20) return '#EF4444';
-                        return '#F59E0B';
-                      };
-                      
-                      return (
-                        <View key={key} style={styles.valuationTableRow}>
-                          <View style={styles.valuationColMetric}>
-                            <Text style={styles.valuationMetricLabel}>{metric.name}</Text>
-                            {hasValue ? (
-                              <Text style={styles.valuationMetricCurrent}>{toEU(metric.current, 1)}</Text>
-                            ) : (
-                              <Text style={styles.naUnprofitable}>
-                                {metric.na_reason_display?.includes('Negative') ? 'Unprofitable' : 'N/A'}
-                              </Text>
-                            )}
-                          </View>
-                          
-                          <View style={styles.valuationColPeers}>
-                            {hasMedian ? (
-                              <Text style={[styles.valuationDeltaText, { color: getColor(peerDelta) }]}>
-                                {peerDelta !== null ? `${peerDelta > 0 ? '+' : ''}${Math.round(peerDelta)}%` : 'N/A'}
-                              </Text>
-                            ) : (
-                              <Text style={styles.valuationNaDash}>N/A</Text>
-                            )}
-                          </View>
-                          
-                          <View style={styles.valuationCol5Y}>
-                            {has5YAvg ? (
-                              <Text style={[styles.valuationDeltaText, { color: getColor(fiveYDelta) }]}>
-                                {fiveYDelta !== null ? `${fiveYDelta > 0 ? '+' : ''}${Math.round(fiveYDelta)}%` : 'N/A'}
-                              </Text>
-                            ) : (
-                              <Text style={styles.valuationNaDash}>N/A (Insufficient history)</Text>
-                            )}
-                          </View>
-                        </View>
-                      );
-                    })}
-                  </View>
-                )}
-              </>
-            )}
-          </View>
-        )}
 
         {/* ===== SECTION 4: KEY METRICS (Hybrid 7) - Collapsed by default ===== */}
         <View 
@@ -3958,13 +3959,14 @@ export default function StockDetail() {
         {/* ===== SECTION 5: FINANCIAL HUB (P9) - Replaces old Financials ===== */}
         <View 
           style={styles.sectionCard}
-          
+          data-testid="financials-section"
         >
           <FinancialHub
             financials={mobileData?.financials || data?.financials}
             expanded={financialsExpanded}
             onToggle={() => setFinancialsExpanded(!financialsExpanded)}
             loading={mobileDataLoading}
+            emptyStateMessage="No financials data available"
           />
         </View>
 
@@ -4336,7 +4338,7 @@ export default function StockDetail() {
                           </View>
                         </View>
                       ) : (
-                        <Text style={styles.nextDividendNeutralText}>No upcoming dividend scheduled.</Text>
+                        <Text style={styles.nextDividendNeutralText}>No upcoming dividend information available.</Text>
                       )}
                     </View>
                   </View>
@@ -4380,7 +4382,10 @@ export default function StockDetail() {
                               <View style={styles.paymentRowBody}>
                                 <Text style={styles.paymentAmount}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
                                 <Text style={styles.paymentSubLabel}>
-                                  Pay {d.payment_date ? formatDividendEventDate(d.payment_date) : '—'} · {exParts.year}
+                                  Ex-date: {formatDividendEventDate(d.ex_date)}
+                                </Text>
+                                <Text style={styles.paymentSubLabel}>
+                                  Payment date: {d.payment_date ? formatDividendEventDate(d.payment_date) : '—'} · {exParts.year}
                                 </Text>
                               </View>
                             </View>

@@ -176,6 +176,7 @@ interface FinancialHubProps {
   expanded: boolean;
   onToggle: () => void;
   loading?: boolean;
+  emptyStateMessage?: string;
 }
 
 interface TooltipData {
@@ -511,7 +512,13 @@ const getFinancialVitalsPill = (financials: FinancialsData | null): { label: str
 };
 
 // Main Component
-const FinancialHub: React.FC<FinancialHubProps> = ({ financials, expanded, onToggle, loading = false }) => {
+const FinancialHub: React.FC<FinancialHubProps> = ({
+  financials,
+  expanded,
+  onToggle,
+  loading = false,
+  emptyStateMessage = 'No financial data available',
+}) => {
   const [period, setPeriod] = useState<'quarterly' | 'annual'>('annual');
   const [displayMode, setDisplayMode] = useState<'usd' | 'pct'>('pct');
   const [tooltip, setTooltip] = useState<TooltipData>({ visible: false, value: '', label: '' });
@@ -695,6 +702,11 @@ const FinancialHub: React.FC<FinancialHubProps> = ({ financials, expanded, onTog
           </View>
           <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={20} color={COLORS.textMuted} />
         </TouchableOpacity>
+        {expanded && !loading ? (
+          <View style={styles.noDataState}>
+            <Text style={styles.noDataText}>{emptyStateMessage}</Text>
+          </View>
+        ) : null}
       </View>
     );
   }
@@ -1376,6 +1388,14 @@ const styles = StyleSheet.create({
   pillText: { fontSize: 11, fontWeight: '500', color: '#6B7280' },
   pillTextPositive: { color: '#16A34A' },
   pillTextNegative: { color: '#DC2626' },
+  noDataState: {
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  noDataText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+  },
   switcherRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
