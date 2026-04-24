@@ -37,6 +37,9 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain("Date {homepageFeedSort === 'date_asc' ? '↑' : '↓'}");
     expect(fileContent).toContain("A‑Z {homepageFeedSort === 'za' ? '↑' : '↓'}");
     expect(fileContent).toContain('placeholder="Search news & events..."');
+    expect(fileContent).toContain('<View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>');
+    expect(fileContent).toContain('newsSearchWrapper: {');
+    expect(fileContent).toContain('marginTop: 8,');
     expect(fileContent).toContain('data-testid="homepage-events-toggle"');
     expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>Events</Text>');
   });

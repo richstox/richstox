@@ -22,6 +22,11 @@ describe('Dividends UX regression', () => {
     expect(fileContent).toContain('No upcoming dividend information available.');
   });
 
+  it('uses Expected copy for missing upcoming earnings estimates', () => {
+    expect(fileContent).toContain("return 'Expected —'");
+    expect(fileContent).not.toContain("return 'Estimate —'");
+  });
+
   it('falls back to Unknown for missing dividend dates', () => {
     expect(fileContent).toContain("if (!dateStr) return 'Unknown'");
     expect(fileContent).toContain("return formatted === 'N/A' ? 'Unknown' : formatted");

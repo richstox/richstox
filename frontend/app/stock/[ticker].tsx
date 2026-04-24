@@ -1479,7 +1479,7 @@ export default function StockDetail() {
 
   const formatUpcomingEarningsEstimate = (estimate?: number | string | null, currency?: string | null): string => {
     const numericEstimate = typeof estimate === 'string' ? Number(estimate) : estimate;
-    if (typeof numericEstimate !== 'number' || !Number.isFinite(numericEstimate)) return 'Estimate —';
+    if (typeof numericEstimate !== 'number' || !Number.isFinite(numericEstimate)) return 'Expected —';
     const currencyPrefix = currency && currency !== 'USD' ? `${currency} ` : '$';
     return `Exp. ${currencyPrefix}${toEU(numericEstimate, 2)}`;
   };

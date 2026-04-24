@@ -1069,7 +1069,7 @@ export default function Dashboard() {
               </TouchableOpacity>
             </View>
             {newsFeedItems.length > 0 && (
-              <View style={styles.myStocksSearchWrapper}>
+              <View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>
                 <Ionicons name="search" size={16} color={COLORS.textMuted} />
                 <TextInput
                   style={styles.myStocksSearchInput}
@@ -2115,6 +2115,9 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     flex: 1,
+  },
+  newsSearchWrapper: {
+    marginTop: 8,
   },
   newsSubtitle: {
     fontSize: 12,

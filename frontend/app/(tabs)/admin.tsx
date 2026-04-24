@@ -262,6 +262,16 @@ function formatTime(value: unknown): string {
   });
 }
 
+function readResultCount(result: Record<string, unknown> | null | undefined, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = result?.[key];
+    if (Array.isArray(value)) return value.length;
+    const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    if (Number.isFinite(numeric)) return numeric;
+  }
+  return undefined;
+}
+
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
 }
@@ -825,9 +835,9 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             const lastRunText = job.lastRunPrague
               ? formatPragueDisplay(String(job.lastRunPrague))
               : formatTime(job.lastRunIso ?? undefined);
-            const requestedDays = Array.isArray(job.result?.requested_days) ? job.result.requested_days.length : undefined;
-            const daysOk = Array.isArray(job.result?.days_fetched_ok) ? job.result.days_fetched_ok.length : undefined;
-            const daysFailed = Array.isArray(job.result?.days_failed) ? job.result.days_failed.length : undefined;
+            const requestedDays = readResultCount(job.result, ['requested_days', 'requested_days_count', 'coverage_requested_days_count']);
+            const daysOk = readResultCount(job.result, ['days_fetched_ok', 'days_fetched_ok_count', 'coverage_ok_days_count']);
+            const daysFailed = readResultCount(job.result, ['days_failed', 'days_failed_count', 'coverage_failed_days_count']);
             const coverageText = requestedDays != null && daysOk != null
               ? `Coverage: ${daysOk}/${requestedDays} day${requestedDays === 1 ? '' : 's'}`
               : null;
