@@ -59,6 +59,8 @@ type DashboardFeedItem =
   | { kind: 'event'; id: string; event: HomepageEvent }
   | { kind: 'article'; id: string; article: any };
 
+type HomepageFeedSort = 'date_desc' | 'date_asc' | 'az' | 'za';
+
 const formatDashboardDate = (dateStr?: string | null): string => {
   if (!dateStr) return '';
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return '';
@@ -98,6 +100,21 @@ const formatHomepageEventSubtitle = (event: HomepageEvent): string => {
     return details.join(HOMEPAGE_EVENT_SEPARATOR) || 'Upcoming dividend';
   }
   return event.split_ratio || 'Upcoming split';
+};
+
+const getDashboardFeedDateValue = (item: DashboardFeedItem): number => {
+  const rawDate = item.kind === 'event' ? item.event.date : item.article?.date;
+  if (!rawDate || typeof rawDate !== 'string') return 0;
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(rawDate) ? `${rawDate}T00:00:00Z` : rawDate;
+  const timestamp = new Date(normalized).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
+};
+
+const getDashboardFeedAlphaKey = (item: DashboardFeedItem): string => {
+  const primary = item.kind === 'event'
+    ? item.event.ticker || item.event.company_name || item.event.title
+    : item.article?.ticker || item.article?.company_name || item.article?.title || '';
+  return String(primary).toUpperCase();
 };
 
 // P31 LOGO GUARANTEE: Component that always renders logo or fallback badge
@@ -209,6 +226,8 @@ export default function Dashboard() {
   const [hasMoreNews, setHasMoreNews] = useState(true);
   const [selectedArticle, setSelectedArticle] = useState<any>(null);
   const [aggregateSentiment, setAggregateSentiment] = useState<any>(null);
+  const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');
+  const [includeHomepageEvents, setIncludeHomepageEvents] = useState(true);
   
   // Fix 3: News pagination with See less
   const INITIAL_NEWS_LIMIT = 5;
@@ -477,18 +496,36 @@ export default function Dashboard() {
   );
 
   const newsFeedItems = useMemo<DashboardFeedItem[]>(() => {
-    const eventItems = homepageEvents.map((event) => ({
-      kind: 'event' as const,
-      id: event.id,
-      event,
-    }));
+    const eventItems = includeHomepageEvents
+      ? homepageEvents.map((event) => ({
+          kind: 'event' as const,
+          id: event.id,
+          event,
+        }))
+      : [];
     const articleItems = newsItems.map((article) => ({
       kind: 'article' as const,
       id: article.id,
       article,
     }));
-    return [...eventItems, ...articleItems];
-  }, [homepageEvents, newsItems]);
+    const mergedItems = [...eventItems, ...articleItems];
+
+    switch (homepageFeedSort) {
+      case 'az':
+        return mergedItems.sort((a, b) => getDashboardFeedAlphaKey(a).localeCompare(getDashboardFeedAlphaKey(b)));
+      case 'za':
+        return mergedItems.sort((a, b) => getDashboardFeedAlphaKey(b).localeCompare(getDashboardFeedAlphaKey(a)));
+      case 'date_asc':
+        return mergedItems.sort((a, b) => getDashboardFeedDateValue(a) - getDashboardFeedDateValue(b));
+      case 'date_desc':
+      default:
+        return mergedItems.sort((a, b) => getDashboardFeedDateValue(b) - getDashboardFeedDateValue(a));
+    }
+  }, [homepageEvents, homepageFeedSort, includeHomepageEvents, newsItems]);
+
+  useEffect(() => {
+    setNewsLimit(INITIAL_NEWS_LIMIT);
+  }, [homepageFeedSort, includeHomepageEvents]);
 
   const formatPercent = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   const formatDrawdown = (v: number) => `-${Math.abs(v).toFixed(2)}%`;
@@ -949,6 +986,60 @@ export default function Dashboard() {
                   </Text>
                 </View>
               )}
+            </View>
+            <View style={styles.newsControlsRow}>
+              <View style={styles.newsSortButtons}>
+                <TouchableOpacity
+                  style={[
+                    styles.sortBtn,
+                    (homepageFeedSort === 'date_desc' || homepageFeedSort === 'date_asc') && styles.sortBtnActive,
+                  ]}
+                  onPress={() => {
+                    if (homepageFeedSort === 'date_desc') setHomepageFeedSort('date_asc');
+                    else if (homepageFeedSort === 'date_asc') setHomepageFeedSort('date_desc');
+                    else setHomepageFeedSort('date_desc');
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.sortBtnText,
+                      (homepageFeedSort === 'date_desc' || homepageFeedSort === 'date_asc') && styles.sortBtnTextActive,
+                    ]}
+                  >
+                    Date {homepageFeedSort === 'date_asc' ? '↑' : '↓'}
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.sortBtn,
+                    (homepageFeedSort === 'az' || homepageFeedSort === 'za') && styles.sortBtnActive,
+                  ]}
+                  onPress={() => {
+                    if (homepageFeedSort === 'az') setHomepageFeedSort('za');
+                    else if (homepageFeedSort === 'za') setHomepageFeedSort('az');
+                    else setHomepageFeedSort('az');
+                  }}
+                >
+                  <Text
+                    style={[
+                      styles.sortBtnText,
+                      (homepageFeedSort === 'az' || homepageFeedSort === 'za') && styles.sortBtnTextActive,
+                    ]}
+                  >
+                    A‑Z {homepageFeedSort === 'za' ? '↑' : '↓'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <TouchableOpacity
+                style={styles.portfolioToggleInline}
+                onPress={() => setIncludeHomepageEvents((prev) => !prev)}
+                data-testid="homepage-events-toggle"
+              >
+                <Text style={styles.portfolioToggleLabelInline}>Events</Text>
+                <View style={[styles.toggleSwitch, includeHomepageEvents && styles.toggleSwitchOn]}>
+                  <View style={[styles.toggleKnob, includeHomepageEvents && styles.toggleKnobOn]} />
+                </View>
+              </TouchableOpacity>
             </View>
           </View>
           
@@ -1964,6 +2055,19 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
+  },
+  newsControlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 12,
+  },
+  newsSortButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    flex: 1,
   },
   newsSubtitle: {
     fontSize: 12,
