@@ -96,11 +96,6 @@ const CALENDAR_VIEW_META: Record<CalendarViewMode, { label: string; emptyLabel: 
   monthly: { label: 'Monthly', emptyLabel: 'month' },
   yearly: { label: 'Yearly', emptyLabel: 'year' },
 };
-const ACTIVE_DAY_DOT_LAYOUT: EventType[][] = [
-  ['dividend', 'earnings'],
-  ['split', 'ipo'],
-];
-
 const getPragueDateString = (value: Date = new Date()): string => {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Europe/Prague',
@@ -538,43 +533,17 @@ export default function Markets() {
                   {activeDayKeysForDisplayMonth.map((dayKey) => {
                     const day = parseYmd(dayKey);
                     const isSelected = dayKey === selectedDateKey;
-                    const dayEvents = eventsByDate[dayKey] || [];
-                    const activeDayTypes = new Set(dayEvents.map((event) => event.type));
                     return (
                       <TouchableOpacity
                         key={dayKey}
                         style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
                         onPress={() => setSelectedDate(day)}
                       >
-                        <View style={styles.activeDayDotMatrix}>
-                          {ACTIVE_DAY_DOT_LAYOUT.map((typeRow, rowIndex) => (
-                            <View key={`${dayKey}-${rowIndex}`} style={styles.activeDayDotMatrixRow}>
-                              {typeRow.map((type) => {
-                                const isPresent = activeDayTypes.has(type);
-                                return (
-                                  <View
-                                    key={type}
-                                    style={[
-                                      styles.activeDayMatrixDot,
-                                      {
-                                        backgroundColor: isPresent ? EVENT_META[type].color : COLORS.border,
-                                        opacity: isPresent ? 1 : 0.45,
-                                      },
-                                    ]}
-                                  />
-                                );
-                              })}
-                            </View>
-                          ))}
-                        </View>
                         <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
                           {format(day, 'EEE')}
                         </Text>
                         <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
                           {format(day, 'd')}
-                        </Text>
-                        <Text style={[styles.activeDayCount, isSelected && styles.activeDayTextSelected]}>
-                          {dayEvents.length}
                         </Text>
                       </TouchableOpacity>
                     );
@@ -953,7 +922,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   activeDaysScrollContent: {
-    gap: 10,
+    gap: 8,
     paddingRight: 4,
   },
   activeDaysScrollerRow: {
@@ -962,30 +931,20 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   activeDayCard: {
-    minWidth: 76,
-    paddingVertical: 10,
-    paddingHorizontal: 10,
+    minWidth: 58,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
     borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
     backgroundColor: '#F8FAFC',
-    gap: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
   },
   activeDayCardSelected: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
-  },
-  activeDayDotMatrix: {
-    gap: 3,
-  },
-  activeDayDotMatrixRow: {
-    flexDirection: 'row',
-    gap: 3,
-  },
-  activeDayMatrixDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 999,
   },
   activeDayWeekday: {
     fontSize: 11,
@@ -997,11 +956,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '800',
     color: COLORS.text,
-  },
-  activeDayCount: {
-    fontSize: 11,
-    color: COLORS.textLight,
-    fontWeight: '600',
   },
   activeDayTextSelected: {
     color: '#FFFFFF',

@@ -262,6 +262,16 @@ function formatTime(value: unknown): string {
   });
 }
 
+function formatDurationSeconds(value: unknown): string | null {
+  const seconds = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+  if (!Number.isFinite(seconds) || seconds < 0) return null;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.round((seconds % 3600) / 60);
+  return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+}
+
 function readResultCount(result: Record<string, unknown> | null | undefined, keys: string[]): number | undefined {
   for (const key of keys) {
     const value = result?.[key];
@@ -518,6 +528,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
       const jobName = meta.jobName;
       const job = allSortedJobs.find((item) => item.name === jobName);
       const lastRun = overview?.job_last_runs?.[jobName];
+      const startedAtIso = lastRun?.started_at ?? lastRun?.start_time ?? null;
+      const isRunning = calendarJobRunning[jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time);
+      const runningDurationSeconds = isRunning && startedAtIso
+        ? Math.max(0, (Date.now() - new Date(startedAtIso).getTime()) / 1000)
+        : null;
       return {
         jobName,
         label: meta.label,
@@ -526,9 +541,15 @@ function DashboardTab({ sessionToken }: DashboardProps) {
         nextRun: job?.next_run ?? getCalendarJobNextRunFallback(meta.hour, meta.minute),
         lastRunIso: lastRun?.finished_at ?? lastRun?.end_time ?? lastRun?.started_at ?? lastRun?.start_time ?? null,
         lastRunPrague: lastRun?.finished_at_prague ?? lastRun?.started_at_prague ?? job?.last_run_finished ?? job?.last_run_started ?? null,
+        latestCompletedPrague: lastRun?.latest_completed_finished_at_prague ?? null,
+        latestCompletedDurationSeconds: lastRun?.latest_completed_duration_seconds ?? null,
+        latestCompletedResult: lastRun?.latest_completed_result ?? null,
+        runningStartedPrague: lastRun?.started_at_prague ?? null,
+        runningDurationSeconds,
+        durationSeconds: lastRun?.duration_seconds ?? null,
         errorMessage: lastRun?.error_message ?? job?.error_summary,
-        result: lastRun?.result ?? null,
-        running: calendarJobRunning[jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time),
+        result: lastRun?.result ?? lastRun?.latest_completed_result ?? null,
+        running: isRunning,
       };
     })
     .filter(Boolean);
@@ -841,6 +862,11 @@ function DashboardTab({ sessionToken }: DashboardProps) {
             const coverageText = requestedDays != null && daysOk != null
               ? `Coverage: ${daysOk}/${requestedDays} day${requestedDays === 1 ? '' : 's'}`
               : null;
+            const runningDurationText = formatDurationSeconds(job.runningDurationSeconds);
+            const lastDurationText = formatDurationSeconds(job.durationSeconds ?? job.latestCompletedDurationSeconds);
+            const lastCompletedText = job.running
+              ? (job.latestCompletedPrague ? formatPragueDisplay(String(job.latestCompletedPrague)) : null)
+              : (lastRunText || null);
             return (
               <View key={job.jobName} style={d.calendarJobItem}>
                 <View style={d.calendarJobHeader}>
@@ -866,7 +892,25 @@ function DashboardTab({ sessionToken }: DashboardProps) {
                   </Text>
                   <Text style={d.calendarJobMeta}>Next: {nextRunText}</Text>
                 </View>
-                <Text style={d.calendarJobMeta}>Last: {lastRunText || 'Never'}</Text>
+                {job.running ? (
+                  <>
+                    <Text style={d.calendarJobMeta}>
+                      Started: {job.runningStartedPrague ? formatPragueDisplay(String(job.runningStartedPrague)) : (lastRunText || '—')}
+                      {runningDurationText ? ` · ${runningDurationText}` : ''}
+                    </Text>
+                    {!!lastCompletedText && (
+                      <Text style={d.calendarJobMeta}>
+                        Last OK: {lastCompletedText}
+                        {lastDurationText ? ` · ${lastDurationText}` : ''}
+                      </Text>
+                    )}
+                  </>
+                ) : (
+                  <Text style={d.calendarJobMeta}>
+                    Last: {lastRunText || 'Never'}
+                    {lastDurationText ? ` · ${lastDurationText}` : ''}
+                  </Text>
+                )}
                 {!!coverageText && (
                   <Text style={d.calendarJobMeta}>
                     {coverageText}{daysFailed ? ` · failed ${daysFailed}` : ''}
