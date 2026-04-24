@@ -240,16 +240,6 @@ function jobStatusLabel(status?: string | null): string {
   return String(status);
 }
 
-function adminJobLabel(jobName: string): string {
-  const labels: Record<string, string> = {
-    dividend_upcoming_calendar: 'Dividends',
-    earnings_upcoming_calendar: 'Earnings',
-    splits_upcoming_calendar: 'Splits',
-    ipos_upcoming_calendar: 'IPOs',
-  };
-  return labels[jobName] ?? jobName;
-}
-
 function formatPragueDisplay(value?: string | null): string {
   if (!value) return 'Never';
   return value.replace('T', ' ').slice(0, 16);
@@ -279,6 +269,31 @@ const UPCOMING_CALENDAR_JOB_NAMES = [
   'splits_upcoming_calendar',
   'ipos_upcoming_calendar',
 ] as const;
+
+const UPCOMING_CALENDAR_JOB_META = {
+  dividend_upcoming_calendar: { label: 'Dividends', hour: 4, minute: 50 },
+  earnings_upcoming_calendar: { label: 'Earnings', hour: 4, minute: 55 },
+  splits_upcoming_calendar: { label: 'Splits', hour: 4, minute: 57 },
+  ipos_upcoming_calendar: { label: 'IPOs', hour: 4, minute: 58 },
+} as const;
+
+function getCalendarJobNextRunFallback(hour: number, minute: number): string {
+  try {
+    const now = new Date();
+    const pragueNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Prague' }));
+    const nextRun = new Date(pragueNow);
+    nextRun.setHours(hour, minute, 0, 0);
+    if (nextRun <= pragueNow) nextRun.setDate(nextRun.getDate() + 1);
+    while (nextRun.getDay() === 0) nextRun.setDate(nextRun.getDate() + 1);
+    return nextRun.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return '—';
+  }
+}
 
 // ─── Dashboard Tab ────────────────────────────────────────────────────────────
 
@@ -501,21 +516,22 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const eodhd = overview?.eodhd_api_usage;
   const upcomingCalendarJobs = UPCOMING_CALENDAR_JOB_NAMES
     .map((jobName) => {
+      const meta = UPCOMING_CALENDAR_JOB_META[jobName];
       const job = allSortedJobs.find((item) => item.name === jobName);
       const lastRun = overview?.job_last_runs?.[jobName];
       return {
         jobName,
-        label: adminJobLabel(jobName),
-        status: lastRun?.status ?? job?.status,
+        label: meta.label,
+        status: lastRun?.status ?? job?.status ?? 'pending',
         nextRunIso: job?.next_run_iso ?? null,
-        nextRun: job?.next_run,
+        nextRun: job?.next_run ?? getCalendarJobNextRunFallback(meta.hour, meta.minute),
         lastRunIso: lastRun?.finished_at ?? lastRun?.end_time ?? lastRun?.started_at ?? lastRun?.start_time ?? null,
         lastRunPrague: lastRun?.finished_at_prague ?? lastRun?.started_at_prague ?? job?.last_run_finished ?? job?.last_run_started ?? null,
         errorMessage: lastRun?.error_message ?? job?.error_summary,
         running: calendarJobRunning[jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time),
       };
     })
-    .filter((job) => !!job.nextRun || !!job.lastRunIso || !!job.lastRunPrague);
+    .filter(Boolean);
 
   // ── Bulk Completeness (since last full backfill) ──
   const bc = overview?.bulk_completeness;
