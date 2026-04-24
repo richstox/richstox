@@ -31,6 +31,7 @@ import AppHeader from '../../components/AppHeader';
 
 const COLORS = {
   primary: '#1E3A5F',
+  primarySoft: 'rgba(30, 58, 95, 0.08)',
   accent: '#10B981',
   warning: '#F59E0B',
   danger: '#EF4444',
@@ -910,7 +911,7 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingVertical: 10,
     borderRadius: 12,
-    backgroundColor: COLORS.primary + '10',
+    backgroundColor: COLORS.primarySoft,
     marginBottom: 12,
   },
   calendarToggleText: {
@@ -1137,7 +1138,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 12,
     borderRadius: 8,
-    backgroundColor: COLORS.primary + '10',
+    backgroundColor: COLORS.primarySoft,
     alignItems: 'center',
   },
   seeLessButtonFull: {
