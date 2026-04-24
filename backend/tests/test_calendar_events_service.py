@@ -41,13 +41,16 @@ class _Collection:
         self._docs = list(docs)
 
     def find(self, query, projection=None):
-        (field, bounds), = query.items()
-        docs = [
-            doc for doc in self._docs
-            if doc.get(field) is not None
-            and doc.get(field) >= bounds.get("$gte")
-            and doc.get(field) <= bounds.get("$lte")
-        ]
+        if not query:
+            docs = list(self._docs)
+        else:
+            (field, bounds), = query.items()
+            docs = [
+                doc for doc in self._docs
+                if doc.get(field) is not None
+                and doc.get(field) >= bounds.get("$gte")
+                and doc.get(field) <= bounds.get("$lte")
+            ]
         return _Cursor(_apply_projection(docs, projection))
 
 
@@ -141,3 +144,34 @@ async def test_get_calendar_events_validates_date_window():
 
     with pytest.raises(ValueError, match="Start date \\(from\\) must be on or before end date \\(to\\)"):
         await get_calendar_events(db, "2026-04-30", "2026-04-29")
+
+
+@pytest.mark.asyncio
+async def test_get_calendar_events_supports_legacy_split_and_ipo_fields():
+    db = _Db()
+    db.upcoming_splits = _Collection([
+        {
+            "ticker": "SHOP.US",
+            "date": "2026-04-28",
+            "ratio": "3/1",
+        },
+    ])
+    db.upcoming_ipos = _Collection([
+        {
+            "ticker": "FING",
+            "date": "2026-04-27",
+            "Description": "Fin Growth Holdings",
+            "Exchange": "NASDAQ",
+            "Offer_Price": 12,
+        },
+    ])
+
+    result = await get_calendar_events(db, "2026-04-27", "2026-04-28")
+
+    assert [event["type"] for event in result["events"]] == ["ipo", "split"]
+    assert result["events"][0]["ticker"] == "FING"
+    assert result["events"][0]["amount"] == 12
+    assert result["events"][0]["description"] == "NASDAQ"
+    assert result["events"][1]["ticker"] == "SHOP"
+    assert result["events"][1]["ratio"] == "3:1"
+    assert result["events"][1]["metadata"] == {"old_shares": None, "new_shares": None}

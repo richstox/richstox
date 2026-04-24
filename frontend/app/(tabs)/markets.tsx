@@ -28,9 +28,9 @@ import {
   startOfWeek,
   subDays,
 } from 'date-fns';
-import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
+import AppHeader from '../../components/AppHeader';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -384,17 +384,7 @@ export default function Markets() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={[styles.header, { paddingHorizontal: sp.pageGutter }]}>
-        <TouchableOpacity style={styles.headerBrand} onPress={() => router.push('/(tabs)/dashboard')}>
-          <Image source={require('../../assets/images/richstox_icon.png')} style={styles.logo} />
-          <Text style={styles.headerTitle}>Markets</Text>
-        </TouchableOpacity>
-        <View style={styles.headerRight}>
-          <TouchableOpacity style={styles.headerIcon} onPress={() => router.push('/(tabs)/search')}>
-            <Ionicons name="search-outline" size={22} color={COLORS.text} />
-          </TouchableOpacity>
-        </View>
-      </View>
+      <AppHeader title="Markets" />
 
       <ScrollView style={styles.scroll} contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}>
         <View style={styles.card}>
@@ -700,28 +690,6 @@ export default function Markets() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-    backgroundColor: COLORS.card,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  headerBrand: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  logo: { width: 36, height: 36 },
-  headerTitle: {
-    fontSize: 18,
-    fontFamily: FONTS.heading,
-    color: COLORS.primary,
-    marginLeft: 10,
-  },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  headerIcon: { padding: 6 },
   scroll: { flex: 1 },
   card: {
     backgroundColor: COLORS.card,

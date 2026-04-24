@@ -44,6 +44,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
     expect(fileContent).toContain("setSelectedYear(year);");
-    expect(fileContent).toContain("router.push('/(tabs)/dashboard')");
+    expect(fileContent).toContain("import AppHeader from '../../components/AppHeader';");
+    expect(fileContent).toContain('<AppHeader title="Markets" />');
   });
 });
