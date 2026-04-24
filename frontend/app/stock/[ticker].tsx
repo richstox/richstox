@@ -44,6 +44,7 @@ const EARNINGS_NEUTRAL_COLOR = '#6B7280';
 const INITIAL_NEWS_EVENTS_LIMIT = 5;
 const NEWS_EVENTS_PAGE_SIZE = 5;
 const NEWS_ARTICLES_FETCH_PAGE_SIZE = 10;
+const EVENT_SUBTITLE_SEPARATOR = ' • ';
 
 type SentimentCategory = 'positive' | 'negative' | 'neutral';
 
@@ -392,6 +393,21 @@ type NewsArticle = {
     neg?: number;
     neu?: number;
   } | null;
+  sentiment_label?: SentimentCategory | null;
+  tags?: string[];
+  time_ago?: string | null;
+};
+
+type TickerNewsApiArticle = {
+  article_id?: string;
+  title?: string | null;
+  content?: string | null;
+  source?: string | null;
+  source_link?: string | null;
+  link?: string | null;
+  published_at?: string | null;
+  date?: string | null;
+  sentiment?: NewsArticle['sentiment'];
   sentiment_label?: SentimentCategory | null;
   tags?: string[];
   time_ago?: string | null;
@@ -1082,8 +1098,8 @@ export default function StockDetail() {
           limit: NEWS_ARTICLES_FETCH_PAGE_SIZE,
         },
       });
-      const rawArticles = Array.isArray(response.data?.articles) ? response.data.articles : [];
-      const incomingArticles: NewsArticle[] = rawArticles.map((article: any, index: number) => ({
+      const rawArticles: TickerNewsApiArticle[] = Array.isArray(response.data?.articles) ? response.data.articles : [];
+      const incomingArticles: NewsArticle[] = rawArticles.map((article, index: number) => ({
         id: article.article_id || `${ticker}-${offset + index}`,
         title: article.title || 'Untitled',
         content: article.content ?? null,
@@ -1447,7 +1463,7 @@ export default function StockDetail() {
         eventType: 'Earnings',
         title: 'Upcoming Earnings',
         subtitle: marketLabel
-          ? `${formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency)} • ${marketLabel}`
+          ? `${formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency)}${EVENT_SUBTITLE_SEPARATOR}${marketLabel}`
           : formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency),
         date: upcomingEarnings.report_date,
       });
@@ -4544,7 +4560,7 @@ export default function StockDetail() {
                         ? COLORS.accent
                         : '#8B5CF6';
                     const eventText = item.subtitle
-                      ? `${item.title}: ${item.subtitle.replace(/ • /g, ', ')}`
+                      ? `${item.title}: ${item.subtitle.replace(new RegExp(EVENT_SUBTITLE_SEPARATOR, 'g'), ', ')}`
                       : item.title;
                     return (
                       <View
@@ -4616,8 +4632,9 @@ export default function StockDetail() {
                   <TouchableOpacity
                     style={styles.newsActionButton}
                     onPress={() => {
-                      const needsFetch = newsVisibleCount + NEWS_EVENTS_PAGE_SIZE > newsEventItems.length && newsHasMore && !newsLoading;
-                      if (needsFetch) {
+                      const shouldFetchMoreArticles =
+                        newsVisibleCount + NEWS_EVENTS_PAGE_SIZE > newsEventItems.length && newsHasMore && !newsLoading;
+                      if (shouldFetchMoreArticles) {
                         fetchNewsArticles(true);
                       }
                       setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
