@@ -2026,6 +2026,7 @@ from dividend_history_service import (
     create_upcoming_ipos_indexes,
     get_ipos_for_ticker,
     get_ipos_calendar,
+    get_calendar_events,
 )
 
 from canonical_dividend import compute_canonical_dividend_yield
@@ -6720,6 +6721,18 @@ async def get_ipo_calendar(
     Results sorted by ipo_date ascending.
     """
     return await get_ipos_calendar(db, exchange=exchange, limit=limit)
+
+
+@api_router.get("/v1/calendar/events")
+async def get_calendar_events_endpoint(
+    from_date: str = Query(..., alias="from", description="Start date YYYY-MM-DD"),
+    to_date: str = Query(..., alias="to", description="End date YYYY-MM-DD"),
+):
+    """Return unified Prague-date calendar events for Markets."""
+    try:
+        return await get_calendar_events(db, from_date=from_date, to_date=to_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @api_router.get("/v1/ticker/{ticker}/ipo")

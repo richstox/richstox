@@ -41,6 +41,9 @@ import { API_URL } from '../../utils/config';
 // Delay before fetching below-the-fold content (talk posts) to prioritize critical data
 const DEFERRED_FETCH_MS = 800;
 const EARNINGS_NEUTRAL_COLOR = '#6B7280';
+const INITIAL_NEWS_EVENTS_LIMIT = 10;
+const NEWS_EVENTS_PAGE_SIZE = 5;
+const NEWS_EVENTS_MAX_TOTAL = 25;
 
 interface CompanyData {
   ticker: string;
@@ -255,6 +258,39 @@ type NextDividendInfo = {
   next_dividend_currency?: string | null;
   event_type_label?: string | null;
 } | null;
+
+type NewsArticle = {
+  id: string;
+  title: string;
+  source?: string | null;
+  link?: string | null;
+  date?: string | null;
+  ticker?: string | null;
+  logo_url?: string | null;
+  fallback_logo_key?: string | null;
+  time_ago?: string | null;
+};
+
+type UpcomingSplitInfo = {
+  split_date: string;
+  split_ratio?: string | null;
+} | null;
+
+type NewsEventFeedItem =
+  | {
+      kind: 'event';
+      id: string;
+      eventType: 'Earnings' | 'Dividend' | 'Split';
+      title: string;
+      subtitle: string;
+      date: string;
+      target?: 'earnings' | 'dividends';
+    }
+  | {
+      kind: 'article';
+      id: string;
+      article: NewsArticle;
+    };
 
 const round4 = (value: number): number => Number(value.toFixed(4));
 const DEFAULT_FREQUENCY_LABEL = 'Irregular';
@@ -529,10 +565,13 @@ export default function StockDetail() {
   // Per-range cache so switching back to MAX (or any range) is instant after first load
   const chartCacheRef = useRef<Record<string, { prices: PriceHistoryPoint[]; benchmark: {date: string; normalized: number}[] }>>({});
 
-  // Talk posts state
-  const [talkPosts, setTalkPosts] = useState<any[]>([]);
-  const [talkLoading, setTalkLoading] = useState(false);
-  const [hasMoreTalk, setHasMoreTalk] = useState(false);
+  // News & events state
+  const [newsArticles, setNewsArticles] = useState<NewsArticle[]>([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsVisibleCount, setNewsVisibleCount] = useState(INITIAL_NEWS_EVENTS_LIMIT);
+  const [upcomingSplit, setUpcomingSplit] = useState<UpcomingSplitInfo>(null);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const [sectionAnchors, setSectionAnchors] = useState<Record<string, number>>({});
 
   // Valuation details expandable state
   const [valuationDetailsExpanded, setValuationDetailsExpanded] = useState(false);
@@ -900,20 +939,30 @@ export default function StockDetail() {
     }, [ticker, checkIfFollowed])
   );
 
-  // Fetch Talk posts for this stock
-  const fetchTalkPosts = async () => {
+  const fetchNewsArticles = useCallback(async () => {
     try {
-      setTalkLoading(true);
-      const response = await axios.get(`${API_URL}/api/v1/stocks/${ticker}/talk?limit=5&offset=0`);
-      setTalkPosts(response.data.posts || []);
-      setHasMoreTalk(response.data.has_more || false);
+      setNewsLoading(true);
+      const response = await axios.get(`${API_URL}/api/news?tickers=${ticker}&offset=0&limit=${NEWS_EVENTS_MAX_TOTAL}`);
+      setNewsArticles(Array.isArray(response.data?.news) ? response.data.news : []);
     } catch (err) {
-      console.error('Error fetching talk posts:', err);
-      setTalkPosts([]);
+      console.error('Error fetching ticker news:', err);
+      setNewsArticles([]);
     } finally {
-      setTalkLoading(false);
+      setNewsLoading(false);
     }
-  };
+  }, [ticker]);
+
+  const fetchUpcomingSplit = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API_URL}/api/v1/ticker/${ticker}/splits`);
+      setUpcomingSplit(response.data?.upcoming_split || null);
+    } catch (err: any) {
+      if (err?.response?.status !== 404) {
+        console.error('Error fetching upcoming split:', err?.message || err);
+      }
+      setUpcomingSplit(null);
+    }
+  }, [ticker]);
 
   // ===== CHART-TOOLTIP: Simple handlers (stockanalysis.com style) =====
   // Chart dimension constants (must match rendering)
@@ -975,15 +1024,22 @@ export default function StockDetail() {
   }, []);
   // ===== END CHART-TOOLTIP handlers =====
 
-  // Fetch talk posts when ticker changes - deferred to avoid blocking initial render
+  const scrollToStockSection = useCallback((key: 'earnings' | 'dividends') => {
+    const y = sectionAnchors[key];
+    if (y == null) return;
+    scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
+  }, [sectionAnchors]);
+
+  // Fetch News & Events when ticker changes - deferred to avoid blocking initial render
   useEffect(() => {
     if (!ticker) return;
-    // Defer talk posts fetch (below-the-fold content) until after critical data loads
+    setNewsVisibleCount(INITIAL_NEWS_EVENTS_LIMIT);
     const timer = setTimeout(() => {
-      fetchTalkPosts();
+      fetchNewsArticles();
+      fetchUpcomingSplit();
     }, DEFERRED_FETCH_MS);
     return () => clearTimeout(timer);
-  }, [ticker]);
+  }, [ticker, fetchNewsArticles, fetchUpcomingSplit]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -993,7 +1049,8 @@ export default function StockDetail() {
     fetchChartData(priceRange);
     fetchDividends();
     fetchEarningsData();
-    fetchTalkPosts();
+    fetchNewsArticles();
+    fetchUpcomingSplit();
   };
   
   // UTC-safe date formatter for MM/YY format
@@ -1200,6 +1257,82 @@ export default function StockDetail() {
     const currencyPrefix = currency && currency !== 'USD' ? `${currency} ` : '$';
     return `Est. ${currencyPrefix}${toEU(estimate, 2)}`;
   };
+
+  const getPragueDateString = (): string => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Prague',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const year = parts.find((part) => part.type === 'year')?.value ?? '1970';
+    const month = parts.find((part) => part.type === 'month')?.value ?? '01';
+    const day = parts.find((part) => part.type === 'day')?.value ?? '01';
+    return `${year}-${month}-${day}`;
+  };
+
+  const todayPrague = getPragueDateString();
+
+  const newsEventItems = useMemo<NewsEventFeedItem[]>(() => {
+    const eventItems: NewsEventFeedItem[] = [];
+
+    if (upcomingEarnings?.report_date && upcomingEarnings.report_date >= todayPrague) {
+      eventItems.push({
+        kind: 'event',
+        id: `earnings-${upcomingEarnings.report_date}`,
+        eventType: 'Earnings',
+        title: formatDateDMY(upcomingEarnings.report_date),
+        subtitle: formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency),
+        date: upcomingEarnings.report_date,
+        target: 'earnings',
+      });
+    }
+
+    if (nextDividendInfo?.next_ex_date && nextDividendInfo.next_ex_date >= todayPrague) {
+      eventItems.push({
+        kind: 'event',
+        id: `dividend-${nextDividendInfo.next_ex_date}`,
+        eventType: 'Dividend',
+        title: formatDateDMY(nextDividendInfo.next_ex_date),
+        subtitle: typeof nextDividendInfo.next_dividend_amount === 'number'
+          ? formatDividendAmount(
+              nextDividendInfo.next_dividend_amount,
+              resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency),
+            )
+          : 'Upcoming ex-dividend',
+        date: nextDividendInfo.next_ex_date,
+        target: 'dividends',
+      });
+    }
+
+    if (upcomingSplit?.split_date && upcomingSplit.split_date >= todayPrague) {
+      eventItems.push({
+        kind: 'event',
+        id: `split-${upcomingSplit.split_date}`,
+        eventType: 'Split',
+        title: formatDateDMY(upcomingSplit.split_date),
+        subtitle: upcomingSplit.split_ratio || 'Upcoming split',
+        date: upcomingSplit.split_date,
+      });
+    }
+
+    const articleItems: NewsEventFeedItem[] = newsArticles.map((article) => ({
+      kind: 'article',
+      id: article.id,
+      article,
+    }));
+
+    return [...eventItems, ...articleItems].slice(0, NEWS_EVENTS_MAX_TOTAL);
+  }, [
+    upcomingEarnings,
+    nextDividendInfo,
+    upcomingSplit,
+    todayPrague,
+    newsArticles,
+    dividendDisplayCurrency,
+    formatDividendAmount,
+    formatUpcomingEarningsEstimate,
+  ]);
 
   type AnnualDividendPeriod = {
     key: string;
@@ -2027,6 +2160,7 @@ export default function StockDetail() {
       )}
 
       <ScrollView
+        ref={scrollViewRef}
         style={styles.scrollView}
         contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
         showsVerticalScrollIndicator={false}
@@ -3563,7 +3697,14 @@ export default function StockDetail() {
         <View 
           style={styles.perfCheckCard} 
           data-testid="earnings-section"
-          
+          onLayout={(event) => {
+            const y = event.nativeEvent.layout.y;
+            setSectionAnchors((prev) => (
+              prev.earnings === y && prev.dividends === y
+                ? prev
+                : { ...prev, earnings: y, dividends: y }
+            ));
+          }}
         >
           <TouchableOpacity 
             style={styles.collapsibleHeader} 
@@ -4168,65 +4309,115 @@ export default function StockDetail() {
           </View>
         </View>
 
-        {/* ===== SECTION 8: NEWS & TALK (unified feed) ===== */}
+        {/* ===== SECTION 8: NEWS & EVENTS ===== */}
         <View 
           style={[styles.sectionCard]} 
           data-testid="news-talk-section"
-          
         >
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionIcon}>💬</Text>
-            <Text style={styles.sectionTitleBold}>News & Talk</Text>
-            <TouchableOpacity onPress={() => router.push('/talk')} style={styles.seeAllButton}>
-              <Text style={styles.seeAllLink}>See all</Text>
-            </TouchableOpacity>
+            <Text style={styles.sectionIcon}>📰</Text>
+            <Text style={styles.sectionTitleBold}>News & Events</Text>
           </View>
-          
-          {talkLoading ? (
-            <View style={styles.talkLoading}>
+
+          {newsLoading ? (
+            <View style={styles.newsLoading}>
               <ActivityIndicator size="small" color={COLORS.primary} />
             </View>
-          ) : talkPosts.length === 0 ? (
-            <View style={styles.talkEmpty}>
-              <Ionicons name="chatbubbles-outline" size={32} color={COLORS.textMuted} />
-              <Text style={styles.talkEmptyText}>No discussions yet</Text>
-              <Text style={styles.talkEmptySubtext}>Be the first to share your thoughts on ${company.code}</Text>
+          ) : newsEventItems.length === 0 ? (
+            <View style={styles.newsEmpty}>
+              <Ionicons name="newspaper-outline" size={32} color={COLORS.textMuted} />
+              <Text style={styles.newsEmptyText}>No news or events available</Text>
+              <Text style={styles.newsEmptySubtext}>Only ticker-specific items are shown here.</Text>
             </View>
           ) : (
             <>
-              {talkPosts.slice(0, 3).map((post: any) => (
-                <TouchableOpacity 
-                  key={post.post_id} 
-                  style={styles.talkPost}
-                  onPress={() => post.user?.user_id && router.push(`/user/${post.user.user_id}`)}
-                >
-                  <View style={styles.talkPostHeader}>
-                    {post.user?.picture ? (
-                      <Image source={{ uri: post.user.picture }} style={styles.talkAvatar} />
+              {newsEventItems.slice(0, newsVisibleCount).map((item, index) => {
+                const isLastVisible = index === Math.min(newsVisibleCount, newsEventItems.length) - 1;
+                if (item.kind === 'event') {
+                  const eventColor = item.eventType === 'Earnings'
+                    ? COLORS.primary
+                    : item.eventType === 'Dividend'
+                      ? COLORS.accent
+                      : '#8B5CF6';
+                  const isPressable = item.target === 'earnings' || item.target === 'dividends';
+                  return (
+                    <View
+                      key={item.id}
+                      style={[styles.newsRow, isLastVisible && styles.lastNewsRow]}
+                    >
+                      <View style={[styles.newsEventIconWrap, { backgroundColor: `${eventColor}15` }]}>
+                        <Ionicons name="calendar-outline" size={16} color={eventColor} />
+                      </View>
+                      <View style={styles.newsContent}>
+                        <View style={styles.newsTickerRow}>
+                          <Text style={styles.newsTickerText}>{ticker}</Text>
+                          {isPressable ? (
+                            <TouchableOpacity
+                              style={[styles.eventPill, { backgroundColor: `${eventColor}15` }]}
+                              onPress={() => scrollToStockSection(item.target!)}
+                            >
+                              <Text style={[styles.eventPillText, { color: eventColor }]}>{item.eventType}</Text>
+                            </TouchableOpacity>
+                          ) : (
+                            <View style={[styles.eventPill, { backgroundColor: `${eventColor}15` }]}>
+                              <Text style={[styles.eventPillText, { color: eventColor }]}>{item.eventType}</Text>
+                            </View>
+                          )}
+                        </View>
+                        <Text style={styles.newsTitle} numberOfLines={2}>{item.title}</Text>
+                        <Text style={styles.newsMeta}>{item.subtitle}</Text>
+                      </View>
+                    </View>
+                  );
+                }
+
+                const article = item.article;
+                return (
+                  <TouchableOpacity
+                    key={item.id}
+                    style={[styles.newsRow, isLastVisible && styles.lastNewsRow]}
+                    onPress={() => article.link && Linking.openURL(article.link)}
+                    disabled={!article.link}
+                  >
+                    {article.logo_url ? (
+                      <Image source={{ uri: article.logo_url }} style={styles.newsLogo} resizeMode="contain" />
                     ) : (
-                      <View style={styles.talkAvatarPlaceholder}>
-                        <Ionicons name="person" size={12} color={COLORS.textMuted} />
+                      <View style={styles.newsLogoFallback}>
+                        <Text style={styles.newsLogoText}>{(article.fallback_logo_key || ticker.charAt(0) || '?').toUpperCase()}</Text>
                       </View>
                     )}
-                    <Text style={styles.talkUserName}>{post.user?.name || 'Anonymous'}</Text>
-                    {post.rrr !== null && post.rrr !== undefined && (
-                      <View style={styles.talkRrrBadge}>
-                        <Text style={styles.talkRrrText}>RRR {toEU(post.rrr, 1)}</Text>
+                    <View style={styles.newsContent}>
+                      <View style={styles.newsTickerRow}>
+                        <Text style={styles.newsTickerText}>{article.ticker || ticker}</Text>
                       </View>
-                    )}
-                  </View>
-                  <Text style={styles.talkPostText} numberOfLines={2}>{post.text}</Text>
-                </TouchableOpacity>
-              ))}
-              
-              {hasMoreTalk && (
-                <TouchableOpacity 
-                  style={styles.talkViewMore}
-                  onPress={() => router.push('/talk')}
-                >
-                  <Text style={styles.talkViewMoreText}>View more discussions</Text>
-                  <Ionicons name="chevron-forward" size={16} color={COLORS.primary} />
-                </TouchableOpacity>
+                      <Text style={styles.newsTitle} numberOfLines={2}>{article.title}</Text>
+                      <Text style={styles.newsMeta}>
+                        {article.date ? formatDateDMY(article.date) : 'N/A'} · {article.source || 'Unknown'}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+
+              {(newsVisibleCount < newsEventItems.length || newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT) && (
+                <View style={styles.newsActionsRow}>
+                  {newsVisibleCount < newsEventItems.length && (
+                    <TouchableOpacity
+                      style={styles.newsActionButton}
+                      onPress={() => setNewsVisibleCount((prev) => Math.min(prev + NEWS_EVENTS_PAGE_SIZE, newsEventItems.length))}
+                    >
+                      <Text style={styles.newsActionText}>Load more</Text>
+                    </TouchableOpacity>
+                  )}
+                  {newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT && (
+                    <TouchableOpacity
+                      style={styles.newsActionButton}
+                      onPress={() => setNewsVisibleCount(INITIAL_NEWS_EVENTS_LIMIT)}
+                    >
+                      <Text style={styles.newsActionText}>See less</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               )}
             </>
           )}
@@ -4888,24 +5079,58 @@ const styles = StyleSheet.create({
   calcButton: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.card, borderRadius: 12, paddingVertical: 14, gap: 8, borderWidth: 1, borderColor: COLORS.border },
   calcButtonText: { fontSize: 14, fontWeight: '600', color: COLORS.primary },
   
-  // Talk Section
-  talkSection: { marginBottom: 16 },
-  talkHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  seeAllLink: { fontSize: 14, color: COLORS.primary, fontWeight: '500' },
-  talkLoading: { padding: 24, alignItems: 'center' },
-  talkEmpty: { backgroundColor: COLORS.card, borderRadius: 12, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
-  talkEmptyText: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginTop: 8 },
-  talkEmptySubtext: { fontSize: 13, color: COLORS.textMuted, textAlign: 'center', marginTop: 4 },
-  talkPost: { backgroundColor: COLORS.card, borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1, borderColor: COLORS.border },
-  talkPostHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
-  talkAvatar: { width: 24, height: 24, borderRadius: 12, marginRight: 8 },
-  talkAvatarPlaceholder: { width: 24, height: 24, borderRadius: 12, backgroundColor: COLORS.background, justifyContent: 'center', alignItems: 'center', marginRight: 8 },
-  talkUserName: { fontSize: 13, fontWeight: '600', color: COLORS.text, flex: 1 },
-  talkRrrBadge: { backgroundColor: '#10B98120', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  talkRrrText: { fontSize: 10, fontWeight: '600', color: '#10B981' },
-  talkPostText: { fontSize: 14, lineHeight: 20, color: COLORS.text },
-  talkViewMore: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 12, backgroundColor: COLORS.card, borderRadius: 8, borderWidth: 1, borderColor: COLORS.border },
-  talkViewMoreText: { fontSize: 14, fontWeight: '500', color: COLORS.primary, marginRight: 4 },
+  // News & Events
+  newsLoading: { padding: 24, alignItems: 'center' },
+  newsEmpty: { backgroundColor: COLORS.card, borderRadius: 12, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: COLORS.border },
+  newsEmptyText: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginTop: 8 },
+  newsEmptySubtext: { fontSize: 13, color: COLORS.textMuted, textAlign: 'center', marginTop: 4 },
+  newsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  lastNewsRow: { borderBottomWidth: 0, paddingBottom: 4 },
+  newsLogo: { width: 32, height: 32, borderRadius: 16, backgroundColor: COLORS.card, marginTop: 2 },
+  newsLogoFallback: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#E0E7FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  newsLogoText: { fontSize: 12, fontWeight: '700', color: COLORS.primary },
+  newsEventIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 2,
+  },
+  newsContent: { flex: 1, gap: 4 },
+  newsTickerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  newsTickerText: { fontSize: 12, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase' },
+  newsTitle: { fontSize: 14, fontWeight: '600', lineHeight: 20, color: COLORS.text },
+  newsMeta: { fontSize: 12, color: COLORS.textMuted, lineHeight: 18 },
+  eventPill: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 999 },
+  eventPillText: { fontSize: 11, fontWeight: '700' },
+  newsActionsRow: { flexDirection: 'row', gap: 10, paddingTop: 12 },
+  newsActionButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.card,
+  },
+  newsActionText: { fontSize: 13, fontWeight: '600', color: COLORS.primary },
   
   // ============================================================================
   // NEW: Reality Check Card Styles - MORE COMPACT

@@ -19,6 +19,7 @@ Used for:
 - Dividends tab visualization (annual chart, YoY growth)
 """
 
+import asyncio
 import os
 import logging
 from datetime import datetime, timezone, timedelta
@@ -1704,4 +1705,128 @@ async def get_ipos_for_ticker(db, ticker: str) -> Dict[str, Any]:
     return {
         "ticker": ticker_full,
         "upcoming_ipo": upcoming_ipo,
+    }
+
+
+def _bare_ticker(value: Any) -> Optional[str]:
+    if not value or not isinstance(value, str):
+        return None
+    symbol = value.strip().upper()
+    if not symbol:
+        return None
+    return symbol.split(".", 1)[0]
+
+
+async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any]:
+    """Return a unified event list across upcoming earnings/dividends/splits/IPOs."""
+    start = _parse_date_ymd(from_date)
+    end = _parse_date_ymd(to_date)
+    if not start or not end:
+        raise ValueError("from and to must use YYYY-MM-DD format")
+    if start > end:
+        raise ValueError("from must be on or before to")
+
+    earnings_task = db.upcoming_earnings.find(
+        {"report_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("report_date", 1).to_list(length=None)
+    dividends_task = db.upcoming_dividends.find(
+        {"next_ex_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("next_ex_date", 1).to_list(length=None)
+    splits_task = db.upcoming_splits.find(
+        {"split_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("split_date", 1).to_list(length=None)
+    ipos_task = db.upcoming_ipos.find(
+        {"ipo_date": {"$gte": start, "$lte": end}},
+        {"_id": 0},
+    ).sort("ipo_date", 1).to_list(length=None)
+
+    earnings_rows, dividend_rows, split_rows, ipo_rows = await asyncio.gather(
+        earnings_task,
+        dividends_task,
+        splits_task,
+        ipos_task,
+    )
+
+    events: List[Dict[str, Any]] = []
+
+    for row in earnings_rows:
+        ticker = _bare_ticker(row.get("ticker"))
+        report_date = _parse_date_ymd(row.get("report_date"))
+        if not report_date:
+            continue
+        events.append({
+            "date": report_date,
+            "type": "earnings",
+            "ticker": ticker,
+            "label": f"{ticker} earnings" if ticker else "Earnings",
+            "description": row.get("before_after_market") or "Scheduled earnings",
+            "estimate": row.get("estimate"),
+            "currency": row.get("currency"),
+            "metadata": {
+                "before_after_market": row.get("before_after_market"),
+                "fiscal_period_end": row.get("fiscal_period_end"),
+            },
+        })
+
+    for row in dividend_rows:
+        ticker = _bare_ticker(row.get("ticker"))
+        ex_date = _parse_date_ymd(row.get("next_ex_date"))
+        if not ex_date:
+            continue
+        events.append({
+            "date": ex_date,
+            "type": "dividend",
+            "ticker": ticker,
+            "label": f"{ticker} ex-dividend" if ticker else "Dividend",
+            "description": row.get("event_type_label") or "Upcoming dividend",
+            "amount": row.get("next_dividend_amount"),
+            "currency": row.get("next_dividend_currency"),
+            "metadata": {
+                "pay_date": row.get("next_pay_date"),
+                "coverage_complete": row.get("coverage_complete"),
+            },
+        })
+
+    for row in split_rows:
+        ticker = _bare_ticker(row.get("ticker"))
+        split_date = _parse_date_ymd(row.get("split_date"))
+        if not split_date:
+            continue
+        events.append({
+            "date": split_date,
+            "type": "split",
+            "ticker": ticker,
+            "label": f"{ticker} split" if ticker else "Split",
+            "description": row.get("split_ratio") or "Upcoming split",
+            "ratio": row.get("split_ratio"),
+            "metadata": {},
+        })
+
+    for row in ipo_rows:
+        ipo_date = _parse_date_ymd(row.get("ipo_date"))
+        if not ipo_date:
+            continue
+        ticker = _bare_ticker(row.get("ticker"))
+        events.append({
+            "date": ipo_date,
+            "type": "ipo",
+            "ticker": ticker,
+            "label": row.get("description") or (f"{ticker} IPO" if ticker else "IPO"),
+            "description": row.get("exchange") or "Upcoming IPO",
+            "amount": row.get("ipo_price"),
+            "metadata": {
+                "exchange": row.get("exchange"),
+            },
+        })
+
+    events.sort(key=lambda item: (item["date"], item["type"], item.get("ticker") or ""))
+    return {
+        "from": start,
+        "to": end,
+        "timezone": PRAGUE_TZ_NAME,
+        "events": events,
+        "count": len(events),
     }
