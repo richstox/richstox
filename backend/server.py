@@ -6728,7 +6728,10 @@ async def get_calendar_events_endpoint(
     from_date: str = Query(..., alias="from", description="Start date YYYY-MM-DD"),
     to_date: str = Query(..., alias="to", description="End date YYYY-MM-DD"),
 ):
-    """Return unified Prague-date calendar events for Markets."""
+    """Return unified Prague-date calendar events for Markets.
+
+    Public path: ``GET /api/v1/calendar/events?from=YYYY-MM-DD&to=YYYY-MM-DD``.
+    """
     try:
         return await get_calendar_events(db, from_date=from_date, to_date=to_date)
     except ValueError as exc:

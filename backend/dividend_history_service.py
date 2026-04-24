@@ -579,6 +579,12 @@ async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, A
 
     Root-cause note:
     - The old implementation called ``/calendar/dividends?from=..&to=..``.
+    - That code immediately executed ``response.raise_for_status()`` on the
+      EODHD response, so the failure mode was an ``httpx.HTTPStatusError`` on
+      the GET request to ``https://eodhd.com/api/calendar/dividends?...``; the
+      scheduler then retried the same failing request three times and finally
+      surfaced ``RuntimeError: dividend_upcoming_calendar: Max retries (3)
+      exceeded`` in Admin.
     - EODHD's documented dividend support is the exchange bulk endpoint
       ``/eod-bulk-last-day/US?type=dividends&date=YYYY-MM-DD`` rather than the
       earnings/splits-style calendar window endpoint.
