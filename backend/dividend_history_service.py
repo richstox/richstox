@@ -100,6 +100,17 @@ def _normalize_ticker_symbol(value: Any) -> Optional[str]:
     return symbol if "." in symbol else f"{symbol}.US"
 
 
+def _extract_calendar_ticker(row: Dict[str, Any]) -> Optional[str]:
+    return _normalize_ticker_symbol(
+        row.get("Code")
+        or row.get("code")
+        or row.get("Symbol")
+        or row.get("symbol")
+        or row.get("Ticker")
+        or row.get("ticker")
+    )
+
+
 def _safe_float(value: Any, *, allow_non_positive: bool = False) -> Optional[float]:
     if value is None:
         return None
@@ -144,6 +155,16 @@ def _format_split_ratio(
     old_shares: Any = None,
     new_shares: Any = None,
 ) -> Optional[str]:
+    def _normalize_ratio_text(value: str) -> str:
+        normalized = value.strip()
+        normalized = re.sub(
+            r"\s*(?:for|to|/|-)\s*",
+            ":",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        return normalized
+
     def _stringify(value: Any) -> Optional[str]:
         try:
             normalized = format(Decimal(str(value)).normalize(), "f")
@@ -154,8 +175,7 @@ def _format_split_ratio(
         return normalized or "0"
 
     if isinstance(split_ratio, str) and split_ratio.strip():
-        normalized = split_ratio.strip().replace(" for ", ":").replace("/", ":")
-        return normalized
+        return _normalize_ratio_text(split_ratio)
     if isinstance(split_ratio, (int, float)) and not isinstance(split_ratio, bool) and split_ratio > 0:
         return _stringify(split_ratio)
     old_value = _safe_float(old_shares)
@@ -173,7 +193,9 @@ def _format_split_ratio(
 def _parse_split_ratio_numbers(split_ratio: Any) -> tuple[Optional[float], Optional[float]]:
     if not isinstance(split_ratio, str):
         return None, None
-    normalized = split_ratio.strip().lower().replace(" for ", ":").replace("/", ":")
+    normalized = _format_split_ratio(split_ratio)
+    if not normalized:
+        return None, None
     match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$", normalized)
     if not match:
         return None, None
@@ -1707,14 +1729,7 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
     for row in rows:
         if not isinstance(row, dict):
             continue
-        ticker = _normalize_ticker_symbol(
-            row.get("Code")
-            or row.get("code")
-            or row.get("Symbol")
-            or row.get("symbol")
-            or row.get("Ticker")
-            or row.get("ticker")
-        )
+        ticker = _extract_calendar_ticker(row)
         if not ticker:
             tickers_skipped_invalid += 1
             continue
@@ -1793,7 +1808,7 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
     ).to_list(length=None)
     delete_ids = []
     for doc in existing_docs:
-        ticker = _normalize_ticker_symbol(doc.get("ticker") or doc.get("code") or doc.get("Code"))
+        ticker = _extract_calendar_ticker(doc)
         split_date = _extract_split_date(doc)
         old_shares = _safe_float(doc.get("old_shares"))
         new_shares = _safe_float(doc.get("new_shares"))
@@ -1861,7 +1876,7 @@ async def get_splits_for_ticker(db, ticker: str) -> Dict[str, Any]:
     matching_docs = []
     for row in docs:
         if _bare_ticker(
-            _normalize_ticker_symbol(row.get("ticker") or row.get("code") or row.get("Code"))
+            _extract_calendar_ticker(row)
         ) != bare_ticker:
             continue
         split_date = _extract_split_date(row)
