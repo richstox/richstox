@@ -4331,8 +4331,10 @@ export default function StockDetail() {
             </View>
           ) : (
             <>
-              {newsEventItems.slice(0, newsVisibleCount).map((item, index) => {
-                const isLastVisible = index === Math.min(newsVisibleCount, newsEventItems.length) - 1;
+              {(() => {
+                const lastVisibleIndex = Math.min(newsVisibleCount, newsEventItems.length) - 1;
+                return newsEventItems.slice(0, newsVisibleCount).map((item, index) => {
+                const isLastVisible = index === lastVisibleIndex;
                 if (item.kind === 'event') {
                   const eventColor = item.eventType === 'Earnings'
                     ? COLORS.primary
@@ -4397,7 +4399,8 @@ export default function StockDetail() {
                     </View>
                   </TouchableOpacity>
                 );
-              })}
+              });
+              })()}
 
               {(newsVisibleCount < newsEventItems.length || newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT) && (
                 <View style={styles.newsActionsRow}>

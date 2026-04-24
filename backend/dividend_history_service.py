@@ -638,7 +638,7 @@ async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, A
         grouped.setdefault(ticker, []).append(row)
 
     total_rows = len(rows)
-    coverage_complete = len(days_failed) == 0
+    coverage_complete = not days_failed
     if not days_fetched_ok:
         failed_preview = "; ".join(f"{item['date']}: {item['error']}" for item in failed_day_errors[:3])
         raise RuntimeError(

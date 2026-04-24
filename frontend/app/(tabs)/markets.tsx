@@ -69,6 +69,11 @@ const getPragueDateString = (value: Date = new Date()): string => {
 
 const parseYmd = (value: string): Date => parseISO(`${value}T00:00:00Z`);
 
+const formatEventAmount = (amount: number, currency?: string | null): string => {
+  const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
+  return `${prefix}${amount.toFixed(2)}`;
+};
+
 const EVENT_META: Record<CalendarEvent['type'], { label: string; color: string; icon: keyof typeof Ionicons.glyphMap }> = {
   earnings: { label: 'Earnings', color: COLORS.primary, icon: 'bar-chart-outline' },
   dividend: { label: 'Dividend', color: COLORS.accent, icon: 'cash-outline' },
@@ -145,16 +150,16 @@ export default function Markets() {
 
   const formatEventSecondary = (event: CalendarEvent): string => {
     if (event.type === 'dividend' && event.amount != null) {
-      return `${event.currency || 'USD'} ${event.amount.toFixed(2)}`;
+      return formatEventAmount(event.amount, event.currency);
     }
     if (event.type === 'split' && event.ratio) {
       return event.ratio;
     }
     if (event.type === 'earnings' && event.estimate != null) {
-      return `Est. ${(event.currency && event.currency !== 'USD') ? `${event.currency} ` : '$'}${event.estimate.toFixed(2)}`;
+      return `Est. ${formatEventAmount(event.estimate, event.currency)}`;
     }
     if (event.type === 'ipo' && event.amount != null) {
-      return `IPO ${(event.amount as number).toFixed(2)}`;
+      return `IPO ${formatEventAmount(event.amount, null)}`;
     }
     return event.description || 'Scheduled';
   };
