@@ -1025,7 +1025,9 @@ export default function StockDetail() {
   // ===== END CHART-TOOLTIP handlers =====
 
   const scrollToStockSection = useCallback((key: 'earnings' | 'dividends') => {
-    const y = sectionAnchors[key];
+    const y = key === 'dividends'
+      ? (sectionAnchors.dividends ?? sectionAnchors.earnings)
+      : sectionAnchors.earnings;
     if (y == null) return;
     scrollViewRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
   }, [sectionAnchors]);
@@ -3700,9 +3702,9 @@ export default function StockDetail() {
           onLayout={(event) => {
             const y = event.nativeEvent.layout.y;
             setSectionAnchors((prev) => (
-              prev.earnings === y && prev.dividends === y
+              prev.earnings === y
                 ? prev
-                : { ...prev, earnings: y, dividends: y }
+                : { ...prev, earnings: y }
             ));
           }}
         >

@@ -135,5 +135,5 @@ async def test_upcoming_calendar_sync_raises_when_all_days_fail():
     with patch("dividend_history_service.EODHD_API_KEY", "test-key"):
         with patch("dividend_history_service.UPCOMING_DIVIDEND_WINDOW_DAYS", 0):
             with patch("dividend_history_service._fetch_dividend_bulk_rows_for_day", side_effect=_always_fail):
-                with pytest.raises(RuntimeError, match="could not fetch any day"):
+                with pytest.raises(RuntimeError, match="unable to fetch any day in the requested window"):
                     await sync_upcoming_dividend_calendar_for_visible_tickers(db)

@@ -108,5 +108,5 @@ async def test_get_calendar_events_merges_and_sorts_sources():
 async def test_get_calendar_events_validates_date_window():
     db = _Db()
 
-    with pytest.raises(ValueError, match="from must be on or before to"):
+    with pytest.raises(ValueError, match="Start date \\(from\\) must be on or before end date \\(to\\)"):
         await get_calendar_events(db, "2026-04-30", "2026-04-29")

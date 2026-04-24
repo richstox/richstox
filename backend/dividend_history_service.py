@@ -642,7 +642,7 @@ async def sync_upcoming_dividend_calendar_for_visible_tickers(db) -> Dict[str, A
     if not days_fetched_ok:
         failed_preview = "; ".join(f"{item['date']}: {item['error']}" for item in failed_day_errors[:3])
         raise RuntimeError(
-            "dividend_upcoming_calendar could not fetch any day from "
+            "dividend_upcoming_calendar failed: unable to fetch any day in the requested window from "
             "/eod-bulk-last-day/US?type=dividends&date=YYYY-MM-DD"
             + (f" ({failed_preview})" if failed_preview else "")
         )
@@ -1724,7 +1724,7 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
     if not start or not end:
         raise ValueError("from and to must use YYYY-MM-DD format")
     if start > end:
-        raise ValueError("from must be on or before to")
+        raise ValueError("Start date (from) must be on or before end date (to)")
 
     earnings_task = db.upcoming_earnings.find(
         {"report_date": {"$gte": start, "$lte": end}},

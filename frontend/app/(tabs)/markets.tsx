@@ -81,6 +81,8 @@ const EVENT_META: Record<CalendarEvent['type'], { label: string; color: string; 
   ipo: { label: 'IPO', color: COLORS.warning, icon: 'rocket-outline' },
 };
 
+const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']; // Prague calendar uses Monday-start weeks.
+
 export default function Markets() {
   const router = useRouter();
   const sp = useLayoutSpacing();
@@ -204,7 +206,7 @@ export default function Markets() {
           </View>
 
           <View style={styles.weekdayRow}>
-            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day) => (
+            {WEEKDAY_LABELS.map((day) => (
               <Text key={day} style={styles.weekdayLabel}>{day}</Text>
             ))}
           </View>
