@@ -1822,11 +1822,17 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
             window_start=window_start,
             window_end=window_end,
         )
-        event_key = (
-            _split_event_key(ticker, split_date, old_shares, new_shares, source)
-            if is_valid and ticker and split_date and old_shares is not None and new_shares is not None
-            else None
-        )
+        event_key = None
+        if is_valid:
+            assert ticker is not None and split_date is not None
+            assert old_shares is not None and new_shares is not None
+            event_key = _split_event_key(
+                ticker,
+                split_date,
+                old_shares,
+                new_shares,
+                source,
+            )
         if not is_valid or (
             source == UPCOMING_SPLITS_SOURCE and event_key not in incoming_keys
         ):

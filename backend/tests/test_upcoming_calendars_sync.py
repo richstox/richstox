@@ -248,6 +248,8 @@ async def test_sync_upcoming_splits_accepts_nested_data_and_splitratio_alias(mon
 
     assert result["tickers_updated"] == 1
     assert db.upcoming_splits.get_docs_for_ticker("CUE.US")[0]["split_ratio"] == "3:2"
+    assert db.upcoming_splits.get_docs_for_ticker("CUE.US")[0]["old_shares"] == 3.0
+    assert db.upcoming_splits.get_docs_for_ticker("CUE.US")[0]["new_shares"] == 2.0
 
 
 @pytest.mark.asyncio
