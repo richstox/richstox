@@ -36,7 +36,8 @@ export default function WebRails({ children, subscriptionTier = 'free' }: WebRai
     return <>{children}</>;
   }
 
-  return <WebRailsInner subscriptionTier={subscriptionTier}>{children}</WebRailsInner>;
+  void subscriptionTier;
+  return <WebRailsInner>{children}</WebRailsInner>;
 }
 
 function WebRailsInner({

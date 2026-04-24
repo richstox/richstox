@@ -110,7 +110,11 @@ const resolveEventLogoUrl = (rawUrl?: string | null): string | undefined => {
   return rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`;
 };
 
-const isValidYmd = (value: string): boolean => /^\d{4}-\d{2}-\d{2}$/.test(value);
+const isValidYmd = (value: string): boolean => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = parseYmd(value);
+  return !Number.isNaN(parsed.getTime()) && format(parsed, 'yyyy-MM-dd') === value;
+};
 
 const EventLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: string }) => {
   const [imageError, setImageError] = useState(false);

@@ -23,6 +23,19 @@ class _Cursor:
         return list(self._docs[:length])
 
 
+def _apply_projection(docs, projection):
+    if projection and any(key != "_id" for key in projection):
+        projected = []
+        for doc in docs:
+            projected.append({
+                key: value
+                for key, value in doc.items()
+                if key != "_id" and key in projection
+            })
+        return projected
+    return docs
+
+
 class _Collection:
     def __init__(self, docs):
         self._docs = list(docs)
@@ -35,16 +48,7 @@ class _Collection:
             and doc.get(field) >= bounds.get("$gte")
             and doc.get(field) <= bounds.get("$lte")
         ]
-        if projection and any(key != "_id" for key in projection):
-            projected = []
-            for doc in docs:
-                projected.append({
-                    key: value
-                    for key, value in doc.items()
-                    if key != "_id" and key in projection
-                })
-            docs = projected
-        return _Cursor(docs)
+        return _Cursor(_apply_projection(docs, projection))
 
 
 class _LookupCollection:
@@ -57,16 +61,7 @@ class _LookupCollection:
         field, lookup = items[0]
         allowed = set(lookup.get("$in", []))
         docs = [doc for doc in self._docs if doc.get(field) in allowed]
-        if projection and any(key != "_id" for key in projection):
-            projected = []
-            for doc in docs:
-                projected.append({
-                    key: value
-                    for key, value in doc.items()
-                    if key != "_id" and key in projection
-                })
-            docs = projected
-        return _Cursor(docs)
+        return _Cursor(_apply_projection(docs, projection))
 
 
 class _Db:
