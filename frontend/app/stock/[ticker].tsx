@@ -86,6 +86,24 @@ const formatEventMessage = (title: string, subtitle?: string): string => {
   return `${title}: ${subtitle.split(EVENT_SUBTITLE_SEPARATOR).join(', ')}`;
 };
 
+const formatSplitRatio = (split?: UpcomingSplitInfo): string | null => {
+  if (!split) return null;
+  if (typeof split.split_ratio === 'string' && split.split_ratio.trim()) {
+    return split.split_ratio.trim();
+  }
+  if (
+    typeof split.old_shares === 'number'
+    && Number.isFinite(split.old_shares)
+    && split.old_shares > 0
+    && typeof split.new_shares === 'number'
+    && Number.isFinite(split.new_shares)
+    && split.new_shares > 0
+  ) {
+    return `${split.old_shares}:${split.new_shares}`;
+  }
+  return null;
+};
+
 const getSentimentTone = (label?: SentimentCategory | null) => {
   if (label === 'positive') {
     return { backgroundColor: '#D1FAE5', textColor: COLORS.accent };
@@ -427,6 +445,8 @@ type TickerNewsApiArticle = {
 type UpcomingSplitInfo = {
   split_date: string;
   split_ratio?: string | null;
+  old_shares?: number | null;
+  new_shares?: number | null;
 } | null;
 
 type NewsEventFeedItem =
@@ -1496,17 +1516,25 @@ export default function StockDetail() {
     }
 
     if (nextDividendInfo?.next_ex_date && nextDividendInfo.next_ex_date >= todayPrague) {
+      const dividendSubtitleParts: string[] = [];
+      if (typeof nextDividendInfo.next_dividend_amount === 'number') {
+        dividendSubtitleParts.push(
+          formatDividendAmount(
+            nextDividendInfo.next_dividend_amount,
+            resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency),
+          ),
+        );
+      }
+      dividendSubtitleParts.push(`Ex ${formatDividendDate(nextDividendInfo.next_ex_date)}`);
+      if (nextDividendInfo.next_pay_date) {
+        dividendSubtitleParts.push(`Pay ${formatDividendDate(nextDividendInfo.next_pay_date)}`);
+      }
       eventItems.push({
         kind: 'event',
         id: `dividend-${nextDividendInfo.next_ex_date}`,
         eventType: 'Dividend',
         title: 'Upcoming Ex-Dividend',
-        subtitle: typeof nextDividendInfo.next_dividend_amount === 'number'
-          ? formatDividendAmount(
-              nextDividendInfo.next_dividend_amount,
-              resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency),
-            )
-          : 'Upcoming ex-dividend',
+        subtitle: dividendSubtitleParts.join(EVENT_SUBTITLE_SEPARATOR),
         date: nextDividendInfo.next_ex_date,
       });
     }
@@ -1517,7 +1545,7 @@ export default function StockDetail() {
         id: `split-${upcomingSplit.split_date}`,
         eventType: 'Split',
         title: 'Upcoming Split',
-        subtitle: upcomingSplit.split_ratio || 'Upcoming split',
+        subtitle: formatSplitRatio(upcomingSplit) || 'Upcoming split',
         date: upcomingSplit.split_date,
       });
     }
@@ -1537,6 +1565,7 @@ export default function StockDetail() {
     newsArticles,
     dividendDisplayCurrency,
     formatDividendAmount,
+    formatDividendDate,
     formatUpcomingEarningsEstimate,
   ]);
 
@@ -4661,24 +4690,34 @@ export default function StockDetail() {
               });
               })()}
 
-              {(newsVisibleCount < newsEventItems.length || newsHasMore) && (
+              {((newsVisibleCount < newsEventItems.length || newsHasMore) || newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT) && (
                 <View style={styles.newsActionsRow}>
-                  <TouchableOpacity
-                    style={styles.newsActionButton}
-                    onPress={() => {
-                      if (shouldFetchMoreNews) {
-                        fetchMoreNews();
-                      }
-                      setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
-                    }}
-                    disabled={newsLoading}
-                  >
-                    {newsLoading ? (
-                      <ActivityIndicator size="small" color={COLORS.primary} />
-                    ) : (
-                      <Text style={styles.newsActionText}>Load more news</Text>
-                    )}
-                  </TouchableOpacity>
+                  {(newsVisibleCount < newsEventItems.length || newsHasMore) && (
+                    <TouchableOpacity
+                      style={styles.newsActionButton}
+                      onPress={() => {
+                        if (shouldFetchMoreNews) {
+                          fetchMoreNews();
+                        }
+                        setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
+                      }}
+                      disabled={newsLoading}
+                    >
+                      {newsLoading ? (
+                        <ActivityIndicator size="small" color={COLORS.primary} />
+                      ) : (
+                        <Text style={styles.newsActionText}>Load more news</Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                  {newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT && (
+                    <TouchableOpacity
+                      style={[styles.newsActionButton, styles.newsActionButtonSecondary]}
+                      onPress={() => setNewsVisibleCount(INITIAL_NEWS_EVENTS_LIMIT)}
+                    >
+                      <Text style={[styles.newsActionText, styles.newsActionTextSecondary]}>See less</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
             </>
@@ -5489,7 +5528,12 @@ const styles = StyleSheet.create({
     borderColor: `${COLORS.primary}30`,
     backgroundColor: `${COLORS.primary}10`,
   },
+  newsActionButtonSecondary: {
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.card,
+  },
   newsActionText: { fontSize: 14, fontWeight: '600', color: COLORS.primary },
+  newsActionTextSecondary: { color: COLORS.textLight },
   articleModalContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
