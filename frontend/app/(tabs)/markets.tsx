@@ -180,7 +180,10 @@ export default function Markets() {
   }, [events]);
 
   const selectedDateKey = format(selectedDate, 'yyyy-MM-dd');
-  const selectedEvents = eventsByDate[selectedDateKey] || [];
+  const selectedEvents = useMemo(
+    () => eventsByDate[selectedDateKey] || [],
+    [eventsByDate, selectedDateKey],
+  );
 
   const selectedEventCounts = useMemo(() => {
     return selectedEvents.reduce<Record<EventType, number>>((acc, event) => {
