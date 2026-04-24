@@ -12,9 +12,10 @@ describe('Markets events regressions', () => {
   it('keeps compact event-type tabs with expanded short labels and removes the legend helper row', () => {
     expect(fileContent).toContain("earnings: { label: 'Earnings', shortLabel: 'EARN', legendLabel: 'E = Earnings'");
     expect(fileContent).toContain("dividend: { label: 'Dividends', shortLabel: 'DIV', legendLabel: 'D = Dividends'");
-    expect(fileContent).toContain("split: { label: 'Splits', shortLabel: 'SPL', legendLabel: 'S = Splits'");
+    expect(fileContent).toContain("split: { label: 'Splits', shortLabel: 'SPLIT', legendLabel: 'S = Splits'");
     expect(fileContent).toContain("ipo: { label: 'IPOs', shortLabel: 'IPO', legendLabel: 'IPO = IPOs'");
     expect(fileContent).not.toContain("EVENT_TYPE_ORDER.map((type) => EVENT_META[type].legendLabel).join(' • ')");
+    expect(fileContent).toContain('<View style={styles.eventTabLabelRow}>');
   });
 
   it('shows ticker/company filtering only when the event list is large enough', () => {
@@ -22,6 +23,13 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const shouldShowTickerFilter = tickerOptions.length >= TICKER_FILTER_THRESHOLD;');
     expect(fileContent).toContain('placeholder="Search ticker or company"');
     expect(fileContent).toContain("Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null");
+  });
+
+  it('keeps earnings subtitles on the expected label and shows scroll arrows for horizontal day cards', () => {
+    expect(fileContent).toContain('details.push(`Exp. ${formattedEstimate}`)');
+    expect(fileContent).toContain('const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + 4;');
+    expect(fileContent).toContain("scrollActiveDaysBy(-1)");
+    expect(fileContent).toContain("scrollActiveDaysBy(1)");
   });
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {

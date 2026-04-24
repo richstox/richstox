@@ -70,9 +70,10 @@ const formatDashboardDate = (dateStr?: string | null): string => {
 };
 
 const formatDashboardCurrency = (value?: number | null, currency?: string | null): string | null => {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const numericValue = typeof value === 'string' ? Number(value) : value;
+  if (typeof numericValue !== 'number' || !Number.isFinite(numericValue)) return null;
   const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
-  return `${prefix}${value.toFixed(2)}`;
+  return `${prefix}${numericValue.toFixed(2)}`;
 };
 
 const getDashboardMarketTimingLabel = (value?: string | null): string | null => {
@@ -86,7 +87,7 @@ const getDashboardMarketTimingLabel = (value?: string | null): string | null => 
 const formatHomepageEventSubtitle = (event: HomepageEvent): string => {
   if (event.event_type === 'Earnings') {
     const details = [
-      formatDashboardCurrency(event.estimate, event.currency) ? `Est. ${formatDashboardCurrency(event.estimate, event.currency)}` : null,
+      formatDashboardCurrency(event.estimate, event.currency) ? `Exp. ${formatDashboardCurrency(event.estimate, event.currency)}` : null,
       getDashboardMarketTimingLabel(event.before_after_market),
     ].filter(Boolean);
     return details.join(HOMEPAGE_EVENT_SEPARATOR) || 'Scheduled earnings';
@@ -228,6 +229,7 @@ export default function Dashboard() {
   const [aggregateSentiment, setAggregateSentiment] = useState<any>(null);
   const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');
   const [includeHomepageEvents, setIncludeHomepageEvents] = useState(true);
+  const [newsFeedFilter, setNewsFeedFilter] = useState('');
   
   // Fix 3: News pagination with See less
   const INITIAL_NEWS_LIMIT = 5;
@@ -523,9 +525,35 @@ export default function Dashboard() {
     }
   }, [homepageEvents, homepageFeedSort, includeHomepageEvents, newsItems]);
 
+  const normalizedNewsFeedFilter = newsFeedFilter.trim().toLowerCase();
+  const filteredNewsFeedItems = useMemo<DashboardFeedItem[]>(() => {
+    if (!normalizedNewsFeedFilter) return newsFeedItems;
+    return newsFeedItems.filter((item) => {
+      const searchFields = item.kind === 'event'
+        ? [
+            item.event.ticker,
+            item.event.company_name,
+            item.event.title,
+            item.event.event_type,
+            formatHomepageEventSubtitle(item.event),
+          ]
+        : [
+            item.article?.ticker,
+            item.article?.company_name,
+            item.article?.title,
+            item.article?.source,
+          ];
+      return searchFields
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedNewsFeedFilter);
+    });
+  }, [newsFeedItems, normalizedNewsFeedFilter]);
+
   useEffect(() => {
     setNewsLimit(INITIAL_NEWS_LIMIT);
-  }, [homepageFeedSort, includeHomepageEvents]);
+  }, [homepageFeedSort, includeHomepageEvents, newsFeedFilter]);
 
   const formatPercent = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   const formatDrawdown = (v: number) => `-${Math.abs(v).toFixed(2)}%`;
@@ -967,7 +995,6 @@ export default function Dashboard() {
                 <Ionicons name="newspaper" size={18} color={COLORS.primary} />
                 <View>
                   <Text style={styles.sectionTitle}>News & Events</Text>
-                  <Text style={styles.newsSubtitle}>News plus upcoming followed-ticker events</Text>
                 </View>
               </View>
               {/* Aggregate Sentiment Badge */}
@@ -1041,6 +1068,24 @@ export default function Dashboard() {
                 </View>
               </TouchableOpacity>
             </View>
+            {newsFeedItems.length > 0 && (
+              <View style={styles.myStocksSearchWrapper}>
+                <Ionicons name="search" size={16} color={COLORS.textMuted} />
+                <TextInput
+                  style={styles.myStocksSearchInput}
+                  placeholder="Search news & events..."
+                  placeholderTextColor={COLORS.textMuted}
+                  value={newsFeedFilter}
+                  onChangeText={setNewsFeedFilter}
+                  autoCorrect={false}
+                />
+                {newsFeedFilter.length > 0 && (
+                  <TouchableOpacity onPress={() => setNewsFeedFilter('')}>
+                    <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
           </View>
           
           {/* News List */}
@@ -1050,10 +1095,12 @@ export default function Dashboard() {
               <ActivityIndicator size="small" color={COLORS.primary} />
               <Text style={styles.newsLoadingText}>Loading news...</Text>
             </View>
-          ) : newsFeedItems.length === 0 ? (
-            <Text style={styles.noNewsText}>No news or events available</Text>
+          ) : filteredNewsFeedItems.length === 0 ? (
+            <Text style={styles.noNewsText}>
+              {normalizedNewsFeedFilter ? `No matches for "${newsFeedFilter}"` : 'No news or events available'}
+            </Text>
           ) : (
-            newsFeedItems.slice(0, newsLimit).map((item, index) => {
+            filteredNewsFeedItems.slice(0, newsLimit).map((item, index) => {
               const isEvent = item.kind === 'event';
               const news = isEvent ? item.event : item.article;
               const eventSubtitle = isEvent ? formatHomepageEventSubtitle(item.event) : null;
@@ -1062,7 +1109,7 @@ export default function Dashboard() {
                 key={item.id}
                 style={[
                   styles.newsRow,
-                  index === Math.min(newsLimit, newsFeedItems.length) - 1 && styles.lastRow
+                  index === Math.min(newsLimit, filteredNewsFeedItems.length) - 1 && styles.lastRow
                 ]}
               >
                 {/* P31 LOGO GUARANTEE: Always show logo or fallback badge */}
@@ -1128,13 +1175,13 @@ export default function Dashboard() {
           )}
 
           {/* Fix 3: Load More + See Less for News */}
-          {newsFeedItems.length > 0 && (
+          {filteredNewsFeedItems.length > 0 && (
             <View style={styles.stocksButtonsRow}>
-              {(hasMoreNews || newsLimit < newsFeedItems.length) && (
+              {(hasMoreNews || newsLimit < filteredNewsFeedItems.length) && (
                 <TouchableOpacity 
                   style={styles.loadMoreButtonFull}
                   onPress={() => {
-                    if (newsLimit >= newsFeedItems.length) {
+                    if (newsLimit >= filteredNewsFeedItems.length) {
                       loadMoreNews();
                     }
                     setNewsLimit(prev => prev + 5);

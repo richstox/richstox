@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -84,7 +84,7 @@ const EVENT_META: Record<EventType, {
 }> = {
   earnings: { label: 'Earnings', shortLabel: 'EARN', legendLabel: 'E = Earnings', singularLabel: 'Earnings', color: '#3B82F6', icon: 'bar-chart-outline' },
   dividend: { label: 'Dividends', shortLabel: 'DIV', legendLabel: 'D = Dividends', singularLabel: 'Dividend', color: '#10B981', icon: 'cash-outline' },
-  split: { label: 'Splits', shortLabel: 'SPL', legendLabel: 'S = Splits', singularLabel: 'Split', color: '#F59E0B', icon: 'git-compare-outline' },
+  split: { label: 'Splits', shortLabel: 'SPLIT', legendLabel: 'S = Splits', singularLabel: 'Split', color: '#F59E0B', icon: 'git-compare-outline' },
   ipo: { label: 'IPOs', shortLabel: 'IPO', legendLabel: 'IPO = IPOs', singularLabel: 'IPO', color: '#A855F7', icon: 'rocket-outline' },
 };
 
@@ -109,9 +109,16 @@ const getPragueDateString = (value: Date = new Date()): string => {
 
 const parseYmd = (value: string): Date => parseISO(`${value}T00:00:00Z`);
 
-const formatEventAmount = (amount: number, currency?: string | null): string => {
+const parseEventNumericValue = (value?: number | string | null): number | null => {
+  const numericValue = typeof value === 'string' ? Number(value) : value;
+  return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : null;
+};
+
+const formatEventAmount = (amount?: number | string | null, currency?: string | null): string | null => {
+  const numericAmount = parseEventNumericValue(amount);
+  if (numericAmount == null) return null;
   const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
-  return `${prefix}${amount.toFixed(2)}`;
+  return `${prefix}${numericAmount.toFixed(2)}`;
 };
 
 const hashSymbolToColor = (symbol: string) => {
@@ -186,6 +193,10 @@ export default function Markets() {
   const [tickerFilter, setTickerFilter] = useState('');
   const [visibleEventLimit, setVisibleEventLimit] = useState(INITIAL_VISIBLE_EVENTS);
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
+  const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);
+  const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
+  const [activeDaysLayoutWidth, setActiveDaysLayoutWidth] = useState(0);
+  const activeDaysScrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -331,6 +342,11 @@ export default function Markets() {
     }
   }, [selectedEventCounts, selectedEventType]);
 
+  useEffect(() => {
+    activeDaysScrollRef.current?.scrollTo({ x: 0, animated: false });
+    setActiveDaysScrollX(0);
+  }, [selectedMonthKey]);
+
   const typeFilteredEvents = useMemo(
     () => periodEvents.filter((event) => event.type === selectedEventType),
     [periodEvents, selectedEventType],
@@ -365,6 +381,17 @@ export default function Markets() {
     [visibleEventLimit, visibleEvents],
   );
 
+  const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + 4;
+  const canScrollActiveDaysLeft = activeDaysScrollX > 4;
+  const canScrollActiveDaysRight = activeDaysContentWidth - activeDaysLayoutWidth - activeDaysScrollX > 4;
+  const scrollActiveDaysBy = (direction: -1 | 1) => {
+    const step = Math.max(activeDaysLayoutWidth * 0.8, 140);
+    activeDaysScrollRef.current?.scrollTo({
+      x: Math.max(0, activeDaysScrollX + direction * step),
+      animated: true,
+    });
+  };
+
   const calendarDays = useMemo(() => {
     const monthStart = startOfMonth(displayMonth);
     const monthEnd = endOfMonth(displayMonth);
@@ -394,7 +421,8 @@ export default function Markets() {
   const formatEventSecondary = (event: CalendarEvent): string => {
     if (event.type === 'dividend') {
       const details: string[] = [];
-      if (event.amount != null) details.push(formatEventAmount(event.amount, event.currency));
+      const formattedAmount = formatEventAmount(event.amount, event.currency);
+      if (formattedAmount) details.push(formattedAmount);
       const payDate = typeof event.metadata?.pay_date === 'string' ? event.metadata.pay_date : null;
       if (payDate && isValidYmd(payDate)) details.push(`Pay ${formatDateDMY(payDate)}`);
       return details.join(' • ') || (event.description || 'Upcoming dividend');
@@ -404,13 +432,15 @@ export default function Markets() {
     }
     if (event.type === 'earnings') {
       const details: string[] = [];
-      if (event.estimate != null) details.push(`Est. ${formatEventAmount(event.estimate, event.currency)}`);
+      const formattedEstimate = formatEventAmount(event.estimate, event.currency);
+      if (formattedEstimate) details.push(`Exp. ${formattedEstimate}`);
       if (event.description) details.push(event.description);
       return details.join(' • ') || 'Scheduled earnings';
     }
     if (event.type === 'ipo') {
       const details: string[] = [];
-      if (event.amount != null) details.push(`IPO ${formatEventAmount(event.amount, null)}`);
+      const formattedAmount = formatEventAmount(event.amount, null);
+      if (formattedAmount) details.push(`IPO ${formattedAmount}`);
       const priceFrom = typeof event.metadata?.price_from === 'number' ? event.metadata.price_from : null;
       const priceTo = typeof event.metadata?.price_to === 'number' ? event.metadata.price_to : null;
       if (event.amount == null && priceFrom != null && priceTo != null && priceFrom > 0 && priceTo > 0) {
@@ -477,35 +507,60 @@ export default function Markets() {
                 </TouchableOpacity>
               </View>
 
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.activeDaysScroll}
-                contentContainerStyle={styles.activeDaysScrollContent}
-              >
-                {activeDayKeysForDisplayMonth.map((dayKey) => {
-                  const day = parseYmd(dayKey);
-                  const isSelected = dayKey === selectedDateKey;
-                  const dayEvents = eventsByDate[dayKey] || [];
-                  return (
-                    <TouchableOpacity
-                      key={dayKey}
-                      style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
-                      onPress={() => setSelectedDate(day)}
-                    >
-                      <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
-                        {format(day, 'EEE')}
-                      </Text>
-                      <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
-                        {format(day, 'd')}
-                      </Text>
-                      <Text style={[styles.activeDayCount, isSelected && styles.activeDayTextSelected]}>
-                        {dayEvents.length} events
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
+              <View style={styles.activeDaysScrollerRow}>
+                {shouldShowActiveDaysArrows && (
+                  <TouchableOpacity
+                    style={[styles.horizontalNavButton, !canScrollActiveDaysLeft && styles.horizontalNavButtonDisabled]}
+                    onPress={() => scrollActiveDaysBy(-1)}
+                    disabled={!canScrollActiveDaysLeft}
+                  >
+                    <Ionicons name="chevron-back" size={16} color={canScrollActiveDaysLeft ? COLORS.primary : COLORS.textMuted} />
+                  </TouchableOpacity>
+                )}
+                <ScrollView
+                  ref={activeDaysScrollRef}
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  style={styles.activeDaysScroll}
+                  contentContainerStyle={styles.activeDaysScrollContent}
+                  onScroll={(event) => setActiveDaysScrollX(event.nativeEvent.contentOffset.x)}
+                  onContentSizeChange={(width) => setActiveDaysContentWidth(width)}
+                  onLayout={(event) => setActiveDaysLayoutWidth(event.nativeEvent.layout.width)}
+                  scrollEventThrottle={16}
+                >
+                  {activeDayKeysForDisplayMonth.map((dayKey) => {
+                    const day = parseYmd(dayKey);
+                    const isSelected = dayKey === selectedDateKey;
+                    const dayEvents = eventsByDate[dayKey] || [];
+                    return (
+                      <TouchableOpacity
+                        key={dayKey}
+                        style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
+                        onPress={() => setSelectedDate(day)}
+                      >
+                        <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
+                          {format(day, 'EEE')}
+                        </Text>
+                        <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
+                          {format(day, 'd')}
+                        </Text>
+                        <Text style={[styles.activeDayCount, isSelected && styles.activeDayTextSelected]}>
+                          {dayEvents.length} events
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+                {shouldShowActiveDaysArrows && (
+                  <TouchableOpacity
+                    style={[styles.horizontalNavButton, !canScrollActiveDaysRight && styles.horizontalNavButtonDisabled]}
+                    onPress={() => scrollActiveDaysBy(1)}
+                    disabled={!canScrollActiveDaysRight}
+                  >
+                    <Ionicons name="chevron-forward" size={16} color={canScrollActiveDaysRight ? COLORS.primary : COLORS.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
 
               <TouchableOpacity
                 style={styles.calendarToggleButton}
@@ -679,15 +734,15 @@ export default function Markets() {
                   onPress={() => setSelectedEventType(type)}
                   accessibilityRole="button"
                 >
-                  <View style={[styles.eventTabDot, { backgroundColor: meta.color }]} />
-                  <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive]}>
-                    {meta.shortLabel}
-                  </Text>
-                  <View style={[styles.eventTabCountPill, isActive && styles.eventTabCountPillActive]}>
-                    <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive]}>
-                      {selectedEventCounts[type]}
+                  <View style={styles.eventTabLabelRow}>
+                    <View style={[styles.eventTabDot, { backgroundColor: meta.color }]} />
+                    <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive]}>
+                      {meta.shortLabel}
                     </Text>
                   </View>
+                  <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive]}>
+                    {selectedEventCounts[type]}
+                  </Text>
                 </TouchableOpacity>
               );
             })}
@@ -865,11 +920,17 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   activeDaysScroll: {
+    flex: 1,
     marginBottom: 12,
   },
   activeDaysScrollContent: {
     gap: 10,
     paddingRight: 4,
+  },
+  activeDaysScrollerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   activeDayCard: {
     minWidth: 88,
@@ -1010,20 +1071,26 @@ const styles = StyleSheet.create({
   eventsCount: { fontSize: 20, fontWeight: '800', color: COLORS.primary },
   eventTabsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
+    gap: 8,
     paddingBottom: 12,
     marginBottom: 14,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
   eventTab: {
-    flexDirection: 'row',
+    flex: 1,
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'center',
+    gap: 6,
     paddingBottom: 8,
     borderBottomWidth: 2,
     borderBottomColor: 'transparent',
+  },
+  eventTabLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   eventTabActive: {
     borderBottomColor: '#3B82F6',
@@ -1034,31 +1101,32 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   eventTabText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     color: COLORS.textLight,
   },
   eventTabTextActive: {
     color: '#2563EB',
   },
-  eventTabCountPill: {
-    minWidth: 28,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 999,
-    alignItems: 'center',
-    backgroundColor: '#F3F4F6',
-  },
-  eventTabCountPillActive: {
-    backgroundColor: '#DBEAFE',
-  },
   eventTabCountText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textLight,
+    fontSize: 13,
+    fontWeight: '800',
+    color: COLORS.text,
   },
   eventTabCountTextActive: {
     color: '#2563EB',
+  },
+  horizontalNavButton: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EEF2FF',
+    marginBottom: 12,
+  },
+  horizontalNavButtonDisabled: {
+    backgroundColor: '#F3F4F6',
   },
   filterSearchWrap: {
     flexDirection: 'row',
