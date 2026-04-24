@@ -4676,7 +4676,9 @@ export default function StockDetail() {
 
                 <Text
                   style={styles.articleContent}
-                  accessibilityLabel={selectedArticle.content?.trim() ? undefined : 'Article preview unavailable. Open the original article to read the full story'}
+                  accessibilityLabel={selectedArticle.content?.trim()
+                    ? 'Article content'
+                    : 'Article preview unavailable. Open the original article to read the full story'}
                 >
                   {selectedArticle.content?.trim() || 'Open the original article to read the full story'}
                 </Text>
@@ -4684,11 +4686,7 @@ export default function StockDetail() {
                 {selectedArticle.link && (
                   <TouchableOpacity
                     style={styles.readOriginalButton}
-                    onPress={() => {
-                      if (selectedArticle.link) {
-                        openExternalLink(selectedArticle.link);
-                      }
-                    }}
+                    onPress={() => openExternalLink(selectedArticle.link)}
                   >
                     <Ionicons name="open-outline" size={18} color={COLORS.primary} />
                     <Text style={styles.readOriginalText}>Read original article</Text>
