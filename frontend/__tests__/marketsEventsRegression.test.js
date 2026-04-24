@@ -29,8 +29,9 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('details.push(`Exp. ${formattedEstimate}`)');
     expect(fileContent).toContain('const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;');
     expect(fileContent).toContain('const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;');
-    expect(fileContent).toContain("scrollActiveDaysBy(-1)");
-    expect(fileContent).toContain("scrollActiveDaysBy(1)");
+    expect(fileContent).toContain("const scrollActiveDaysBy = (scrollDirection: 'left' | 'right') => {");
+    expect(fileContent).toContain("scrollActiveDaysBy('left')");
+    expect(fileContent).toContain("scrollActiveDaysBy('right')");
   });
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {

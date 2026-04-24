@@ -112,13 +112,13 @@ const getPragueDateString = (value: Date = new Date()): string => {
 
 const parseYmd = (value: string): Date => parseISO(`${value}T00:00:00Z`);
 
-const normalizeEventNumber = (value?: number | string | null): number | null => {
+const parseEventNumber = (value?: number | string | null): number | null => {
   const numericValue = typeof value === 'string' ? Number(value) : value;
   return typeof numericValue === 'number' && Number.isFinite(numericValue) ? numericValue : null;
 };
 
 const formatEventAmount = (amount?: number | string | null, currency?: string | null): string | null => {
-  const numericAmount = normalizeEventNumber(amount);
+  const numericAmount = parseEventNumber(amount);
   if (numericAmount == null) return null;
   const prefix = currency && currency !== 'USD' ? `${currency} ` : '$';
   return `${prefix}${numericAmount.toFixed(2)}`;
@@ -387,10 +387,10 @@ export default function Markets() {
   const canScrollActiveDaysLeft = activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
   const canScrollActiveDaysRight =
     activeDaysContentWidth - activeDaysLayoutWidth - activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
-  const scrollActiveDaysBy = (direction: -1 | 1) => {
+  const scrollActiveDaysBy = (scrollDirection: 'left' | 'right') => {
     const step = Math.max(activeDaysLayoutWidth * ACTIVE_DAYS_SCROLL_PERCENTAGE, MIN_ACTIVE_DAYS_SCROLL_STEP);
     activeDaysScrollRef.current?.scrollTo({
-      x: Math.max(0, activeDaysScrollX + direction * step),
+      x: Math.max(0, activeDaysScrollX + (scrollDirection === 'right' ? step : -step)),
       animated: true,
     });
   };
@@ -514,7 +514,7 @@ export default function Markets() {
                 {shouldShowActiveDaysArrows && (
                   <TouchableOpacity
                     style={[styles.horizontalNavButton, !canScrollActiveDaysLeft && styles.horizontalNavButtonDisabled]}
-                    onPress={() => scrollActiveDaysBy(-1)}
+                    onPress={() => scrollActiveDaysBy('left')}
                     disabled={!canScrollActiveDaysLeft}
                   >
                     <Ionicons name="chevron-back" size={16} color={canScrollActiveDaysLeft ? COLORS.primary : COLORS.textMuted} />
@@ -557,7 +557,7 @@ export default function Markets() {
                 {shouldShowActiveDaysArrows && (
                   <TouchableOpacity
                     style={[styles.horizontalNavButton, !canScrollActiveDaysRight && styles.horizontalNavButtonDisabled]}
-                    onPress={() => scrollActiveDaysBy(1)}
+                    onPress={() => scrollActiveDaysBy('right')}
                     disabled={!canScrollActiveDaysRight}
                   >
                     <Ionicons name="chevron-forward" size={16} color={canScrollActiveDaysRight ? COLORS.primary : COLORS.textMuted} />
