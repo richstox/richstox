@@ -1219,7 +1219,7 @@ export default function StockDetail() {
     missCount: number;
     inlineCount: number;
     naCount: number;
-    otherCount: number;
+    neutralCount: number;
     previousAnnualReportedEps: number | null;
     previousReportsCount: number | null;
     isPartial: boolean;
@@ -1331,10 +1331,10 @@ export default function StockDetail() {
         missCount: current.missCount,
         inlineCount: current.inlineCount,
         naCount: current.naCount,
-        otherCount: current.inlineCount + current.naCount,
+        neutralCount: current.inlineCount + current.naCount,
         previousAnnualReportedEps: previous ? round4(previous.annualReportedEps) : null,
         previousReportsCount: previous ? previous.reportsCount : null,
-        isPartial: previous != null && current.reportsCount < previous.reportsCount,
+        isPartial: previous !== null && current.reportsCount < previous.reportsCount,
       };
     });
   }, [earningsHistory]);
@@ -1361,7 +1361,7 @@ export default function StockDetail() {
   const showAnnualEarningsBreakdown = (period: AnnualEarningsPeriod) => {
     void dialog.alert(
       `Annual Earnings · ${period.label}`,
-      `Beat ${period.beatCount}, Miss ${period.missCount}, Other ${period.otherCount}`,
+      `Beat ${period.beatCount}, Miss ${period.missCount}, Other ${period.neutralCount}`,
     );
   };
 
@@ -3731,6 +3731,7 @@ export default function StockDetail() {
                                         onPress={() => showAnnualEarningsBreakdown(period)}
                                         accessibilityRole="button"
                                         accessibilityLabel={`Show ${period.label} earnings outcome breakdown`}
+                                        accessibilityHint={`Beat ${period.beatCount}, miss ${period.missCount}, other ${period.neutralCount}`}
                                       >
                                         <View style={styles.earningsAnnualBarTrack}>
                                           {period.beatCount > 0 ? (
@@ -3739,8 +3740,8 @@ export default function StockDetail() {
                                           {period.missCount > 0 ? (
                                             <View style={[styles.earningsAnnualBarSegment, styles.earningsAnnualBarSegmentMiss, { flex: period.missCount }]} />
                                           ) : null}
-                                          {period.otherCount > 0 ? (
-                                            <View style={[styles.earningsAnnualBarSegment, styles.earningsAnnualBarSegmentOther, { flex: period.otherCount }]} />
+                                          {period.neutralCount > 0 ? (
+                                            <View style={[styles.earningsAnnualBarSegment, styles.earningsAnnualBarSegmentOther, { flex: period.neutralCount }]} />
                                           ) : null}
                                         </View>
                                         <Ionicons name="help-circle-outline" size={13} color={EARNINGS_NEUTRAL_COLOR} />
