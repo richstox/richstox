@@ -1739,12 +1739,29 @@ async def get_homepage_data():
         ]
         prices_task = db.stock_prices.aggregate(prices_pipeline).to_list(length=None)
 
-        fundamentals_list, prices_agg = await asyncio.gather(
-            fundamentals_task, prices_task
+        today_prague = get_prague_now().strftime("%Y-%m-%d")
+        earnings_task = db.upcoming_earnings.find(
+            {"ticker": {"$in": all_ticker_dbs}, "report_date": {"$gte": today_prague}},
+            {"_id": 0, "ticker": 1, "report_date": 1, "before_after_market": 1, "estimate": 1, "currency": 1},
+        ).sort("report_date", 1).to_list(length=None)
+        dividends_task = db.upcoming_dividends.find(
+            {"ticker": {"$in": all_ticker_dbs}, "next_ex_date": {"$gte": today_prague}},
+            {"_id": 0, "ticker": 1, "next_ex_date": 1, "next_dividend_amount": 1, "next_dividend_currency": 1, "next_pay_date": 1},
+        ).sort("next_ex_date", 1).to_list(length=None)
+        splits_task = db.upcoming_splits.find(
+            {"ticker": {"$in": all_ticker_dbs}, "split_date": {"$gte": today_prague}},
+            {"_id": 0, "ticker": 1, "split_date": 1, "split_ratio": 1, "old_shares": 1, "new_shares": 1},
+        ).sort("split_date", 1).to_list(length=None)
+
+        fundamentals_list, prices_agg, earnings_rows, dividend_rows, split_rows = await asyncio.gather(
+            fundamentals_task, prices_task, earnings_task, dividends_task, splits_task
         )
     else:
         fundamentals_list = []
         prices_agg = []
+        earnings_rows = []
+        dividend_rows = []
+        split_rows = []
 
     # Build lookup dicts
     fund_map = {doc["ticker"]: doc for doc in fundamentals_list}
@@ -1761,6 +1778,81 @@ async def get_homepage_data():
                 prev = prices[1]
                 entry["prev"] = prev.get("adjusted_close") or prev.get("close", 0)
         price_map[ticker_db] = entry
+
+    upcoming_events = []
+    event_type_order = {"Earnings": 0, "Dividend": 1, "Split": 2}
+
+    def _company_meta_for_event(ticker_db: str) -> tuple[str, Optional[str]]:
+        fundamentals = fund_map.get(ticker_db, {})
+        bare = ticker_db.replace(".US", "")
+        logo_url = None
+        if fundamentals.get("logo_status") == "present":
+            logo_url = _internal_logo_url(fundamentals.get("logo_url") or bare)
+        return fundamentals.get("name", bare), logo_url
+
+    for row in earnings_rows:
+        ticker_db = (row.get("ticker") or "").upper()
+        if not ticker_db:
+            continue
+        company_name, logo_url = _company_meta_for_event(ticker_db)
+        upcoming_events.append({
+            "id": f"earnings-{ticker_db}-{row.get('report_date')}",
+            "ticker": ticker_db.replace(".US", ""),
+            "company_name": company_name,
+            "logo_url": logo_url,
+            "event_type": "Earnings",
+            "title": "Upcoming Earnings",
+            "date": row.get("report_date"),
+            "before_after_market": row.get("before_after_market"),
+            "estimate": row.get("estimate"),
+            "currency": row.get("currency"),
+        })
+
+    for row in dividend_rows:
+        ticker_db = (row.get("ticker") or "").upper()
+        if not ticker_db:
+            continue
+        company_name, logo_url = _company_meta_for_event(ticker_db)
+        upcoming_events.append({
+            "id": f"dividend-{ticker_db}-{row.get('next_ex_date')}",
+            "ticker": ticker_db.replace(".US", ""),
+            "company_name": company_name,
+            "logo_url": logo_url,
+            "event_type": "Dividend",
+            "title": "Upcoming Ex-Dividend",
+            "date": row.get("next_ex_date"),
+            "amount": row.get("next_dividend_amount"),
+            "currency": row.get("next_dividend_currency"),
+            "pay_date": row.get("next_pay_date"),
+        })
+
+    for row in split_rows:
+        ticker_db = (row.get("ticker") or "").upper()
+        if not ticker_db:
+            continue
+        company_name, logo_url = _company_meta_for_event(ticker_db)
+        upcoming_events.append({
+            "id": f"split-{ticker_db}-{row.get('split_date')}",
+            "ticker": ticker_db.replace(".US", ""),
+            "company_name": company_name,
+            "logo_url": logo_url,
+            "event_type": "Split",
+            "title": "Upcoming Split",
+            "date": row.get("split_date"),
+            "split_ratio": _format_split_ratio(
+                row.get("split_ratio"),
+                old_shares=row.get("old_shares"),
+                new_shares=row.get("new_shares"),
+            ),
+        })
+
+    upcoming_events.sort(
+        key=lambda item: (
+            item.get("date") or "",
+            event_type_order.get(item.get("event_type") or "", 99),
+            item.get("ticker") or "",
+        )
+    )
 
     # --- Phase 3: Build response from lookup dicts (no DB calls) ---
     for ticker in ordered_tickers[:20]:
@@ -1841,6 +1933,7 @@ async def get_homepage_data():
             "ytd_return": round(sp_ytd_return, 2)
         },
         "my_stocks": stocks,
+        "upcoming_events": upcoming_events,
         "watchlist_count": len(watchlist_tickers & visible_set),
         "portfolio_count": len(portfolio_tickers & visible_set),
         "total_count": len(ordered_tickers),
@@ -2027,6 +2120,7 @@ from dividend_history_service import (
     get_ipos_for_ticker,
     get_ipos_calendar,
     get_calendar_events,
+    _format_split_ratio,
 )
 
 from canonical_dividend import compute_canonical_dividend_yield

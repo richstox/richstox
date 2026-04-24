@@ -111,6 +111,19 @@ def _safe_float(value: Any, *, allow_non_positive: bool = False) -> Optional[flo
     return round(parsed, 6)
 
 
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped:
+                return stripped
+            continue
+        return value
+    return None
+
+
 def _internal_logo_url(ticker_or_path: Any) -> Optional[str]:
     if not ticker_or_path or not isinstance(ticker_or_path, str):
         return None
@@ -131,7 +144,8 @@ def _format_split_ratio(
     new_shares: Any = None,
 ) -> Optional[str]:
     if isinstance(split_ratio, str) and split_ratio.strip():
-        return split_ratio.strip()
+        normalized = split_ratio.strip().replace(" for ", ":").replace("/", ":")
+        return normalized
     old_value = _safe_float(old_shares)
     new_value = _safe_float(new_shares)
     if old_value is None or new_value is None:
@@ -141,6 +155,74 @@ def _format_split_ratio(
         return str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
 
     return f"{_stringify(old_value)}:{_stringify(new_value)}"
+
+
+def _extract_split_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    old_shares = _safe_float(_first_present(
+        row.get("Old_Shares"),
+        row.get("OldShares"),
+        row.get("old_shares"),
+        row.get("oldShares"),
+        row.get("ForFactor"),
+        row.get("for_factor"),
+        row.get("forFactor"),
+    ))
+    new_shares = _safe_float(_first_present(
+        row.get("New_Shares"),
+        row.get("NewShares"),
+        row.get("new_shares"),
+        row.get("newShares"),
+        row.get("ToFactor"),
+        row.get("to_factor"),
+        row.get("toFactor"),
+    ))
+    split_ratio = _format_split_ratio(
+        _first_present(
+            row.get("Split"),
+            row.get("split"),
+            row.get("split_ratio"),
+            row.get("splitRatio"),
+            row.get("Ratio"),
+            row.get("ratio"),
+        ),
+        old_shares=old_shares,
+        new_shares=new_shares,
+    )
+    return {
+        "split_ratio": split_ratio,
+        "old_shares": old_shares,
+        "new_shares": new_shares,
+    }
+
+
+def _extract_ipo_price_fields(row: Dict[str, Any]) -> Dict[str, Optional[float]]:
+    price_from = _safe_float(_first_present(
+        row.get("Price_From"),
+        row.get("price_from"),
+        row.get("priceFrom"),
+    ), allow_non_positive=True)
+    price_to = _safe_float(_first_present(
+        row.get("Price_To"),
+        row.get("price_to"),
+        row.get("priceTo"),
+    ), allow_non_positive=True)
+    offer_price = _safe_float(_first_present(
+        row.get("IPO_Price"),
+        row.get("ipo_price"),
+        row.get("ipoPrice"),
+        row.get("Offer_Price"),
+        row.get("offer_price"),
+        row.get("offerPrice"),
+    ), allow_non_positive=True)
+    ipo_price = offer_price if offer_price and offer_price > 0 else None
+    if ipo_price is None and price_from is not None and price_from > 0 and price_from == price_to:
+        ipo_price = price_from
+    return {
+        "price_from": price_from,
+        "price_to": price_to,
+        "offer_price": offer_price,
+        "ipo_price": ipo_price,
+    }
 
 
 def _normalize_frequency_label(raw: Any) -> Optional[str]:
@@ -1484,31 +1566,13 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
         if not split_date:
             continue
         if ticker not in grouped or split_date < grouped[ticker]["_split_date"]:
-            old_shares = _safe_float(
-                row.get("Old_Shares")
-                or row.get("OldShares")
-                or row.get("old_shares")
-                or row.get("oldShares")
-            )
-            new_shares = _safe_float(
-                row.get("New_Shares")
-                or row.get("NewShares")
-                or row.get("new_shares")
-                or row.get("newShares")
-            )
+            split_fields = _extract_split_fields(row)
             grouped[ticker] = {
                 "_split_date": split_date,
                 "split_date": split_date,
-                "split_ratio": _format_split_ratio(
-                    row.get("Split")
-                    or row.get("split")
-                    or row.get("split_ratio")
-                    or None,
-                    old_shares=old_shares,
-                    new_shares=new_shares,
-                ),
-                "old_shares": old_shares,
-                "new_shares": new_shares,
+                "split_ratio": split_fields["split_ratio"],
+                "old_shares": split_fields["old_shares"],
+                "new_shares": split_fields["new_shares"],
             }
 
     write_ops: List[UpdateOne] = []
@@ -1679,28 +1743,52 @@ async def sync_upcoming_ipos_calendar(db) -> Dict[str, Any]:
         )
         if not ticker:
             continue
-        ipo_date = _parse_date_ymd(
-            row.get("Date")
-            or row.get("date")
-            or row.get("ipo_date")
-        )
+        ipo_date = _parse_date_ymd(_first_present(
+            row.get("Date"),
+            row.get("date"),
+            row.get("ipo_date"),
+            row.get("start_date"),
+            row.get("StartDate"),
+            row.get("startDate"),
+        ))
         if not ipo_date:
             continue
+        ipo_prices = _extract_ipo_price_fields(row)
         docs.append({
             "ticker": ticker,
             "ipo_date": ipo_date,
             "description": (
-                row.get("Description")
-                or row.get("description")
-                or row.get("name")
-                or None
+                _first_present(
+                    row.get("Description"),
+                    row.get("description"),
+                    row.get("name"),
+                    row.get("Name"),
+                )
             ),
-            "exchange": row.get("Exchange") or row.get("exchange") or None,
-            "ipo_price": (
-                row.get("IPO_Price")
-                or row.get("ipo_price")
-                or row.get("ipoPrice")
-                or None
+            "name": _first_present(row.get("name"), row.get("Name")),
+            "exchange": _first_present(row.get("Exchange"), row.get("exchange")),
+            "ipo_price": ipo_prices["ipo_price"],
+            "price_from": ipo_prices["price_from"],
+            "price_to": ipo_prices["price_to"],
+            "offer_price": ipo_prices["offer_price"],
+            "filing_date": _parse_date_ymd(_first_present(
+                row.get("filing_date"),
+                row.get("FilingDate"),
+                row.get("filingDate"),
+            )),
+            "amended_date": _parse_date_ymd(_first_present(
+                row.get("amended_date"),
+                row.get("AmendedDate"),
+                row.get("amendedDate"),
+            )),
+            "shares": _safe_float(_first_present(
+                row.get("shares"),
+                row.get("Shares"),
+            ), allow_non_positive=True),
+            "deal_type": _first_present(
+                row.get("deal_type"),
+                row.get("DealType"),
+                row.get("dealType"),
             ),
             "source": UPCOMING_IPOS_SOURCE,
             "fetched_at": now_utc,
@@ -1734,7 +1822,20 @@ async def get_ipos_calendar(db, exchange: Optional[str] = None, limit: int = 50)
 
     docs = await db.upcoming_ipos.find(
         query,
-        {"_id": 0, "ticker": 1, "ipo_date": 1, "description": 1, "exchange": 1, "ipo_price": 1},
+        {
+            "_id": 0,
+            "ticker": 1,
+            "ipo_date": 1,
+            "description": 1,
+            "name": 1,
+            "exchange": 1,
+            "ipo_price": 1,
+            "price_from": 1,
+            "price_to": 1,
+            "offer_price": 1,
+            "deal_type": 1,
+            "shares": 1,
+        },
     ).sort("ipo_date", 1).limit(limit).to_list(limit)
 
     return {
@@ -1766,6 +1867,11 @@ async def get_ipos_for_ticker(db, ticker: str) -> Dict[str, Any]:
             "description": doc.get("description"),
             "exchange": doc.get("exchange"),
             "ipo_price": doc.get("ipo_price"),
+            "price_from": doc.get("price_from"),
+            "price_to": doc.get("price_to"),
+            "offer_price": doc.get("offer_price"),
+            "deal_type": doc.get("deal_type"),
+            "shares": doc.get("shares"),
         }
 
     return {
@@ -1929,13 +2035,18 @@ async def get_calendar_events(db, from_date: str, to_date: str) -> Dict[str, Any
             "date": ipo_date,
             "type": "ipo",
             "ticker": ticker,
-            "company_name": company_meta.get("company_name") or row.get("description"),
+            "company_name": company_meta.get("company_name") or row.get("name") or row.get("description"),
             "logo_url": company_meta.get("logo_url"),
-            "label": row.get("description") or (f"{ticker} IPO" if ticker else "IPO"),
+            "label": row.get("description") or row.get("name") or (f"{ticker} IPO" if ticker else "IPO"),
             "description": row.get("exchange") or "Upcoming IPO",
             "amount": row.get("ipo_price"),
             "metadata": {
                 "exchange": row.get("exchange"),
+                "price_from": row.get("price_from"),
+                "price_to": row.get("price_to"),
+                "offer_price": row.get("offer_price"),
+                "deal_type": row.get("deal_type"),
+                "shares": row.get("shares"),
             },
         })
 
