@@ -27,6 +27,7 @@ if _backend not in sys.path:
 
 
 def _matches(doc, query):
+    """Tiny matcher for the limited query shapes used in this test file."""
     for key, expected in query.items():
         actual = doc.get(key)
         if isinstance(expected, dict):

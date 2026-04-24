@@ -80,7 +80,12 @@ interface OverviewData {
   };
   job_last_runs?: Record<string, JobRun>;
   jobs?: {
-    all_sorted?: any[];
+    all_sorted?: {
+      name?: string;
+      status?: string;
+      next_run?: string;
+      error_summary?: string;
+    }[];
     registry?: any[];
     overdue?: any[];
     completed?: any[];
@@ -1150,20 +1155,20 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     return ADMIN_CALENDAR_JOBS
       .filter((meta) => meta.jobName !== 'dividend_upcoming_calendar')
       .map((meta) => {
-      const scheduledJob = scheduledJobs.find((job) => job.name === meta.jobName);
-      const lastRun = jobRuns[meta.jobName];
-      const running = lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time;
-      return {
-        ...meta,
-        schedule: formatAdminJobSchedule(meta.hour, meta.minute),
-        status: lastRun?.status ?? scheduledJob?.status ?? 'pending',
-        running,
-        nextRun: scheduledJob?.next_run ?? getNextRun(meta.hour, meta.minute, true),
-        lastRunText: lastRun
-          ? `Last: ${formatTime(lastRun.finished_at ?? lastRun.end_time ?? lastRun.start_time)}`
-          : 'Last: Never',
-        errorMessage: lastRun?.error_message ?? scheduledJob?.error_summary ?? null,
-      };
+        const scheduledJob = scheduledJobs.find((job) => job?.name === meta.jobName);
+        const lastRun = jobRuns[meta.jobName];
+        const running = lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time;
+        return {
+          ...meta,
+          schedule: formatAdminJobSchedule(meta.hour, meta.minute),
+          status: lastRun?.status ?? scheduledJob?.status ?? 'pending',
+          running,
+          nextRun: scheduledJob?.next_run ?? getNextRun(meta.hour, meta.minute, true),
+          lastRunText: lastRun
+            ? `Last: ${formatTime(lastRun.finished_at ?? lastRun.end_time ?? lastRun.start_time)}`
+            : 'Last: Never',
+          errorMessage: lastRun?.error_message ?? scheduledJob?.error_summary ?? null,
+        };
       });
   }, [jobRuns, scheduledJobs]);
 
