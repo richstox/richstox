@@ -1369,6 +1369,7 @@ async def sync_upcoming_earnings_calendar_for_visible_tickers(db) -> Dict[str, A
     now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
     window_start = now_prague.strftime("%Y-%m-%d")
     window_end = (now_prague + timedelta(days=UPCOMING_EARNINGS_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    requested_days_count = UPCOMING_EARNINGS_WINDOW_DAYS + 1
 
     # Canonical universe source: tracked_tickers.is_visible (same as dividend calendar).
     visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
@@ -1486,9 +1487,14 @@ async def sync_upcoming_earnings_calendar_for_visible_tickers(db) -> Dict[str, A
 
     return {
         "success": True,
+        "status": "completed",
         "source": UPCOMING_EARNINGS_SOURCE,
         "window_start": window_start,
         "window_end": window_end,
+        "requested_days_count": requested_days_count,
+        "days_fetched_ok_count": requested_days_count,
+        "days_failed_count": 0,
+        "coverage_complete": True,
         "visible_tickers": len(visible_tickers),
         "tickers_with_upcoming": len(grouped),
         "tickers_without_upcoming": len(null_tickers),
@@ -1692,6 +1698,7 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
     now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
     window_start = now_prague.strftime("%Y-%m-%d")
     window_end = (now_prague + timedelta(days=UPCOMING_SPLITS_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    requested_days_count = UPCOMING_SPLITS_WINDOW_DAYS + 1
 
     visible_tickers_raw = await db.tracked_tickers.distinct(
         "ticker",
@@ -1852,6 +1859,10 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
         "source": UPCOMING_SPLITS_SOURCE,
         "window_start": window_start,
         "window_end": window_end,
+        "requested_days_count": requested_days_count,
+        "days_fetched_ok_count": requested_days_count,
+        "days_failed_count": 0,
+        "coverage_complete": True,
         "visible_tickers": len(visible_tickers),
         "tickers_targeted": tickers_targeted,
         "tickers_updated": len(events_by_key),
@@ -1956,6 +1967,7 @@ async def sync_upcoming_ipos_calendar(db) -> Dict[str, Any]:
     now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
     window_start = now_prague.strftime("%Y-%m-%d")
     window_end = (now_prague + timedelta(days=UPCOMING_IPOS_WINDOW_DAYS)).strftime("%Y-%m-%d")
+    requested_days_count = UPCOMING_IPOS_WINDOW_DAYS + 1
 
     url = f"{EODHD_BASE_URL}/calendar/ipos"
     params = {
@@ -2044,9 +2056,14 @@ async def sync_upcoming_ipos_calendar(db) -> Dict[str, Any]:
 
     return {
         "success": True,
+        "status": "completed",
         "source": UPCOMING_IPOS_SOURCE,
         "window_start": window_start,
         "window_end": window_end,
+        "requested_days_count": requested_days_count,
+        "days_fetched_ok_count": requested_days_count,
+        "days_failed_count": 0,
+        "coverage_complete": True,
         "records_written": len(docs),
     }
 

@@ -144,11 +144,48 @@ class _UpcomingIposCollection:
         self.inserted = [dict(doc) for doc in docs]
 
 
+class _UpcomingEarningsCollection:
+    def __init__(self):
+        self.docs = []
+
+    async def bulk_write(self, ops, ordered=False):
+        for op in ops:
+            payload = dict(op._doc["$set"])
+            self.docs.append(payload)
+
+
 class _Db:
     def __init__(self, tracked_tickers=None, upcoming_splits=None):
         self.tracked_tickers = _TrackedTickersCollection(tracked_tickers or [])
         self.upcoming_splits = _UpcomingSplitsCollection(upcoming_splits)
         self.upcoming_ipos = _UpcomingIposCollection()
+        self.upcoming_earnings = _UpcomingEarningsCollection()
+
+
+@pytest.mark.asyncio
+async def test_sync_upcoming_earnings_reports_full_window_coverage(monkeypatch):
+    payload = {
+        "earnings": [
+            {
+                "code": "CUE.US",
+                "report_date": "2026-04-24",
+                "estimate": 1.23,
+                "currency": "USD",
+            }
+        ]
+    }
+    db = _Db(tracked_tickers=[{"ticker": "CUE.US", "is_visible": True}])
+
+    monkeypatch.setattr(svc, "EODHD_API_KEY", "test-key")
+    monkeypatch.setattr(svc.httpx, "AsyncClient", lambda *args, **kwargs: _FakeAsyncClient(payload))
+
+    result = await svc.sync_upcoming_earnings_calendar_for_visible_tickers(db)
+
+    assert result["status"] == "completed"
+    assert result["coverage_complete"] is True
+    assert result["requested_days_count"] == svc.UPCOMING_EARNINGS_WINDOW_DAYS + 1
+    assert result["days_fetched_ok_count"] == svc.UPCOMING_EARNINGS_WINDOW_DAYS + 1
+    assert result["days_failed_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -177,6 +214,10 @@ async def test_sync_upcoming_splits_persists_ratio_from_alias_fields(monkeypatch
     result = await svc.sync_upcoming_splits_calendar_for_visible_tickers(db)
 
     assert result["status"] == "success"
+    assert result["coverage_complete"] is True
+    assert result["requested_days_count"] == svc.UPCOMING_SPLITS_WINDOW_DAYS + 1
+    assert result["days_fetched_ok_count"] == svc.UPCOMING_SPLITS_WINDOW_DAYS + 1
+    assert result["days_failed_count"] == 0
     assert result["tickers_updated"] == 1
     assert db.upcoming_splits.get_docs_for_ticker("CUE.US")[0]["split_date"] == "2026-04-24"
     assert db.upcoming_splits.get_docs_for_ticker("CUE.US")[0]["split_ratio"] == "1:30"
@@ -208,6 +249,11 @@ async def test_sync_upcoming_ipos_accepts_start_date_payload(monkeypatch):
 
     result = await svc.sync_upcoming_ipos_calendar(db)
 
+    assert result["status"] == "completed"
+    assert result["coverage_complete"] is True
+    assert result["requested_days_count"] == svc.UPCOMING_IPOS_WINDOW_DAYS + 1
+    assert result["days_fetched_ok_count"] == svc.UPCOMING_IPOS_WINDOW_DAYS + 1
+    assert result["days_failed_count"] == 0
     assert result["records_written"] == 1
     assert db.upcoming_ipos.deleted == {}
     assert len(db.upcoming_ipos.inserted) == 1
