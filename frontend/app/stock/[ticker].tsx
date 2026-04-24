@@ -45,6 +45,8 @@ const INITIAL_NEWS_EVENTS_LIMIT = 5;
 const NEWS_EVENTS_PAGE_SIZE = 5;
 const NEWS_ARTICLES_FETCH_PAGE_SIZE = 10;
 const EVENT_SUBTITLE_SEPARATOR = ' • ';
+const AGGREGATE_SENTIMENT_POSITIVE_THRESHOLD = 0.3;
+const AGGREGATE_SENTIMENT_NEGATIVE_THRESHOLD = -0.3;
 
 type SentimentCategory = 'positive' | 'negative' | 'neutral';
 
@@ -70,8 +72,12 @@ const getAggregateSentimentFromArticles = (
     return 0;
   });
   const score = sentimentScores.reduce((sum, value) => sum + value, 0) / sentimentScores.length;
-  if (score > 0.3) return { score: Number(score.toFixed(2)), label: 'positive', color: '#10B981' };
-  if (score < -0.3) return { score: Number(score.toFixed(2)), label: 'negative', color: '#EF4444' };
+  if (score > AGGREGATE_SENTIMENT_POSITIVE_THRESHOLD) {
+    return { score: Number(score.toFixed(2)), label: 'positive', color: '#10B981' };
+  }
+  if (score < AGGREGATE_SENTIMENT_NEGATIVE_THRESHOLD) {
+    return { score: Number(score.toFixed(2)), label: 'negative', color: '#EF4444' };
+  }
   return { score: Number(score.toFixed(2)), label: 'neutral', color: '#F59E0B' };
 };
 
@@ -1513,6 +1519,9 @@ export default function StockDetail() {
     formatDividendAmount,
     formatUpcomingEarningsEstimate,
   ]);
+
+  const shouldFetchMoreNews =
+    newsVisibleCount + NEWS_EVENTS_PAGE_SIZE > newsEventItems.length && newsHasMore && !newsLoading;
 
   type AnnualDividendPeriod = {
     key: string;
@@ -4560,7 +4569,7 @@ export default function StockDetail() {
                         ? COLORS.accent
                         : '#8B5CF6';
                     const eventText = item.subtitle
-                      ? `${item.title}: ${item.subtitle.replace(new RegExp(EVENT_SUBTITLE_SEPARATOR, 'g'), ', ')}`
+                      ? `${item.title}: ${item.subtitle.replaceAll(EVENT_SUBTITLE_SEPARATOR, ', ')}`
                       : item.title;
                     return (
                       <View
@@ -4632,9 +4641,7 @@ export default function StockDetail() {
                   <TouchableOpacity
                     style={styles.newsActionButton}
                     onPress={() => {
-                      const shouldFetchMoreArticles =
-                        newsVisibleCount + NEWS_EVENTS_PAGE_SIZE > newsEventItems.length && newsHasMore && !newsLoading;
-                      if (shouldFetchMoreArticles) {
+                      if (shouldFetchMoreNews) {
                         fetchNewsArticles(true);
                       }
                       setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
