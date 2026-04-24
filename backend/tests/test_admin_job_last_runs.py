@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -82,8 +83,7 @@ class FakeOpsJobRuns:
         return FakeAggCursor(docs)
 
 
-@pytest.mark.asyncio
-async def test_recover_stale_calendar_job_uses_shorter_timeout():
+def test_recover_stale_calendar_job_uses_shorter_timeout():
     started_at = datetime.now(timezone.utc) - timedelta(minutes=16)
     doc = {
         "_id": "run-1",
@@ -93,7 +93,7 @@ async def test_recover_stale_calendar_job_uses_shorter_timeout():
     }
     db = SimpleNamespace(ops_job_runs=FakeOpsJobRuns([doc]))
 
-    recovered = await recover_stale_job_run(db, "earnings_upcoming_calendar")
+    recovered = asyncio.run(recover_stale_job_run(db, "earnings_upcoming_calendar"))
 
     assert recovered is not None
     assert doc["status"] == "error"
@@ -102,8 +102,7 @@ async def test_recover_stale_calendar_job_uses_shorter_timeout():
     assert doc["duration_seconds"] >= 15 * 60
 
 
-@pytest.mark.asyncio
-async def test_get_job_last_runs_keeps_latest_completed_result_for_running_job():
+def test_get_job_last_runs_keeps_latest_completed_result_for_running_job():
     now = datetime.now(timezone.utc)
     docs = [
         {
@@ -130,7 +129,7 @@ async def test_get_job_last_runs_keeps_latest_completed_result_for_running_job()
     ]
     db = SimpleNamespace(ops_job_runs=FakeOpsJobRuns(docs))
 
-    last_runs = await get_job_last_runs(db)
+    last_runs = asyncio.run(get_job_last_runs(db))
     job = last_runs["earnings_upcoming_calendar"]
 
     assert job["status"] == "running"

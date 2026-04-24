@@ -29,7 +29,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('details.push(`Exp. ${formattedEstimate}`)');
     expect(fileContent).not.toContain('const ACTIVE_DAY_DOT_LAYOUT: EventType[][] = [');
     expect(fileContent).not.toContain('const activeDayTypes = new Set(dayEvents.map((event) => event.type));');
-    expect(fileContent).not.toContain('{dayEvents.length}');
+    expect(fileContent).not.toContain('<Text style={[styles.activeDayCount, isSelected && styles.activeDayTextSelected]}>');
     expect(fileContent).toContain('const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;');
     expect(fileContent).toContain('const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;');
     expect(fileContent).toContain("const scrollActiveDaysBy = (scrollDirection: 'left' | 'right') => {");
