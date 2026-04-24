@@ -53,6 +53,41 @@ type AggregateSentiment = {
   color: string;
 };
 
+const getSentimentText = (label?: SentimentLabel | null): string => {
+  if (label === 'positive') return 'Positive';
+  if (label === 'negative') return 'Negative';
+  return 'Neutral';
+};
+
+const getSentimentTone = (label?: SentimentLabel | null) => {
+  if (label === 'positive') {
+    return { backgroundColor: '#D1FAE5', textColor: COLORS.accent };
+  }
+  if (label === 'negative') {
+    return { backgroundColor: '#FEE2E2', textColor: COLORS.danger };
+  }
+  return { backgroundColor: '#FEF3C7', textColor: '#D97706' };
+};
+
+const getSentimentLabelFromScores = (
+  sentiment?: { pos?: number; neg?: number; neu?: number } | null,
+  fallbackLabel?: SentimentLabel | null,
+): SentimentLabel => {
+  const pos = sentiment?.pos ?? 0;
+  const neg = sentiment?.neg ?? 0;
+  if (pos > neg) return 'positive';
+  if (neg > pos) return 'negative';
+  return fallbackLabel ?? 'neutral';
+};
+
+const getMarketTimingLabel = (value?: string | null): string | null => {
+  if (!value) return null;
+  const normalized = value.toLowerCase().replace(/[\s_-]+/g, '');
+  if (normalized.startsWith('before')) return 'Before Market';
+  if (normalized.startsWith('after')) return 'After Market';
+  return null;
+};
+
 const getCompanyColor = (symbol: string) => {
   const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
   let hash = 0;
@@ -1351,12 +1386,7 @@ export default function StockDetail() {
     const eventItems: NewsEventFeedItem[] = [];
 
     if (upcomingEarnings?.report_date && upcomingEarnings.report_date >= todayPrague) {
-      const marketTiming = (upcomingEarnings.before_after_market ?? '').toLowerCase();
-      const marketLabel = marketTiming.startsWith('before')
-        ? 'Before Market'
-        : marketTiming.startsWith('after')
-          ? 'After Market'
-          : null;
+      const marketLabel = getMarketTimingLabel(upcomingEarnings.before_after_market);
       eventItems.push({
         kind: 'event',
         id: `earnings-${upcomingEarnings.report_date}`,
@@ -1962,6 +1992,11 @@ export default function StockDetail() {
   const openExternalLink = (url: string) => {
     Linking.openURL(url);
   };
+
+  const selectedArticleSentimentLabel = selectedArticle
+    ? getSentimentLabelFromScores(selectedArticle.sentiment, selectedArticle.sentiment_label)
+    : 'neutral';
+  const selectedArticleSentimentTone = getSentimentTone(selectedArticleSentimentLabel);
 
   // =============================================================================
   // P5: SUMMARY PILLS LOGIC (Honest Data - never guess)
@@ -4435,7 +4470,7 @@ export default function StockDetail() {
               >
                 <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                 <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
-                  {aggregateSentiment.label === 'positive' ? 'Positive' : aggregateSentiment.label === 'negative' ? 'Negative' : 'Neutral'}
+                  {getSentimentText(aggregateSentiment.label)}
                 </Text>
               </View>
             )}
@@ -4484,6 +4519,7 @@ export default function StockDetail() {
                           <View style={[styles.eventPill, { backgroundColor: `${eventColor}15` }]}>
                             <Text style={[styles.eventPillText, { color: eventColor }]}>{item.eventType}</Text>
                           </View>
+                          <View style={styles.newsTickerSpacer} />
                           <Text style={styles.newsMeta}>{formatDateDMY(item.date)}</Text>
                         </View>
                         <Text style={styles.newsTitle} numberOfLines={2}>{item.title}</Text>
@@ -4495,6 +4531,7 @@ export default function StockDetail() {
                 }
 
                 const article = item.article;
+                const articleTone = getSentimentTone(article.sentiment_label);
                 return (
                   <TouchableOpacity
                     key={item.id}
@@ -4512,20 +4549,17 @@ export default function StockDetail() {
                         {article.sentiment_label && (
                           <View style={[
                             styles.sentimentBadgeSmall,
-                            article.sentiment_label === 'positive' && { backgroundColor: '#D1FAE5' },
-                            article.sentiment_label === 'negative' && { backgroundColor: '#FEE2E2' },
-                            article.sentiment_label === 'neutral' && { backgroundColor: '#FEF3C7' },
+                            { backgroundColor: articleTone.backgroundColor },
                           ]}>
                             <Text style={[
                               styles.sentimentTextSmall,
-                              article.sentiment_label === 'positive' && { color: COLORS.accent },
-                              article.sentiment_label === 'negative' && { color: COLORS.danger },
-                              article.sentiment_label === 'neutral' && { color: '#D97706' },
+                              { color: articleTone.textColor },
                             ]}>
-                              {article.sentiment_label === 'positive' ? 'Positive' : article.sentiment_label === 'negative' ? 'Negative' : 'Neutral'}
+                              {getSentimentText(article.sentiment_label)}
                             </Text>
                           </View>
                         )}
+                        <View style={styles.newsTickerSpacer} />
                         {article.date ? (
                           <Text style={styles.newsMeta}>{formatNewsDate(article.date)}</Text>
                         ) : null}
@@ -4611,31 +4645,13 @@ export default function StockDetail() {
                   <View style={styles.articleSentimentRow}>
                     <View style={[
                       styles.articleSentimentBadge,
-                      {
-                        backgroundColor:
-                          (selectedArticle.sentiment.pos ?? 0) > (selectedArticle.sentiment.neg ?? 0)
-                            ? '#D1FAE5'
-                            : (selectedArticle.sentiment.neg ?? 0) > (selectedArticle.sentiment.pos ?? 0)
-                              ? '#FEE2E2'
-                              : '#FEF3C7',
-                      },
+                      { backgroundColor: selectedArticleSentimentTone.backgroundColor },
                     ]}>
                       <Text style={[
                         styles.articleSentimentText,
-                        {
-                          color:
-                            (selectedArticle.sentiment.pos ?? 0) > (selectedArticle.sentiment.neg ?? 0)
-                              ? COLORS.accent
-                              : (selectedArticle.sentiment.neg ?? 0) > (selectedArticle.sentiment.pos ?? 0)
-                                ? COLORS.danger
-                                : '#D97706',
-                        },
+                        { color: selectedArticleSentimentTone.textColor },
                       ]}>
-                        {(selectedArticle.sentiment.pos ?? 0) > (selectedArticle.sentiment.neg ?? 0)
-                          ? 'Positive'
-                          : (selectedArticle.sentiment.neg ?? 0) > (selectedArticle.sentiment.pos ?? 0)
-                            ? 'Negative'
-                            : 'Neutral'} Sentiment
+                        {getSentimentText(selectedArticleSentimentLabel)} Sentiment
                       </Text>
                     </View>
                   </View>
@@ -5350,6 +5366,7 @@ const styles = StyleSheet.create({
   lastNewsRow: { borderBottomWidth: 0, paddingBottom: 4 },
   newsContent: { flex: 1, gap: 4 },
   newsTickerRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  newsTickerSpacer: { flex: 1 },
   newsTickerText: { fontSize: 12, fontWeight: '700', color: COLORS.primary, textTransform: 'uppercase' },
   sentimentBadgeSmall: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   sentimentTextSmall: { fontSize: 10, fontWeight: '700' },
