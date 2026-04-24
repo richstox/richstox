@@ -86,6 +86,30 @@ const formatEventMessage = (title: string, subtitle?: string): string => {
   return `${title}: ${subtitle.split(EVENT_SUBTITLE_SEPARATOR).join(', ')}`;
 };
 
+const formatDividendEventDate = (dateStr: string | null | undefined): string => {
+  if (!dateStr) return 'Unknown';
+  const formatted = formatDateDMY(dateStr);
+  return formatted === 'N/A' ? 'Unknown' : formatted;
+};
+
+const getFormattedSplitRatio = (split?: UpcomingSplitInfo): string | null => {
+  if (!split) return null;
+  if (typeof split.split_ratio === 'string' && split.split_ratio.trim()) {
+    return split.split_ratio.trim();
+  }
+  if (
+    typeof split.old_shares === 'number'
+    && Number.isFinite(split.old_shares)
+    && split.old_shares > 0
+    && typeof split.new_shares === 'number'
+    && Number.isFinite(split.new_shares)
+    && split.new_shares > 0
+  ) {
+    return `${split.old_shares}:${split.new_shares}`;
+  }
+  return null;
+};
+
 const getSentimentTone = (label?: SentimentCategory | null) => {
   if (label === 'positive') {
     return { backgroundColor: '#D1FAE5', textColor: COLORS.accent };
@@ -427,6 +451,8 @@ type TickerNewsApiArticle = {
 type UpcomingSplitInfo = {
   split_date: string;
   split_ratio?: string | null;
+  old_shares?: number | null;
+  new_shares?: number | null;
 } | null;
 
 type NewsEventFeedItem =
@@ -1445,12 +1471,6 @@ export default function StockDetail() {
     return `${dd}/${mm}/${yyyy}`;
   };
 
-  const formatDividendDate = (dateStr: string | null | undefined): string => {
-    if (!dateStr) return 'Unknown';
-    const formatted = formatDateDMY(dateStr);
-    return formatted === 'N/A' ? 'Unknown' : formatted;
-  };
-
   const formatDividendAmount = (value: number | null | undefined, currency?: string | null): string => {
     if (typeof value !== 'number' || !Number.isFinite(value)) return 'N/A';
     const normalizedCurrency = resolveDividendCurrency(currency, null);
@@ -1496,17 +1516,25 @@ export default function StockDetail() {
     }
 
     if (nextDividendInfo?.next_ex_date && nextDividendInfo.next_ex_date >= todayPrague) {
+      const dividendSubtitleParts: string[] = [];
+      if (typeof nextDividendInfo.next_dividend_amount === 'number') {
+        dividendSubtitleParts.push(
+          formatDividendAmount(
+            nextDividendInfo.next_dividend_amount,
+            resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency),
+          ),
+        );
+      }
+      dividendSubtitleParts.push(`Ex ${formatDividendEventDate(nextDividendInfo.next_ex_date)}`);
+      if (nextDividendInfo.next_pay_date) {
+        dividendSubtitleParts.push(`Pay ${formatDividendEventDate(nextDividendInfo.next_pay_date)}`);
+      }
       eventItems.push({
         kind: 'event',
         id: `dividend-${nextDividendInfo.next_ex_date}`,
         eventType: 'Dividend',
         title: 'Upcoming Ex-Dividend',
-        subtitle: typeof nextDividendInfo.next_dividend_amount === 'number'
-          ? formatDividendAmount(
-              nextDividendInfo.next_dividend_amount,
-              resolveDividendCurrency(nextDividendInfo.next_dividend_currency, dividendDisplayCurrency),
-            )
-          : 'Upcoming ex-dividend',
+        subtitle: dividendSubtitleParts.join(EVENT_SUBTITLE_SEPARATOR),
         date: nextDividendInfo.next_ex_date,
       });
     }
@@ -1517,7 +1545,7 @@ export default function StockDetail() {
         id: `split-${upcomingSplit.split_date}`,
         eventType: 'Split',
         title: 'Upcoming Split',
-        subtitle: upcomingSplit.split_ratio || 'Upcoming split',
+        subtitle: getFormattedSplitRatio(upcomingSplit) || 'Upcoming split',
         date: upcomingSplit.split_date,
       });
     }
@@ -4282,11 +4310,11 @@ export default function StockDetail() {
                                 : '—'}
                             </Text>
                             <Text style={styles.earningsNextTileDate}>
-                              Ex {formatDividendDate(nextDividendInfo.next_ex_date)}
+                              Ex {formatDividendEventDate(nextDividendInfo.next_ex_date)}
                             </Text>
                             {nextDividendInfo.next_pay_date && (
                               <Text style={styles.earningsNextTileDate}>
-                                Pay {formatDividendDate(nextDividendInfo.next_pay_date)}
+                                Pay {formatDividendEventDate(nextDividendInfo.next_pay_date)}
                               </Text>
                             )}
                           </View>
@@ -4352,7 +4380,7 @@ export default function StockDetail() {
                               <View style={styles.paymentRowBody}>
                                 <Text style={styles.paymentAmount}>{formatDividendAmount(d.amount, rowCurrency)}</Text>
                                 <Text style={styles.paymentSubLabel}>
-                                  Pay {d.payment_date ? formatDividendDate(d.payment_date) : '—'} · {exParts.year}
+                                  Pay {d.payment_date ? formatDividendEventDate(d.payment_date) : '—'} · {exParts.year}
                                 </Text>
                               </View>
                             </View>
@@ -4661,24 +4689,34 @@ export default function StockDetail() {
               });
               })()}
 
-              {(newsVisibleCount < newsEventItems.length || newsHasMore) && (
+              {(newsVisibleCount < newsEventItems.length || newsHasMore || newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT) && (
                 <View style={styles.newsActionsRow}>
-                  <TouchableOpacity
-                    style={styles.newsActionButton}
-                    onPress={() => {
-                      if (shouldFetchMoreNews) {
-                        fetchMoreNews();
-                      }
-                      setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
-                    }}
-                    disabled={newsLoading}
-                  >
-                    {newsLoading ? (
-                      <ActivityIndicator size="small" color={COLORS.primary} />
-                    ) : (
-                      <Text style={styles.newsActionText}>Load more news</Text>
-                    )}
-                  </TouchableOpacity>
+                  {(newsVisibleCount < newsEventItems.length || newsHasMore) && (
+                    <TouchableOpacity
+                      style={styles.newsActionButton}
+                      onPress={() => {
+                        if (shouldFetchMoreNews) {
+                          fetchMoreNews();
+                        }
+                        setNewsVisibleCount((prev) => prev + NEWS_EVENTS_PAGE_SIZE);
+                      }}
+                      disabled={newsLoading}
+                    >
+                      {newsLoading ? (
+                        <ActivityIndicator size="small" color={COLORS.primary} />
+                      ) : (
+                        <Text style={styles.newsActionText}>Load more news</Text>
+                      )}
+                    </TouchableOpacity>
+                  )}
+                  {newsVisibleCount > INITIAL_NEWS_EVENTS_LIMIT && (
+                    <TouchableOpacity
+                      style={[styles.newsActionButton, styles.newsActionButtonSecondary]}
+                      onPress={() => setNewsVisibleCount(INITIAL_NEWS_EVENTS_LIMIT)}
+                    >
+                      <Text style={[styles.newsActionText, styles.newsActionTextSecondary]}>See less</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               )}
             </>
@@ -5489,7 +5527,12 @@ const styles = StyleSheet.create({
     borderColor: `${COLORS.primary}30`,
     backgroundColor: `${COLORS.primary}10`,
   },
+  newsActionButtonSecondary: {
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.card,
+  },
   newsActionText: { fontSize: 14, fontWeight: '600', color: COLORS.primary },
+  newsActionTextSecondary: { color: COLORS.textLight },
   articleModalContainer: {
     flex: 1,
     backgroundColor: COLORS.background,
