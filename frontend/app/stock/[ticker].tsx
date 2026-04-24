@@ -86,6 +86,17 @@ const formatEventMessage = (title: string, subtitle?: string): string => {
   return `${title}: ${subtitle.split(EVENT_SUBTITLE_SEPARATOR).join(', ')}`;
 };
 
+// P22: Global date formatter - DD/MM/YYYY format (e.g., 23/02/2026)
+const formatDateDMY = (dateStr: string | null | undefined): string => {
+  if (!dateStr) return 'N/A';
+  const d = new Date(dateStr + 'T00:00:00Z');
+  if (isNaN(d.getTime())) return 'N/A';
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = d.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
+};
+
 const formatDividendEventDate = (dateStr: string | null | undefined): string => {
   if (!dateStr) return 'Unknown';
   const formatted = formatDateDMY(dateStr);
@@ -1458,17 +1469,6 @@ export default function StockDetail() {
     const rrr = reward_hist / risk_hist;
     
     return rrr;
-  };
-
-  // P22: Global date formatter - DD/MM/YYYY format (e.g., 23/02/2026)
-  const formatDateDMY = (dateStr: string | null | undefined): string => {
-    if (!dateStr) return 'N/A';
-    const d = new Date(dateStr + 'T00:00:00Z');
-    if (isNaN(d.getTime())) return 'N/A';
-    const dd = String(d.getUTCDate()).padStart(2, '0');
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    const yyyy = d.getUTCFullYear();
-    return `${dd}/${mm}/${yyyy}`;
   };
 
   const formatDividendAmount = (value: number | null | undefined, currency?: string | null): string => {
