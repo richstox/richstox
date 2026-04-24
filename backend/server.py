@@ -2750,9 +2750,34 @@ async def get_industry_benchmark_detail(industry: str):
 
 # ----- Peer Medians Admin Endpoints -----
 
+async def _require_admin_session(request: Request) -> dict:
+    """
+    Route-local admin guard for peer medians endpoints.
+
+    Uses the same session token sources as the rest of the app:
+    - `session_token` cookie
+    - `Authorization: Bearer <token>` header
+    """
+    session_token = get_session_token_from_request(request)
+    if not session_token:
+        raise HTTPException(401, "Authentication required. Please sign in.")
+
+    user = await validate_session(db, session_token)
+    if not user:
+        raise HTTPException(401, "Session expired. Please sign in again.")
+
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Access denied. Admin privileges required.")
+
+    return user
+
 @api_router.get("/admin/peer-medians/groups")
-async def admin_peer_medians_groups(level: str = Query(..., regex="^(industry|sector|market)$")):
+async def admin_peer_medians_groups(
+    request: Request,
+    level: str = Query(..., regex="^(industry|sector|market)$"),
+):
     """Return available group names for a given level from peer_benchmarks."""
+    await _require_admin_session(request)
     if level == "industry":
         names = await db.peer_benchmarks.distinct("industry", {"industry": {"$ne": None}})
     elif level == "sector":

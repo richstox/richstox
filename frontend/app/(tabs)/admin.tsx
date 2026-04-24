@@ -1436,6 +1436,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
   const dialog = useAppDialog();
   const [level, setLevel] = useState<BmLevel>('industry');
   const [groups, setGroups] = useState<string[]>([]);
+  const [groupsUnavailable, setGroupsUnavailable] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [data, setData] = useState<BmData | null>(null);
@@ -1555,17 +1556,24 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     setData(null);
     setSearch('');
     setDropdownOpen(false);
+    setGroupsUnavailable(false);
     (async () => {
       setGroupsLoading(true);
       try {
-        const res = await fetch(`${API_URL}/api/admin/peer-medians/groups?level=${level}`, { headers });
+        const res = await authenticatedFetch(`${API_URL}/api/admin/peer-medians/groups?level=${level}`, {}, sessionToken);
         if (res.ok) {
           const j = await res.json();
           setGroups(j.groups || []);
+          setGroupsUnavailable(false);
           // Auto-select first for market (only one group)
           if (level === 'market' && j.groups?.length > 0) setSelectedKey(j.groups[0]);
+        } else if (res.status === 401) {
+          setGroups([]);
+          setGroupsUnavailable(true);
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        setGroups([]);
+      }
       setGroupsLoading(false);
     })();
   }, [level, sessionToken]);
@@ -1577,9 +1585,10 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch(
+        const res = await authenticatedFetch(
           `${API_URL}/api/admin/peer-medians?level=${level}&key=${encodeURIComponent(selectedKey)}`,
-          { headers },
+          {},
+          sessionToken,
         );
         if (res.ok && !cancelled) setData(await res.json());
         else if (!cancelled) setData(null);
@@ -1666,6 +1675,9 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
             </Text>
             <Ionicons name={dropdownOpen ? 'chevron-up' : 'chevron-down'} size={14} color={COLORS.textMuted} />
           </TouchableOpacity>
+          {groupsUnavailable && (
+            <Text style={[bm.emptyText, bm.unavailableText]}>Peer medians unavailable</Text>
+          )}
           {dropdownOpen && (
             <View style={bm.dropdownList}>
               <View style={bm.searchRow}>
@@ -1843,6 +1855,7 @@ const bm = StyleSheet.create({
   dropdownItemText: { fontSize: 12, color: COLORS.text },
   dropdownItemTextActive: { color: COLORS.primary, fontWeight: '600' },
   emptyText: { fontSize: 11, color: COLORS.textMuted, textAlign: 'center', paddingVertical: 12 },
+  unavailableText: { textAlign: 'left', paddingVertical: 6 },
 
   content: { marginTop: 4 },
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },
