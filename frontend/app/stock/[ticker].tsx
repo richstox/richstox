@@ -45,21 +45,21 @@ const INITIAL_NEWS_EVENTS_LIMIT = 5;
 const NEWS_EVENTS_PAGE_SIZE = 5;
 const NEWS_EVENTS_MAX_TOTAL = 25;
 
-type SentimentLabel = 'positive' | 'negative' | 'neutral';
+type SentimentCategory = 'positive' | 'negative' | 'neutral';
 
 type AggregateSentiment = {
   score: number;
-  label: SentimentLabel;
+  label: SentimentCategory;
   color: string;
 };
 
-const getSentimentText = (label?: SentimentLabel | null): string => {
+const getSentimentText = (label?: SentimentCategory | null): string => {
   if (label === 'positive') return 'Positive';
   if (label === 'negative') return 'Negative';
   return 'Neutral';
 };
 
-const getSentimentTone = (label?: SentimentLabel | null) => {
+const getSentimentTone = (label?: SentimentCategory | null) => {
   if (label === 'positive') {
     return { backgroundColor: '#D1FAE5', textColor: COLORS.accent };
   }
@@ -71,8 +71,8 @@ const getSentimentTone = (label?: SentimentLabel | null) => {
 
 const getSentimentLabelFromScores = (
   sentiment?: { pos?: number; neg?: number; neu?: number } | null,
-  fallbackLabel?: SentimentLabel | null,
-): SentimentLabel => {
+  fallbackLabel?: SentimentCategory | null,
+): SentimentCategory => {
   const pos = sentiment?.pos ?? 0;
   const neg = sentiment?.neg ?? 0;
   if (pos > neg) return 'positive';
@@ -88,21 +88,30 @@ const getMarketTimingLabel = (value?: string | null): string | null => {
   return null;
 };
 
-const getCompanyColor = (symbol: string) => {
+const getNewsFallbackKey = (
+  fallbackKey?: string | null,
+  symbol?: string | null,
+): string => {
+  if (fallbackKey && fallbackKey.trim()) return fallbackKey.trim().toUpperCase();
+  if (symbol && symbol.trim()) return symbol.trim().charAt(0).toUpperCase();
+  return '?';
+};
+
+const hashSymbolToColor = (symbol: string) => {
   const colors = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
   let hash = 0;
   for (let i = 0; i < symbol.length; i++) {
-    hash = symbol.charCodeAt(i) + ((hash << 5) - hash);
+    hash = ((hash << 5) - hash + symbol.charCodeAt(i)) | 0;
   }
   return colors[Math.abs(hash) % colors.length];
 };
 
-const NewsLogo = ({ logoUrl, fallbackKey, ticker }: { logoUrl?: string; fallbackKey: string; ticker?: string }) => {
+const NewsLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: string }) => {
   const [imageError, setImageError] = useState(false);
 
   if (!logoUrl || imageError) {
     return (
-      <View style={[newsLogoStyles.fallback, { backgroundColor: getCompanyColor(ticker || fallbackKey) }]}>
+      <View style={[newsLogoStyles.fallback, { backgroundColor: hashSymbolToColor(fallbackKey) }]}>
         <Text style={newsLogoStyles.fallbackText}>{fallbackKey}</Text>
       </View>
     );
@@ -368,7 +377,7 @@ type NewsArticle = {
     neg?: number;
     neu?: number;
   } | null;
-  sentiment_label?: SentimentLabel | null;
+  sentiment_label?: SentimentCategory | null;
   tags?: string[];
   time_ago?: string | null;
 };
@@ -1975,10 +1984,11 @@ export default function StockDetail() {
 
   const formatNewsDate = (dateStr?: string | null): string => {
     if (!dateStr) return '';
-    const normalizedDate = dateStr.includes('T') ? dateStr : `${dateStr}T00:00:00Z`;
-    const d = new Date(normalizedDate);
+    const d = dateStr.includes('T')
+      ? new Date(dateStr)
+      : new Date(`${dateStr}T12:00:00Z`);
     if (isNaN(d.getTime())) return '';
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
   };
 
   const openArticle = (article: NewsArticle) => {
@@ -4510,8 +4520,7 @@ export default function StockDetail() {
                     >
                       <NewsLogo
                         logoUrl={logoUrl ?? undefined}
-                        fallbackKey={(ticker || '?').charAt(0).toUpperCase()}
-                        ticker={ticker}
+                        fallbackKey={getNewsFallbackKey(null, ticker)}
                       />
                       <View style={styles.newsContent}>
                         <View style={styles.newsTickerRow}>
@@ -4540,8 +4549,7 @@ export default function StockDetail() {
                   >
                     <NewsLogo
                       logoUrl={resolveNewsLogoUrl(article.logo_url)}
-                      fallbackKey={(article.fallback_logo_key || article.ticker || ticker.charAt(0) || '?').charAt(0).toUpperCase()}
-                      ticker={article.ticker || ticker}
+                      fallbackKey={getNewsFallbackKey(article.fallback_logo_key, article.ticker || ticker)}
                     />
                     <View style={styles.newsContent}>
                       <View style={styles.newsTickerRow}>
@@ -4578,7 +4586,7 @@ export default function StockDetail() {
                     style={styles.newsActionButton}
                     onPress={() => setNewsVisibleCount((prev) => Math.min(prev + NEWS_EVENTS_PAGE_SIZE, newsEventItems.length))}
                   >
-                    <Text style={styles.newsActionText}>Load more news & events</Text>
+                    <Text style={styles.newsActionText}>Load more</Text>
                   </TouchableOpacity>
                 </View>
               )}
@@ -4626,8 +4634,7 @@ export default function StockDetail() {
                   >
                     <NewsLogo
                       logoUrl={resolveNewsLogoUrl(selectedArticle.logo_url)}
-                      fallbackKey={(selectedArticle.fallback_logo_key || selectedArticle.ticker || ticker || '?').charAt(0).toUpperCase()}
-                      ticker={selectedArticle.ticker || ticker}
+                      fallbackKey={getNewsFallbackKey(selectedArticle.fallback_logo_key, selectedArticle.ticker || ticker)}
                     />
                     <View>
                       <Text style={styles.articleTicker}>{selectedArticle.ticker || ticker}</Text>
@@ -4660,7 +4667,7 @@ export default function StockDetail() {
                 {selectedArticle.tags && selectedArticle.tags.length > 0 && (
                   <View style={styles.articleTagsRow}>
                     {selectedArticle.tags.slice(0, 5).map((tag, index) => (
-                      <View key={`${tag}-${index}`} style={styles.articleTagBadge}>
+                      <View key={index} style={styles.articleTagBadge}>
                         <Text style={styles.articleTagText}>{tag}</Text>
                       </View>
                     ))}
@@ -4668,13 +4675,17 @@ export default function StockDetail() {
                 )}
 
                 <Text style={styles.articleContent}>
-                  {selectedArticle.content?.trim() || 'Open the original article to read the full story.'}
+                  {selectedArticle.content?.trim() || 'Open the original article to read the full story'}
                 </Text>
 
                 {selectedArticle.link && (
                   <TouchableOpacity
                     style={styles.readOriginalButton}
-                    onPress={() => openExternalLink(selectedArticle.link!)}
+                    onPress={() => {
+                      if (selectedArticle.link) {
+                        openExternalLink(selectedArticle.link);
+                      }
+                    }}
                   >
                     <Ionicons name="open-outline" size={18} color={COLORS.primary} />
                     <Text style={styles.readOriginalText}>Read original article</Text>
