@@ -25,7 +25,8 @@ describe('Markets events regressions', () => {
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {
     expect(fileContent).toContain('const EventLogo = ({ logoUrl, fallbackKey }');
-    expect(fileContent).toContain("if (!rawUrl && ticker?.trim()) return `${API_URL}/api/logo/${ticker.trim().toUpperCase()}`;");
+    expect(fileContent).toContain('const normalizedTicker = ticker?.trim().toUpperCase();');
+    expect(fileContent).toContain('if (!rawUrl && normalizedTicker) return `${API_URL}/api/logo/${normalizedTicker}`;');
     expect(fileContent).toContain('router.push(`/stock/${event.ticker}`)');
     expect(fileContent).toContain('<EventLogo');
   });

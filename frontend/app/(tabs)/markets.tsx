@@ -119,7 +119,8 @@ const getEventFallbackKey = (ticker?: string | null, companyName?: string | null
 };
 
 const resolveEventLogoUrl = (rawUrl?: string | null, ticker?: string | null): string | undefined => {
-  if (!rawUrl && ticker?.trim()) return `${API_URL}/api/logo/${ticker.trim().toUpperCase()}`;
+  const normalizedTicker = ticker?.trim().toUpperCase();
+  if (!rawUrl && normalizedTicker) return `${API_URL}/api/logo/${normalizedTicker}`;
   if (!rawUrl) return undefined;
   return rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`;
 };

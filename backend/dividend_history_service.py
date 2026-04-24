@@ -121,7 +121,7 @@ def _internal_logo_url(ticker_or_path: Any) -> Optional[str]:
         basename = raw.rsplit("/", 1)[-1]
         code = basename.rsplit(".", 1)[0].upper()
         return f"/api/logo/{code}" if code else None
-    code = re.sub(r"\.[A-Z]{1,4}$", "", raw.upper())
+    code = re.sub(r"\.[A-Z]{1,4}$", "", raw, flags=re.IGNORECASE).upper()
     return f"/api/logo/{code}" if code else None
 
 
@@ -138,7 +138,7 @@ def _format_split_ratio(
         return None
 
     def _stringify(value: float) -> str:
-        return str(int(value)) if value.is_integer() else f"{value:g}"
+        return str(int(value)) if value.is_integer() else f"{value:.6f}".rstrip("0").rstrip(".")
 
     return f"{_stringify(old_value)}:{_stringify(new_value)}"
 
