@@ -149,6 +149,8 @@ async def test_get_calendar_events_validates_date_window():
 @pytest.mark.asyncio
 async def test_get_calendar_events_supports_legacy_split_and_ipo_fields():
     db = _Db()
+    db.upcoming_earnings = _Collection([])
+    db.upcoming_dividends = _Collection([])
     db.upcoming_splits = _Collection([
         {
             "ticker": "SHOP.US",
