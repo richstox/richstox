@@ -40,6 +40,7 @@ import { API_URL } from '../../utils/config';
 
 // Delay before fetching below-the-fold content (talk posts) to prioritize critical data
 const DEFERRED_FETCH_MS = 800;
+const EARNINGS_NEUTRAL_COLOR = '#6B7280';
 
 interface CompanyData {
   ticker: string;
@@ -1218,8 +1219,10 @@ export default function StockDetail() {
     missCount: number;
     inlineCount: number;
     naCount: number;
+    neutralCount: number;
     previousAnnualReportedEps: number | null;
     previousReportsCount: number | null;
+    isPartial: boolean;
   };
 
   const annualDividendPeriods = useMemo<AnnualDividendPeriod[]>(() => {
@@ -1328,8 +1331,10 @@ export default function StockDetail() {
         missCount: current.missCount,
         inlineCount: current.inlineCount,
         naCount: current.naCount,
+        neutralCount: current.inlineCount + current.naCount,
         previousAnnualReportedEps: previous ? round4(previous.annualReportedEps) : null,
         previousReportsCount: previous ? previous.reportsCount : null,
+        isPartial: previous !== null && current.reportsCount < previous.reportsCount,
       };
     });
   }, [earningsHistory]);
@@ -1351,6 +1356,13 @@ export default function StockDetail() {
       label: `${pct >= 0 ? '+' : ''}${toEU(pct, 1)}%`,
       tone: pct >= 0 ? ('positive' as const) : ('negative' as const),
     };
+  };
+
+  const showAnnualEarningsBreakdown = (period: AnnualEarningsPeriod) => {
+    void dialog.alert(
+      `Annual Earnings · ${period.label}`,
+      `Beat ${period.beatCount}, Miss ${period.missCount}, Other ${period.neutralCount}`,
+    );
   };
 
   const getDividendToneStyle = (tone: 'positive' | 'negative' | 'neutral') => {
@@ -3701,13 +3713,40 @@ export default function StockDetail() {
                                   <View style={styles.earningsLeft}>
                                     <View style={styles.earningsEpsRow}>
                                       <Text style={styles.earningsDate}>{period.label}</Text>
+                                      {period.isPartial ? (
+                                        <View style={styles.earningsPartialBadge}>
+                                          <Text style={styles.earningsPartialText}>Partial</Text>
+                                        </View>
+                                      ) : null}
                                     </View>
                                     <Text style={styles.earningsAnnualPrimaryValue}>
                                       Act ${toEU(period.annualReportedEps, 2)}
                                     </Text>
                                     <Text style={styles.earningsAnnualSummary}>
-                                      Reports: {period.reportsCount} · Beat {period.beatCount} · Miss {period.missCount} · Inline {period.inlineCount} · N/A {period.naCount}
+                                      Reports: {period.reportsCount}
                                     </Text>
+                                    {period.reportsCount > 0 ? (
+                                      <TouchableOpacity
+                                        style={styles.earningsAnnualBarButton}
+                                        onPress={() => showAnnualEarningsBreakdown(period)}
+                                        accessibilityRole="button"
+                                        accessibilityLabel={`Show ${period.label} earnings outcome breakdown`}
+                                        accessibilityHint={`Beat ${period.beatCount}, miss ${period.missCount}, other ${period.neutralCount}`}
+                                      >
+                                        <View style={styles.earningsAnnualBarTrack}>
+                                          {period.beatCount > 0 ? (
+                                            <View style={[styles.earningsAnnualBarSegment, styles.earningsAnnualBarSegmentBeat, { flex: period.beatCount }]} />
+                                          ) : null}
+                                          {period.missCount > 0 ? (
+                                            <View style={[styles.earningsAnnualBarSegment, styles.earningsAnnualBarSegmentMiss, { flex: period.missCount }]} />
+                                          ) : null}
+                                          {period.neutralCount > 0 ? (
+                                            <View style={[styles.earningsAnnualBarSegment, styles.earningsAnnualBarSegmentOther, { flex: period.neutralCount }]} />
+                                          ) : null}
+                                        </View>
+                                        <Ionicons name="help-circle-outline" size={13} color={EARNINGS_NEUTRAL_COLOR} />
+                                      </TouchableOpacity>
+                                    ) : null}
                                   </View>
                                   <View
                                     style={[
@@ -4807,7 +4846,15 @@ const styles = StyleSheet.create({
   earningsLeft: { flex: 1, marginRight: 8 },
   earningsDate: { fontSize: 14, color: COLORS.textMuted, marginBottom: 3 },
   earningsAnnualPrimaryValue: { fontSize: 18, fontWeight: '800', color: '#111827', marginBottom: 2 },
-  earningsAnnualSummary: { fontSize: 13, color: '#6B7280', fontWeight: '500', lineHeight: 18 },
+  earningsAnnualSummary: { fontSize: 13, color: EARNINGS_NEUTRAL_COLOR, fontWeight: '500', lineHeight: 18 },
+  earningsPartialBadge: { backgroundColor: '#F3F4F6', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 999 },
+  earningsPartialText: { fontSize: 11, fontWeight: '700', color: EARNINGS_NEUTRAL_COLOR },
+  earningsAnnualBarButton: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 6, maxWidth: 180 },
+  earningsAnnualBarTrack: { flex: 1, flexDirection: 'row', height: 8, backgroundColor: '#F3F4F6', borderRadius: 999, overflow: 'hidden' },
+  earningsAnnualBarSegment: { height: '100%' },
+  earningsAnnualBarSegmentBeat: { backgroundColor: '#10B981' },
+  earningsAnnualBarSegmentMiss: { backgroundColor: '#EF4444' },
+  earningsAnnualBarSegmentOther: { backgroundColor: EARNINGS_NEUTRAL_COLOR },
   earningsEpsRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   earningsEpsLabel: { fontSize: 14, fontWeight: '600', color: COLORS.textMuted, letterSpacing: 0.3 },
   earningsEpsValue: { fontSize: 14, fontWeight: '600', color: '#374151' },

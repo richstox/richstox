@@ -21,6 +21,7 @@ import CustomersTab from '../admin/customers';
 import RemediationTab from '../admin/remediation';
 import { API_URL } from '../../utils/config';
 import { authenticatedFetch } from '../../utils/api_client';
+import { ADMIN_CALENDAR_JOBS } from '../../constants/adminJobs';
 
 type Tab = 'dashboard' | 'pipeline' | 'customers' | 'remediation';
 
@@ -240,16 +241,6 @@ function jobStatusLabel(status?: string | null): string {
   return String(status);
 }
 
-function adminJobLabel(jobName: string): string {
-  const labels: Record<string, string> = {
-    dividend_upcoming_calendar: 'Dividends',
-    earnings_upcoming_calendar: 'Earnings',
-    splits_upcoming_calendar: 'Splits',
-    ipos_upcoming_calendar: 'IPOs',
-  };
-  return labels[jobName] ?? jobName;
-}
-
 function formatPragueDisplay(value?: string | null): string {
   if (!value) return 'Never';
   return value.replace('T', ' ').slice(0, 16);
@@ -273,12 +264,23 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? value : [];
 }
 
-const UPCOMING_CALENDAR_JOB_NAMES = [
-  'dividend_upcoming_calendar',
-  'earnings_upcoming_calendar',
-  'splits_upcoming_calendar',
-  'ipos_upcoming_calendar',
-] as const;
+function getCalendarJobNextRunFallback(hour: number, minute: number): string {
+  try {
+    const now = new Date();
+    const pragueNow = new Date(now.toLocaleString('en-US', { timeZone: 'Europe/Prague' }));
+    const nextRun = new Date(pragueNow);
+    nextRun.setHours(hour, minute, 0, 0);
+    if (nextRun <= pragueNow) nextRun.setDate(nextRun.getDate() + 1);
+    while (nextRun.getDay() === 0) nextRun.setDate(nextRun.getDate() + 1);
+    return nextRun.toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return '—';
+  }
+}
 
 // ─── Dashboard Tab ────────────────────────────────────────────────────────────
 
@@ -499,23 +501,24 @@ function DashboardTab({ sessionToken }: DashboardProps) {
   const pi = overview?.price_integrity;
   const cp = pi?.coverage_checkpoints || {};
   const eodhd = overview?.eodhd_api_usage;
-  const upcomingCalendarJobs = UPCOMING_CALENDAR_JOB_NAMES
-    .map((jobName) => {
+  const upcomingCalendarJobs = ADMIN_CALENDAR_JOBS
+    .map((meta) => {
+      const jobName = meta.jobName;
       const job = allSortedJobs.find((item) => item.name === jobName);
       const lastRun = overview?.job_last_runs?.[jobName];
       return {
         jobName,
-        label: adminJobLabel(jobName),
-        status: lastRun?.status ?? job?.status,
+        label: meta.label,
+        status: lastRun?.status ?? job?.status ?? 'pending',
         nextRunIso: job?.next_run_iso ?? null,
-        nextRun: job?.next_run,
+        nextRun: job?.next_run ?? getCalendarJobNextRunFallback(meta.hour, meta.minute),
         lastRunIso: lastRun?.finished_at ?? lastRun?.end_time ?? lastRun?.started_at ?? lastRun?.start_time ?? null,
         lastRunPrague: lastRun?.finished_at_prague ?? lastRun?.started_at_prague ?? job?.last_run_finished ?? job?.last_run_started ?? null,
         errorMessage: lastRun?.error_message ?? job?.error_summary,
         running: calendarJobRunning[jobName] || (lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time),
       };
     })
-    .filter((job) => !!job.nextRun || !!job.lastRunIso || !!job.lastRunPrague);
+    .filter(Boolean);
 
   // ── Bulk Completeness (since last full backfill) ──
   const bc = overview?.bulk_completeness;
@@ -1436,6 +1439,7 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
   const dialog = useAppDialog();
   const [level, setLevel] = useState<BmLevel>('industry');
   const [groups, setGroups] = useState<string[]>([]);
+  const [groupsUnavailable, setGroupsUnavailable] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [data, setData] = useState<BmData | null>(null);
@@ -1555,17 +1559,28 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     setData(null);
     setSearch('');
     setDropdownOpen(false);
+    setGroupsUnavailable(false);
     (async () => {
       setGroupsLoading(true);
       try {
-        const res = await fetch(`${API_URL}/api/admin/peer-medians/groups?level=${level}`, { headers });
+        const res = await authenticatedFetch(
+          `${API_URL}/api/admin/peer-medians/groups?level=${level}`,
+          { method: 'GET' },
+          sessionToken,
+        );
         if (res.ok) {
           const j = await res.json();
           setGroups(j.groups || []);
+          setGroupsUnavailable(false);
           // Auto-select first for market (only one group)
           if (level === 'market' && j.groups?.length > 0) setSelectedKey(j.groups[0]);
+        } else if (res.status === 401) {
+          setGroups([]);
+          setGroupsUnavailable(true);
         }
-      } catch { /* non-fatal */ }
+      } catch {
+        setGroups([]);
+      }
       setGroupsLoading(false);
     })();
   }, [level, sessionToken]);
@@ -1577,9 +1592,10 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
     (async () => {
       setLoading(true);
       try {
-        const res = await fetch(
+        const res = await authenticatedFetch(
           `${API_URL}/api/admin/peer-medians?level=${level}&key=${encodeURIComponent(selectedKey)}`,
-          { headers },
+          { method: 'GET' },
+          sessionToken,
         );
         if (res.ok && !cancelled) setData(await res.json());
         else if (!cancelled) setData(null);
@@ -1666,6 +1682,9 @@ function BenchmarkMediansCard({ sessionToken }: { sessionToken: string | null })
             </Text>
             <Ionicons name={dropdownOpen ? 'chevron-up' : 'chevron-down'} size={14} color={COLORS.textMuted} />
           </TouchableOpacity>
+          {groupsUnavailable && (
+            <Text style={[bm.emptyText, bm.unavailableText]}>Peer medians unavailable</Text>
+          )}
           {dropdownOpen && (
             <View style={bm.dropdownList}>
               <View style={bm.searchRow}>
@@ -1843,6 +1862,7 @@ const bm = StyleSheet.create({
   dropdownItemText: { fontSize: 12, color: COLORS.text },
   dropdownItemTextActive: { color: COLORS.primary, fontWeight: '600' },
   emptyText: { fontSize: 11, color: COLORS.textMuted, textAlign: 'center', paddingVertical: 12 },
+  unavailableText: { textAlign: 'left', paddingVertical: 6 },
 
   content: { marginTop: 4 },
   metaRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 8 },

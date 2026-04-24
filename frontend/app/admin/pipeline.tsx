@@ -14,6 +14,7 @@ import { useAppDialog } from '../../contexts/AppDialogContext';
 import { authenticatedFetch } from '../../utils/api_client';
 import BrandedLoading from '../../components/BrandedLoading';
 import { API_URL } from '../../utils/config';
+import { ADMIN_CALENDAR_JOBS, formatAdminJobSchedule } from '../../constants/adminJobs';
 
 interface PipelineProps {
   sessionToken: string | null;
@@ -79,6 +80,12 @@ interface OverviewData {
   };
   job_last_runs?: Record<string, JobRun>;
   jobs?: {
+    all_sorted?: {
+      name?: string;
+      status?: string;
+      next_run?: string;
+      error_summary?: string;
+    }[];
     registry?: any[];
     overdue?: any[];
     completed?: any[];
@@ -1143,6 +1150,27 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
     Object.entries(merged).forEach(([k, v]) => { normalized[k] = normaliseRun(v); });
     return normalized;
   }, [jobRunsRaw, liveLastRuns]);
+  const scheduledJobs = data?.jobs?.all_sorted || [];
+  const calendarJobs = useMemo(() => {
+    return ADMIN_CALENDAR_JOBS
+      .filter((meta) => meta.jobName !== 'dividend_upcoming_calendar')
+      .map((meta) => {
+        const scheduledJob = scheduledJobs.find((job) => job?.name === meta.jobName);
+        const lastRun = jobRuns[meta.jobName];
+        const running = lastRun?.status === 'running' && !lastRun?.finished_at && !lastRun?.end_time;
+        return {
+          ...meta,
+          schedule: formatAdminJobSchedule(meta.hour, meta.minute),
+          status: lastRun?.status ?? scheduledJob?.status ?? 'pending',
+          running,
+          nextRun: scheduledJob?.next_run ?? getNextRun(meta.hour, meta.minute, true),
+          lastRunText: lastRun
+            ? `Last: ${formatTime(lastRun.finished_at ?? lastRun.end_time ?? lastRun.start_time)}`
+            : 'Last: Never',
+          errorMessage: lastRun?.error_message ?? scheduledJob?.error_summary ?? null,
+        };
+      });
+  }, [jobRuns, scheduledJobs]);
 
   // On first data load: expand any step that is currently running
   useEffect(() => {
@@ -2748,6 +2776,56 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         );
       })}
 
+      <View style={[s.stepCard, { marginTop: 16, borderLeftColor: '#64748B', borderLeftWidth: 3 }]}>
+        <View style={s.stepHeader}>
+          <View style={[s.stepBadge, { backgroundColor: '#64748B22' }]}>
+            <Ionicons name="calendar-outline" size={16} color="#64748B" />
+          </View>
+          <View style={s.stepMeta}>
+            <Text style={s.stepTitle}>Calendar Jobs</Text>
+            <Text style={s.stepSchedule}>Splits, IPOs and Earnings status</Text>
+          </View>
+        </View>
+        <View style={{ marginTop: 8, gap: 10 }}>
+          {calendarJobs.map((job, index) => (
+            <View
+              key={job.jobName}
+              style={[
+                s.calendarJobRow,
+                index > 0 && s.calendarJobRowBorder,
+              ]}
+            >
+              <View style={{ flex: 1 }}>
+                <View style={s.stepTitleRow}>
+                  {job.running ? (
+                    <ActivityIndicator size="small" color="#F59E0B" style={{ marginRight: 4 }} />
+                  ) : (
+                    <Ionicons
+                      name={getStatusIcon(job.status) as any}
+                      size={14}
+                      color={getStatusColor(job.status)}
+                      style={{ marginRight: 4 }}
+                    />
+                  )}
+                  <Text style={s.calendarJobTitle}>{job.label}</Text>
+                </View>
+                <Text style={s.stepSchedule}>{job.schedule}</Text>
+                <Text style={[s.detailValue, { marginTop: 4 }]}>{job.lastRunText}</Text>
+                <Text style={s.detailValue}>Next: {job.nextRun}</Text>
+                {job.errorMessage ? (
+                  <Text style={[s.detailValue, { color: '#EF4444', marginTop: 2 }]} numberOfLines={2}>
+                    {job.errorMessage}
+                  </Text>
+                ) : null}
+              </View>
+              <Text style={[s.calendarJobBadge, { color: getStatusColor(job.status) }]}>
+                {job.running ? 'Running' : String(job.status).toUpperCase()}
+              </Text>
+            </View>
+          ))}
+        </View>
+      </View>
+
       {/* Morning Fresh — independent job, not part of universe pipeline */}
       <View style={[s.stepCard, { marginTop: 16, borderLeftColor: '#06B6D4', borderLeftWidth: 3 }]}>
         <View style={s.stepHeader}>
@@ -3074,6 +3152,10 @@ const s = StyleSheet.create({
   stepNum: { fontSize: 9, fontWeight: '700', color: COLORS.textMuted, letterSpacing: 0.5 },
   stepTitle: { fontSize: 13, fontWeight: '600', color: COLORS.text },
   stepSchedule: { fontSize: 10, color: COLORS.textMuted, marginTop: 1 },
+  calendarJobRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 },
+  calendarJobRowBorder: { paddingTop: 10, borderTopWidth: 1, borderTopColor: COLORS.border },
+  calendarJobTitle: { fontSize: 12, fontWeight: '600', color: COLORS.text },
+  calendarJobBadge: { fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
 
   jobBtnGroup: { flexDirection: 'row', gap: 6 },
   runBtnDisabled: { opacity: 0.5 },
