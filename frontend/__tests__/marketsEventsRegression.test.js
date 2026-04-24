@@ -9,12 +9,12 @@ describe('Markets events regressions', () => {
     fileContent = fs.readFileSync(marketsPagePath, 'utf-8');
   });
 
-  it('keeps compact event-type tabs and inline legend help for all calendar categories', () => {
-    expect(fileContent).toContain("earnings: { label: 'Earnings', shortLabel: 'E', legendLabel: 'E = Earnings'");
-    expect(fileContent).toContain("dividend: { label: 'Dividends', shortLabel: 'D', legendLabel: 'D = Dividends'");
-    expect(fileContent).toContain("split: { label: 'Splits', shortLabel: 'S', legendLabel: 'S = Splits'");
+  it('keeps compact event-type tabs with expanded short labels and removes the legend helper row', () => {
+    expect(fileContent).toContain("earnings: { label: 'Earnings', shortLabel: 'EARN', legendLabel: 'E = Earnings'");
+    expect(fileContent).toContain("dividend: { label: 'Dividends', shortLabel: 'DIV', legendLabel: 'D = Dividends'");
+    expect(fileContent).toContain("split: { label: 'Splits', shortLabel: 'SPL', legendLabel: 'S = Splits'");
     expect(fileContent).toContain("ipo: { label: 'IPOs', shortLabel: 'IPO', legendLabel: 'IPO = IPOs'");
-    expect(fileContent).toContain("EVENT_TYPE_ORDER.map((type) => EVENT_META[type].legendLabel).join(' • ')");
+    expect(fileContent).not.toContain("EVENT_TYPE_ORDER.map((type) => EVENT_META[type].legendLabel).join(' • ')");
   });
 
   it('shows ticker/company filtering only when the event list is large enough', () => {
@@ -41,6 +41,12 @@ describe('Markets events regressions', () => {
   it('supports daily monthly and yearly calendar views and keeps the logo clickable', () => {
     expect(fileContent).toContain("type CalendarViewMode = 'daily' | 'monthly' | 'yearly';");
     expect(fileContent).toContain("const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];");
+    expect(fileContent).toContain('const activeDayKeysForDisplayMonth = useMemo(');
+    expect(fileContent).toContain("setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);");
+    expect(fileContent).toContain("activeMonthKeys.find((monthKey) => monthKey >= todayMonthKey) ?? activeMonthKeys[0]");
+    expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
+    expect(fileContent).toContain("Show full calendar");
+    expect(fileContent).toContain("Load more events");
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
     expect(fileContent).toContain("setSelectedYear(year);");
