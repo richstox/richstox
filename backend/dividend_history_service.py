@@ -100,6 +100,17 @@ def _normalize_ticker_symbol(value: Any) -> Optional[str]:
     return symbol if "." in symbol else f"{symbol}.US"
 
 
+def _extract_calendar_ticker(row: Dict[str, Any]) -> Optional[str]:
+    return _normalize_ticker_symbol(
+        row.get("Code")
+        or row.get("code")
+        or row.get("Symbol")
+        or row.get("symbol")
+        or row.get("Ticker")
+        or row.get("ticker")
+    )
+
+
 def _safe_float(value: Any, *, allow_non_positive: bool = False) -> Optional[float]:
     if value is None:
         return None
@@ -144,6 +155,16 @@ def _format_split_ratio(
     old_shares: Any = None,
     new_shares: Any = None,
 ) -> Optional[str]:
+    def _normalize_ratio_text(value: str) -> str:
+        normalized = value.strip()
+        normalized = re.sub(
+            r"\s*(?:for|to|/|-)\s*",
+            ":",
+            normalized,
+            flags=re.IGNORECASE,
+        )
+        return normalized
+
     def _stringify(value: Any) -> Optional[str]:
         try:
             normalized = format(Decimal(str(value)).normalize(), "f")
@@ -154,8 +175,7 @@ def _format_split_ratio(
         return normalized or "0"
 
     if isinstance(split_ratio, str) and split_ratio.strip():
-        normalized = split_ratio.strip().replace(" for ", ":").replace("/", ":")
-        return normalized
+        return _normalize_ratio_text(split_ratio)
     if isinstance(split_ratio, (int, float)) and not isinstance(split_ratio, bool) and split_ratio > 0:
         return _stringify(split_ratio)
     old_value = _safe_float(old_shares)
@@ -170,7 +190,28 @@ def _format_split_ratio(
     return f"{old_text}:{new_text}"
 
 
+def _parse_split_ratio_numbers(split_ratio: Any) -> tuple[Optional[float], Optional[float]]:
+    if not isinstance(split_ratio, str):
+        return None, None
+    normalized = _format_split_ratio(split_ratio)
+    if not normalized:
+        return None, None
+    match = re.match(r"^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$", normalized)
+    if not match:
+        return None, None
+    return _safe_float(match.group(1)), _safe_float(match.group(2))
+
+
 def _extract_split_fields(row: Dict[str, Any]) -> Dict[str, Any]:
+    split_ratio_value = _first_present(
+        row.get("Split"),
+        row.get("split"),
+        row.get("split_ratio"),
+        row.get("splitRatio"),
+        row.get("SplitRatio"),
+        row.get("Ratio"),
+        row.get("ratio"),
+    )
     old_shares = _safe_float(_first_present(
         row.get("Old_Shares"),
         row.get("OldShares"),
@@ -189,16 +230,14 @@ def _extract_split_fields(row: Dict[str, Any]) -> Dict[str, Any]:
         row.get("to_factor"),
         row.get("toFactor"),
     ))
+    if old_shares is None or new_shares is None:
+        ratio_old, ratio_new = _parse_split_ratio_numbers(split_ratio_value)
+        if old_shares is None:
+            old_shares = ratio_old
+        if new_shares is None:
+            new_shares = ratio_new
     split_ratio = _format_split_ratio(
-        _first_present(
-            row.get("Split"),
-            row.get("split"),
-            row.get("split_ratio"),
-            row.get("splitRatio"),
-            row.get("SplitRatio"),
-            row.get("Ratio"),
-            row.get("ratio"),
-        ),
+        split_ratio_value,
         old_shares=old_shares,
         new_shares=new_shares,
     )
@@ -1563,39 +1602,110 @@ async def get_earnings_for_ticker(db, ticker: str) -> Dict[str, Any]:
 
 async def create_upcoming_splits_indexes(db) -> None:
     """Create indexes for the upcoming_splits collection."""
+    try:
+        index_info = await db.upcoming_splits.index_information()
+    except Exception:
+        index_info = {}
+
+    if "upcoming_splits_ticker_unique" in index_info:
+        try:
+            await db.upcoming_splits.drop_index("upcoming_splits_ticker_unique")
+        except Exception:
+            logger.debug(
+                "create_upcoming_splits_indexes: failed to drop legacy ticker index",
+                exc_info=True,
+            )
+
     await db.upcoming_splits.create_index(
-        [("ticker", 1)], unique=True, name="upcoming_splits_ticker_unique"
+        [
+            ("ticker", 1),
+            ("split_date", 1),
+            ("old_shares", 1),
+            ("new_shares", 1),
+            ("source", 1),
+        ],
+        unique=True,
+        name="upcoming_splits_event_unique",
+    )
+    await db.upcoming_splits.create_index(
+        [("ticker", 1), ("split_date", 1)],
+        name="upcoming_splits_ticker_split_date",
     )
     await db.upcoming_splits.create_index(
         [("split_date", 1)], name="upcoming_splits_split_date"
     )
 
 
+def _split_event_key(
+    ticker: str,
+    split_date: str,
+    old_shares: float,
+    new_shares: float,
+    source: str = UPCOMING_SPLITS_SOURCE,
+) -> tuple[str, str, float, float, str]:
+    return (ticker, split_date, old_shares, new_shares, source)
+
+
+def _is_valid_upcoming_split_event(
+    ticker: Optional[str],
+    split_date: Optional[str],
+    old_shares: Optional[float],
+    new_shares: Optional[float],
+    *,
+    allowed_tickers: set[str],
+    window_start: str,
+    window_end: str,
+) -> bool:
+    if not ticker or ticker not in allowed_tickers:
+        return False
+    if not split_date or split_date < window_start or split_date > window_end:
+        return False
+    if old_shares is None or old_shares <= 0:
+        return False
+    if new_shares is None or new_shares <= 0:
+        return False
+    return True
+
+
 async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any]:
-    """Daily job: fetch EODHD /calendar/splits and persist one doc per visible
-    ticker into the upcoming_splits collection.
-
-    Pattern mirrors sync_upcoming_earnings_calendar_for_visible_tickers exactly:
-    - One document per visible ticker (upsert).
-    - Visible tickers with no upcoming split get all payload fields set to None.
-    - Visibility definition: tracked_tickers.is_visible = True.
-    - window_start / window_end use Europe/Prague date-only. fetched_at stays UTC.
-
-    EODHD fields:
-      split_date  ← row["Date"] or row["date"] or row["split_date"]
-      split_ratio ← row["Split"] or row["split"] or row["split_ratio"]
-    """
+    """Daily job: fetch EODHD /calendar/splits and persist valid visible events."""
     if not EODHD_API_KEY:
         logger.error("[splits_upcoming_calendar] EODHD_API_KEY not configured")
-        return {"success": False, "error": "EODHD_API_KEY not configured"}
+        finished_at = datetime.now(timezone.utc)
+        return {
+            "success": False,
+            "status": "failed",
+            "error": "EODHD_API_KEY not configured",
+            "tickers_targeted": 0,
+            "tickers_updated": 0,
+            "tickers_skipped_invalid": 0,
+            "tickers_skipped_not_in_universe": 0,
+            "api_calls": 0,
+            "api_credits_estimated": 0,
+            "finished_at": finished_at,
+            "finished_at_prague": finished_at.astimezone(
+                ZoneInfo(PRAGUE_TZ_NAME)
+            ).isoformat(),
+        }
 
     now_utc = datetime.now(timezone.utc)
     now_prague = datetime.now(ZoneInfo(PRAGUE_TZ_NAME))
     window_start = now_prague.strftime("%Y-%m-%d")
     window_end = (now_prague + timedelta(days=UPCOMING_SPLITS_WINDOW_DAYS)).strftime("%Y-%m-%d")
 
-    visible_tickers_raw = await db.tracked_tickers.distinct("ticker", {"is_visible": True})
-    visible_tickers = {_normalize_ticker_symbol(t) for t in visible_tickers_raw if _normalize_ticker_symbol(t)}
+    visible_tickers_raw = await db.tracked_tickers.distinct(
+        "ticker",
+        {
+            "is_visible": True,
+            "exchange": {"$in": ["NYSE", "NASDAQ"]},
+            "asset_type": "Common Stock",
+        },
+    )
+    visible_tickers = {
+        _normalize_ticker_symbol(t)
+        for t in visible_tickers_raw
+        if _normalize_ticker_symbol(t)
+    }
 
     url = f"{EODHD_BASE_URL}/calendar/splits"
     params = {
@@ -1612,93 +1722,149 @@ async def sync_upcoming_splits_calendar_for_visible_tickers(db) -> Dict[str, Any
 
     rows = _extract_calendar_rows(payload, "splits")
 
-    # Group rows by ticker; keep only the nearest upcoming split per ticker.
-    grouped: Dict[str, Dict[str, Any]] = {}
+    tickers_targeted = 0
+    tickers_skipped_invalid = 0
+    tickers_skipped_not_in_universe = 0
+    events_by_key: Dict[tuple[str, str, float, float, str], Dict[str, Any]] = {}
     for row in rows:
         if not isinstance(row, dict):
             continue
-        ticker = _normalize_ticker_symbol(
-            row.get("Code")
-            or row.get("code")
-            or row.get("Symbol")
-            or row.get("symbol")
-            or row.get("Ticker")
-            or row.get("ticker")
-        )
+        ticker = _extract_calendar_ticker(row)
         if not ticker:
+            tickers_skipped_invalid += 1
             continue
-        if visible_tickers and ticker not in visible_tickers:
+        tickers_targeted += 1
+        if ticker not in visible_tickers:
+            tickers_skipped_not_in_universe += 1
             continue
-        split_date = _parse_date_ymd(
-            row.get("Date")
-            or row.get("date")
-            or row.get("split_date")
+        split_date = _extract_split_date(row)
+        split_fields = _extract_split_fields(row)
+        old_shares = split_fields["old_shares"]
+        new_shares = split_fields["new_shares"]
+        if not _is_valid_upcoming_split_event(
+            ticker,
+            split_date,
+            old_shares,
+            new_shares,
+            allowed_tickers=visible_tickers,
+            window_start=window_start,
+            window_end=window_end,
+        ):
+            tickers_skipped_invalid += 1
+            continue
+        event_key = _split_event_key(
+            ticker,
+            split_date,
+            old_shares,
+            new_shares,
         )
-        if not split_date:
-            continue
-        if ticker not in grouped or split_date < grouped[ticker]["_split_date"]:
-            split_fields = _extract_split_fields(row)
-            grouped[ticker] = {
-                "_split_date": split_date,
-                "split_date": split_date,
-                "split_ratio": split_fields["split_ratio"],
-                "old_shares": split_fields["old_shares"],
-                "new_shares": split_fields["new_shares"],
-            }
+        events_by_key[event_key] = {
+            "ticker": ticker,
+            "split_date": split_date,
+            "split_ratio": split_fields["split_ratio"],
+            "old_shares": old_shares,
+            "new_shares": new_shares,
+            "source": UPCOMING_SPLITS_SOURCE,
+            "fetched_at": now_utc,
+            "window_start": window_start,
+            "window_end": window_end,
+        }
 
     write_ops: List[UpdateOne] = []
-
-    for ticker, event in grouped.items():
+    for event in sorted(
+        events_by_key.values(),
+        key=lambda item: (
+            item["split_date"],
+            item["ticker"],
+            item["old_shares"],
+            item["new_shares"],
+        ),
+    ):
         write_ops.append(
             UpdateOne(
-                {"ticker": ticker},
-                {"$set": {
-                    "ticker": ticker,
+                {
+                    "ticker": event["ticker"],
                     "split_date": event["split_date"],
-                    "split_ratio": event["split_ratio"],
                     "old_shares": event["old_shares"],
                     "new_shares": event["new_shares"],
-                    "source": UPCOMING_SPLITS_SOURCE,
-                    "fetched_at": now_utc,
-                    "window_start": window_start,
-                    "window_end": window_end,
-                }},
+                    "source": event["source"],
+                },
+                {"$set": event},
                 upsert=True,
             )
         )
 
-    null_tickers = sorted(visible_tickers - set(grouped.keys()))
-    for ticker in null_tickers:
-        write_ops.append(
-            UpdateOne(
-                {"ticker": ticker},
-                {"$set": {
-                    "ticker": ticker,
-                    "split_date": None,
-                    "split_ratio": None,
-                    "old_shares": None,
-                    "new_shares": None,
-                    "source": UPCOMING_SPLITS_SOURCE,
-                    "fetched_at": now_utc,
-                    "window_start": window_start,
-                    "window_end": window_end,
-                }},
-                upsert=True,
-            )
+    incoming_keys = set(events_by_key.keys())
+    existing_docs = await db.upcoming_splits.find(
+        {},
+        {
+            "_id": 1,
+            "ticker": 1,
+            "split_date": 1,
+            "old_shares": 1,
+            "new_shares": 1,
+            "source": 1,
+        },
+    ).to_list(length=None)
+    delete_ids = []
+    for doc in existing_docs:
+        ticker = _extract_calendar_ticker(doc)
+        split_date = _extract_split_date(doc)
+        old_shares = _safe_float(doc.get("old_shares"))
+        new_shares = _safe_float(doc.get("new_shares"))
+        source = doc.get("source") or UPCOMING_SPLITS_SOURCE
+        is_valid = _is_valid_upcoming_split_event(
+            ticker,
+            split_date,
+            old_shares,
+            new_shares,
+            allowed_tickers=visible_tickers,
+            window_start=window_start,
+            window_end=window_end,
         )
+        event_key = None
+        if is_valid:
+            assert ticker is not None and split_date is not None
+            assert old_shares is not None and new_shares is not None
+            event_key = _split_event_key(
+                ticker,
+                split_date,
+                old_shares,
+                new_shares,
+                source,
+            )
+        if not is_valid or (
+            source == UPCOMING_SPLITS_SOURCE and event_key not in incoming_keys
+        ):
+            if doc.get("_id") is not None:
+                delete_ids.append(doc["_id"])
+
+    if delete_ids:
+        await db.upcoming_splits.delete_many({"_id": {"$in": delete_ids}})
 
     if write_ops:
         await db.upcoming_splits.bulk_write(write_ops, ordered=False)
 
+    finished_at = datetime.now(timezone.utc)
     return {
         "success": True,
+        "status": "success",
         "source": UPCOMING_SPLITS_SOURCE,
         "window_start": window_start,
         "window_end": window_end,
         "visible_tickers": len(visible_tickers),
-        "tickers_with_upcoming": len(grouped),
-        "tickers_without_upcoming": len(null_tickers),
+        "tickers_targeted": tickers_targeted,
+        "tickers_updated": len(events_by_key),
+        "tickers_skipped_invalid": tickers_skipped_invalid,
+        "tickers_skipped_not_in_universe": tickers_skipped_not_in_universe,
         "records_written": len(write_ops),
+        "cleanup_deleted": len(delete_ids),
+        "api_calls": 1,
+        "api_credits_estimated": 1,
+        "finished_at": finished_at,
+        "finished_at_prague": finished_at.astimezone(
+            ZoneInfo(PRAGUE_TZ_NAME)
+        ).isoformat(),
     }
 
 
@@ -1713,10 +1879,16 @@ async def get_splits_for_ticker(db, ticker: str) -> Dict[str, Any]:
 
     bare_ticker = _bare_ticker(ticker_full)
     docs = await db.upcoming_splits.find({}, {"_id": 0}).to_list(length=None)
-    doc = next((
-        row for row in docs
-        if _bare_ticker(_normalize_ticker_symbol(row.get("ticker") or row.get("code") or row.get("Code"))) == bare_ticker
-    ), None)
+    matching_docs = []
+    for row in docs:
+        if _bare_ticker(
+            _extract_calendar_ticker(row)
+        ) != bare_ticker:
+            continue
+        split_date = _extract_split_date(row)
+        if split_date:
+            matching_docs.append((split_date, row))
+    doc = min(matching_docs, key=lambda item: item[0], default=(None, None))[1]
 
     upcoming_split = None
     if doc:

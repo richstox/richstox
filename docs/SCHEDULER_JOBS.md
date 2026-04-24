@@ -123,10 +123,10 @@ ADMIN_REPORT_MINUTE = 0
 
 ### 9. Upcoming Splits Calendar (Mon-Sat 04:57)
 - **File**: `/app/backend/dividend_history_service.py` → `sync_upcoming_splits_calendar_for_visible_tickers()`
-- **Purpose**: Fetch date-window upcoming stock split events (today..+90d) and persist per visible ticker for UI display.
+- **Purpose**: Fetch date-window upcoming stock split events (today..+90d) and persist only valid visible-universe split rows for UI display.
 - **API**: `GET https://eodhd.com/api/calendar/splits?from={YYYY-MM-DD}&to={YYYY-MM-DD}`
 - **Cost**: 1 API call/day
-- **Persistence**: `upcoming_splits` collection with one document per visible ticker (upsert/null-safe)
+- **Persistence**: `upcoming_splits` collection with composite upsert key `(ticker, split_date, old_shares, new_shares, source)` plus cleanup of invalid, out-of-window, and out-of-universe rows
 - **Window**: Europe/Prague date-only (not UTC)
 - **Served by**: `GET /v1/ticker/{ticker}/splits`
 

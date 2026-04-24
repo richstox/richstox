@@ -176,4 +176,4 @@ async def test_get_calendar_events_supports_legacy_split_and_ipo_fields():
     assert result["events"][0]["description"] == "NASDAQ"
     assert result["events"][1]["ticker"] == "SHOP"
     assert result["events"][1]["ratio"] == "3:1"
-    assert result["events"][1]["metadata"] == {"old_shares": None, "new_shares": None}
+    assert result["events"][1]["metadata"] == {"old_shares": 3.0, "new_shares": 1.0}

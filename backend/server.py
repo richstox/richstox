@@ -7832,6 +7832,8 @@ async def create_job_audit_entry(database, job_name: str, triggered_by: str = "a
         "tickers_targeted": 0,
         "tickers_updated": 0,
         "tickers_skipped": 0,
+        "tickers_skipped_invalid": 0,
+        "tickers_skipped_not_in_universe": 0,
         "tickers_failed": 0,
         "api_calls": 0,
         "api_credits_estimated": 0,
@@ -7879,8 +7881,21 @@ async def finalize_job_audit_entry(database, audit_id: str, result: dict = None,
             update_doc["error_traceback"] = str(error_traceback)[:4000]
 
     if result:
-        update_doc["tickers_updated"] = result.get("tickers_updated", 0)
-        update_doc["api_calls"] = result.get("api_calls", 0)
+        result_status = result.get("status") if isinstance(result, dict) else None
+        if result_status:
+            update_doc["status"] = result_status
+        for field in (
+            "tickers_targeted",
+            "tickers_updated",
+            "tickers_skipped",
+            "tickers_skipped_invalid",
+            "tickers_skipped_not_in_universe",
+            "tickers_failed",
+            "api_calls",
+            "api_credits_estimated",
+        ):
+            if field in result:
+                update_doc[field] = result.get(field)
         # Store the full result dict so the frontend can read job-specific
         # output (e.g. tickers_processed, stats, exclusion_reasons for Step 4).
         # This matches what run_job_with_retry() stores in scheduler.py.
