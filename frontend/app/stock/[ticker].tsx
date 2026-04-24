@@ -1098,7 +1098,7 @@ export default function StockDetail() {
         article.article_id ||
         article.source_link ||
         article.link ||
-        `${ticker}-fallback-${article.title ?? 'untitled'}-${article.published_at ?? article.date ?? 'unknown'}-${offset + index}`,
+        `${ticker}-fallback-${article.title ?? 'no-title'}-${article.published_at ?? article.date ?? 'no-date'}-${offset + index}`,
       title: article.title || 'Untitled',
       content: article.content ?? null,
       source: article.source ?? null,
