@@ -1477,10 +1477,11 @@ export default function StockDetail() {
     return normalizedCurrency ? `${normalizedCurrency} ${toEU(value, 2)}` : toEU(value, 2);
   };
 
-  const formatUpcomingEarningsEstimate = (estimate?: number | null, currency?: string | null): string => {
-    if (estimate == null) return 'Estimate —';
+  const formatUpcomingEarningsEstimate = (estimate?: number | string | null, currency?: string | null): string => {
+    const numericEstimate = typeof estimate === 'string' ? Number(estimate) : estimate;
+    if (typeof numericEstimate !== 'number' || !Number.isFinite(numericEstimate)) return 'Estimate —';
     const currencyPrefix = currency && currency !== 'USD' ? `${currency} ` : '$';
-    return `Est. ${currencyPrefix}${toEU(estimate, 2)}`;
+    return `Exp. ${currencyPrefix}${toEU(numericEstimate, 2)}`;
   };
 
   const getPragueDateString = (): string => {

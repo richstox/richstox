@@ -11,12 +11,15 @@ describe('Dashboard News & Events regressions', () => {
 
   it('renames the homepage feed to News & Events and merges upcoming events into the feed', () => {
     expect(fileContent).toContain("<Text style={styles.sectionTitle}>News & Events</Text>");
+    expect(fileContent).not.toContain("News plus upcoming followed-ticker events");
     expect(fileContent).toContain("const homepageEvents = useMemo<HomepageEvent[]>(");
     expect(fileContent).toContain("const newsFeedItems = useMemo<DashboardFeedItem[]>(");
+    expect(fileContent).toContain("const filteredNewsFeedItems = useMemo<DashboardFeedItem[]>(");
     expect(fileContent).toContain("kind: 'event' as const");
     expect(fileContent).toContain("kind: 'article' as const");
     expect(fileContent).toContain("const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');");
     expect(fileContent).toContain("const [includeHomepageEvents, setIncludeHomepageEvents] = useState(true);");
+    expect(fileContent).toContain("const [newsFeedFilter, setNewsFeedFilter] = useState('');");
     expect(fileContent).toContain("getDashboardFeedDateValue");
     expect(fileContent).toContain("getDashboardFeedAlphaKey");
     expect(fileContent).toContain("No news or events available");
@@ -33,6 +36,7 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('<View style={styles.newsControlsRow}>');
     expect(fileContent).toContain("Date {homepageFeedSort === 'date_asc' ? '↑' : '↓'}");
     expect(fileContent).toContain("A‑Z {homepageFeedSort === 'za' ? '↑' : '↓'}");
+    expect(fileContent).toContain('placeholder="Search news & events..."');
     expect(fileContent).toContain('data-testid="homepage-events-toggle"');
     expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>Events</Text>');
   });

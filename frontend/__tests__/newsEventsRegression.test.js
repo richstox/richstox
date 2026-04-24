@@ -21,6 +21,7 @@ describe('News & Events regressions', () => {
     expect(fileContent).toContain("title: 'Upcoming Earnings'");
     expect(fileContent).toContain('formatUpcomingEarningsEstimate(upcomingEarnings.estimate, upcomingEarnings.currency)');
     expect(fileContent).toContain('${EVENT_SUBTITLE_SEPARATOR}${marketLabel}');
+    expect(fileContent).toContain("return `Exp. ${currencyPrefix}${toEU(numericEstimate, 2)}`;");
   });
 
   it('keeps dividend events enriched with amount, ex-date, and pay date', () => {
