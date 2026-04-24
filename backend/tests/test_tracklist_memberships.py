@@ -48,6 +48,24 @@ def test_search_includes_tracklist_memberships():
     assert results[1]['memberships'] == ['tracklist']
 
 
+def test_search_includes_both_memberships_when_overlap_exists():
+    from whitelist_service import search_whitelist
+
+    tracked_docs = [
+        {"ticker": "AAPL.US", "name": "Apple Inc", "exchange": "NASDAQ", "sector": "Technology", "industry": "Hardware", "asset_type": "Common Stock", "status": "active", "safety_type": "standard", "rank": 0},
+    ]
+    db = _make_fake_db(tracked_docs)
+
+    results = asyncio.run(search_whitelist(
+        db,
+        'A',
+        followed_tickers={'AAPL'},
+        tracklist_tickers={'AAPL'},
+    ))
+
+    assert results[0]['memberships'] == ['watchlist', 'tracklist']
+
+
 def test_server_declares_tracklist_endpoints():
     server_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'server.py')
     with open(server_path, 'r', encoding='utf-8') as handle:
@@ -55,4 +73,4 @@ def test_server_declares_tracklist_endpoints():
 
     assert '/v1/tracklist/add/{ticker}' in content
     assert '/v1/tracklist/replace' in content
-    assert 'Use Replace on the Tracklist page to swap holdings.' in content
+    assert 'Manage replacements on the Tracklist page.' in content

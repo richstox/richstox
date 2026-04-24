@@ -1704,14 +1704,14 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             if peak > 0:
                 max_drawdown = max(max_drawdown, ((peak - value) / peak) * 100)
 
-    years = max(len(usd_series) / TRADING_DAYS_PER_YEAR, 0)
+    years = len(usd_series) / TRADING_DAYS_PER_YEAR
     end_value = values[-1]
     avg_per_year = ((end_value / initial_value) ** (1 / years) - 1) * 100 if years > 0 and initial_value > 0 else 0
     peak_value = max(values)
     trough_value = min(values)
     risk_hist = initial_value - trough_value
     reward_hist = peak_value - initial_value
-    risk_reward_ratio = round(reward_hist / risk_hist, 2) if risk_hist > 0 else None
+    reward_to_risk_ratio = round(reward_hist / risk_hist, 2) if risk_hist > 0 else None
 
     return {
         "ready": True,
@@ -1726,7 +1726,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "avg_per_year_pct": round(avg_per_year, 2),
             "max_drawdown_pct": round(max_drawdown, 2),
             "duration_days": drawdown_duration,
-            "rrr": risk_reward_ratio,
+            "rrr": reward_to_risk_ratio,
             "track_record_days": len(usd_series),
         },
     }
@@ -1766,7 +1766,7 @@ async def follow_ticker(ticker: str, request: Request):
 
     state = await _get_membership_state(user_id)
     if ticker_clean in state["tracklist"]:
-        raise HTTPException(409, f"{ticker_clean} is already in your Tracklist")
+        raise HTTPException(409, f"Cannot add {ticker_clean} to Watchlist while it's in your Tracklist. Remove it first or use Replace.")
 
     existing = await db.user_watchlist.find_one(
         {"ticker": ticker_clean, "user_id": user_id}
@@ -2007,7 +2007,7 @@ async def add_to_tracklist(ticker: str, request: Request):
     if ticker_clean in state["tracklist"]:
         return {"status": "already_in_tracklist", "ticker": ticker_clean}
     if state["tracklist_is_full"]:
-        raise HTTPException(409, "Your Tracklist has reached the 7-stock limit. Use Replace on the Tracklist page to swap holdings.")
+        raise HTTPException(409, "Your Tracklist has reached the 7-stock limit. Manage replacements on the Tracklist page.")
 
     await _assert_visible_ticker(ticker_clean)
     tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "positions": [], "events": []}

@@ -93,7 +93,7 @@ export default function TracklistPage() {
             </View>
           </View>
           <Text style={styles.heroHint}>
-            Manage replacements here. Search is read-only unless you open it in replace mode.
+            Use Replace buttons below to swap stocks. Search is read-only unless opened from here in replace mode.
           </Text>
         </View>
 

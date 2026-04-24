@@ -57,7 +57,7 @@ _RAW_DOCS = [
 # Tests
 # ---------------------------------------------------------------------------
 
-def test_is_following_present_when_set_provided():
+def test_is_following_present_when_set_provided_sync():
     """Results should include is_following=True/False when followed_tickers is given."""
     from whitelist_service import search_whitelist
 

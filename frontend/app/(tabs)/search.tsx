@@ -38,6 +38,11 @@ const MEMBERSHIP_LABELS: Record<string, string> = {
   tracklist: 'T',
 };
 
+const getMembershipLabel = (membership: unknown): string => {
+  if (typeof membership !== 'string' || membership.length === 0) return '?';
+  return MEMBERSHIP_LABELS[membership] || membership.charAt(0).toUpperCase();
+};
+
 export default function Search() {
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -128,7 +133,7 @@ export default function Search() {
         {memberships.map((membership: string) => (
           <View key={`${item.ticker}-${membership}`} style={styles.badge}>
             <Text style={styles.badgeText}>
-              {MEMBERSHIP_LABELS[membership] || (typeof membership === 'string' && membership.length > 0 ? membership.charAt(0).toUpperCase() : '?')}
+              {getMembershipLabel(membership)}
             </Text>
           </View>
         ))}

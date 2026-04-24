@@ -701,6 +701,7 @@ export default function StockDetail() {
   const [listActionLoading, setListActionLoading] = useState(false);
   const [tracklistIsFull, setTracklistIsFull] = useState(false);
   const [addToVisible, setAddToVisible] = useState(false);
+  const membershipCount = Number(listMemberships.watchlist) + Number(listMemberships.tracklist);
   
   // Company details accordion state
   const [companyDetailsExpanded, setCompanyDetailsExpanded] = useState(false);
@@ -2602,7 +2603,7 @@ export default function StockDetail() {
               >
                 <Ionicons name="add" size={16} color={COLORS.text} />
                 <Text style={styles.addToButtonText}>
-                  {listMemberships.watchlist || listMemberships.tracklist ? 'Added · 1' : 'Add to'}
+                  {membershipCount > 0 ? `In ${membershipCount} list${membershipCount > 1 ? 's' : ''}` : 'Add to'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -4908,7 +4909,7 @@ export default function StockDetail() {
                     : listMemberships.watchlist
                       ? 'Unavailable while this stock is in your Watchlist.'
                       : tracklistIsFull
-                        ? 'Tracklist is full (7). Manage it on the Tracklist page.'
+                        ? 'Tracklist is full (7). Manage replacements on the Tracklist page.'
                         : 'Track performance from the day you add it.'}
                 </Text>
               </View>
