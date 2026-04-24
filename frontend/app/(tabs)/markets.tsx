@@ -63,6 +63,7 @@ type CalendarEvent = {
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const TICKER_FILTER_THRESHOLD = 6;
 const INITIAL_VISIBLE_EVENTS = 10;
+const MAX_VISIBLE_MONTH_CARDS = 4;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 
@@ -264,7 +265,7 @@ export default function Markets() {
   const monthCards = useMemo(() => {
     return activeMonthKeys
       .filter((monthKey) => monthKey.startsWith(`${selectedYearKey}-`))
-      .slice(0, 4)
+      .slice(0, MAX_VISIBLE_MONTH_CARDS)
       .map((monthKey) => startOfMonth(parseYmd(`${monthKey}-01`)));
   }, [activeMonthKeys, selectedYearKey]);
 
@@ -308,6 +309,7 @@ export default function Markets() {
   }, [displayMonth]);
 
   useEffect(() => {
+    // Keep the compact month/day selectors pinned to real event dates after fresh data loads.
     if (activeMonthKeys.length === 0 || activeMonthKeys.includes(selectedMonthKey)) return;
     const nextMonthKey = activeMonthKeys.find((monthKey) => monthKey >= todayMonthKey) ?? activeMonthKeys[0];
     setDisplayMonth(startOfMonth(parseYmd(`${nextMonthKey}-01`)));
@@ -317,9 +319,7 @@ export default function Markets() {
     if (calendarView !== 'daily' || activeDayKeysForDisplayMonth.length === 0) return;
     if (activeDayKeysForDisplayMonth.includes(selectedDateKey)) return;
     const nextDateKey = activeDayKeysForDisplayMonth.find((dateKey) => dateKey >= todayPragueStr) ?? activeDayKeysForDisplayMonth[0];
-    if (nextDateKey && nextDateKey !== selectedDateKey) {
-      setSelectedDate(parseYmd(nextDateKey));
-    }
+    if (nextDateKey) setSelectedDate(parseYmd(nextDateKey));
   }, [activeDayKeysForDisplayMonth, calendarView, selectedDateKey, todayPragueStr]);
 
   useEffect(() => {
@@ -384,6 +384,11 @@ export default function Markets() {
   const canGoNext = selectedMonthIndex >= 0 && selectedMonthIndex < activeMonthKeys.length - 1;
   const canGoPrevYear = selectedYearIndex > 0;
   const canGoNextYear = selectedYearIndex >= 0 && selectedYearIndex < yearCards.length - 1;
+  const getYearMonthKey = (year: number, edge: 'first' | 'last'): string | undefined => {
+    const yearMonthKeys = activeMonthKeys.filter((monthKey) => monthKey.startsWith(`${year}-`));
+    if (yearMonthKeys.length === 0) return undefined;
+    return edge === 'first' ? yearMonthKeys[0] : yearMonthKeys[yearMonthKeys.length - 1];
+  };
 
   const formatEventSecondary = (event: CalendarEvent): string => {
     if (event.type === 'dividend') {
@@ -571,9 +576,9 @@ export default function Markets() {
                   onPress={() => {
                     if (!canGoPrevYear) return;
                     const nextYear = yearCards[selectedYearIndex - 1];
-                    const nextMonthKey = activeMonthKeys.find((monthKey) => monthKey.startsWith(`${nextYear}-`));
+                    const nextMonthKey = getYearMonthKey(nextYear, 'last');
                     setSelectedYear(nextYear);
-                    if (nextMonthKey) setDisplayMonth(startOfMonth(parseYmd(`${nextMonthKey}-01`)));
+                    setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${nextYear}-01`)}-01`)));
                   }}
                   disabled={!canGoPrevYear}
                 >
@@ -585,9 +590,9 @@ export default function Markets() {
                   onPress={() => {
                     if (!canGoNextYear) return;
                     const nextYear = yearCards[selectedYearIndex + 1];
-                    const nextMonthKey = activeMonthKeys.find((monthKey) => monthKey.startsWith(`${nextYear}-`));
+                    const nextMonthKey = getYearMonthKey(nextYear, 'first');
                     setSelectedYear(nextYear);
-                    if (nextMonthKey) setDisplayMonth(startOfMonth(parseYmd(`${nextMonthKey}-01`)));
+                    setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${nextYear}-01`)}-01`)));
                   }}
                   disabled={!canGoNextYear}
                 >
@@ -636,7 +641,8 @@ export default function Markets() {
                     style={[styles.periodCell, styles.yearCell, isSelected && styles.periodCellSelected]}
                     onPress={() => {
                       setSelectedYear(year);
-                      setDisplayMonth(startOfMonth(parseYmd(`${year}-${format(displayMonth, 'MM')}-01`)));
+                      const nextMonthKey = getYearMonthKey(year, 'first');
+                      setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${year}-01`)}-01`)));
                     }}
                   >
                     <Text style={[styles.periodCellLabel, isSelected && styles.periodCellLabelSelected]}>

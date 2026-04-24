@@ -41,9 +41,12 @@ describe('Markets events regressions', () => {
   it('supports daily monthly and yearly calendar views and keeps the logo clickable', () => {
     expect(fileContent).toContain("type CalendarViewMode = 'daily' | 'monthly' | 'yearly';");
     expect(fileContent).toContain("const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];");
+    expect(fileContent).toContain('const MAX_VISIBLE_MONTH_CARDS = 4;');
     expect(fileContent).toContain('const activeDayKeysForDisplayMonth = useMemo(');
     expect(fileContent).toContain("setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);");
     expect(fileContent).toContain("activeMonthKeys.find((monthKey) => monthKey >= todayMonthKey) ?? activeMonthKeys[0]");
+    expect(fileContent).toContain("getYearMonthKey(nextYear, 'last')");
+    expect(fileContent).toContain("getYearMonthKey(nextYear, 'first')");
     expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
     expect(fileContent).toContain("Show full calendar");
     expect(fileContent).toContain("Load more events");
