@@ -615,7 +615,7 @@ export default function Markets() {
               <TextInput
                 style={[
                   styles.filterSearchInput,
-                  Platform.OS === 'web' ? ({ outlineStyle: 'none', outlineWidth: 0 } as any) : null,
+                  Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null,
                 ]}
                 placeholder="Search ticker or company"
                 placeholderTextColor={COLORS.textMuted}

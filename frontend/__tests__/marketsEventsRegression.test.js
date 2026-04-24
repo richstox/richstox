@@ -21,7 +21,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const TICKER_FILTER_THRESHOLD = 6;');
     expect(fileContent).toContain('const shouldShowTickerFilter = tickerOptions.length >= TICKER_FILTER_THRESHOLD;');
     expect(fileContent).toContain('placeholder="Search ticker or company"');
-    expect(fileContent).toContain("Platform.OS === 'web' ? ({ outlineStyle: 'none', outlineWidth: 0 } as any) : null");
+    expect(fileContent).toContain("Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null");
   });
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {

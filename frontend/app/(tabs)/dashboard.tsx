@@ -61,6 +61,7 @@ type DashboardFeedItem =
 
 const formatDashboardDate = (dateStr?: string | null): string => {
   if (!dateStr) return '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return '';
   const parsed = new Date(`${dateStr}T00:00:00Z`);
   if (Number.isNaN(parsed.getTime())) return '';
   return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
