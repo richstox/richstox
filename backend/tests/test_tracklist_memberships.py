@@ -55,4 +55,4 @@ def test_server_declares_tracklist_endpoints():
 
     assert '/v1/tracklist/add/{ticker}' in content
     assert '/v1/tracklist/replace' in content
-    assert 'Tracklist is full (7). Manage it on the Tracklist page.' in content
+    assert 'Use Replace on the Tracklist page to swap holdings.' in content

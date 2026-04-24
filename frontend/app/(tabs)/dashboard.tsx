@@ -675,9 +675,9 @@ export default function Dashboard() {
               <View style={styles.performanceBars}>
                 {miniChartSeries.map((point: any, index: number) => {
                   const values = miniChartSeries.map((item: any) => item.value || 0);
-                  const maxValue = Math.max(...values, 0);
-                  const minValue = Math.min(...values, 0);
-                  const range = maxValue - minValue || 1;
+                  const maxValue = Math.max(...values);
+                  const minValue = Math.min(...values);
+                  const range = maxValue === minValue ? 1 : maxValue - minValue;
                   const normalized = ((point.value || 0) - minValue) / range;
                   return (
                     <View key={`${point.date}-${index}`} style={styles.performanceBarColumn}>

@@ -2626,7 +2626,7 @@ export default function StockDetail() {
                   </Text>
                 </View>
                 <Text style={(price.change || 0) >= 0 ? styles.lastCloseDeltaPositive : styles.lastCloseDeltaNegative}>
-                  {(price.change || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(price.change || 0)).replace('$', '$')}
+                  {(price.change || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(price.change || 0))}
                 </Text>
               </View>
             </View>

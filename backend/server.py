@@ -109,6 +109,7 @@ EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 # S&P 500 benchmark ticker
 SP500_TICKER = "GSPC.INDX"  # S&P 500 Index
 SP500_TR_TICKER = "SP500TR.INDX"  # S&P 500 Total Return Index
+TRADING_DAYS_PER_YEAR = 252
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -1656,7 +1657,8 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
     usd_series: List[dict] = []
     for index, snapshot in enumerate(ready_snapshots):
         segment_start = snapshot["effective_date"]
-        segment_end_exclusive = ready_snapshots[index + 1]["effective_date"] if index + 1 < len(ready_snapshots) else None
+        has_next_snapshot = index + 1 < len(ready_snapshots)
+        segment_end_exclusive = ready_snapshots[index + 1]["effective_date"] if has_next_snapshot else None
         for trading_day in trading_days:
             if trading_day < segment_start:
                 continue
@@ -1702,14 +1704,14 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             if peak > 0:
                 max_drawdown = max(max_drawdown, ((peak - value) / peak) * 100)
 
-    years = max(len(usd_series) / 252, 0)
+    years = max(len(usd_series) / TRADING_DAYS_PER_YEAR, 0)
     end_value = values[-1]
     avg_per_year = ((end_value / initial_value) ** (1 / years) - 1) * 100 if years > 0 and initial_value > 0 else 0
     peak_value = max(values)
     trough_value = min(values)
     risk_hist = initial_value - trough_value
     reward_hist = peak_value - initial_value
-    rrr = round(reward_hist / risk_hist, 2) if risk_hist > 0 else None
+    risk_reward_ratio = round(reward_hist / risk_hist, 2) if risk_hist > 0 else None
 
     return {
         "ready": True,
@@ -1724,7 +1726,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "avg_per_year_pct": round(avg_per_year, 2),
             "max_drawdown_pct": round(max_drawdown, 2),
             "duration_days": drawdown_duration,
-            "rrr": rrr,
+            "rrr": risk_reward_ratio,
             "track_record_days": len(usd_series),
         },
     }
@@ -2005,7 +2007,7 @@ async def add_to_tracklist(ticker: str, request: Request):
     if ticker_clean in state["tracklist"]:
         return {"status": "already_in_tracklist", "ticker": ticker_clean}
     if state["tracklist_is_full"]:
-        raise HTTPException(409, "Tracklist is full (7). Manage it on the Tracklist page.")
+        raise HTTPException(409, "Your Tracklist has reached the 7-stock limit. Use Replace on the Tracklist page to swap holdings.")
 
     await _assert_visible_ticker(ticker_clean)
     tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "positions": [], "events": []}

@@ -54,7 +54,6 @@ export default function Search() {
   const [results, setResults] = useState<any[]>(storedResults);
   const [loading, setLoading] = useState(false);
   const [replacingTicker, setReplacingTicker] = useState<string | null>(null);
-  const [tracklistTickers, setTracklistTickers] = useState<string[]>([]);
 
   useFocusEffect(
     useCallback(() => {
@@ -67,16 +66,6 @@ export default function Search() {
     () => (sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
     [sessionToken]
   );
-
-  const fetchTracklist = useCallback(async () => {
-    if (!sessionToken) return;
-    try {
-      const response = await axios.get(`${API_URL}/api/v1/tracklist`, { headers: authHeaders });
-      setTracklistTickers((response.data.positions || []).map((position: any) => position.ticker));
-    } catch (error) {
-      console.error('Error loading tracklist:', error);
-    }
-  }, [authHeaders, sessionToken]);
 
   const searchTickers = useCallback(async () => {
     if (searchQuery.length < 1) {
@@ -103,12 +92,6 @@ export default function Search() {
   useEffect(() => {
     searchTickers();
   }, [searchTickers]);
-
-  useEffect(() => {
-    if (replaceMode) {
-      fetchTracklist();
-    }
-  }, [fetchTracklist, replaceMode]);
 
   const handleTickerPress = async (item: any) => {
     Keyboard.dismiss();
@@ -144,7 +127,9 @@ export default function Search() {
       <View style={styles.badgesRow}>
         {memberships.map((membership: string) => (
           <View key={`${item.ticker}-${membership}`} style={styles.badge}>
-            <Text style={styles.badgeText}>{MEMBERSHIP_LABELS[membership] || membership[0]?.toUpperCase()}</Text>
+            <Text style={styles.badgeText}>
+              {MEMBERSHIP_LABELS[membership] || (typeof membership === 'string' && membership.length > 0 ? membership.charAt(0).toUpperCase() : '?')}
+            </Text>
           </View>
         ))}
       </View>
@@ -218,7 +203,7 @@ export default function Search() {
           }
           renderItem={({ item }) => {
             const memberships = Array.isArray(item.memberships) ? item.memberships : [];
-            const disabledForReplace = replaceMode && (memberships.includes('tracklist') || memberships.includes('watchlist') || tracklistTickers.includes(item.ticker));
+            const disabledForReplace = replaceMode && (memberships.includes('tracklist') || memberships.includes('watchlist'));
             const isReplacing = replacingTicker === item.ticker;
 
             return (
