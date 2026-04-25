@@ -6067,7 +6067,7 @@ const styles = StyleSheet.create({
     borderBottomColor: '#F3F4F6',
   },
   addToSheetItemActive: {
-    backgroundColor: '#FFFBEB',
+    backgroundColor: '#FEF3C7',
   },
   addToSheetItemActiveTracklist: {
     backgroundColor: '#EFF6FF',
