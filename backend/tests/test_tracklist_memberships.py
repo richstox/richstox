@@ -78,4 +78,5 @@ def test_server_declares_tracklist_endpoints():
     assert '/v1/tracklist/draft/{ticker}' in content
     assert '/v1/tracklist/replace' in content
     assert 'Tracklist is assigned automatically from your first login date.' in content
-    assert 'Tracklist is fixed automatically right now and cannot be replaced from the app.' in content
+    assert 'Tracklist replacements are available after your automatic 7-stock basket is ready.' in content
+    assert 'Replacement is saved and applies at next close.' in content

@@ -2052,7 +2052,7 @@ async def get_tracklist(request: Request):
         "seed_tickers": tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN,
         "positions": positions,
         "performance": performance,
-        "changes_apply_note": "Tracklist is assigned automatically from your first login date.",
+        "changes_apply_note": "Tracklist starts automatically from your first login date. Replacements apply at next close.",
     }
 
 
@@ -2068,7 +2068,60 @@ async def add_tracklist_setup_ticker(ticker: str, request: Request):
 
 @api_router.post("/v1/tracklist/replace")
 async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Request):
-    raise HTTPException(410, "Tracklist is fixed automatically right now and cannot be replaced from the app.")
+    user = request.state.user
+    old_ticker = _normalize_list_ticker(payload.old_ticker)
+    new_ticker = _normalize_list_ticker(payload.new_ticker)
+    if old_ticker == new_ticker:
+        raise HTTPException(400, "Choose a different ticker")
+
+    state = await _get_membership_state(user["user_id"])
+    if old_ticker not in state["tracklist"]:
+        raise HTTPException(404, f"{old_ticker} is not in your Tracklist")
+    if new_ticker in state["tracklist"]:
+        raise HTTPException(409, f"{new_ticker} is already in your Tracklist")
+    if new_ticker in state["watchlist"]:
+        raise HTTPException(409, f"{new_ticker} is already in your Watchlist")
+    if not state["tracklist_is_full"]:
+        raise HTTPException(409, "Tracklist replacements are available after your automatic 7-stock basket is ready.")
+
+    await _assert_visible_ticker(new_ticker)
+    existing_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in state["tracklist_positions"]]
+    target_tickers = [new_ticker if ticker == old_ticker else ticker for ticker in existing_tickers]
+    now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
+    tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "events": []}
+    capital = await _compute_tracklist_value(state["tracklist_positions"], effective_date)
+    snapshot = await _build_tracklist_snapshot(target_tickers, capital, effective_date, created_at=now_iso)
+    events = list(tracklist_doc.get("events", []))
+    events.append({
+        **snapshot,
+        "event_type": "replace",
+        "removed_ticker": old_ticker,
+        "added_ticker": new_ticker,
+        "created_at": now_iso,
+    })
+    await db.user_tracklists.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "user_id": user["user_id"],
+            "initial_capital": float(tracklist_doc.get("initial_capital") or 100000),
+            "draft_tickers": [],
+            "positions": snapshot["positions"],
+            "events": events,
+            "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+            "seed_tickers": tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN,
+            "seeded_at": tracklist_doc.get("seeded_at"),
+            "updated_at": now_iso,
+        }},
+        upsert=True,
+    )
+    return {
+        "status": "replaced",
+        "old_ticker": old_ticker,
+        "new_ticker": new_ticker,
+        "effective_close_date": effective_date,
+        "message": "Replacement is saved and applies at next close.",
+    }
 
 
 @api_router.post("/admin/tracklist/reset/{user_id}")

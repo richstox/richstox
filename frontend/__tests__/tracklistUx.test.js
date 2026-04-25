@@ -25,6 +25,7 @@ describe('Tracklist UX regression', () => {
     expect(stockDetail).toContain('Tracklist');
     expect(stockDetail).toContain('Portfolio');
     expect(stockDetail).toContain('Changes apply at next close.');
+    expect(stockDetail).toContain("pathname: '/(tabs)/tracklist'");
   });
 
   it('keeps search passive and badge-driven only', () => {
@@ -54,8 +55,11 @@ describe('Tracklist UX regression', () => {
     expect(appHeader).toContain('menu-portfolio');
     expect(appHeader).toContain('Soon');
     expect(tracklistPage).toContain('Your Tracklist');
-    expect(tracklistPage).toContain('Magnificent 7 basket automatically');
+    expect(tracklistPage).toContain('You can still replace names from this overview.');
     expect(tracklistPage).toContain('Auto-assigned basket');
+    expect(tracklistPage).toContain('settings-outline');
+    expect(tracklistPage).toContain('Replace flow');
+    expect(tracklistPage).toContain('Replace');
   });
 });
 

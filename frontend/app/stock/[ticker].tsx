@@ -1083,11 +1083,17 @@ export default function StockDetail() {
     }
   }, [ticker, sessionToken]);
 
-  const handleAddTo = async (target: 'watchlist') => {
+  const handleAddTo = async (target: 'watchlist' | 'tracklist') => {
     if (listActionLoading || !sessionToken) {
       return;
     }
     if (target === 'watchlist' && listMemberships.tracklist) return;
+    if (target === 'tracklist' && listMemberships.watchlist) return;
+    if (target === 'tracklist') {
+      setAddToVisible(false);
+      router.push({ pathname: '/(tabs)/tracklist', params: { candidate: ticker, manage: '1' } });
+      return;
+    }
     setListActionLoading(true);
     const authHeaders = { Authorization: `Bearer ${sessionToken}` };
     try {
@@ -4885,10 +4891,11 @@ export default function StockDetail() {
                 listMemberships.watchlist && styles.addToSheetItemDisabled,
                 listMemberships.tracklist && styles.addToSheetItemActive,
               ]}
-              disabled
+              onPress={() => handleAddTo('tracklist')}
+              disabled={listMemberships.watchlist}
             >
               <View style={styles.addToSheetIcon}>
-                <Ionicons name="analytics-outline" size={18} color={COLORS.textMuted} />
+                <Ionicons name="analytics-outline" size={18} color={COLORS.primary} />
               </View>
               <View style={styles.addToSheetTextWrap}>
                 <Text style={styles.addToSheetItemTitle}>Tracklist</Text>
@@ -4897,7 +4904,7 @@ export default function StockDetail() {
                     ? 'Already managed in your Tracklist.'
                     : listMemberships.watchlist
                       ? 'Unavailable while this stock is in your Watchlist.'
-                      : 'Assigned automatically from your first login date.'}
+                      : 'Opens your Tracklist overview where you can replace one current name.'}
                 </Text>
               </View>
               {listMemberships.tracklist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}
