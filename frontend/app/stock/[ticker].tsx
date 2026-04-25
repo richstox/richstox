@@ -1378,13 +1378,13 @@ export default function StockDetail() {
   }, [data?.company, mobileData?.company_details]);
 
   // P21: EU/CZ Number Formatting - import utility
-  // Thousands separator: . (dot), Decimal separator: , (comma)
+  // Thousands separator: space, Decimal separator: , (comma)
   const toEU = (value: number, decimals: number = 2): string => {
     if (value === null || value === undefined || isNaN(value)) return 'N/A';
     const fixed = value.toFixed(decimals);
     const [intPart, decPart] = fixed.split('.');
-    const intWithDots = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-    return decPart ? `${intWithDots},${decPart}` : intWithDots;
+    const intWithSpaces = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    return decPart ? `${intWithSpaces},${decPart}` : intWithSpaces;
   };
 
   /**
@@ -1422,19 +1422,13 @@ export default function StockDetail() {
     return `${sign}${toEU(value, 2)} %`;
   };
 
-  // Format large percentages: >100% no decimals, thousands separated (EU style)
+  // Format Performance Check percentages as whole numbers with space-separated thousands
   const formatLargePercent = (value: number | null | undefined, showSign: boolean = true) => {
     if (value === null || value === undefined) return 'N/A';
     const sign = value >= 0 ? (showSign ? '+' : '') : '-';
     const absValue = Math.abs(value);
-    
-    if (absValue >= 1000) {
-      return `${sign}${toEU(absValue, 0)} %`;
-    } else if (absValue >= 100) {
-      return `${sign}${toEU(absValue, 0)} %`;
-    } else {
-      return `${sign}${toEU(absValue, 1)} %`;
-    }
+
+    return `${sign}${toEU(absValue, 0)}%`;
   };
 
   /**
@@ -3604,7 +3598,7 @@ export default function StockDetail() {
                 <Text style={styles.perfCheckIndexRow}>
                   Total return:{' '}
                   <Text style={styles.perfCheckIndexRowValue}>
-                    {mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}{toEU(mobileData.period_stats.benchmark_total_pct, 1)}%
+                    {formatLargePercent(mobileData.period_stats.benchmark_total_pct)}
                   </Text>
                 </Text>
               )}
@@ -3613,7 +3607,6 @@ export default function StockDetail() {
                 const wealthGap = mobileData.period_stats.outperformance_pct;
                 if (wealthGap === null || wealthGap === undefined) return null;
                 const deltaClamped = Math.max(wealthGap, -100);
-                const sign = deltaClamped >= 0 ? '+' : '';
                 return (
                   <Text style={styles.perfCheckIndexRow}>
                     {'Stock vs. index: '}
@@ -3622,7 +3615,7 @@ export default function StockDetail() {
                       deltaClamped > 0 ? styles.positiveText :
                       deltaClamped < 0 ? styles.negativeText : null
                     ]}>
-                      {sign}{toEU(deltaClamped, 1)}%
+                      {formatLargePercent(deltaClamped)}
                     </Text>
                   </Text>
                 );
