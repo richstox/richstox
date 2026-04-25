@@ -28,12 +28,15 @@ describe('Tracklist UX regression', () => {
     expect(stockDetail).toContain("pathname: '/(tabs)/tracklist'");
   });
 
-  it('keeps search passive and badge-driven only', () => {
+  it('keeps search passive and pill-driven only', () => {
     expect(search).toContain("const MEMBERSHIP_LABELS");
-    expect(search).toContain("W / T badges show where each ticker already lives.");
+    expect(search).toContain("Watchlist");
+    expect(search).toContain("Tracklist");
+    expect(search).not.toContain("W / T badges show where each ticker already lives.");
+    expect(search).not.toContain("Passive search only");
     expect(search).not.toContain('star-toggle-');
     expect(search).not.toContain("/api/v1/watchlist/");
-    expect(search).toContain('renderMembershipBadges');
+    expect(search).toContain('renderMembershipPills');
     expect(search).not.toContain('/api/v1/tracklist/replace');
   });
 
