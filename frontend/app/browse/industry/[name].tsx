@@ -118,10 +118,10 @@ function SortableHeader({
 export default function IndustryDetailScreen() {
   const router = useRouter();
   const sp = useLayoutSpacing();
-  const { name } = useLocalSearchParams<{ name: string }>();
+  const { name, sector: sectorParam } = useLocalSearchParams<{ name: string; sector?: string }>();
 
   const [companies, setCompanies] = useState<Company[]>([]);
-  const [sector, setSector] = useState<string | null>(null);
+  const [sector, setSector] = useState<string | null>(sectorParam || null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<TabKey>('performance');
@@ -134,15 +134,17 @@ export default function IndustryDetailScreen() {
     setError(null);
     try {
       const encodedName = encodeURIComponent(name);
-      const res = await axios.get(`${API_URL}/api/v1/browse/industries/${encodedName}`);
+      const params: Record<string, string> = {};
+      if (sectorParam) params.sector = sectorParam;
+      const res = await axios.get(`${API_URL}/api/v1/browse/industries/${encodedName}`, { params });
       setCompanies(res.data.companies || []);
-      setSector(res.data.sector || null);
+      setSector(res.data.sector || sectorParam || null);
     } catch {
       setError('Could not load companies. Please try again.');
     } finally {
       setLoading(false);
     }
-  }, [name]);
+  }, [name, sectorParam]);
 
   useEffect(() => {
     loadCompanies();
@@ -182,6 +184,7 @@ export default function IndustryDetailScreen() {
         </TouchableOpacity>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle} numberOfLines={1}>{name || 'Industry'}</Text>
+          {sector ? <Text style={styles.headerSector} numberOfLines={1}>{sector}</Text> : null}
         </View>
         <View style={styles.headerPlaceholder} />
       </View>
@@ -346,7 +349,8 @@ const styles = StyleSheet.create({
   },
   backButton: { padding: 16, marginLeft: -8 },
   headerCenter: { flex: 1, alignItems: 'center' },
-  headerTitle: { fontSize: 18, fontWeight: '700', color: COLORS.text },
+  headerTitle: { fontSize: 17, fontWeight: '700', color: COLORS.text },
+  headerSector: { fontSize: 11, color: COLORS.textMuted, fontWeight: '500', marginTop: 1 },
   headerPlaceholder: { width: 48 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   errorText: { fontSize: 15, color: COLORS.textLight, textAlign: 'center', marginBottom: 16 },

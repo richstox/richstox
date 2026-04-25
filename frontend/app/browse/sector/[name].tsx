@@ -89,7 +89,7 @@ export default function SectorDetailScreen() {
   }, [loadIndustries]);
 
   const handleIndustryPress = (industryName: string) => {
-    router.push({ pathname: '/browse/industry/[name]', params: { name: industryName } });
+    router.push({ pathname: '/browse/industry/[name]', params: { name: industryName, sector: name } });
   };
 
   return (

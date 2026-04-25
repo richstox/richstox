@@ -2803,12 +2803,19 @@ async def browse_sector_industries(sector_name: str):
 
 
 @api_router.get("/v1/browse/industries/{industry_name:path}")
-async def browse_industry_companies(industry_name: str):
+async def browse_industry_companies(
+    industry_name: str,
+    sector: Optional[str] = Query(None, description="Filter companies to a specific sector"),
+):
     """
     Return companies in an industry with Performance and Fundamentals data.
 
+    Optional ?sector= query param narrows results to companies that belong to
+    both the given industry AND the given sector (the normal navigation path is
+    Sectors → Sector detail → Industry detail, so the sector is always known).
+
     Performance data per company:
-      market_cap, return_1y (%), max_drawdown_1y (%)
+      market_cap, return_1y (%), max_drawdown_1y (drawdown from 1-year high, %)
 
     Fundamentals data per company:
       market_cap, pe_ratio, div_yield (%)
@@ -2820,23 +2827,31 @@ async def browse_industry_companies(industry_name: str):
     from whitelist_service import _build_full_logo_url
 
     industry_name = unquote(industry_name)
+    if sector:
+        sector = unquote(sector)
+
+    ticker_filter: dict = {"is_visible": True, "industry": industry_name}
+    if sector:
+        ticker_filter["sector"] = sector
 
     tickers_in_industry = await db.tracked_tickers.find(
-        {"is_visible": True, "industry": industry_name},
+        ticker_filter,
         {"_id": 0, "ticker": 1, "name": 1, "sector": 1, "shares_outstanding": 1},
     ).to_list(length=None)
 
     if not tickers_in_industry:
         raise HTTPException(404, f"Industry '{industry_name}' not found or has no data")
 
-    sector_name = next(
+    sector_name = sector or next(
         (t.get("sector") for t in tickers_in_industry if t.get("sector")), None
     )
     ticker_list = [t["ticker"] for t in tickers_in_industry]
 
-    # ── 1. 1-year price history for return + max drawdown ──────────────────
-    # Use 370 days (5 extra) as the lookback window to absorb weekends / holidays
-    # that might push the oldest data point slightly past 365 calendar days.
+    # ── 1. 1-year price stats for return + drawdown from 1-year high ────────
+    # Use 370 days (5 extra) to absorb weekends / holidays.
+    # We only need first price, last price, and the 1-year high (max) — we do NOT
+    # push the entire price series, which would load thousands of values into memory
+    # for large industries and cause unnecessary latency.
     one_year_ago = (datetime.now(timezone.utc) - timedelta(days=370)).strftime("%Y-%m-%d")
     price_hist_map: dict = {}
     async for doc in db.stock_prices.aggregate([
@@ -2846,13 +2861,13 @@ async def browse_industry_companies(industry_name: str):
             "_id": "$ticker",
             "first_price": {"$first": "$adjusted_close"},
             "last_price": {"$last": "$adjusted_close"},
-            "prices": {"$push": "$adjusted_close"},
+            "max_price": {"$max": "$adjusted_close"},
         }},
     ]):
         price_hist_map[doc["_id"]] = {
             "first_price": doc.get("first_price"),
             "last_price": doc.get("last_price"),
-            "prices": doc.get("prices", []),
+            "max_price": doc.get("max_price"),
         }
 
     # ── 2. Logos ────────────────────────────────────────────────────────────
@@ -2904,7 +2919,7 @@ async def browse_industry_companies(industry_name: str):
         ph = price_hist_map.get(ticker_full, {})
         last_price = float(ph.get("last_price") or 0)
         first_price = float(ph.get("first_price") or 0)
-        prices_list = ph.get("prices", [])
+        max_price = float(ph.get("max_price") or 0)
 
         market_cap = shares * last_price if shares and last_price else None
 
@@ -2912,18 +2927,10 @@ async def browse_industry_companies(industry_name: str):
         if first_price > 0 and last_price > 0:
             return_1y = round(((last_price - first_price) / first_price) * 100, 1)
 
+        # Drawdown from 1-year high to current price
         max_drawdown_1y: float | None = None
-        if len(prices_list) > 1:
-            peak = prices_list[0]
-            max_dd = 0.0
-            for p in prices_list:
-                if p > peak:
-                    peak = p
-                if peak > 0:
-                    dd = ((peak - p) / peak) * 100
-                    if dd > max_dd:
-                        max_dd = dd
-            max_drawdown_1y = round(-max_dd, 1) if max_dd > 0 else 0.0
+        if max_price > 0 and last_price > 0:
+            max_drawdown_1y = round(((last_price - max_price) / max_price) * 100, 1)
 
         eps_ttm = eps_map.get(ticker_full)
         pe_ratio: float | None = None
