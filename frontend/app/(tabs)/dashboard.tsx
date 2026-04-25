@@ -628,11 +628,13 @@ export default function Dashboard() {
     return COMPANY_COLORS[ticker] || '#6B7280';
   };
 
+  const firstName = user?.name ? user.name.split(' ')[0] : null;
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       {/* Global Header with Avatar Menu — always visible immediately */}
       <AppHeader
-        title="Home"
+        title={firstName ? `Welcome, ${firstName}` : 'Welcome'}
         onNotificationPress={openNotifications}
         notificationCount={notificationCount}
       />
@@ -643,11 +645,6 @@ export default function Dashboard() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
         showsVerticalScrollIndicator={false}
       >
-        {/* Welcome */}
-        <Text style={styles.welcomeText}>
-          Welcome back{user?.name ? `, ${user.name.split(' ')[0]}` : ''}
-        </Text>
-
         {/* ===== MY PERFORMANCE ===== */}
         <View style={styles.performanceCard} data-testid="my-performance">
           <View style={styles.performanceHeaderRow}>
@@ -1557,13 +1554,6 @@ const styles = StyleSheet.create({
 
   scroll: { flex: 1 },
   scrollContent: { padding: 16 },
-
-  welcomeText: {
-    fontSize: 22,
-    fontFamily: FONTS.heading,
-    color: COLORS.text,
-    marginBottom: 16,
-  },
 
   // Performance Card
   performanceCard: {

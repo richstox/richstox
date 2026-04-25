@@ -113,14 +113,6 @@ export default function AppHeader({
       {/* Right side: Search, Notifications, PRO badge, Avatar */}
       <View style={[styles.headerRight, { gap: sp.rowGap }]}>
         {rightAction}
-        <TouchableOpacity 
-          style={styles.headerIcon} 
-          onPress={() => router.push('/(tabs)/search?autofocus=true')}
-          testID="header-search-btn"
-        >
-          <Ionicons name="search-outline" size={22} color={COLORS.text} />
-        </TouchableOpacity>
-        
         {onNotificationPress ? (
           <TouchableOpacity 
             style={styles.headerIcon} 
