@@ -701,7 +701,6 @@ export default function StockDetail() {
   const [listActionLoading, setListActionLoading] = useState(false);
   const [tracklistIsFull, setTracklistIsFull] = useState(false);
   const [addToVisible, setAddToVisible] = useState(false);
-  const membershipCount = Number(listMemberships.watchlist) + Number(listMemberships.tracklist);
   
   // Company details accordion state
   const [companyDetailsExpanded, setCompanyDetailsExpanded] = useState(false);
@@ -1094,8 +1093,9 @@ export default function StockDetail() {
     }
     if (target === 'watchlist' && listMemberships.tracklist) return;
     if (target === 'tracklist' && listMemberships.watchlist) return;
-    if (target === 'tracklist' && !listMemberships.tracklist && tracklistIsFull) {
-      dialog.alert('Tracklist is full', 'Tracklist is full (7). Manage it on the Tracklist page.');
+    if (target === 'tracklist') {
+      setAddToVisible(false);
+      router.push({ pathname: '/(tabs)/tracklist', params: { candidate: ticker } });
       return;
     }
     setListActionLoading(true);
@@ -1107,10 +1107,6 @@ export default function StockDetail() {
         });
       } else if (target === 'watchlist') {
         await axios.post(`${API_URL}/api/v1/watchlist/${ticker}`, {}, {
-          headers: authHeaders,
-        });
-      } else {
-        await axios.post(`${API_URL}/api/v1/tracklist/add/${ticker}`, {}, {
           headers: authHeaders,
         });
       }
@@ -2603,7 +2599,11 @@ export default function StockDetail() {
               >
                 <Ionicons name="add" size={16} color={COLORS.text} />
                 <Text style={styles.addToButtonText}>
-                  {membershipCount > 0 ? `In ${membershipCount} list${membershipCount > 1 ? 's' : ''}` : 'Add to'}
+                  {listMemberships.watchlist
+                    ? 'In Watchlist'
+                    : listMemberships.tracklist
+                      ? 'In Tracklist'
+                      : 'Add to'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -4883,7 +4883,7 @@ export default function StockDetail() {
                 <Text style={styles.addToSheetItemText}>
                   {listMemberships.tracklist
                     ? 'Unavailable while this stock is in your Tracklist.'
-                    : 'Just keep an eye on it — no performance tracking.'}
+                    : 'Starts tracking from the next close and appears in My Stocks.'}
                 </Text>
               </View>
               {listMemberships.watchlist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}
@@ -4892,11 +4892,11 @@ export default function StockDetail() {
             <TouchableOpacity
               style={[
                 styles.addToSheetItem,
-                (listMemberships.watchlist || (tracklistIsFull && !listMemberships.tracklist)) && styles.addToSheetItemDisabled,
+                listMemberships.watchlist && styles.addToSheetItemDisabled,
                 listMemberships.tracklist && styles.addToSheetItemActive,
               ]}
               onPress={() => handleAddTo('tracklist')}
-              disabled={listActionLoading || listMemberships.watchlist || (tracklistIsFull && !listMemberships.tracklist) || listMemberships.tracklist}
+              disabled={listActionLoading || listMemberships.watchlist || listMemberships.tracklist}
             >
               <View style={styles.addToSheetIcon}>
                 <Ionicons name="analytics-outline" size={18} color={COLORS.primary} />
@@ -4905,16 +4905,29 @@ export default function StockDetail() {
                 <Text style={styles.addToSheetItemTitle}>Tracklist</Text>
                 <Text style={styles.addToSheetItemText}>
                   {listMemberships.tracklist
-                    ? 'Already managed in your Tracklist. Use Replace on the Tracklist page.'
+                    ? 'Already managed in your Tracklist.'
                     : listMemberships.watchlist
                       ? 'Unavailable while this stock is in your Watchlist.'
                       : tracklistIsFull
-                        ? 'Tracklist is full (7). Manage replacements on the Tracklist page.'
-                        : 'Track performance from the day you add it.'}
+                        ? 'Open Tracklist settings to replace one of your 7 names.'
+                        : 'Open Tracklist setup and lock this stock into your 7-name basket.'}
                 </Text>
               </View>
               {listMemberships.tracklist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}
             </TouchableOpacity>
+
+            <View style={[styles.addToSheetItem, styles.addToSheetItemDisabled]}>
+              <View style={styles.addToSheetIcon}>
+                <Ionicons name="briefcase-outline" size={18} color={COLORS.textMuted} />
+              </View>
+              <View style={styles.addToSheetTextWrap}>
+                <Text style={styles.addToSheetItemTitle}>Portfolio</Text>
+                <Text style={styles.addToSheetItemText}>Soon.</Text>
+              </View>
+              <View style={styles.addToSoonBadge}>
+                <Text style={styles.addToSoonBadgeText}>Soon</Text>
+              </View>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
@@ -6036,6 +6049,17 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     color: COLORS.textLight,
     marginTop: 2,
+  },
+  addToSoonBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: '#FEF3C7',
+  },
+  addToSoonBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B45309',
   },
   periodSelectorHandle: {
     width: 40,

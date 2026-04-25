@@ -48,7 +48,7 @@ def test_search_includes_tracklist_memberships():
     assert results[1]['memberships'] == ['tracklist']
 
 
-def test_search_includes_both_memberships_when_overlap_exists():
+def test_search_prefers_tracklist_when_overlap_exists():
     from whitelist_service import search_whitelist
 
     tracked_docs = [
@@ -63,7 +63,7 @@ def test_search_includes_both_memberships_when_overlap_exists():
         tracklist_tickers={'AAPL'},
     ))
 
-    assert results[0]['memberships'] == ['watchlist', 'tracklist']
+    assert results[0]['memberships'] == ['tracklist']
 
 
 def test_server_declares_tracklist_endpoints():
@@ -71,6 +71,6 @@ def test_server_declares_tracklist_endpoints():
     with open(server_path, 'r', encoding='utf-8') as handle:
         content = handle.read()
 
-    assert '/v1/tracklist/add/{ticker}' in content
+    assert '/v1/tracklist/draft/{ticker}' in content
     assert '/v1/tracklist/replace' in content
-    assert 'Manage replacements on the Tracklist page.' in content
+    assert 'Tracklist replacements are available after you complete the 7-stock setup.' in content

@@ -174,14 +174,14 @@ export default function TickerDetail() {
           </View>
         )}
 
-        {/* Add to Portfolio Button */}
+        {/* Open canonical stock detail */}
         <TouchableOpacity
           style={styles.addButton}
-          onPress={() => router.push('/add-position')}
+          onPress={() => router.push(`/stock/${ticker}`)}
           activeOpacity={0.8}
         >
-          <Ionicons name="add" size={20} color="#FFFFFF" />
-          <Text style={styles.addButtonText}>Add to Portfolio</Text>
+          <Ionicons name="open-outline" size={20} color="#FFFFFF" />
+          <Text style={styles.addButtonText}>Open stock detail</Text>
         </TouchableOpacity>
 
         {/* Calm Reminder */}

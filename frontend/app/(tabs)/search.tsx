@@ -116,7 +116,7 @@ export default function Search() {
         { old_ticker: oldTicker, new_ticker: item.ticker },
         { headers: authHeaders }
       );
-      router.replace('/(tabs)/portfolio');
+      router.replace('/(tabs)/tracklist');
     } catch (error: any) {
       console.error('Error replacing tracklist ticker:', error);
       dialog.alert('Replace failed', error?.response?.data?.detail || 'Please try again.');

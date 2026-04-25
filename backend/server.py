@@ -361,6 +361,13 @@ class TracklistReplaceRequest(BaseModel):
 
 # ========== MONGO READ HELPERS (replace runtime EODHD calls) ==========
 
+
+def _legacy_portfolio_disabled() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy Portfolio is disabled. Use Watchlist and Tracklist instead.",
+    )
+
 def _normalize_ticker(ticker: str) -> str:
     """Normalize ticker to the canonical DB format (e.g. 'AAPL' -> 'AAPL.US')."""
     t = ticker.upper().strip()
@@ -1339,99 +1346,19 @@ async def calculate_portfolio_value(
 
 @api_router.post("/portfolios")
 async def create_portfolio(request: Request, portfolio: PortfolioCreate):
-    """Create a new portfolio. Auth: UserAuthMiddleware (user_id from session)."""
-    user = request.state.user
-    portfolio_id = str(uuid.uuid4())
-    doc = {
-        "id": portfolio_id,
-        "name": portfolio.name,
-        "user_id": user["user_id"],
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
-    }
-    await db.portfolios.insert_one(doc)
-    return {"id": portfolio_id, "name": portfolio.name}
+    _legacy_portfolio_disabled()
 
 @api_router.get("/portfolios")
 async def list_portfolios(request: Request):
-    """List all portfolios for the authenticated user."""
-    user = request.state.user
-    portfolios = await db.portfolios.find(
-        {"user_id": user["user_id"]},
-        {"_id": 0}
-    ).to_list(100)
-    return {"count": len(portfolios), "portfolios": portfolios}
+    _legacy_portfolio_disabled()
 
 @api_router.get("/portfolios/{portfolio_id}")
 async def get_portfolio(portfolio_id: str, request: Request):
-    """Get portfolio with positions and live valuations. Scoped to authenticated user."""
-    user = request.state.user
-    portfolio = await db.portfolios.find_one(
-        {"id": portfolio_id, "user_id": user["user_id"]}, {"_id": 0}
-    )
-    if not portfolio:
-        raise HTTPException(404, "Portfolio not found")
-
-    positions = await db.positions.find(
-        {"portfolio_id": portfolio_id},
-        {"_id": 0}
-    ).to_list(100)
-
-    total_value = 0
-    total_cost = 0
-    enriched_positions = []
-
-    for pos in positions:
-        ticker = pos.get("ticker", "")
-        shares = pos.get("shares", 0)
-        buy_price = pos.get("buy_price", 0)
-
-        latest = await _get_latest_price_from_db(ticker)
-        current_price = (latest.get("adjusted_close") or latest.get("close", buy_price)) if latest else buy_price
-
-        market_value = shares * current_price
-        cost_basis = shares * buy_price
-        gain_loss = market_value - cost_basis
-        gain_loss_pct = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
-
-        total_value += market_value
-        total_cost += cost_basis
-
-        enriched_positions.append({
-            **pos,
-            "current_price": round(current_price, 2),
-            "market_value": round(market_value, 2),
-            "cost_basis": round(cost_basis, 2),
-            "gain_loss": round(gain_loss, 2),
-            "gain_loss_pct": round(gain_loss_pct, 2)
-        })
-
-    portfolio["positions"] = enriched_positions
-    portfolio["total_value"] = round(total_value, 2)
-    portfolio["total_cost"] = round(total_cost, 2)
-    portfolio["total_gain_loss"] = round(total_value - total_cost, 2)
-    portfolio["total_gain_loss_pct"] = round(((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0, 2)
-
-    return portfolio
+    _legacy_portfolio_disabled()
 
 @api_router.post("/positions")
 async def create_position(request: Request, position: PositionCreate):
-    """Add a position to a portfolio. Anti-enumeration: 404 if not owned."""
-    user = request.state.user
-    portfolio = await db.portfolios.find_one(
-        {"id": position.portfolio_id, "user_id": user["user_id"]}
-    )
-    if not portfolio:
-        raise HTTPException(404, "Portfolio not found")
-
-    position_id = str(uuid.uuid4())
-    doc = {
-        "id": position_id,
-        **position.dict(),
-        "created_at": datetime.utcnow()
-    }
-    await db.positions.insert_one(doc)
-    return {"id": position_id, "ticker": position.ticker}
+    _legacy_portfolio_disabled()
 
 
 # =============================================================================
@@ -1539,7 +1466,32 @@ async def _get_tracklist_doc_for_user(user_id: str) -> Optional[dict]:
 def _get_tracklist_positions(tracklist_doc: Optional[dict]) -> List[dict]:
     if not tracklist_doc:
         return []
-    return [p for p in tracklist_doc.get("positions", []) if p.get("ticker")]
+    positions = [p for p in tracklist_doc.get("positions", []) if p.get("ticker")]
+    return positions if len(positions) == 7 else []
+
+
+def _get_tracklist_draft_tickers(tracklist_doc: Optional[dict]) -> List[str]:
+    if not tracklist_doc:
+        return []
+    raw_draft = tracklist_doc.get("draft_tickers") or []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for ticker in raw_draft:
+        ticker_clean = _normalize_list_ticker(ticker)
+        if ticker_clean and ticker_clean not in seen:
+            seen.add(ticker_clean)
+            normalized.append(ticker_clean)
+    if normalized:
+        return normalized
+
+    raw_positions = [p for p in tracklist_doc.get("positions", []) if p.get("ticker")]
+    if 0 < len(raw_positions) < 7:
+        for pos in raw_positions:
+            ticker_clean = _normalize_list_ticker(pos.get("ticker", ""))
+            if ticker_clean and ticker_clean not in seen:
+                seen.add(ticker_clean)
+                normalized.append(ticker_clean)
+    return normalized
 
 
 async def _get_membership_state(user_id: str) -> dict:
@@ -1547,12 +1499,18 @@ async def _get_membership_state(user_id: str) -> dict:
     tracklist_doc = await _get_tracklist_doc_for_user(user_id)
     watchlist = {_normalize_list_ticker(doc.get("ticker", "")) for doc in watchlist_docs if doc.get("ticker")}
     tracklist_positions = _get_tracklist_positions(tracklist_doc)
-    tracklist = {_normalize_list_ticker(pos.get("ticker", "")) for pos in tracklist_positions if pos.get("ticker")}
+    tracklist_draft_tickers = _get_tracklist_draft_tickers(tracklist_doc)
+    tracklist = {
+        _normalize_list_ticker(pos.get("ticker", ""))
+        for pos in tracklist_positions
+        if pos.get("ticker")
+    } | set(tracklist_draft_tickers)
     return {
         "watchlist_docs": watchlist_docs,
         "watchlist": watchlist,
         "tracklist_doc": tracklist_doc,
         "tracklist_positions": tracklist_positions,
+        "tracklist_draft_tickers": tracklist_draft_tickers,
         "tracklist": tracklist,
         "tracklist_is_full": len(tracklist_positions) >= 7,
     }
@@ -1636,6 +1594,10 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         {"market": "US", "is_trading_day": True, "date": {"$gte": start_date, "$lte": end_date}},
         {"_id": 0, "date": 1},
     ).sort("date", 1).to_list(length=None)
+    benchmark_rows = await db.stock_prices.find(
+        {"ticker": SP500_TR_TICKER, "date": {"$gte": start_date, "$lte": end_date}},
+        {"_id": 0, "date": 1, "adjusted_close": 1, "close": 1},
+    ).sort("date", 1).to_list(length=None)
 
     trading_days = [row["date"] for row in trading_days_rows]
     price_map: Dict[str, List[tuple[str, float]]] = {}
@@ -1644,6 +1606,11 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         price = row.get("adjusted_close") or row.get("close")
         if ticker and price:
             price_map.setdefault(ticker, []).append((row["date"], float(price)))
+    benchmark_history = [
+        (row["date"], float(row.get("adjusted_close") or row.get("close")))
+        for row in benchmark_rows
+        if row.get("date") and (row.get("adjusted_close") or row.get("close"))
+    ]
 
     def _value_on_date(ticker: str, target_date: str, fallback_price: float) -> float:
         history = price_map.get(ticker, [])
@@ -1684,6 +1651,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         }
 
     initial_value = float(tracklist_doc.get("initial_capital") or 100000)
+    initial_date = usd_series[0]["date"]
     series_pct = [{
         "date": point["date"],
         "value": round(((point["value"] - initial_value) / initial_value) * 100, 2) if initial_value > 0 else 0,
@@ -1694,6 +1662,8 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
     max_drawdown = 0.0
     drawdown_duration = 0
     running_duration = 0
+    trough_index = 0
+    drawdown_peak_value = values[0]
     for value in values:
         if value >= peak:
             peak = value
@@ -1703,6 +1673,23 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             drawdown_duration = max(drawdown_duration, running_duration)
             if peak > 0:
                 max_drawdown = max(max_drawdown, ((peak - value) / peak) * 100)
+    peak_for_recovery = values[0]
+    for index, value in enumerate(values):
+        if value >= peak_for_recovery:
+            peak_for_recovery = value
+        elif peak_for_recovery > 0:
+            drawdown_pct = ((peak_for_recovery - value) / peak_for_recovery) * 100
+            if drawdown_pct >= max_drawdown:
+                max_drawdown = drawdown_pct
+                trough_index = index
+                drawdown_peak_value = peak_for_recovery
+
+    recovered_date = None
+    if max_drawdown > 0:
+        for index in range(trough_index + 1, len(values)):
+            if values[index] >= drawdown_peak_value:
+                recovered_date = usd_series[index]["date"]
+                break
 
     years = len(usd_series) / TRADING_DAYS_PER_YEAR
     end_value = values[-1]
@@ -1712,22 +1699,43 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
     risk_hist = initial_value - trough_value
     reward_hist = peak_value - initial_value
     reward_to_risk_ratio = round(reward_hist / risk_hist, 2) if risk_hist > 0 else None
+    benchmark_start = None
+    benchmark_end = None
+    for date_str, price in benchmark_history:
+        if date_str <= initial_date:
+            benchmark_start = price
+        benchmark_end = price
+    benchmark_total_pct = (
+        round(((benchmark_end - benchmark_start) / benchmark_start) * 100, 2)
+        if benchmark_start and benchmark_end and benchmark_start > 0
+        else None
+    )
+    total_profit_pct = round(((end_value - initial_value) / initial_value) * 100, 2) if initial_value > 0 else 0
+    vs_benchmark_pct = (
+        round(total_profit_pct - benchmark_total_pct, 2)
+        if benchmark_total_pct is not None
+        else None
+    )
 
     return {
         "ready": True,
         "mode": "USD",
-        "subtitle": "Based on your Tracklist (equal-weight, 7 stocks)",
+        "subtitle": "Based on your Tracklist (equal-weight)",
         "series_usd": usd_series,
         "series_pct": series_pct,
         "current_value": round(end_value, 2),
         "metrics": {
             "total_profit_usd": round(end_value - initial_value, 2),
-            "total_profit_pct": round(((end_value - initial_value) / initial_value) * 100, 2) if initial_value > 0 else 0,
+            "total_profit_pct": total_profit_pct,
             "avg_per_year_pct": round(avg_per_year, 2),
             "max_drawdown_pct": round(max_drawdown, 2),
             "duration_days": drawdown_duration,
             "rrr": reward_to_risk_ratio,
             "track_record_days": len(usd_series),
+            "recovered_date": recovered_date,
+            "benchmark_name": "S&P 500 TR",
+            "benchmark_total_pct": benchmark_total_pct,
+            "vs_benchmark_pct": vs_benchmark_pct,
         },
     }
 
@@ -1753,8 +1761,7 @@ async def check_if_followed(ticker: str, request: Request):
 
 @api_router.get("/v1/positions/check/{ticker}")
 async def check_if_followed_legacy(ticker: str, request: Request):
-    """Legacy alias for watchlist check."""
-    return await check_if_followed(ticker, request)
+    raise HTTPException(410, "Legacy Watchlist aliases are disabled. Use /api/v1/lists/check/{ticker}.")
 
 
 @api_router.post("/v1/watchlist/{ticker}")
@@ -1805,8 +1812,7 @@ async def follow_ticker(ticker: str, request: Request):
 
 @api_router.post("/v1/positions/follow/{ticker}")
 async def follow_ticker_legacy(ticker: str, request: Request):
-    """Legacy alias for watchlist follow."""
-    return await follow_ticker(ticker, request)
+    raise HTTPException(410, "Legacy Watchlist aliases are disabled. Use /api/v1/watchlist/{ticker}.")
 
 
 @api_router.delete("/v1/watchlist/{ticker}")
@@ -1826,8 +1832,7 @@ async def unfollow_ticker(ticker: str, request: Request):
 
 @api_router.delete("/v1/positions/unfollow/{ticker}")
 async def unfollow_ticker_legacy(ticker: str, request: Request):
-    """Legacy alias for watchlist unfollow."""
-    return await unfollow_ticker(ticker, request)
+    raise HTTPException(410, "Legacy Watchlist aliases are disabled. Use /api/v1/watchlist/{ticker}.")
 
 
 @api_router.get("/v1/watchlist")
@@ -1920,6 +1925,8 @@ async def get_list_membership(ticker: str, request: Request):
         "tracklist_is_full": state["tracklist_is_full"],
         "watchlist_count": len(state["watchlist"]),
         "tracklist_count": len(state["tracklist"]),
+        "tracklist_ready": state["tracklist_is_full"],
+        "tracklist_draft_count": len(state["tracklist_draft_tickers"]),
         "changes_apply_note": "Changes apply at next close.",
     }
 
@@ -1932,6 +1939,7 @@ async def get_tracklist(request: Request):
         "initial_capital": 100000,
         "positions": [],
         "events": [],
+        "draft_tickers": [],
     }
     performance = await _build_tracklist_performance(tracklist_doc)
     positions = []
@@ -1943,11 +1951,15 @@ async def get_tracklist(request: Request):
             "entry_date": pos.get("entry_date"),
             "shares": round(float(pos.get("shares") or 0), 6),
         })
+    draft_tickers = state["tracklist_draft_tickers"]
     return {
         "count": len(positions),
         "max_positions": 7,
         "is_full": len(positions) >= 7,
         "slots_remaining": max(0, 7 - len(positions)),
+        "ready": len(positions) >= 7,
+        "draft_tickers": draft_tickers,
+        "draft_count": len(draft_tickers),
         "positions": positions,
         "performance": performance,
         "changes_apply_note": "Changes apply at next close.",
@@ -1981,6 +1993,7 @@ async def setup_tracklist(payload: TracklistSetupRequest, request: Request):
     doc = {
         "user_id": user["user_id"],
         "initial_capital": 100000,
+        "draft_tickers": [],
         "positions": snapshot["positions"],
         "events": [{
             **snapshot,
@@ -1997,47 +2010,77 @@ async def setup_tracklist(payload: TracklistSetupRequest, request: Request):
     return {"status": "ok", "count": 7, "effective_close_date": effective_date, "message": "Changes apply at next close."}
 
 
-@api_router.post("/v1/tracklist/add/{ticker}")
-async def add_to_tracklist(ticker: str, request: Request):
+@api_router.post("/v1/tracklist/draft/{ticker}")
+async def add_tracklist_setup_ticker(ticker: str, request: Request):
     user = request.state.user
     ticker_clean = _normalize_list_ticker(ticker)
     state = await _get_membership_state(user["user_id"])
     if ticker_clean in state["watchlist"]:
         raise HTTPException(409, f"{ticker_clean} is already in your Watchlist")
-    if ticker_clean in state["tracklist"]:
-        return {"status": "already_in_tracklist", "ticker": ticker_clean}
     if state["tracklist_is_full"]:
-        raise HTTPException(409, "Your Tracklist has reached the 7-stock limit. Manage replacements on the Tracklist page.")
+        raise HTTPException(409, "Your Tracklist is already full. Manage replacements on the Tracklist page.")
+    if ticker_clean in state["tracklist"]:
+        return {"status": "already_queued", "ticker": ticker_clean, "draft_count": len(state["tracklist_draft_tickers"])}
 
     await _assert_visible_ticker(ticker_clean)
-    tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "positions": [], "events": []}
-    existing_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in state["tracklist_positions"]]
-    target_tickers = existing_tickers + [ticker_clean]
+    draft_tickers = list(state["tracklist_draft_tickers"])
+    target_tickers = draft_tickers + [ticker_clean]
+    if len(target_tickers) > 7:
+        raise HTTPException(409, "Tracklist setup requires exactly 7 unique tickers.")
+
     now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
     effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
+    tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "positions": [], "events": [], "draft_tickers": []}
     capital = float(tracklist_doc.get("initial_capital") or 100000)
-    if state["tracklist_positions"]:
-        capital = await _compute_tracklist_value(state["tracklist_positions"], effective_date)
-    snapshot = await _build_tracklist_snapshot(target_tickers, capital, effective_date, created_at=now_iso)
-    events = list(tracklist_doc.get("events", []))
-    events.append({
-        **snapshot,
-        "event_type": "add",
-        "added_ticker": ticker_clean,
-        "created_at": now_iso,
-    })
+
+    if len(target_tickers) == 7:
+        snapshot = await _build_tracklist_snapshot(target_tickers, capital, effective_date, created_at=now_iso)
+        events = list(tracklist_doc.get("events", []))
+        events.append({
+            **snapshot,
+            "event_type": "setup",
+            "created_at": now_iso,
+        })
+        await db.user_tracklists.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {
+                "user_id": user["user_id"],
+                "initial_capital": capital,
+                "draft_tickers": [],
+                "positions": snapshot["positions"],
+                "events": events,
+                "updated_at": now_iso,
+            }},
+            upsert=True,
+        )
+        return {
+            "status": "setup_complete",
+            "ticker": ticker_clean,
+            "count": 7,
+            "draft_count": 0,
+            "effective_close_date": effective_date,
+            "message": "Tracklist setup is complete. Changes apply at next close.",
+        }
+
     await db.user_tracklists.update_one(
         {"user_id": user["user_id"]},
         {"$set": {
             "user_id": user["user_id"],
-            "initial_capital": float(tracklist_doc.get("initial_capital") or 100000),
-            "positions": snapshot["positions"],
-            "events": events,
+            "initial_capital": capital,
+            "draft_tickers": target_tickers,
+            "positions": [],
+            "events": list(tracklist_doc.get("events", [])),
             "updated_at": now_iso,
         }},
         upsert=True,
     )
-    return {"status": "added", "ticker": ticker_clean, "count": len(snapshot["positions"]), "effective_close_date": effective_date, "message": "Changes apply at next close."}
+    return {
+        "status": "queued",
+        "ticker": ticker_clean,
+        "draft_count": len(target_tickers),
+        "slots_remaining": 7 - len(target_tickers),
+        "message": "Tracklist setup is saved. Add 7 stocks from ticker detail pages to activate performance.",
+    }
 
 
 @api_router.post("/v1/tracklist/replace")
@@ -2055,6 +2098,8 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
         raise HTTPException(409, f"{new_ticker} is already in your Tracklist")
     if new_ticker in state["watchlist"]:
         raise HTTPException(409, f"{new_ticker} is already in your Watchlist")
+    if not state["tracklist_is_full"]:
+        raise HTTPException(409, "Tracklist replacements are available after you complete the 7-stock setup.")
 
     await _assert_visible_ticker(new_ticker)
     existing_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in state["tracklist_positions"]]
@@ -2077,6 +2122,7 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
         {"$set": {
             "user_id": user["user_id"],
             "initial_capital": float(tracklist_doc.get("initial_capital") or 100000),
+            "draft_tickers": [],
             "positions": snapshot["positions"],
             "events": events,
             "updated_at": now_iso,
@@ -2129,11 +2175,7 @@ async def get_homepage_data(request: Request):
     }
     watchlist_tickers = set(watchlist_docs.keys())
     tracklist_positions = membership_state["tracklist_positions"]
-    tracklist_tickers = {
-        _normalize_list_ticker(pos.get("ticker", ""))
-        for pos in tracklist_positions
-        if pos.get("ticker")
-    }
+    tracklist_tickers = set(membership_state["tracklist"])
     all_tickers = watchlist_tickers | tracklist_tickers
 
     if all_tickers:

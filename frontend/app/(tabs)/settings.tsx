@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React from 'react';
 import {
   View,
   Text,
@@ -7,60 +7,39 @@ import {
   TouchableOpacity,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import axios from 'axios';
 import { COLORS } from '../_layout';
 import { useAuth } from '../../contexts/AuthContext';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import AppHeader from '../../components/AppHeader';
 import { useLayoutSpacing } from '../../constants/layout';
-import { API_URL } from '../../utils/config';
 
 export default function Settings() {
   const router = useRouter();
   const { isAdmin } = useAuth();
   const dialog = useAppDialog();
   const sp = useLayoutSpacing();
-  const [portfolioName, setPortfolioName] = useState('');
-
-  // Only load portfolio info when this screen is focused (not on boot)
-  useFocusEffect(
-    useCallback(() => {
-      loadPortfolioInfo();
-    }, [])
-  );
-
-  const loadPortfolioInfo = async () => {
-    try {
-      const portfolioId = await AsyncStorage.getItem('portfolioId');
-      if (portfolioId) {
-        const response = await axios.get(`${API_URL}/api/portfolios/${portfolioId}`);
-        setPortfolioName(response.data.name);
-      }
-    } catch (error) {
-      console.error('Error loading portfolio info:', error);
-    }
-  };
 
   const handleResetApp = async () => {
     const confirmed = await dialog.confirm(
       'Reset App',
-      'This will delete all your portfolio data and start fresh. This action cannot be undone.',
+      'This will clear local app state and restart onboarding. Your Watchlist and Tracklist stay managed from their dedicated flows.',
       { confirmLabel: 'Reset', confirmStyle: 'destructive' },
     );
     if (!confirmed) return;
+
     try {
-      const portfolioId = await AsyncStorage.getItem('portfolioId');
-      if (portfolioId) {
-        await axios.delete(`${API_URL}/api/portfolios/${portfolioId}`);
-      }
-      await AsyncStorage.clear();
+      await AsyncStorage.multiRemove([
+        'portfolioId',
+        'onboardingGoal',
+        'onboardingPortfolioName',
+        'onboardingPortfolioType',
+      ]);
       router.replace('/onboarding/step1');
     } catch (error) {
       console.error('Error resetting app:', error);
-      await AsyncStorage.clear();
       router.replace('/onboarding/step1');
     }
   };
@@ -73,30 +52,27 @@ export default function Settings() {
         contentContainerStyle={[styles.scrollContent, { padding: sp.pageGutter }]}
         showsVerticalScrollIndicator={false}
       >
-
-        {/* Portfolio Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Portfolio</Text>
+          <Text style={styles.sectionTitle}>Status</Text>
           <View style={styles.sectionCard}>
             <View style={styles.settingItem}>
               <View style={styles.settingLeft}>
-                <Ionicons name="briefcase-outline" size={22} color={COLORS.primary} />
+                <Ionicons name="briefcase-outline" size={22} color={COLORS.warning} />
                 <View style={styles.settingText}>
-                  <Text style={styles.settingLabel}>Current Portfolio</Text>
-                  <Text style={styles.settingValue}>{portfolioName || 'Not set'}</Text>
+                  <Text style={styles.settingLabel}>Portfolio</Text>
+                  <Text style={styles.settingValue}>Soon — available from the avatar menu only</Text>
                 </View>
               </View>
             </View>
           </View>
         </View>
 
-        {/* Admin Section - only shown for admins */}
         {isAdmin && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Administration</Text>
             <View style={styles.sectionCard}>
-              <TouchableOpacity 
-                style={styles.settingItem} 
+              <TouchableOpacity
+                style={styles.settingItem}
                 onPress={() => router.push('/(tabs)/admin' as any)}
                 activeOpacity={0.7}
                 data-testid="settings-admin-panel-btn"
@@ -111,7 +87,6 @@ export default function Settings() {
           </View>
         )}
 
-        {/* Legal Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Legal & Disclaimer</Text>
           <View style={styles.sectionCard}>
@@ -120,33 +95,11 @@ export default function Settings() {
               <Text style={styles.disclaimerTitle}>Educational Purpose Only</Text>
             </View>
             <Text style={styles.disclaimerText}>
-              RICHSTOX is an educational tool designed to help you track and understand your investment portfolio. This app:
-            </Text>
-            <View style={styles.disclaimerPoints}>
-              <View style={styles.disclaimerPoint}>
-                <Ionicons name="close-circle" size={16} color={COLORS.negative} />
-                <Text style={styles.disclaimerPointText}>Does NOT execute trades</Text>
-              </View>
-              <View style={styles.disclaimerPoint}>
-                <Ionicons name="close-circle" size={16} color={COLORS.negative} />
-                <Text style={styles.disclaimerPointText}>Does NOT provide financial advice</Text>
-              </View>
-              <View style={styles.disclaimerPoint}>
-                <Ionicons name="close-circle" size={16} color={COLORS.negative} />
-                <Text style={styles.disclaimerPointText}>Does NOT guarantee any returns</Text>
-              </View>
-              <View style={styles.disclaimerPoint}>
-                <Ionicons name="close-circle" size={16} color={COLORS.negative} />
-                <Text style={styles.disclaimerPointText}>Does NOT provide trading signals</Text>
-              </View>
-            </View>
-            <Text style={styles.disclaimerText}>
-              All investment decisions are solely your responsibility. Past performance does not guarantee future results. Always consult a qualified financial advisor before making investment decisions.
+              RICHSTOX is an educational tool designed to help you track and understand your investment process. It does not execute trades, provide financial advice, or guarantee returns.
             </Text>
           </View>
         </View>
 
-        {/* About Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>About</Text>
           <View style={styles.sectionCard}>
@@ -176,7 +129,6 @@ export default function Settings() {
           </View>
         </View>
 
-        {/* Danger Zone */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Data Management</Text>
           <View style={styles.sectionCard}>
@@ -187,20 +139,10 @@ export default function Settings() {
             >
               <View style={styles.settingLeft}>
                 <Ionicons name="trash-outline" size={22} color={COLORS.negative} />
-                <Text style={styles.dangerLabel}>Reset App & Delete Data</Text>
+                <Text style={styles.dangerLabel}>Reset App</Text>
               </View>
             </TouchableOpacity>
           </View>
-        </View>
-
-        {/* Footer */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            Made with patience for long-term investors
-          </Text>
-          <Text style={styles.footerQuote}>
-            "Nothing to do today is success."
-          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -216,30 +158,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: 16,
     paddingBottom: 48,
-  },
-  appHeader: {
-    alignItems: 'center',
-    paddingVertical: 24,
-    marginBottom: 8,
-  },
-  appName: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: COLORS.text,
-    letterSpacing: 3,
-  },
-  appTagline: {
-    fontSize: 14,
-    color: COLORS.textLight,
-    marginTop: 4,
-    fontStyle: 'italic',
-  },
-  appVersion: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-    marginTop: 8,
   },
   section: {
     marginBottom: 24,
@@ -258,85 +177,62 @@ const styles = StyleSheet.create({
   },
   settingItem: {
     flexDirection: 'row',
-    alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 16,
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 16,
   },
   settingLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
+    flex: 1,
   },
-  settingText: {},
+  settingText: {
+    flex: 1,
+  },
   settingLabel: {
-    fontSize: 15,
+    fontSize: 16,
+    fontWeight: '600',
     color: COLORS.text,
   },
   settingValue: {
+    marginTop: 4,
     fontSize: 13,
-    color: COLORS.textMuted,
-    marginTop: 2,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: COLORS.border,
-    marginLeft: 50,
+    color: COLORS.textLight,
   },
   disclaimerBox: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    padding: 16,
-    paddingBottom: 8,
+    paddingHorizontal: 18,
+    paddingTop: 18,
   },
   disclaimerTitle: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '700',
     color: COLORS.text,
   },
   disclaimerText: {
+    paddingHorizontal: 18,
+    paddingTop: 12,
+    paddingBottom: 18,
     fontSize: 14,
+    lineHeight: 21,
     color: COLORS.textLight,
-    lineHeight: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
   },
-  disclaimerPoints: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    gap: 8,
-  },
-  disclaimerPoint: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  disclaimerPointText: {
-    fontSize: 14,
-    color: COLORS.textLight,
+  divider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginHorizontal: 18,
   },
   dangerItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
   },
   dangerLabel: {
-    fontSize: 15,
+    fontSize: 16,
+    fontWeight: '600',
     color: COLORS.negative,
-  },
-  footer: {
-    alignItems: 'center',
-    paddingVertical: 24,
-  },
-  footerText: {
-    fontSize: 12,
-    color: COLORS.textMuted,
-  },
-  footerQuote: {
-    fontSize: 14,
-    color: COLORS.textLight,
-    fontStyle: 'italic',
-    marginTop: 8,
   },
 });

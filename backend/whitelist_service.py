@@ -1237,10 +1237,10 @@ async def search_whitelist(
         if followed_tickers is not None:
             entry["is_following"] = ticker_code in followed_tickers
         memberships = []
-        if followed_tickers is not None and ticker_code in followed_tickers:
-            memberships.append("watchlist")
         if tracklist_tickers is not None and ticker_code in tracklist_tickers:
             memberships.append("tracklist")
+        elif followed_tickers is not None and ticker_code in followed_tickers:
+            memberships.append("watchlist")
         if memberships:
             entry["memberships"] = memberships
         formatted.append(entry)

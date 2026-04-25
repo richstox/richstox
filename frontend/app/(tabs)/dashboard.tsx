@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { LineChart } from 'react-native-gifted-charts';
 import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
 import { FONTS } from '../_layout';
@@ -560,7 +561,13 @@ export default function Dashboard() {
   const performanceSeries = performanceMode === 'USD'
     ? (tracklistPerformance?.series_usd || [])
     : (tracklistPerformance?.series_pct || []);
-  const miniChartSeries = performanceSeries.slice(-12);
+  const performanceWindow = performanceSeries.slice(-30);
+  const performanceChartData = performanceWindow.map((point: any, index: number) => ({
+    value: Number(point.value || 0),
+    label: index === 0 || index === performanceWindow.length - 1
+      ? String(point.date || '').slice(5)
+      : '',
+  }));
 
   // Get logo URL from stock data — backend now returns internal /api/logo/ paths
   const getLogoUrl = (stock: any): string | null => {
@@ -614,21 +621,29 @@ export default function Dashboard() {
           <View style={styles.performanceHeaderRow}>
             <View>
               <Text style={[styles.sectionTitle, { color: '#FFF' }]}>My Tracklist performance</Text>
-              <Text style={styles.performanceSubtitle}>Based on your Tracklist (equal-weight, 7 stocks)</Text>
+              <Text style={styles.performanceSubtitle}>Based on your Tracklist (equal-weight)</Text>
             </View>
-            <View style={styles.performanceToggle}>
+            <View style={styles.performanceHeaderActions}>
               <TouchableOpacity
-                style={[styles.performanceToggleChip, performanceMode === '%' && styles.performanceToggleChipActive]}
-                onPress={() => setPerformanceMode('%')}
+                style={styles.performanceSettingsButton}
+                onPress={() => router.push('/(tabs)/tracklist')}
               >
-                <Text style={[styles.performanceToggleText, performanceMode === '%' && styles.performanceToggleTextActive]}>%</Text>
+                <Ionicons name="settings-outline" size={16} color="#FFFFFF" />
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.performanceToggleChip, performanceMode === 'USD' && styles.performanceToggleChipActive]}
-                onPress={() => setPerformanceMode('USD')}
-              >
-                <Text style={[styles.performanceToggleText, performanceMode === 'USD' && styles.performanceToggleTextActive]}>USD</Text>
-              </TouchableOpacity>
+              <View style={styles.performanceToggle}>
+                <TouchableOpacity
+                  style={[styles.performanceToggleChip, performanceMode === '%' && styles.performanceToggleChipActive]}
+                  onPress={() => setPerformanceMode('%')}
+                >
+                  <Text style={[styles.performanceToggleText, performanceMode === '%' && styles.performanceToggleTextActive]}>%</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.performanceToggleChip, performanceMode === 'USD' && styles.performanceToggleChipActive]}
+                  onPress={() => setPerformanceMode('USD')}
+                >
+                  <Text style={[styles.performanceToggleText, performanceMode === 'USD' && styles.performanceToggleTextActive]}>USD</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
 
@@ -643,7 +658,7 @@ export default function Dashboard() {
             <>
               <View style={styles.performanceMetricsGrid}>
                 <View style={styles.performanceMetricCard}>
-                  <Text style={styles.metricLabel}>Total Profit</Text>
+                  <Text style={styles.metricLabel}>Reward</Text>
                   <Text style={[styles.metricValue, (performanceMetrics.total_profit_pct || 0) >= 0 ? styles.positive : styles.negative]}>
                     {performanceMode === 'USD'
                       ? `${performanceMetrics.total_profit_usd >= 0 ? '+' : '-'}$${Math.abs(performanceMetrics.total_profit_usd).toFixed(2)}`
@@ -655,7 +670,7 @@ export default function Dashboard() {
                   <Text style={styles.metricValue}>{formatPercent(performanceMetrics.avg_per_year_pct)}</Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
-                  <Text style={styles.metricLabel}>Max Drawdown</Text>
+                  <Text style={styles.metricLabel}>Risk</Text>
                   <Text style={[styles.metricValue, styles.negative]}>{formatDrawdown(performanceMetrics.max_drawdown_pct)}</Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
@@ -663,29 +678,56 @@ export default function Dashboard() {
                   <Text style={styles.metricValue}>{performanceMetrics.duration_days} days</Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
-                  <Text style={styles.metricLabel}>RRR</Text>
+                  <Text style={styles.metricLabel}>Reward / Risk</Text>
                   <Text style={styles.metricValue}>{performanceMetrics.rrr ?? '—'}</Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
-                  <Text style={styles.metricLabel}>Track Record</Text>
-                  <Text style={styles.metricValue}>{performanceMetrics.track_record_days} days</Text>
+                  <Text style={styles.metricLabel}>Recovered</Text>
+                  <Text style={styles.metricValue}>{performanceMetrics.recovered_date || 'Not yet'}</Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Index</Text>
+                  <Text style={styles.metricValue}>
+                    {performanceMetrics.benchmark_total_pct == null ? '—' : formatPercent(performanceMetrics.benchmark_total_pct)}
+                  </Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Vs. Index</Text>
+                  <Text style={[
+                    styles.metricValue,
+                    (performanceMetrics.vs_benchmark_pct || 0) >= 0 ? styles.positive : styles.negative,
+                  ]}>
+                    {performanceMetrics.vs_benchmark_pct == null ? '—' : formatPercent(performanceMetrics.vs_benchmark_pct)}
+                  </Text>
                 </View>
               </View>
 
-              <View style={styles.performanceBars}>
-                {miniChartSeries.map((point: any, index: number) => {
-                  const values = miniChartSeries.map((item: any) => item.value || 0);
-                  const maxValue = Math.max(...values);
-                  const minValue = Math.min(...values);
-                  const range = maxValue === minValue ? 1 : maxValue - minValue;
-                  const normalized = ((point.value || 0) - minValue) / range;
-                  return (
-                    <View key={`${point.date}-${index}`} style={styles.performanceBarColumn}>
-                      <View style={[styles.performanceBar, { height: 28 + normalized * 76 }]} />
-                    </View>
-                  );
-                })}
-              </View>
+              {performanceChartData.length > 1 ? (
+                <View style={styles.performanceChartCard}>
+                  <LineChart
+                    data={performanceChartData}
+                    width={300}
+                    height={180}
+                    spacing={Math.max(8, Math.floor(260 / Math.max(performanceChartData.length - 1, 1)))}
+                    initialSpacing={0}
+                    endSpacing={0}
+                    color="#FFFFFF"
+                    thickness={2}
+                    hideDataPoints
+                    curved
+                    areaChart
+                    startFillColor="#FFFFFF"
+                    endFillColor="#FFFFFF"
+                    startOpacity={0.18}
+                    endOpacity={0.02}
+                    hideYAxisText
+                    yAxisColor="transparent"
+                    xAxisColor="rgba(255,255,255,0.15)"
+                    xAxisLabelTextStyle={{ color: 'rgba(255,255,255,0.7)', fontSize: 10 }}
+                    rulesColor="rgba(255,255,255,0.08)"
+                  />
+                </View>
+              ) : null}
             </>
           )}
         </View>
@@ -698,7 +740,7 @@ export default function Dashboard() {
               <Text style={styles.sectionTitle}>My Stocks {loading ? '' : `(${filteredStocks.length})`}</Text>
             </View>
             <View style={styles.titleRightControls}>
-              <TouchableOpacity style={styles.membershipPill} onPress={() => router.push('/(tabs)/portfolio')}>
+              <TouchableOpacity style={styles.membershipPill} onPress={() => router.push('/(tabs)/tracklist')}>
                 <Text style={styles.membershipPillText}>Tracklist ({data?.tracklist_count || 0})</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.membershipPill}>
@@ -1492,6 +1534,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
+  performanceHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  performanceSettingsButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
   performanceToggle: {
     flexDirection: 'row',
     alignSelf: 'flex-start',
@@ -1541,6 +1596,13 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     color: 'rgba(255,255,255,0.72)',
+  },
+  performanceChartCard: {
+    marginTop: 16,
+    paddingTop: 12,
+    paddingHorizontal: 6,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.08)',
   },
   performanceBars: {
     flexDirection: 'row',
