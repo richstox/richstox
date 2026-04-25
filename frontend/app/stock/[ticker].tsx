@@ -1087,8 +1087,14 @@ export default function StockDetail() {
     if (listActionLoading || !sessionToken) {
       return;
     }
-    if (target === 'watchlist' && listMemberships.tracklist) return;
-    if (target === 'tracklist' && listMemberships.watchlist) return;
+    if (target === 'watchlist' && listMemberships.tracklist) {
+      dialog.alert('Unavailable', `${ticker} is already in your Tracklist.`);
+      return;
+    }
+    if (target === 'tracklist' && listMemberships.watchlist) {
+      dialog.alert('Unavailable', `${ticker} is already in your Watchlist.`);
+      return;
+    }
     if (target === 'tracklist') {
       setAddToVisible(false);
       router.push({ pathname: '/(tabs)/tracklist', params: { candidate: ticker, manage: '1' } });

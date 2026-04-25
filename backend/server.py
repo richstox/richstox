@@ -111,6 +111,9 @@ SP500_TICKER = "GSPC.INDX"  # S&P 500 Index
 SP500_TR_TICKER = "SP500TR.INDX"  # S&P 500 Total Return Index
 TRADING_DAYS_PER_YEAR = 252
 MAGNIFICENT_SEVEN = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+# Backfill the seeded admin account to an early deterministic start date so demo/admin
+# Tracklist performance has a stable historical window even if the legacy user document
+# was created before `users.created_at` started being persisted consistently.
 ADMIN_TRACKLIST_FALLBACK_CREATED_AT = datetime(2024, 1, 2, tzinfo=timezone.utc)
 
 # Logging
