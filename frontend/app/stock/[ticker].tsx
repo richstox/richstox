@@ -2585,9 +2585,12 @@ export default function StockDetail() {
         {price && (
           <View style={styles.priceCard}>
             <View style={styles.lastCloseHeader}>
-              <View style={styles.lastCloseTitleRow}>
-                <Ionicons name="time-outline" size={18} color={COLORS.primary} />
-                <Text style={styles.lastCloseTitle}>Last close</Text>
+              <View style={styles.lastCloseMeta}>
+                <View style={styles.lastCloseTitleRow}>
+                  <Ionicons name="time-outline" size={18} color={COLORS.primary} />
+                  <Text style={styles.lastCloseTitle}>Last Close</Text>
+                </View>
+                <Text style={styles.priceDate}>as of {formatDateDMY(price.date)}</Text>
               </View>
               <TouchableOpacity
                 style={[styles.addToButton, (listMemberships.watchlist || listMemberships.tracklist) && styles.addToButtonActive]}
@@ -2604,8 +2607,8 @@ export default function StockDetail() {
               </TouchableOpacity>
             </View>
             <View style={styles.priceRow}>
-              <Text style={styles.priceValue}>{formatCurrency(price.last_close)}</Text>
-              <View style={styles.lastCloseChangeRow}>
+              <View style={styles.priceValueRow}>
+                <Text style={styles.priceValue}>{formatCurrency(price.last_close)}</Text>
                 <View style={[
                   styles.changeChip,
                   (price.change_pct || 0) >= 0 ? styles.positiveChip : styles.negativeChip
@@ -2622,13 +2625,8 @@ export default function StockDetail() {
                     {formatPercent(price.change_pct)}
                   </Text>
                 </View>
-                <Text style={(price.change || 0) >= 0 ? styles.lastCloseDeltaPositive : styles.lastCloseDeltaNegative}>
-                  {(price.change || 0) >= 0 ? '+' : ''}{formatCurrency(Math.abs(price.change || 0))}
-                </Text>
               </View>
             </View>
-            <Text style={styles.priceDate}>as of {formatDateDMY(price.date)}</Text>
-            <Text style={styles.lastCloseNote}>Changes apply at next close.</Text>
           </View>
         )}
 
@@ -5288,25 +5286,23 @@ const styles = StyleSheet.create({
   
   // Price Card - MORE COMPACT
   priceCard: { backgroundColor: COLORS.card, borderRadius: 12, padding: 12, marginBottom: 8 },  // Reduced padding and margin
-  lastCloseHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  lastCloseHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 },
+  lastCloseMeta: { gap: 4 },
   lastCloseTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   lastCloseTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   addToButton: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: '#F3F4F6' },
   addToButtonActive: { backgroundColor: '#E0E7FF' },
   addToButtonText: { fontSize: 13, fontWeight: '700', color: COLORS.text },
-  priceRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  priceRow: { flexDirection: 'row', alignItems: 'center' },
+  priceValueRow: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
   priceValue: { fontSize: 28, fontWeight: '700', color: COLORS.text },  // Slightly smaller
-  lastCloseChangeRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   changeChip: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, gap: 4 },
   positiveChip: { backgroundColor: '#D1FAE5' },
   negativeChip: { backgroundColor: '#FEE2E2' },
   changeText: { fontSize: 13, fontWeight: '600' },
   positiveText: { color: '#10B981' },
   negativeText: { color: '#EF4444' },
-  priceDate: { fontSize: 14, color: '#374151', lineHeight: 20, marginTop: 4 },
-  lastCloseDeltaPositive: { fontSize: 14, fontWeight: '700', color: '#10B981' },
-  lastCloseDeltaNegative: { fontSize: 14, fontWeight: '700', color: '#EF4444' },
-  lastCloseNote: { fontSize: 12, color: COLORS.textMuted, marginTop: 6 },
+  priceDate: { fontSize: 14, color: '#374151', lineHeight: 20 },
   
   // Price Chart - MORE COMPACT
   chartCard: { backgroundColor: COLORS.card, borderRadius: 12, padding: 12, marginBottom: 8 },  // Reduced
