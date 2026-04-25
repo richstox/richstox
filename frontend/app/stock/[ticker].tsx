@@ -2628,223 +2628,6 @@ export default function StockDetail() {
           </View>
         )}
 
-        {/* ===== UNIFIED PERFORMANCE CHECK (Dynamic based on period) ===== */}
-        {/* P1 CRITICAL: Single source of truth - stats change with period selector */}
-        {mobileData?.period_stats && (
-          <View 
-            style={styles.perfCheckCard} 
-            data-testid="reality-check-card"
-          >
-            {/* Header row: title left, period badge right */}
-            <View style={styles.perfCheckHeaderRow}>
-              <View style={styles.perfCheckTitleRow}>
-                <Text style={styles.sectionIcon}>📊</Text>
-                <Text style={styles.sectionTitleBold}>Performance Check</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.perfCheckPeriodTouchable}
-                onPress={() => setPerfCheckPeriodVisible(true)}
-                accessibilityRole="button"
-                accessibilityLabel="Change performance period"
-              >
-                <Text style={styles.perfCheckPeriodBadge}>
-                  {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
-                </Text>
-                <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
-              </TouchableOpacity>
-            </View>
-            <Text style={styles.perfCheckDateRange}>
-              {formatDateDMY(mobileData.period_stats.start_date)} – {formatDateDMY(mobileData.period_stats.end_date)}
-            </Text>
-            
-            {/* Two sub-cards: Reward | Risk */}
-            <View style={styles.perfCheckColumns}>
-              {/* REWARD sub-card - GREEN */}
-              <View style={styles.perfCheckRewardCard}>
-                <TouchableOpacity
-                  style={styles.perfCheckCardHeader}
-                  onPress={() => showTooltip('perfCheckReward')}
-                  accessibilityRole="button"
-                >
-                  <Ionicons name="trending-up" size={18} color="#059669" />
-                  <Text style={styles.perfCheckRewardTitle}>REWARD</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                
-                {/* Total Profit */}
-                <TouchableOpacity
-                  style={styles.perfCheckMetricLabelRow}
-                  onPress={() => showTooltip('perfCheckTotalProfit')}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.perfCheckMetricLabel}>Total Profit</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                <Text style={[
-                  styles.perfCheckMetricValueLarge,
-                  mobileData.period_stats.profit_pct >= 0 ? styles.positiveText : styles.negativeText
-                ]}>
-                  {formatLargePercent(mobileData.period_stats.profit_pct)}
-                </Text>
-                
-                {/* Average per year (CAGR) */}
-                {mobileData.period_stats.cagr_pct !== null && (
-                  <View style={styles.perfCheckMetricRow}>
-                    <TouchableOpacity
-                      style={styles.perfCheckMetricLabelRow}
-                      onPress={() => showTooltip('perfCheckAvgPerYear')}
-                      accessibilityRole="button"
-                    >
-                      <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
-                      <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                    </TouchableOpacity>
-                    <View style={styles.perfCheckMetricInlineRow}>
-                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={14} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
-                      <Text style={[
-                        styles.perfCheckMetricValue, 
-                        mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
-                      ]}>
-                        {formatLargePercent(mobileData.period_stats.cagr_pct)}
-                      </Text>
-                    </View>
-                  </View>
-                )}
-                
-                {/* Reward / Risk (RRR) */}
-                {(() => {
-                  const rrr = computeRRR(chartData);
-                  if (rrr === null) return null;
-                  
-                  return (
-                    <View style={styles.perfCheckMetricRow} data-testid="rrr-performance-check">
-                      <TouchableOpacity
-                        style={styles.perfCheckMetricLabelRow}
-                        onPress={() => showTooltip('perfCheckRewardRisk')}
-                        accessibilityRole="button"
-                      >
-                        <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
-                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                      </TouchableOpacity>
-                      <View style={styles.perfCheckMetricInlineRow}>
-                        <Text style={[
-                          styles.perfCheckMetricValue,
-                          rrr > 2 ? styles.positiveText :
-                          rrr >= 1 ? styles.neutralText :
-                          styles.rrrNegativeText
-                        ]}>
-                          {formatRRR(rrr)}
-                        </Text>
-                      </View>
-                    </View>
-                  );
-                })()}
-              </View>
-              
-              {/* RISK sub-card - RED */}
-              <View style={styles.perfCheckRiskCard}>
-                <TouchableOpacity
-                  style={styles.perfCheckCardHeader}
-                  onPress={() => showTooltip('perfCheckRisk')}
-                  accessibilityRole="button"
-                >
-                  <Ionicons name="alert-circle" size={18} color="#DC2626" />
-                  <Text style={styles.perfCheckRiskTitle}>RISK</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                
-                {/* Max Drawdown */}
-                <TouchableOpacity
-                  style={styles.perfCheckMetricLabelRow}
-                  onPress={() => showTooltip('perfCheckMaxDrawdown')}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.perfCheckMetricLabel}>Max. Drawdown</Text>
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-                <Text style={[styles.perfCheckMetricValueLarge, styles.negativeText]}>
-                  {formatLargePercent(-Math.abs(mobileData.period_stats.max_drawdown_pct))}
-                </Text>
-                
-                {/* Drawdown details */}
-                {drawdownDetails && (
-                  <>
-                    <View style={styles.perfCheckMetricRow}>
-                      <TouchableOpacity
-                        style={styles.perfCheckMetricLabelRow}
-                        onPress={() => showTooltip('perfCheckDuration')}
-                        accessibilityRole="button"
-                      >
-                        <Text style={styles.perfCheckMetricLabel}>Duration</Text>
-                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                      </TouchableOpacity>
-                      <Text style={styles.perfCheckMetricValue}>
-                        {drawdownDetails.durationDays} days
-                      </Text>
-                    </View>
-                    <View style={styles.perfCheckMetricRow}>
-                      <TouchableOpacity
-                        style={styles.perfCheckMetricLabelRow}
-                        onPress={() => showTooltip('perfCheckRecovered')}
-                        accessibilityRole="button"
-                      >
-                        <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
-                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                      </TouchableOpacity>
-                      <Text style={styles.perfCheckMetricValue}>
-                        {drawdownDetails.recoveryDate 
-                          ? formatDateDMY(drawdownDetails.recoveryDate)
-                          : 'Not yet'}
-                      </Text>
-                    </View>
-                  </>
-                )}
-              </View>
-            </View>
-            
-            {/* INDEX BLOCK - Index comparison (stacked, readable) */}
-            <View style={styles.perfCheckIndexBlock}>
-              <View style={styles.perfCheckIndexTitleRow}>
-                <Text style={styles.perfCheckIndexTitle}>Index (S&P 500 TR)</Text>
-                <TouchableOpacity onPress={() => showTooltip('perfCheckIndex')} accessibilityRole="button">
-                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
-                </TouchableOpacity>
-              </View>
-              {mobileData.period_stats.benchmark_total_pct !== null && (
-                <Text style={styles.perfCheckIndexRow}>
-                  Total return:{' '}
-                  <Text style={styles.perfCheckIndexRowValue}>
-                    {mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}{toEU(mobileData.period_stats.benchmark_total_pct, 1)}%
-                  </Text>
-                </Text>
-              )}
-              {/* P0 FIX: Use backend's Wealth Gap calculation (outperformance_pct) */}
-              {(() => {
-                const wealthGap = mobileData.period_stats.outperformance_pct;
-                if (wealthGap === null || wealthGap === undefined) return null;
-                const deltaClamped = Math.max(wealthGap, -100);
-                const sign = deltaClamped >= 0 ? '+' : '';
-                return (
-                  <Text style={styles.perfCheckIndexRow}>
-                    {'Stock vs. index: '}
-                    <Text style={[
-                      styles.perfCheckIndexRowValue,
-                      deltaClamped > 0 ? styles.positiveText :
-                      deltaClamped < 0 ? styles.negativeText : null
-                    ]}>
-                      {sign}{toEU(deltaClamped, 1)}%
-                    </Text>
-                  </Text>
-                );
-              })()}
-            </View>
-            
-            {/* Footer disclaimer */}
-            <Text style={styles.perfCheckDisclaimer}>
-              Past returns do not guarantee future gains. Context only, not advice.
-            </Text>
-          </View>
-        )}
-
         {/* ===== VALUATION OVERVIEW (P1 UX: Collapsible with Pulse) ===== */}
         {mobileData?.valuation?.available && (
           <View style={[styles.sectionCard]} data-testid="valuation-card">
@@ -3291,6 +3074,34 @@ export default function StockDetail() {
                   if (p >= 1000) return `$${toEU(p / 1000, 1)}k`;
                   return `$${toEU(p, 0)}`;
                 };
+                const formatChartDate = (dateStr?: string) => formatDateDMY(dateStr);
+                const X_AXIS_DATE_LABEL_W = 72;
+                const X_AXIS_DATE_LABEL_GAP = 12;
+                const clampXAxisDateX = (x: number) => {
+                  const minX = paddingLeft + X_AXIS_DATE_LABEL_W / 2;
+                  const maxX = paddingLeft + graphW - X_AXIS_DATE_LABEL_W / 2;
+                  return Math.max(minX, Math.min(maxX, x));
+                };
+                const highDateLabel = formatChartDate(visibleChartData[highIdx]?.date);
+                const lowDateLabel = formatChartDate(visibleChartData[lowIdx]?.date);
+                let highDateX = clampXAxisDateX(highX);
+                let lowDateX = clampXAxisDateX(lowX);
+                let highDateY = chartH - 6;
+                let lowDateY = chartH - 6;
+                const xAxisDateTargetGap = X_AXIS_DATE_LABEL_W + X_AXIS_DATE_LABEL_GAP;
+                if (Math.abs(highDateX - lowDateX) < xAxisDateTargetGap) {
+                  const midpoint = (highDateX + lowDateX) / 2;
+                  const shift = xAxisDateTargetGap / 2;
+                  highDateX = clampXAxisDateX(highX >= lowX ? midpoint + shift : midpoint - shift);
+                  lowDateX = clampXAxisDateX(lowX <= highX ? midpoint - shift : midpoint + shift);
+                }
+                if (Math.abs(highDateX - lowDateX) < xAxisDateTargetGap) {
+                  if (lowX <= highX) {
+                    lowDateY -= 12;
+                  } else {
+                    highDateY -= 12;
+                  }
+                }
                 
                 // ===== Y-AXIS GRID: Compute ~4 evenly spaced horizontal grid lines =====
                 const yAxisTicks: { price: number; y: number; label: string }[] = (() => {
@@ -3449,12 +3260,26 @@ export default function StockDetail() {
                       {/* Price line */}
                       <Path d={pathD} stroke={lineColor} strokeWidth={2} fill="none" />
                       
-                      {/* High/Low markers */}
-                      <Circle cx={highX} cy={highY} r={5} fill="#10B981" />
-                      <Circle cx={lowX} cy={lowY} r={5} fill="#EF4444" />
-                      
-                      {/* Price labels as colored badges (green=HIGH, red=LOW, dark=PRICE) */}
-                      {chartLabels.map(label => {
+                       {/* High/Low markers */}
+                       <Circle cx={highX} cy={highY} r={5} fill="#10B981" />
+                       <Circle cx={lowX} cy={lowY} r={5} fill="#EF4444" />
+                       {highIdx !== lowIdx && (
+                         <>
+                           <Line x1={highX} y1={chartH - paddingBottom} x2={highX} y2={chartH - paddingBottom + 6}
+                             stroke="#10B981" strokeWidth={1} />
+                           <Line x1={lowX} y1={chartH - paddingBottom} x2={lowX} y2={chartH - paddingBottom + 6}
+                             stroke="#EF4444" strokeWidth={1} />
+                           <SvgText x={highDateX} y={highDateY} fontSize={10} fill="#10B981" fontWeight="600" textAnchor="middle">
+                             {highDateLabel}
+                           </SvgText>
+                           <SvgText x={lowDateX} y={lowDateY} fontSize={10} fill="#EF4444" fontWeight="600" textAnchor="middle">
+                             {lowDateLabel}
+                           </SvgText>
+                         </>
+                       )}
+                       
+                       {/* Price labels as colored badges (green=HIGH, red=LOW, dark=PRICE) */}
+                       {chartLabels.map(label => {
                         const badgeW = Math.max(label.text.length * BADGE_CHAR_W + BADGE_PAD_H * 2, 28);
                         const badgeX = paddingLeft - 3 - badgeW;
                         const badgeY = label.adjustedY - BADGE_H / 2;
@@ -3593,6 +3418,223 @@ export default function StockDetail() {
             </View>
           )}
         </View>
+
+        {/* ===== UNIFIED PERFORMANCE CHECK (Dynamic based on period) ===== */}
+        {/* P1 CRITICAL: Single source of truth - stats change with period selector */}
+        {mobileData?.period_stats && (
+          <View 
+            style={styles.perfCheckCard} 
+            data-testid="reality-check-card"
+          >
+            {/* Header row: title left, period badge right */}
+            <View style={styles.perfCheckHeaderRow}>
+              <View style={styles.perfCheckTitleRow}>
+                <Text style={styles.sectionIcon}>📊</Text>
+                <Text style={styles.sectionTitleBold}>Performance Check</Text>
+              </View>
+              <TouchableOpacity
+                style={styles.perfCheckPeriodTouchable}
+                onPress={() => setPerfCheckPeriodVisible(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Change performance period"
+              >
+                <Text style={styles.perfCheckPeriodBadge}>
+                  {priceRange === 'MAX' ? 'Full History' : `Past ${priceRange}`}
+                </Text>
+                <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.perfCheckDateRange}>
+              {formatDateDMY(mobileData.period_stats.start_date)} – {formatDateDMY(mobileData.period_stats.end_date)}
+            </Text>
+            
+            {/* Two sub-cards: Reward | Risk */}
+            <View style={styles.perfCheckColumns}>
+              {/* REWARD sub-card - GREEN */}
+              <View style={styles.perfCheckRewardCard}>
+                <TouchableOpacity
+                  style={styles.perfCheckCardHeader}
+                  onPress={() => showTooltip('perfCheckReward')}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="trending-up" size={18} color="#059669" />
+                  <Text style={styles.perfCheckRewardTitle}>REWARD</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                
+                {/* Total Profit */}
+                <TouchableOpacity
+                  style={styles.perfCheckMetricLabelRow}
+                  onPress={() => showTooltip('perfCheckTotalProfit')}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.perfCheckMetricLabel}>Total Profit</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                <Text style={[
+                  styles.perfCheckMetricValueLarge,
+                  mobileData.period_stats.profit_pct >= 0 ? styles.positiveText : styles.negativeText
+                ]}>
+                  {formatLargePercent(mobileData.period_stats.profit_pct)}
+                </Text>
+                
+                {/* Average per year (CAGR) */}
+                {mobileData.period_stats.cagr_pct !== null && (
+                  <View style={styles.perfCheckMetricRow}>
+                    <TouchableOpacity
+                      style={styles.perfCheckMetricLabelRow}
+                      onPress={() => showTooltip('perfCheckAvgPerYear')}
+                      accessibilityRole="button"
+                    >
+                      <Text style={styles.perfCheckMetricLabel}>Avg. per Year</Text>
+                      <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                    </TouchableOpacity>
+                    <View style={styles.perfCheckMetricInlineRow}>
+                      <Ionicons name={mobileData.period_stats.cagr_pct >= 0 ? "arrow-up-outline" : "arrow-down-outline"} size={14} color={mobileData.period_stats.cagr_pct >= 0 ? '#10B981' : '#EF4444'} />
+                      <Text style={[
+                        styles.perfCheckMetricValue, 
+                        mobileData.period_stats.cagr_pct >= 0 ? styles.positiveText : styles.negativeText
+                      ]}>
+                        {formatLargePercent(mobileData.period_stats.cagr_pct)}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+                
+                {/* Reward / Risk (RRR) */}
+                {(() => {
+                  const rrr = computeRRR(chartData);
+                  if (rrr === null) return null;
+                  
+                  return (
+                    <View style={styles.perfCheckMetricRow} data-testid="rrr-performance-check">
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckRewardRisk')}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.perfCheckMetricLabel}>Reward / Risk</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <View style={styles.perfCheckMetricInlineRow}>
+                        <Text style={[
+                          styles.perfCheckMetricValue,
+                          rrr > 2 ? styles.positiveText :
+                          rrr >= 1 ? styles.neutralText :
+                          styles.rrrNegativeText
+                        ]}>
+                          {formatRRR(rrr)}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })()}
+              </View>
+              
+              {/* RISK sub-card - RED */}
+              <View style={styles.perfCheckRiskCard}>
+                <TouchableOpacity
+                  style={styles.perfCheckCardHeader}
+                  onPress={() => showTooltip('perfCheckRisk')}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="alert-circle" size={18} color="#DC2626" />
+                  <Text style={styles.perfCheckRiskTitle}>RISK</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                
+                {/* Max Drawdown */}
+                <TouchableOpacity
+                  style={styles.perfCheckMetricLabelRow}
+                  onPress={() => showTooltip('perfCheckMaxDrawdown')}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.perfCheckMetricLabel}>Max. Drawdown</Text>
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+                <Text style={[styles.perfCheckMetricValueLarge, styles.negativeText]}>
+                  {formatLargePercent(-Math.abs(mobileData.period_stats.max_drawdown_pct))}
+                </Text>
+                
+                {/* Drawdown details */}
+                {drawdownDetails && (
+                  <>
+                    <View style={styles.perfCheckMetricRow}>
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckDuration')}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.perfCheckMetricLabel}>Duration</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <Text style={styles.perfCheckMetricValue}>
+                        {drawdownDetails.durationDays} days
+                      </Text>
+                    </View>
+                    <View style={styles.perfCheckMetricRow}>
+                      <TouchableOpacity
+                        style={styles.perfCheckMetricLabelRow}
+                        onPress={() => showTooltip('perfCheckRecovered')}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.perfCheckMetricLabel}>Recovered</Text>
+                        <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <Text style={styles.perfCheckMetricValue}>
+                        {drawdownDetails.recoveryDate 
+                          ? formatDateDMY(drawdownDetails.recoveryDate)
+                          : 'Not yet'}
+                      </Text>
+                    </View>
+                  </>
+                )}
+              </View>
+            </View>
+            
+            {/* INDEX BLOCK - Index comparison (stacked, readable) */}
+            <View style={styles.perfCheckIndexBlock}>
+              <View style={styles.perfCheckIndexTitleRow}>
+                <Text style={styles.perfCheckIndexTitle}>Index (S&P 500 TR)</Text>
+                <TouchableOpacity onPress={() => showTooltip('perfCheckIndex')} accessibilityRole="button">
+                  <Ionicons name="help-circle-outline" size={14} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              </View>
+              {mobileData.period_stats.benchmark_total_pct !== null && (
+                <Text style={styles.perfCheckIndexRow}>
+                  Total return:{' '}
+                  <Text style={styles.perfCheckIndexRowValue}>
+                    {mobileData.period_stats.benchmark_total_pct >= 0 ? '+' : ''}{toEU(mobileData.period_stats.benchmark_total_pct, 1)}%
+                  </Text>
+                </Text>
+              )}
+              {/* P0 FIX: Use backend's Wealth Gap calculation (outperformance_pct) */}
+              {(() => {
+                const wealthGap = mobileData.period_stats.outperformance_pct;
+                if (wealthGap === null || wealthGap === undefined) return null;
+                const deltaClamped = Math.max(wealthGap, -100);
+                const sign = deltaClamped >= 0 ? '+' : '';
+                return (
+                  <Text style={styles.perfCheckIndexRow}>
+                    {'Stock vs. index: '}
+                    <Text style={[
+                      styles.perfCheckIndexRowValue,
+                      deltaClamped > 0 ? styles.positiveText :
+                      deltaClamped < 0 ? styles.negativeText : null
+                    ]}>
+                      {sign}{toEU(deltaClamped, 1)}%
+                    </Text>
+                  </Text>
+                );
+              })()}
+            </View>
+            
+            {/* Footer disclaimer */}
+            <Text style={styles.perfCheckDisclaimer}>
+              Past returns do not guarantee future gains. Context only, not advice.
+            </Text>
+          </View>
+        )}
 
 
         {/* ===== SECTION 4: KEY METRICS (Hybrid 7) - Collapsed by default ===== */}
