@@ -32,7 +32,7 @@ describe('Tracklist UX regression', () => {
     expect(search).toContain("W / T badges show where each ticker already lives.");
     expect(search).not.toContain('star-toggle-');
     expect(search).not.toContain("/api/v1/watchlist/");
-    expect(search).toContain("memberships.includes('tracklist')");
+    expect(search).toContain('renderMembershipBadges');
     expect(search).not.toContain('/api/v1/tracklist/replace');
   });
 
