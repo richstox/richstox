@@ -699,7 +699,6 @@ export default function StockDetail() {
   
   const [listMemberships, setListMemberships] = useState<{ watchlist: boolean; tracklist: boolean }>({ watchlist: false, tracklist: false });
   const [listActionLoading, setListActionLoading] = useState(false);
-  const [tracklistIsFull, setTracklistIsFull] = useState(false);
   const [addToVisible, setAddToVisible] = useState(false);
   
   // Company details accordion state
@@ -1071,7 +1070,6 @@ export default function StockDetail() {
   const fetchListMemberships = useCallback(async () => {
     if (!sessionToken) {
       setListMemberships({ watchlist: false, tracklist: false });
-      setTracklistIsFull(false);
       return;
     }
     try {
@@ -1079,25 +1077,17 @@ export default function StockDetail() {
         headers: { Authorization: `Bearer ${sessionToken}` },
       });
       setListMemberships(response.data.memberships || { watchlist: false, tracklist: false });
-      setTracklistIsFull(response.data.tracklist_is_full || false);
     } catch (err) {
       console.error('Error checking list memberships:', err);
       setListMemberships({ watchlist: false, tracklist: false });
-      setTracklistIsFull(false);
     }
   }, [ticker, sessionToken]);
 
-  const handleAddTo = async (target: 'watchlist' | 'tracklist') => {
+  const handleAddTo = async (target: 'watchlist') => {
     if (listActionLoading || !sessionToken) {
       return;
     }
     if (target === 'watchlist' && listMemberships.tracklist) return;
-    if (target === 'tracklist' && listMemberships.watchlist) return;
-    if (target === 'tracklist') {
-      setAddToVisible(false);
-      router.push({ pathname: '/(tabs)/tracklist', params: { candidate: ticker } });
-      return;
-    }
     setListActionLoading(true);
     const authHeaders = { Authorization: `Bearer ${sessionToken}` };
     try {
@@ -4895,11 +4885,10 @@ export default function StockDetail() {
                 listMemberships.watchlist && styles.addToSheetItemDisabled,
                 listMemberships.tracklist && styles.addToSheetItemActive,
               ]}
-              onPress={() => handleAddTo('tracklist')}
-              disabled={listActionLoading || listMemberships.watchlist || listMemberships.tracklist}
+              disabled
             >
               <View style={styles.addToSheetIcon}>
-                <Ionicons name="analytics-outline" size={18} color={COLORS.primary} />
+                <Ionicons name="analytics-outline" size={18} color={COLORS.textMuted} />
               </View>
               <View style={styles.addToSheetTextWrap}>
                 <Text style={styles.addToSheetItemTitle}>Tracklist</Text>
@@ -4908,9 +4897,7 @@ export default function StockDetail() {
                     ? 'Already managed in your Tracklist.'
                     : listMemberships.watchlist
                       ? 'Unavailable while this stock is in your Watchlist.'
-                      : tracklistIsFull
-                        ? 'Open Tracklist settings to replace one of your 7 names.'
-                        : 'Open Tracklist setup and lock this stock into your 7-name basket.'}
+                      : 'Assigned automatically from your first login date.'}
                 </Text>
               </View>
               {listMemberships.tracklist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}

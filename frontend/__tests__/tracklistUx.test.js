@@ -27,12 +27,13 @@ describe('Tracklist UX regression', () => {
     expect(stockDetail).toContain('Changes apply at next close.');
   });
 
-  it('makes search passive and badge-driven outside replace mode', () => {
+  it('keeps search passive and badge-driven only', () => {
     expect(search).toContain("const MEMBERSHIP_LABELS");
     expect(search).toContain("W / T badges show where each ticker already lives.");
     expect(search).not.toContain('star-toggle-');
     expect(search).not.toContain("/api/v1/watchlist/");
     expect(search).toContain("memberships.includes('tracklist')");
+    expect(search).not.toContain('/api/v1/tracklist/replace');
   });
 
   it('shows tracklist performance on the homepage', () => {
@@ -41,6 +42,8 @@ describe('Tracklist UX regression', () => {
     expect(dashboard).toContain("setPerformanceMode('USD')");
     expect(dashboard).toContain('Reward / Risk');
     expect(dashboard).toContain('Vs. Index');
+    expect(dashboard).toContain('HIGH');
+    expect(dashboard).toContain('LOW');
   });
 
   it('hides portfolio and tracklist from bottom tabs while keeping dedicated screens', () => {
@@ -51,8 +54,8 @@ describe('Tracklist UX regression', () => {
     expect(appHeader).toContain('menu-portfolio');
     expect(appHeader).toContain('Soon');
     expect(tracklistPage).toContain('Your Tracklist');
-    expect(tracklistPage).toContain('Choose replacement');
-    expect(tracklistPage).toContain("mode: 'tracklist-replace'");
+    expect(tracklistPage).toContain('Magnificent 7 basket automatically');
+    expect(tracklistPage).toContain('Auto-assigned basket');
   });
 });
 

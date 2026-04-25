@@ -10,11 +10,10 @@ import {
   Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
-import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useSearchStore } from '../../stores/searchStore';
 import BrandedLoading from '../../components/BrandedLoading';
 import { useLayoutSpacing } from '../../constants/layout';
@@ -47,20 +46,14 @@ const getMembershipLabel = (membership: unknown): string => {
 
 export default function Search() {
   const router = useRouter();
-  const params = useLocalSearchParams();
   const inputRef = useRef<TextInput>(null);
   const { sessionToken } = useAuth();
-  const dialog = useAppDialog();
   const { query: storedQuery, results: storedResults, setSearch } = useSearchStore();
   const sp = useLayoutSpacing();
-
-  const replaceMode = params.mode === 'tracklist-replace';
-  const oldTicker = typeof params.oldTicker === 'string' ? params.oldTicker.toUpperCase() : '';
 
   const [searchQuery, setSearchQuery] = useState(storedQuery);
   const [results, setResults] = useState<any[]>(storedResults);
   const [loading, setLoading] = useState(false);
-  const [replacingTicker, setReplacingTicker] = useState<string | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -86,7 +79,7 @@ export default function Search() {
       });
       const searchResults = response.data.results || [];
       setResults(searchResults);
-      if (!replaceMode && searchResults.length > 0) {
+      if (searchResults.length > 0) {
         setSearch(searchQuery, searchResults);
       }
     } catch (error) {
@@ -94,7 +87,7 @@ export default function Search() {
     } finally {
       setLoading(false);
     }
-  }, [authHeaders, replaceMode, searchQuery, setSearch]);
+  }, [authHeaders, searchQuery, setSearch]);
 
   useEffect(() => {
     searchTickers();
@@ -102,29 +95,7 @@ export default function Search() {
 
   const handleTickerPress = async (item: any) => {
     Keyboard.dismiss();
-    if (!replaceMode) {
-      router.push(`/stock/${item.ticker}`);
-      return;
-    }
-
-    const memberships = Array.isArray(item.memberships) ? item.memberships : [];
-    const isDisabled = memberships.includes('tracklist') || memberships.includes('watchlist');
-    if (isDisabled || !oldTicker || replacingTicker) return;
-
-    setReplacingTicker(item.ticker);
-    try {
-      await axios.post(
-        `${API_URL}/api/v1/tracklist/replace`,
-        { old_ticker: oldTicker, new_ticker: item.ticker },
-        { headers: authHeaders }
-      );
-      router.replace('/(tabs)/tracklist');
-    } catch (error: any) {
-      console.error('Error replacing tracklist ticker:', error);
-      dialog.alert('Replace failed', error?.response?.data?.detail || 'Please try again.');
-    } finally {
-      setReplacingTicker(null);
-    }
+    router.push(`/stock/${item.ticker}`);
   };
 
   const renderMembershipBadges = (item: any) => {
@@ -150,10 +121,8 @@ export default function Search() {
           <Ionicons name="arrow-back" size={24} color={COLORS.text} />
         </TouchableOpacity>
         <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle}>{replaceMode ? 'Replace Tracklist stock' : 'Search Stocks'}</Text>
-          {replaceMode && oldTicker ? (
-            <Text style={styles.headerSubtitle}>Replace {oldTicker} with a new stock</Text>
-          ) : null}
+          <Text style={styles.headerTitle}>Search Stocks</Text>
+          <Text style={styles.headerSubtitle}>Passive search only — badges show list membership.</Text>
         </View>
         <View style={styles.headerPlaceholder} />
       </View>
@@ -201,23 +170,14 @@ export default function Search() {
           ListHeaderComponent={
             <View style={styles.resultsHeader}>
               <Text style={styles.resultsCount}>{results.length} result{results.length !== 1 ? 's' : ''}</Text>
-              {!replaceMode ? (
-                <Text style={styles.resultsHint}>W / T badges show where each ticker already lives.</Text>
-              ) : (
-                <Text style={styles.resultsHint}>Current Watchlist and Tracklist members are disabled here.</Text>
-              )}
+              <Text style={styles.resultsHint}>W / T badges show where each ticker already lives.</Text>
             </View>
           }
           renderItem={({ item }) => {
-            const memberships = Array.isArray(item.memberships) ? item.memberships : [];
-            const disabledForReplace = replaceMode && (memberships.includes('tracklist') || memberships.includes('watchlist'));
-            const isReplacing = replacingTicker === item.ticker;
-
             return (
               <TouchableOpacity
-                style={[styles.item, disabledForReplace && styles.itemDisabled]}
+                style={styles.item}
                 onPress={() => handleTickerPress(item)}
-                disabled={isReplacing}
               >
                 {item.logo ? (
                   <Image
@@ -235,23 +195,10 @@ export default function Search() {
                     {renderMembershipBadges(item)}
                   </View>
                   <Text style={styles.itemName} numberOfLines={1}>{item.name}</Text>
-                  {replaceMode && disabledForReplace ? (
-                    <Text style={styles.disabledHint}>Already used in one of your lists</Text>
-                  ) : null}
                 </View>
                 <View style={styles.itemRight}>
                   <Text style={styles.itemExchange}>{item.exchange}</Text>
-                  {replaceMode ? (
-                    isReplacing ? (
-                      <Text style={styles.itemAction}>Saving…</Text>
-                    ) : (
-                      <Text style={[styles.itemAction, disabledForReplace && styles.itemActionDisabled]}>
-                        {disabledForReplace ? 'Unavailable' : 'Replace'}
-                      </Text>
-                    )
-                  ) : (
-                    <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
-                  )}
+                  <Ionicons name="chevron-forward" size={20} color={COLORS.textMuted} />
                 </View>
               </TouchableOpacity>
             );

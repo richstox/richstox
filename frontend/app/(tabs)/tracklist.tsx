@@ -5,16 +5,14 @@ import {
   StyleSheet,
   ScrollView,
   RefreshControl,
-  TouchableOpacity,
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 import AppHeader from '../../components/AppHeader';
 import { useAuth } from '../../contexts/AuthContext';
-import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
 
@@ -31,20 +29,11 @@ const COLORS = {
 };
 
 export default function TracklistPage() {
-  const router = useRouter();
-  const params = useLocalSearchParams();
   const { sessionToken } = useAuth();
-  const dialog = useAppDialog();
   const sp = useLayoutSpacing();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [tracklistData, setTracklistData] = useState<any>(null);
-
-  const candidate = useMemo(
-    () => (typeof params.candidate === 'string' ? params.candidate.toUpperCase() : ''),
-    [params.candidate]
-  );
 
   const authHeaders = useMemo(
     () => (sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {}),
@@ -60,12 +49,11 @@ export default function TracklistPage() {
       setTracklistData(response.data);
     } catch (error) {
       console.error('Error fetching tracklist:', error);
-      dialog.alert('Tracklist unavailable', 'Please try again.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [authHeaders, dialog, sessionToken]);
+  }, [authHeaders, sessionToken]);
 
   useFocusEffect(
     useCallback(() => {
@@ -79,46 +67,9 @@ export default function TracklistPage() {
   };
 
   const positions = tracklistData?.positions || [];
-  const draftTickers = tracklistData?.draft_tickers || [];
-  const ready = Boolean(tracklistData?.ready);
-  const reservedTickers = new Set<string>([...draftTickers, ...positions.map((position: any) => position.ticker)]);
-  const candidateAlreadyUsed = candidate ? reservedTickers.has(candidate) : false;
-
-  const handleAddCandidateToSetup = async () => {
-    if (!candidate || candidateAlreadyUsed || submitting) return;
-    setSubmitting(true);
-    try {
-      await axios.post(`${API_URL}/api/v1/tracklist/draft/${candidate}`, {}, {
-        headers: authHeaders,
-      });
-      await fetchTracklist();
-      router.replace('/(tabs)/tracklist');
-    } catch (error: any) {
-      console.error('Error queueing tracklist ticker:', error);
-      dialog.alert('Tracklist setup failed', error?.response?.data?.detail || 'Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const handleReplaceCandidate = async (oldTicker: string) => {
-    if (!candidate || submitting) return;
-    setSubmitting(true);
-    try {
-      await axios.post(
-        `${API_URL}/api/v1/tracklist/replace`,
-        { old_ticker: oldTicker, new_ticker: candidate },
-        { headers: authHeaders }
-      );
-      await fetchTracklist();
-      router.replace('/(tabs)/tracklist');
-    } catch (error: any) {
-      console.error('Error replacing tracklist ticker:', error);
-      dialog.alert('Replace failed', error?.response?.data?.detail || 'Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const seededAt = tracklistData?.seeded_at;
+  const seedTickers = tracklistData?.seed_tickers || [];
+  const chart = tracklistData?.performance?.chart;
 
   if (loading) {
     return (
@@ -140,116 +91,49 @@ export default function TracklistPage() {
         <View style={styles.heroCard}>
           <View style={styles.heroTop}>
             <View style={styles.heroTextWrap}>
-              <Text style={styles.heroTitle}>{ready ? 'Your Tracklist' : 'Tracklist setup'}</Text>
+              <Text style={styles.heroTitle}>Your Tracklist</Text>
               <Text style={styles.heroSubtitle}>
-                {ready
-                  ? 'Exactly 7 stocks, equal-weight, and every replacement applies at the next close.'
-                  : 'Tracklist turns on only after you lock exactly 7 stocks. Add them from the Last close card on ticker detail pages.'}
+                Every customer gets the same Magnificent 7 basket automatically from the date of the first login. Search stays passive and only shows membership badges.
               </Text>
             </View>
             <View style={styles.countBadge}>
-              <Text style={styles.countBadgeText}>{ready ? `${positions.length}/7` : `${draftTickers.length}/7`}</Text>
+              <Text style={styles.countBadgeText}>{positions.length}/7</Text>
             </View>
           </View>
           <Text style={styles.heroHint}>{tracklistData?.changes_apply_note}</Text>
+          {seededAt ? (
+            <Text style={styles.seededMeta}>Started on {String(seededAt).slice(0, 10)}</Text>
+          ) : null}
         </View>
 
-        {candidate ? (
-          <View style={styles.candidateCard}>
-            <View style={styles.candidateHeader}>
-              <Ionicons name="sparkles-outline" size={18} color={COLORS.primary} />
-              <Text style={styles.candidateTitle}>Selected from ticker detail</Text>
-            </View>
-            <Text style={styles.candidateTicker}>{candidate}</Text>
-            <Text style={styles.candidateText}>
-              {candidateAlreadyUsed
-                ? `${candidate} is already reserved in your Tracklist flow.`
-                : ready
-                  ? `Choose which current Tracklist stock should be replaced by ${candidate}.`
-                  : `Add ${candidate} into your 7-stock Tracklist setup.`}
-            </Text>
-            {!ready && !candidateAlreadyUsed ? (
-              <TouchableOpacity
-                style={[styles.primaryButton, submitting && styles.primaryButtonDisabled]}
-                onPress={handleAddCandidateToSetup}
-                disabled={submitting}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {submitting ? 'Saving…' : `Add ${candidate} to Tracklist`}
-                </Text>
-              </TouchableOpacity>
-            ) : null}
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryHeader}>
+            <Ionicons name="calendar-outline" size={18} color={COLORS.primary} />
+            <Text style={styles.summaryTitle}>Auto-assigned basket</Text>
           </View>
-        ) : null}
+          <Text style={styles.summaryText}>
+            Seed: {seedTickers.join(', ')}
+          </Text>
+          {chart ? (
+            <Text style={styles.summaryText}>
+              Performance window: {chart.start_date} → {chart.end_date}
+            </Text>
+          ) : null}
+        </View>
 
-        {!ready ? (
-          <>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Setup queue</Text>
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>Tracked stocks</Text>
+        </View>
+
+        {positions.map((position: any, index: number) => (
+          <View key={position.ticker} style={styles.positionCard}>
+            <View>
+              <Text style={styles.positionTicker}>{position.ticker}</Text>
+              <Text style={styles.positionMeta}>Started {position.entry_date || position.added_at || '—'}</Text>
             </View>
-
-            {draftTickers.map((ticker: string, index: number) => (
-              <View key={ticker} style={styles.positionCard}>
-                <View>
-                  <Text style={styles.positionTicker}>{ticker}</Text>
-                  <Text style={styles.positionMeta}>Queued for the next Tracklist close snapshot</Text>
-                </View>
-                <Text style={styles.positionStep}>#{index + 1}</Text>
-              </View>
-            ))}
-
-            {Array.from({ length: Math.max(0, 7 - draftTickers.length) }).map((_, index) => (
-              <View key={`slot-${index}`} style={[styles.positionCard, styles.emptySlotCard]}>
-                <View>
-                  <Text style={styles.positionTicker}>Empty slot</Text>
-                  <Text style={styles.positionMeta}>Open a ticker detail page and use + Add to → Tracklist.</Text>
-                </View>
-              </View>
-            ))}
-          </>
-        ) : (
-          <>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Managed stocks</Text>
-            </View>
-
-            {positions.map((position: any) => {
-              const replaceDisabled = !candidate || candidate === position.ticker || candidateAlreadyUsed || submitting;
-              return (
-                <View key={position.ticker} style={styles.positionCard}>
-                  <View>
-                    <Text style={styles.positionTicker}>{position.ticker}</Text>
-                    <Text style={styles.positionMeta}>Added {position.added_at || '—'}</Text>
-                  </View>
-                  {candidate ? (
-                    <TouchableOpacity
-                      style={[styles.replaceButton, replaceDisabled && styles.replaceButtonDisabled]}
-                      onPress={() => handleReplaceCandidate(position.ticker)}
-                      disabled={replaceDisabled}
-                    >
-                      <Text style={[styles.replaceButtonText, replaceDisabled && styles.replaceButtonTextDisabled]}>
-                        {candidate === position.ticker
-                          ? 'Current'
-                          : candidateAlreadyUsed
-                            ? 'Unavailable'
-                            : submitting
-                              ? 'Saving…'
-                              : `Replace`}
-                      </Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={styles.replaceButton}
-                      onPress={() => router.push({ pathname: '/(tabs)/search', params: { mode: 'tracklist-replace', oldTicker: position.ticker } })}
-                    >
-                      <Text style={styles.replaceButtonText}>Choose replacement</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              );
-            })}
-          </>
-        )}
+            <Text style={styles.positionStep}>#{index + 1}</Text>
+          </View>
+        ))}
       </ScrollView>
     </SafeAreaView>
   );
@@ -314,7 +198,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.primary,
   },
-  candidateCard: {
+  summaryCard: {
     backgroundColor: '#EEF6FF',
     borderRadius: 18,
     padding: 18,
@@ -322,45 +206,23 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#BFDBFE',
   },
-  candidateHeader: {
+  summaryHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  candidateTitle: {
+  summaryTitle: {
     fontSize: 13,
     fontWeight: '700',
     color: COLORS.primary,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
-  candidateTicker: {
+  summaryText: {
     marginTop: 10,
-    fontSize: 26,
-    fontWeight: '800',
-    color: COLORS.text,
-  },
-  candidateText: {
-    marginTop: 6,
     fontSize: 14,
     lineHeight: 20,
     color: COLORS.textLight,
-  },
-  primaryButton: {
-    marginTop: 14,
-    alignSelf: 'flex-start',
-    backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
-  primaryButtonDisabled: {
-    opacity: 0.6,
-  },
-  primaryButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
   },
   sectionHeader: {
     marginBottom: 10,
@@ -403,21 +265,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.warning,
   },
-  replaceButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: COLORS.primary + '12',
-  },
-  replaceButtonDisabled: {
-    backgroundColor: '#F3F4F6',
-  },
-  replaceButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.primary,
-  },
-  replaceButtonTextDisabled: {
+  seededMeta: {
+    marginTop: 6,
+    fontSize: 12,
     color: COLORS.textMuted,
   },
 });

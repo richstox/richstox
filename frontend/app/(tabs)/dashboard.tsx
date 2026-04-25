@@ -552,6 +552,18 @@ export default function Dashboard() {
     setSelectedArticle(null);
   };
 
+  const formatShortDate = (value?: string | null) => {
+    if (!value) return '—';
+    const parsed = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return `${parsed.getUTCDate().toString().padStart(2, '0')}.${(parsed.getUTCMonth() + 1).toString().padStart(2, '0')}.${parsed.getUTCFullYear()}`;
+  };
+
+  const formatMoney = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return `$${value.toFixed(2)}`;
+  };
+
   const openExternalLink = (url: string) => {
     Linking.openURL(url);
   };
@@ -568,6 +580,26 @@ export default function Dashboard() {
       ? String(point.date || '').slice(5)
       : '',
   }));
+  const performanceChartIndicators = useMemo(() => {
+    if (!performanceSeries.length) return null;
+    let high = performanceSeries[0];
+    let low = performanceSeries[0];
+    for (const point of performanceSeries) {
+      if ((point.value ?? 0) >= (high.value ?? 0)) high = point;
+      if ((point.value ?? 0) <= (low.value ?? 0)) low = point;
+    }
+    return {
+      start_date: performanceSeries[0].date,
+      end_date: performanceSeries[performanceSeries.length - 1].date,
+      high,
+      low,
+      current: performanceSeries[performanceSeries.length - 1],
+    };
+  }, [performanceSeries]);
+  const formatChartMetricValue = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return performanceMode === 'USD' ? formatMoney(value) : formatPercent(value);
+  };
 
   // Get logo URL from stock data — backend now returns internal /api/logo/ paths
   const getLogoUrl = (stock: any): string | null => {
@@ -649,9 +681,9 @@ export default function Dashboard() {
 
           {!tracklistPerformance?.ready || !performanceMetrics ? (
             <View style={styles.performanceEmptyState}>
-              <Text style={styles.performanceEmptyTitle}>Finish your 7-stock Tracklist</Text>
+              <Text style={styles.performanceEmptyTitle}>Preparing your automatic Tracklist</Text>
               <Text style={styles.performanceEmptyText}>
-                Add seven companies you believe in to unlock your virtual 100,000 USD scorecard.
+                We assign the Magnificent 7 basket from your first login date and calculate performance after the first completed close.
               </Text>
             </View>
           ) : (
@@ -704,6 +736,30 @@ export default function Dashboard() {
 
               {performanceChartData.length > 1 ? (
                 <View style={styles.performanceChartCard}>
+                  {performanceChartIndicators ? (
+                    <>
+                      <Text style={styles.performanceChartDateRange}>
+                        {formatShortDate(performanceChartIndicators.start_date)} – {formatShortDate(performanceChartIndicators.end_date)}
+                      </Text>
+                      <View style={styles.performanceChartLegend}>
+                        <View style={styles.performanceChartLegendItem}>
+                          <Text style={[styles.performanceChartLegendLabel, styles.performanceChartLegendHigh]}>HIGH</Text>
+                          <Text style={styles.performanceChartLegendValue}>{formatChartMetricValue(performanceChartIndicators.high?.value)}</Text>
+                          <Text style={styles.performanceChartLegendDate}>{formatShortDate(performanceChartIndicators.high?.date)}</Text>
+                        </View>
+                        <View style={styles.performanceChartLegendItem}>
+                          <Text style={[styles.performanceChartLegendLabel, styles.performanceChartLegendLow]}>LOW</Text>
+                          <Text style={styles.performanceChartLegendValue}>{formatChartMetricValue(performanceChartIndicators.low?.value)}</Text>
+                          <Text style={styles.performanceChartLegendDate}>{formatShortDate(performanceChartIndicators.low?.date)}</Text>
+                        </View>
+                        <View style={styles.performanceChartLegendItem}>
+                          <Text style={styles.performanceChartLegendLabel}>CURRENT</Text>
+                          <Text style={styles.performanceChartLegendValue}>{formatChartMetricValue(performanceChartIndicators.current?.value)}</Text>
+                          <Text style={styles.performanceChartLegendDate}>{formatShortDate(performanceChartIndicators.current?.date)}</Text>
+                        </View>
+                      </View>
+                    </>
+                  ) : null}
                   <LineChart
                     data={performanceChartData}
                     width={300}
@@ -1601,8 +1657,51 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingTop: 12,
     paddingHorizontal: 6,
+    paddingBottom: 8,
     borderRadius: 14,
     backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  performanceChartDateRange: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.72)',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  performanceChartLegend: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 12,
+  },
+  performanceChartLegendItem: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  performanceChartLegendLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.76)',
+    letterSpacing: 0.5,
+  },
+  performanceChartLegendHigh: {
+    color: '#86EFAC',
+  },
+  performanceChartLegendLow: {
+    color: '#FCA5A5',
+  },
+  performanceChartLegendValue: {
+    marginTop: 4,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  performanceChartLegendDate: {
+    marginTop: 2,
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.68)',
   },
   performanceBars: {
     flexDirection: 'row',

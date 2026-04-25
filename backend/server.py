@@ -110,6 +110,8 @@ EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 SP500_TICKER = "GSPC.INDX"  # S&P 500 Index
 SP500_TR_TICKER = "SP500TR.INDX"  # S&P 500 Total Return Index
 TRADING_DAYS_PER_YEAR = 252
+MAGNIFICENT_SEVEN = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+ADMIN_TRACKLIST_FALLBACK_CREATED_AT = datetime(2024, 1, 2, tzinfo=timezone.utc)
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -1463,6 +1465,68 @@ async def _get_tracklist_doc_for_user(user_id: str) -> Optional[dict]:
     return await db.user_tracklists.find_one({"user_id": user_id}, {"_id": 0})
 
 
+def _coerce_utc_datetime(raw_value: Any) -> Optional[datetime]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, datetime):
+        return raw_value if raw_value.tzinfo else raw_value.replace(tzinfo=timezone.utc)
+    if isinstance(raw_value, str):
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
+    tracklist_doc = await _get_tracklist_doc_for_user(user_id)
+    if len(_get_tracklist_positions(tracklist_doc)) == 7:
+        return tracklist_doc
+
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "created_at": 1, "updated_at": 1, "role": 1, "email": 1})
+    if not user_doc:
+        return tracklist_doc
+
+    created_at = _coerce_utc_datetime(user_doc.get("created_at"))
+    if created_at is None:
+        created_at = ADMIN_TRACKLIST_FALLBACK_CREATED_AT if user_doc.get("role") == "admin" else datetime.now(timezone.utc)
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"created_at": created_at, "updated_at": datetime.now(timezone.utc)}},
+        )
+
+    created_at_iso = created_at.isoformat()
+    effective_date = created_at.date().isoformat()
+    snapshot = await _build_tracklist_snapshot(
+        MAGNIFICENT_SEVEN,
+        100000,
+        effective_date,
+        created_at=created_at_iso,
+    )
+    doc = {
+        "user_id": user_id,
+        "initial_capital": 100000,
+        "positions": snapshot["positions"],
+        "events": [{
+            **snapshot,
+            "event_type": "auto_seed",
+            "seed_name": "magnificent_7",
+            "created_at": created_at_iso,
+        }],
+        "seed_name": "magnificent_7",
+        "seed_tickers": MAGNIFICENT_SEVEN,
+        "seeded_at": created_at_iso,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.user_tracklists.update_one(
+        {"user_id": user_id},
+        {"$set": doc},
+        upsert=True,
+    )
+    return doc
+
+
 def _get_tracklist_positions(tracklist_doc: Optional[dict]) -> List[dict]:
     if not tracklist_doc:
         return []
@@ -1496,7 +1560,7 @@ def _get_tracklist_draft_tickers(tracklist_doc: Optional[dict]) -> List[str]:
 
 async def _get_membership_state(user_id: str) -> dict:
     watchlist_docs = await _get_watchlist_docs_for_user(user_id)
-    tracklist_doc = await _get_tracklist_doc_for_user(user_id)
+    tracklist_doc = await _ensure_default_tracklist_for_user(user_id)
     watchlist = {_normalize_list_ticker(doc.get("ticker", "")) for doc in watchlist_docs if doc.get("ticker")}
     tracklist_positions = _get_tracklist_positions(tracklist_doc)
     tracklist_draft_tickers = _get_tracklist_draft_tickers(tracklist_doc)
@@ -1565,11 +1629,12 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         return {
             "ready": False,
             "mode": "USD",
-            "subtitle": "Complete your Tracklist with 7 stocks to unlock performance.",
+            "subtitle": "Your Tracklist activates automatically from your first login date.",
             "series_usd": [],
             "series_pct": [],
             "metrics": None,
             "current_value": None,
+            "chart": None,
         }
 
     start_date = ready_snapshots[0]["effective_date"]
@@ -1583,6 +1648,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_pct": [],
             "metrics": None,
             "current_value": None,
+            "chart": None,
         }
 
     all_tickers = sorted({_normalize_list_ticker(pos.get("ticker", "")) for snap in ready_snapshots for pos in snap.get("positions", []) if pos.get("ticker")})
@@ -1648,6 +1714,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_pct": [],
             "metrics": None,
             "current_value": None,
+            "chart": None,
         }
 
     initial_value = float(tracklist_doc.get("initial_capital") or 100000)
@@ -1698,6 +1765,8 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         avg_per_year = ((end_value / initial_value) ** (1 / years) - 1) * 100
     peak_value = max(values)
     trough_value = min(values)
+    peak_index = values.index(peak_value)
+    trough_index_exact = values.index(trough_value)
     risk_hist = initial_value - trough_value
     reward_hist = peak_value - initial_value
     reward_to_risk_ratio = round(reward_hist / risk_hist, 2) if risk_hist > 0 else None
@@ -1726,6 +1795,22 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         "series_usd": usd_series,
         "series_pct": series_pct,
         "current_value": round(end_value, 2),
+        "chart": {
+            "start_date": initial_date,
+            "end_date": usd_series[-1]["date"],
+            "high": {
+                "value": round(peak_value, 2),
+                "date": usd_series[peak_index]["date"],
+            },
+            "low": {
+                "value": round(trough_value, 2),
+                "date": usd_series[trough_index_exact]["date"],
+            },
+            "current": {
+                "value": round(end_value, 2),
+                "date": usd_series[-1]["date"],
+            },
+        },
         "metrics": {
             "total_profit_usd": round(end_value - initial_value, 2),
             "total_profit_pct": total_profit_pct,
@@ -1929,7 +2014,7 @@ async def get_list_membership(ticker: str, request: Request):
         "tracklist_count": len(state["tracklist"]),
         "tracklist_ready": state["tracklist_is_full"],
         "tracklist_draft_count": len(state["tracklist_draft_tickers"]),
-        "changes_apply_note": "Changes apply at next close.",
+        "changes_apply_note": "Watchlist changes apply at next close. Tracklist is assigned automatically from your first login date.",
     }
 
 
@@ -1962,182 +2047,28 @@ async def get_tracklist(request: Request):
         "ready": len(positions) >= 7,
         "draft_tickers": draft_tickers,
         "draft_count": len(draft_tickers),
+        "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+        "seeded_at": tracklist_doc.get("seeded_at") or (tracklist_doc.get("events", [{}])[0].get("created_at") if tracklist_doc.get("events") else None),
+        "seed_tickers": tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN,
         "positions": positions,
         "performance": performance,
-        "changes_apply_note": "Changes apply at next close.",
+        "changes_apply_note": "Tracklist is assigned automatically from your first login date.",
     }
 
 
 @api_router.post("/v1/tracklist/setup")
 async def setup_tracklist(payload: TracklistSetupRequest, request: Request):
-    user = request.state.user
-    tickers = [_normalize_list_ticker(ticker) for ticker in payload.tickers]
-    unique_tickers = []
-    seen = set()
-    for ticker in tickers:
-        if ticker not in seen:
-            seen.add(ticker)
-            unique_tickers.append(ticker)
-    if len(unique_tickers) != 7:
-        raise HTTPException(400, "Tracklist requires exactly 7 unique tickers")
-
-    state = await _get_membership_state(user["user_id"])
-    conflicts = [ticker for ticker in unique_tickers if ticker in state["watchlist"]]
-    if conflicts:
-        raise HTTPException(409, f"Tracklist tickers cannot also be in Watchlist: {', '.join(conflicts)}")
-
-    for ticker in unique_tickers:
-        await _assert_visible_ticker(ticker)
-
-    now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-    effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
-    snapshot = await _build_tracklist_snapshot(unique_tickers, 100000, effective_date, created_at=now_iso)
-    doc = {
-        "user_id": user["user_id"],
-        "initial_capital": 100000,
-        "draft_tickers": [],
-        "positions": snapshot["positions"],
-        "events": [{
-            **snapshot,
-            "event_type": "setup",
-            "created_at": now_iso,
-        }],
-        "updated_at": now_iso,
-    }
-    await db.user_tracklists.update_one(
-        {"user_id": user["user_id"]},
-        {"$set": doc},
-        upsert=True,
-    )
-    return {"status": "ok", "count": 7, "effective_close_date": effective_date, "message": "Changes apply at next close."}
+    raise HTTPException(410, "Tracklist is assigned automatically from your first login date.")
 
 
 @api_router.post("/v1/tracklist/draft/{ticker}")
 async def add_tracklist_setup_ticker(ticker: str, request: Request):
-    user = request.state.user
-    ticker_clean = _normalize_list_ticker(ticker)
-    state = await _get_membership_state(user["user_id"])
-    if ticker_clean in state["watchlist"]:
-        raise HTTPException(409, f"{ticker_clean} is already in your Watchlist")
-    if state["tracklist_is_full"]:
-        raise HTTPException(409, "Your Tracklist is already full. Manage replacements on the Tracklist page.")
-    if ticker_clean in state["tracklist"]:
-        return {"status": "already_queued", "ticker": ticker_clean, "draft_count": len(state["tracklist_draft_tickers"])}
-
-    await _assert_visible_ticker(ticker_clean)
-    draft_tickers = list(state["tracklist_draft_tickers"])
-    target_tickers = draft_tickers + [ticker_clean]
-    if len(target_tickers) > 7:
-        raise HTTPException(409, "Tracklist setup requires exactly 7 unique tickers.")
-
-    now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-    effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
-    tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "positions": [], "events": [], "draft_tickers": []}
-    capital = float(tracklist_doc.get("initial_capital") or 100000)
-
-    if len(target_tickers) == 7:
-        snapshot = await _build_tracklist_snapshot(target_tickers, capital, effective_date, created_at=now_iso)
-        events = list(tracklist_doc.get("events", []))
-        events.append({
-            **snapshot,
-            "event_type": "setup",
-            "created_at": now_iso,
-        })
-        await db.user_tracklists.update_one(
-            {"user_id": user["user_id"]},
-            {"$set": {
-                "user_id": user["user_id"],
-                "initial_capital": capital,
-                "draft_tickers": [],
-                "positions": snapshot["positions"],
-                "events": events,
-                "updated_at": now_iso,
-            }},
-            upsert=True,
-        )
-        return {
-            "status": "setup_complete",
-            "ticker": ticker_clean,
-            "count": 7,
-            "draft_count": 0,
-            "effective_close_date": effective_date,
-            "message": "Tracklist setup is complete. Changes apply at next close.",
-        }
-
-    await db.user_tracklists.update_one(
-        {"user_id": user["user_id"]},
-        {"$set": {
-            "user_id": user["user_id"],
-            "initial_capital": capital,
-            "draft_tickers": target_tickers,
-            "positions": [],
-            "events": list(tracklist_doc.get("events", [])),
-            "updated_at": now_iso,
-        }},
-        upsert=True,
-    )
-    return {
-        "status": "queued",
-        "ticker": ticker_clean,
-        "draft_count": len(target_tickers),
-        "slots_remaining": 7 - len(target_tickers),
-        "message": "Tracklist setup is saved. Add 7 stocks from ticker detail pages to activate performance.",
-    }
+    raise HTTPException(410, "Tracklist is assigned automatically from your first login date.")
 
 
 @api_router.post("/v1/tracklist/replace")
 async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Request):
-    user = request.state.user
-    old_ticker = _normalize_list_ticker(payload.old_ticker)
-    new_ticker = _normalize_list_ticker(payload.new_ticker)
-    if old_ticker == new_ticker:
-        raise HTTPException(400, "Choose a different ticker")
-
-    state = await _get_membership_state(user["user_id"])
-    if old_ticker not in state["tracklist"]:
-        raise HTTPException(404, f"{old_ticker} is not in your Tracklist")
-    if new_ticker in state["tracklist"]:
-        raise HTTPException(409, f"{new_ticker} is already in your Tracklist")
-    if new_ticker in state["watchlist"]:
-        raise HTTPException(409, f"{new_ticker} is already in your Watchlist")
-    if not state["tracklist_is_full"]:
-        raise HTTPException(409, "Tracklist replacements are available after you complete the 7-stock setup.")
-
-    await _assert_visible_ticker(new_ticker)
-    existing_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in state["tracklist_positions"]]
-    target_tickers = [new_ticker if ticker == old_ticker else ticker for ticker in existing_tickers]
-    now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
-    effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
-    tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "events": []}
-    capital = await _compute_tracklist_value(state["tracklist_positions"], effective_date)
-    snapshot = await _build_tracklist_snapshot(target_tickers, capital, effective_date, created_at=now_iso)
-    events = list(tracklist_doc.get("events", []))
-    events.append({
-        **snapshot,
-        "event_type": "replace",
-        "removed_ticker": old_ticker,
-        "added_ticker": new_ticker,
-        "created_at": now_iso,
-    })
-    await db.user_tracklists.update_one(
-        {"user_id": user["user_id"]},
-        {"$set": {
-            "user_id": user["user_id"],
-            "initial_capital": float(tracklist_doc.get("initial_capital") or 100000),
-            "draft_tickers": [],
-            "positions": snapshot["positions"],
-            "events": events,
-            "updated_at": now_iso,
-        }},
-        upsert=True,
-    )
-    return {
-        "status": "replaced",
-        "old_ticker": old_ticker,
-        "new_ticker": new_ticker,
-        "effective_close_date": effective_date,
-        "message": "Changes apply at next close.",
-    }
+    raise HTTPException(410, "Tracklist is fixed automatically right now and cannot be replaced from the app.")
 
 
 @api_router.post("/admin/tracklist/reset/{user_id}")

@@ -74,6 +74,8 @@ def test_server_declares_tracklist_endpoints():
     with open(server_path, 'r', encoding='utf-8') as handle:
         content = handle.read()
 
+    assert 'MAGNIFICENT_SEVEN' in content
     assert '/v1/tracklist/draft/{ticker}' in content
     assert '/v1/tracklist/replace' in content
-    assert 'Tracklist replacements are available after you complete the 7-stock setup.' in content
+    assert 'Tracklist is assigned automatically from your first login date.' in content
+    assert 'Tracklist is fixed automatically right now and cannot be replaced from the app.' in content
