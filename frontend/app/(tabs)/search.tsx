@@ -39,8 +39,10 @@ const MEMBERSHIP_LABELS: Record<string, string> = {
 };
 
 const getMembershipLabel = (membership: unknown): string => {
-  if (typeof membership !== 'string' || membership.length === 0) return '?';
-  return MEMBERSHIP_LABELS[membership] || membership.charAt(0).toUpperCase();
+  if (typeof membership !== 'string') return '?';
+  const normalized = membership.trim();
+  if (!normalized) return '?';
+  return MEMBERSHIP_LABELS[normalized] || normalized.charAt(0).toUpperCase();
 };
 
 export default function Search() {

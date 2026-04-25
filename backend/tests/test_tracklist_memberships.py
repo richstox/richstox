@@ -44,6 +44,8 @@ def test_search_includes_tracklist_memberships():
         tracklist_tickers={'MSFT'},
     ))
 
+    assert results[0]['ticker'] == 'AAPL'
+    assert results[1]['ticker'] == 'MSFT'
     assert results[0]['memberships'] == ['watchlist']
     assert results[1]['memberships'] == ['tracklist']
 
@@ -63,6 +65,7 @@ def test_search_prefers_tracklist_when_overlap_exists():
         tracklist_tickers={'AAPL'},
     ))
 
+    assert results[0]['ticker'] == 'AAPL'
     assert results[0]['memberships'] == ['tracklist']
 
 
