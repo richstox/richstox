@@ -1232,7 +1232,7 @@ async def search_whitelist(
             "asset_type": r.get("asset_type", "Common Stock"),
             "fundamentals_pending": r.get("status") != "active",
             "safety": safety_info,
-            "logo": _build_full_logo_url(logo_map.get(ticker)),
+            "logo": _build_full_logo_url(logo_map.get(ticker) or ticker) if ticker in logo_map else None,
         }
         if followed_tickers is not None:
             entry["is_following"] = ticker_code in followed_tickers

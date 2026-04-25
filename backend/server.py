@@ -2783,7 +2783,7 @@ async def browse_sector_industries(sector_name: str):
         industry_data[industry].append({
             "ticker": ticker_code,
             "market_cap": market_cap,
-            "logo": _build_full_logo_url(logo_map.get(ticker_full)),
+            "logo": _build_full_logo_url(logo_map.get(ticker_full) or ticker_full) if ticker_full in logo_map else None,
         })
 
     industries = []
@@ -2938,7 +2938,7 @@ async def browse_industry_companies(industry_name: str):
         companies.append({
             "ticker": ticker_code,
             "name": t.get("name") or ticker_code,
-            "logo": _build_full_logo_url(logo_map.get(ticker_full)),
+            "logo": _build_full_logo_url(logo_map.get(ticker_full) or ticker_full) if ticker_full in logo_map else None,
             "market_cap": round(market_cap) if market_cap else None,
             "return_1y": return_1y,
             "max_drawdown_1y": max_drawdown_1y,
