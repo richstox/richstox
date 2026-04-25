@@ -32,16 +32,16 @@ const COLORS = {
   border: '#E5E7EB',
 };
 
-const MEMBERSHIP_LABELS: Record<string, string> = {
-  watchlist: 'Watchlist',
-  tracklist: 'Tracklist',
+const MEMBERSHIP_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
+  watchlist: { label: 'Watchlist', bg: '#FEF3C7', text: '#B45309' },
+  tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' },
 };
 
-const getMembershipLabel = (membership: unknown): string => {
-  if (typeof membership !== 'string') return '';
+const getMembershipConfig = (membership: unknown) => {
+  if (typeof membership !== 'string') return null;
   const normalized = membership.trim().toLowerCase();
-  if (!normalized) return '';
-  return MEMBERSHIP_LABELS[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  if (!normalized) return null;
+  return MEMBERSHIP_CONFIG[normalized] ?? { label: normalized.charAt(0).toUpperCase() + normalized.slice(1), bg: '#F3F4F6', text: '#374151' };
 };
 
 export default function Search() {
@@ -104,11 +104,11 @@ export default function Search() {
     return (
       <View style={styles.pillsRow}>
         {memberships.map((membership: string) => {
-          const label = getMembershipLabel(membership);
-          if (!label) return null;
+          const config = getMembershipConfig(membership);
+          if (!config) return null;
           return (
-            <View key={`${item.ticker}-${membership}`} style={styles.membershipPill}>
-              <Text style={styles.membershipPillText}>{label}</Text>
+            <View key={`${item.ticker}-${membership}`} style={[styles.membershipPill, { backgroundColor: config.bg }]}>
+              <Text style={[styles.membershipPillText, { color: config.text }]}>{config.label}</Text>
             </View>
           );
         })}
@@ -244,8 +244,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     backgroundColor: COLORS.card,
     borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
     paddingHorizontal: 16,
     paddingVertical: 14,
     flexDirection: 'row',
@@ -333,12 +331,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: COLORS.primary + '15',
   },
   membershipPillText: {
     fontSize: 11,
     fontWeight: '700',
-    color: COLORS.primary,
   },
   itemRight: {
     alignItems: 'flex-end',
