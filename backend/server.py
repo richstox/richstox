@@ -1694,7 +1694,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
     years = len(usd_series) / TRADING_DAYS_PER_YEAR
     end_value = values[-1]
     avg_per_year = 0.0
-    if years > 0 and initial_value > 0 and end_value > 0:
+    if len(usd_series) > 1 and years > 0 and initial_value > 0 and end_value > 0:
         avg_per_year = ((end_value / initial_value) ** (1 / years) - 1) * 100
     peak_value = max(values)
     trough_value = min(values)
