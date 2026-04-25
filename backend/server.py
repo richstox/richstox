@@ -2832,6 +2832,8 @@ async def browse_industry_companies(industry_name: str):
     ticker_list = [t["ticker"] for t in tickers_in_industry]
 
     # ── 1. 1-year price history for return + max drawdown ──────────────────
+    # Use 370 days (5 extra) as the lookback window to absorb weekends / holidays
+    # that might push the oldest data point slightly past 365 calendar days.
     one_year_ago = (datetime.now(timezone.utc) - timedelta(days=370)).strftime("%Y-%m-%d")
     price_hist_map: dict = {}
     async for doc in db.stock_prices.aggregate([

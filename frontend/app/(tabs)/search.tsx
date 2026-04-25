@@ -46,7 +46,11 @@ const getMembershipConfig = (membership: unknown) => {
 };
 
 // GICS-style sectors with icon and color
-const BROWSE_SECTORS = [
+const BROWSE_SECTORS: Array<{
+  name: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  color: string;
+}> = [
   { name: 'Technology',          icon: 'hardware-chip-outline',  color: '#6366F1' },
   { name: 'Healthcare',          icon: 'medkit-outline',         color: '#10B981' },
   { name: 'Financial Services',  icon: 'bar-chart-outline',      color: '#3B82F6' },
@@ -205,7 +209,7 @@ export default function Search() {
                   onPress={() => handleSectorPress(s.name)}
                   activeOpacity={0.75}
                 >
-                  <Ionicons name={s.icon as any} size={16} color={s.color} />
+                  <Ionicons name={s.icon} size={16} color={s.color} />
                   <Text style={styles.sectorChipText}>{s.name}</Text>
                 </TouchableOpacity>
               ))}
