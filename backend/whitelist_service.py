@@ -1194,7 +1194,7 @@ async def search_whitelist(
     result_tickers = [r["ticker"] for r in results]
     if result_tickers:
         cache_logos = await db.company_fundamentals_cache.find(
-            {"ticker": {"$in": result_tickers}},
+            {"ticker": {"$in": result_tickers}, "logo_status": "present"},
             {"_id": 0, "ticker": 1, "logo_url": 1},
         ).to_list(None)
         logo_map = {d["ticker"]: d.get("logo_url") for d in cache_logos}

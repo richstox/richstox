@@ -64,6 +64,24 @@ type Company = {
   div_yield: number | null;
 };
 
+function IndustryLogo({ uri, ticker }: { uri: string | null; ticker: string }) {
+  const [imgError, setImgError] = React.useState(false);
+  if (!uri || imgError) {
+    return (
+      <View style={[styles.rowLogo, styles.rowLogoFallback]}>
+        <Text style={styles.rowLogoInitial}>{ticker[0]}</Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri: uri.startsWith('http') ? uri : `${API_URL}${uri}` }}
+      style={styles.rowLogo}
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 function SortableHeader({
   label,
   field,
@@ -268,16 +286,7 @@ export default function IndustryDetailScreen() {
               >
                 {/* Logo + name */}
                 <View style={styles.colCompany}>
-                  {item.logo ? (
-                    <Image
-                      source={{ uri: item.logo.startsWith('http') ? item.logo : `${API_URL}${item.logo}` }}
-                      style={styles.rowLogo}
-                    />
-                  ) : (
-                    <View style={[styles.rowLogo, styles.rowLogoFallback]}>
-                      <Text style={styles.rowLogoInitial}>{item.ticker[0]}</Text>
-                    </View>
-                  )}
+                  <IndustryLogo uri={item.logo} ticker={item.ticker} />
                   <View style={styles.rowNameWrap}>
                     <Text style={styles.rowTicker}>{item.ticker}</Text>
                     <Text style={styles.rowName} numberOfLines={1}>{item.name}</Text>

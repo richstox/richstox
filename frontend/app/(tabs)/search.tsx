@@ -61,6 +61,24 @@ const BROWSE_SECTORS: Array<{
   { name: 'Utilities',           icon: 'water-outline',          color: '#06B6D4' },
 ];
 
+function StockLogo({ uri, ticker }: { uri: string | null; ticker: string }) {
+  const [imgError, setImgError] = React.useState(false);
+  if (!uri || imgError) {
+    return (
+      <View style={styles.itemIcon}>
+        <Text style={styles.itemInitial}>{ticker[0]}</Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri: uri.startsWith('http') ? uri : `${API_URL}${uri}` }}
+      style={styles.itemLogo}
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 export default function Search() {
   const router = useRouter();
   const inputRef = useRef<TextInput>(null);
@@ -248,16 +266,7 @@ export default function Search() {
                 style={styles.item}
                 onPress={() => handleTickerPress(item)}
               >
-                {item.logo ? (
-                  <Image
-                    source={{ uri: item.logo.startsWith('http') ? item.logo : `${API_URL}${item.logo}` }}
-                    style={styles.itemLogo}
-                  />
-                ) : (
-                  <View style={styles.itemIcon}>
-                    <Text style={styles.itemInitial}>{item.ticker[0]}</Text>
-                  </View>
-                )}
+                <StockLogo uri={item.logo ?? null} ticker={item.ticker} />
                 <View style={styles.itemInfo}>
                   <View style={styles.itemTopRow}>
                     <Text style={styles.itemTicker}>{item.ticker}</Text>
@@ -323,7 +332,8 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     color: COLORS.text,
-    outlineWidth: 0,
+    outlineStyle: 'none',
+    borderWidth: 0,
   },
   // ── Discovery / landing state ─────────────────────────────────────────────
   discoveryScroll: { flex: 1 },

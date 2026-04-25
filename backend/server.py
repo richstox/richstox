@@ -2679,10 +2679,11 @@ async def browse_all_sectors():
 
     ticker_list = [t["ticker"] for t in all_tickers]
 
-    # 2. Latest price per ticker (single aggregation)
+    # 2. Latest price per ticker — limit to 30-day window to avoid a full collection scan
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     price_map: dict = {}
     async for doc in db.stock_prices.aggregate([
-        {"$match": {"ticker": {"$in": ticker_list}}},
+        {"$match": {"ticker": {"$in": ticker_list}, "date": {"$gte": recent_cutoff}}},
         {"$sort": {"date": -1}},
         {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}},
     ]):
@@ -2751,10 +2752,11 @@ async def browse_sector_industries(sector_name: str):
 
     ticker_list = [t["ticker"] for t in tickers_in_sector]
 
-    # Latest prices
+    # Latest prices — limit to 30-day window to avoid a full collection scan
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     price_map: dict = {}
     async for doc in db.stock_prices.aggregate([
-        {"$match": {"ticker": {"$in": ticker_list}}},
+        {"$match": {"ticker": {"$in": ticker_list}, "date": {"$gte": recent_cutoff}}},
         {"$sort": {"date": -1}},
         {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}},
     ]):
@@ -2762,7 +2764,7 @@ async def browse_sector_industries(sector_name: str):
 
     # Logos from company_fundamentals_cache
     logo_docs = await db.company_fundamentals_cache.find(
-        {"ticker": {"$in": ticker_list}},
+        {"ticker": {"$in": ticker_list}, "logo_status": "present"},
         {"_id": 0, "ticker": 1, "logo_url": 1},
     ).to_list(length=None)
     logo_map = {d["ticker"]: d.get("logo_url") for d in logo_docs}
@@ -2855,7 +2857,7 @@ async def browse_industry_companies(industry_name: str):
 
     # ── 2. Logos ────────────────────────────────────────────────────────────
     logo_docs = await db.company_fundamentals_cache.find(
-        {"ticker": {"$in": ticker_list}},
+        {"ticker": {"$in": ticker_list}, "logo_status": "present"},
         {"_id": 0, "ticker": 1, "logo_url": 1},
     ).to_list(length=None)
     logo_map = {d["ticker"]: d.get("logo_url") for d in logo_docs}
