@@ -48,9 +48,9 @@ describe('P4 Regression: Single Vertical Scroll Layout', () => {
     
     // Expected section order (by data-testid)
     const EXPECTED_SECTION_ORDER = [
-      'reality-check-card',      // 1. Price & Reality Check
-      'valuation-card',          // 2. Valuation Overview
-      'price-chart-card',        // 3. Price History Chart
+      'valuation-card',          // 1. Valuation Overview
+      'price-chart-card',        // 2. Price History Chart
+      'reality-check-card',      // 3. Performance Check
       'key-metrics-section',     // 4. Key Metrics (collapsed)
       'financials-section',      // 5. Financials
       'earnings-section',        // 6. Earnings & Dividends
@@ -79,7 +79,24 @@ describe('P4 Regression: Single Vertical Scroll Layout', () => {
         expect(curr.position).toBeGreaterThan(prev.position);
       }
     });
+
+    it('should render Price History before Performance Check', () => {
+      const priceHistoryPosition = fileContent.indexOf('data-testid="price-chart-card"');
+      const performanceCheckPosition = fileContent.indexOf('data-testid="reality-check-card"');
+      expect(priceHistoryPosition).toBeGreaterThan(-1);
+      expect(performanceCheckPosition).toBeGreaterThan(-1);
+      expect(priceHistoryPosition).toBeLessThan(performanceCheckPosition);
+    });
     
+  });
+
+  describe('Price History Extremes Labels', () => {
+    it('should restore High/Low date labels on the chart x-axis', () => {
+      expect(fileContent).toContain('const highDateLabel = formatChartDate(visibleChartData[highIdx]?.date);');
+      expect(fileContent).toContain('const lowDateLabel = formatChartDate(visibleChartData[lowIdx]?.date);');
+      expect(fileContent).toContain('{highDateLabel}');
+      expect(fileContent).toContain('{lowDateLabel}');
+    });
   });
   
   describe('Key Metrics Collapsible Behavior', () => {
