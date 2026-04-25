@@ -67,15 +67,6 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="portfolio"
-        options={{
-          title: 'Portfolio',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="briefcase-outline" size={size} color={color} />
-          ),
-        }}
-      />
-      <Tabs.Screen
         name="talk"
         options={{
           title: 'Talk',
@@ -93,6 +84,18 @@ export default function TabsLayout() {
       />
       <Tabs.Screen
         name="settings"
+        options={{
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="portfolio"
+        options={{
+          href: null,
+        }}
+      />
+      <Tabs.Screen
+        name="tracklist"
         options={{
           href: null,
         }}

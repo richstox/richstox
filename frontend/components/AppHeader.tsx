@@ -3,7 +3,7 @@
  * DO NOT MODIFY without Richard's approval.
  * 
  * Features:
- * - Avatar dropdown menu with: My Dashboard, Account Settings, Admin Panel (admin only), Sign out
+ * - Avatar dropdown menu with: Portfolio, Account Settings, Admin Panel (admin only), Sign out
  * - Consistent across all pages including /admin
  */
 
@@ -72,6 +72,9 @@ export default function AppHeader({
     switch (action) {
       case 'dashboard':
         router.push('/(tabs)/dashboard');
+        break;
+      case 'portfolio':
+        router.push('/(tabs)/portfolio');
         break;
       case 'settings':
         router.push('/(tabs)/settings');
@@ -244,6 +247,18 @@ export default function AppHeader({
                         <Text style={[styles.menuItemText, { color: COLORS.primary }]}>Admin Panel</Text>
                       </TouchableOpacity>
                     )}
+
+                    <TouchableOpacity
+                      style={styles.menuItem}
+                      onPress={() => handleMenuItemPress('portfolio')}
+                      testID="menu-portfolio"
+                    >
+                      <Ionicons name="briefcase-outline" size={20} color={COLORS.text} />
+                      <Text style={styles.menuItemText}>Portfolio</Text>
+                      <View style={styles.menuSoonBadge}>
+                        <Text style={styles.menuSoonBadgeText}>Soon</Text>
+                      </View>
+                    </TouchableOpacity>
                     
                     <TouchableOpacity 
                       style={styles.menuItem}
@@ -458,5 +473,17 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: FONTS.body,
     color: COLORS.text,
+  },
+  menuSoonBadge: {
+    marginLeft: 'auto',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: '#FEF3C7',
+  },
+  menuSoonBadgeText: {
+    fontSize: 11,
+    fontFamily: FONTS.bodyMedium,
+    color: '#B45309',
   },
 });

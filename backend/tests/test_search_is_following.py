@@ -57,15 +57,14 @@ _RAW_DOCS = [
 # Tests
 # ---------------------------------------------------------------------------
 
-@pytest.mark.asyncio
-async def test_is_following_present_when_set_provided():
+def test_is_following_present_when_set_provided_sync():
     """Results should include is_following=True/False when followed_tickers is given."""
     from whitelist_service import search_whitelist
 
     db = _make_fake_db(_RAW_DOCS)
     followed = {"KO", "KODK"}
 
-    results = await search_whitelist(db, "KO", limit=20, followed_tickers=followed)
+    results = asyncio.run(search_whitelist(db, "KO", limit=20, followed_tickers=followed))
 
     assert len(results) == 3
     assert results[0]["ticker"] == "KO"
@@ -76,28 +75,26 @@ async def test_is_following_present_when_set_provided():
     assert results[2]["is_following"] is True
 
 
-@pytest.mark.asyncio
-async def test_is_following_absent_when_no_set():
+def test_is_following_absent_when_no_set():
     """Results should NOT include is_following when followed_tickers is None."""
     from whitelist_service import search_whitelist
 
     db = _make_fake_db(_RAW_DOCS)
 
-    results = await search_whitelist(db, "KO", limit=20, followed_tickers=None)
+    results = asyncio.run(search_whitelist(db, "KO", limit=20, followed_tickers=None))
 
     assert len(results) == 3
     for r in results:
         assert "is_following" not in r, f"is_following should be absent for {r['ticker']}"
 
 
-@pytest.mark.asyncio
-async def test_is_following_empty_set_all_false():
+def test_is_following_empty_set_all_false():
     """All results should have is_following=False when user follows nothing."""
     from whitelist_service import search_whitelist
 
     db = _make_fake_db(_RAW_DOCS)
 
-    results = await search_whitelist(db, "KO", limit=20, followed_tickers=set())
+    results = asyncio.run(search_whitelist(db, "KO", limit=20, followed_tickers=set()))
 
     assert len(results) == 3
     for r in results:
@@ -136,8 +133,7 @@ def test_build_full_logo_url_empty():
     assert _build_full_logo_url("") is None
 
 
-@pytest.mark.asyncio
-async def test_search_results_include_full_logo_url():
+def test_search_results_include_full_logo_url():
     """Search results should include fully-qualified logo URLs from company_fundamentals_cache."""
     from whitelist_service import search_whitelist
 
@@ -153,15 +149,14 @@ async def test_search_results_include_full_logo_url():
     ]
     db = _make_fake_db(tracked_docs, cache_docs=cache_docs)
 
-    results = await search_whitelist(db, "A", limit=20)
+    results = asyncio.run(search_whitelist(db, "A", limit=20))
 
     assert results[0]["logo"] == "/api/logo/AAPL"
     assert results[1]["logo"] == "/api/logo/MSFT"
     assert results[2]["logo"] is None
 
 
-@pytest.mark.asyncio
-async def test_search_logo_from_fundamentals_cache():
+def test_search_logo_from_fundamentals_cache():
     """Logos come from company_fundamentals_cache (same source as dashboard)."""
     from whitelist_service import search_whitelist
 
@@ -178,7 +173,7 @@ async def test_search_logo_from_fundamentals_cache():
     ]
 
     db = _make_fake_db(tracked_docs, cache_docs=cache_docs)
-    results = await search_whitelist(db, "KO", limit=20)
+    results = asyncio.run(search_whitelist(db, "KO", limit=20))
 
     assert results[0]["ticker"] == "KO"
     assert results[0]["logo"] == "/api/logo/KO"

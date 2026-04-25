@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
+import { LineChart } from 'react-native-gifted-charts';
 import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
 import { FONTS } from '../_layout';
@@ -216,7 +217,7 @@ const stockLogoStyles = StyleSheet.create({
 
 export default function Dashboard() {
   const router = useRouter();
-  const { user, isAuthenticated, sessionToken } = useAuth();
+  const { user, sessionToken } = useAuth();
   const sp = useLayoutSpacing();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -247,24 +248,13 @@ export default function Dashboard() {
   const [notificationsLoading, setNotificationsLoading] = useState(false);
   
   // View as tier (admin feature to switch between subscription views)
-  const [viewAsTier, setViewAsTier] = useState<string>(user?.subscription_tier || 'free');
-  
-  // Update viewAsTier when user changes
-  React.useEffect(() => {
-    if (user?.subscription_tier) {
-      setViewAsTier(user.subscription_tier);
-    }
-  }, [user?.subscription_tier]);
-
   // P36 Item 3: My Stocks filter state
   const [stocksFilter, setStocksFilter] = useState('');
+  const [performanceMode, setPerformanceMode] = useState<'USD' | '%'>('%');
   
   // P37++ A) Sort state with ascending/descending options
   // Options: 'date_desc' (default), 'date_asc', 'az', 'za', 'total_desc', 'total_asc', '1d_desc', '1d_asc'
   const [stocksSort, setStocksSort] = useState<string>('date_desc');
-  
-  // P37++ B) Portfolio toggle - default ON (show both Watchlist + Portfolio)
-  const [includePortfolio, setIncludePortfolio] = useState(true);
   
   // P34/P36: My Stocks computed values
   const myStocks = data?.my_stocks || [];
@@ -272,13 +262,7 @@ export default function Dashboard() {
   // P37++ Filter and sort stocks
   const filteredStocks = useMemo(() => {
     let stocks = [...myStocks];
-    
-    // P37++ B) Filter by portfolio toggle
-    if (!includePortfolio) {
-      // Show only Watchlist items (exclude Portfolio-only)
-      stocks = stocks.filter((stock: any) => stock.pill === 'Watchlist' || stock.pill === 'Both');
-    }
-    
+
     // Filter by ticker or name search
     if (stocksFilter) {
       const query = stocksFilter.toUpperCase();
@@ -326,9 +310,9 @@ export default function Dashboard() {
         });
         break;
     }
-    
-    return stocks;
-  }, [myStocks, stocksFilter, stocksSort, includePortfolio]);
+     
+     return stocks;
+   }, [myStocks, stocksFilter, stocksSort]);
   
   // P36 Item 4: hasMoreStocks and hasLessStocks for Load more / See less
   const INITIAL_STOCKS_LIMIT = 5;
@@ -404,7 +388,9 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const response = await axios.get(`${API_URL}/api/homepage`);
+      const response = await axios.get(`${API_URL}/api/homepage`, {
+        headers: sessionToken ? { Authorization: `Bearer ${sessionToken}` } : {},
+      });
       setData(response.data);
     } catch (err) {
       console.error('Error:', err);
@@ -566,23 +552,53 @@ export default function Dashboard() {
     setSelectedArticle(null);
   };
 
+  const formatShortDate = (value?: string | null) => {
+    if (!value) return '—';
+    const parsed = new Date(`${value}T00:00:00Z`);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return `${parsed.getUTCDate().toString().padStart(2, '0')}.${(parsed.getUTCMonth() + 1).toString().padStart(2, '0')}.${parsed.getUTCFullYear()}`;
+  };
+
+  const formatMoney = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return `$${value.toFixed(2)}`;
+  };
+
   const openExternalLink = (url: string) => {
     Linking.openURL(url);
   };
 
-  // Mock data for demo (will be replaced with real API data)
-  const myPerformance = {
-    return: 12.45,
-    maxDrawdown: 8.32,
-    trackRecord: 142, // days
-  };
-
-  const myPortfolios = {
-    public: 1,
-    private: 2,
-    total: 3,
-    maxFree: 1,
-    maxPro: 10,
+  const tracklistPerformance = data?.tracklist?.performance;
+  const performanceMetrics = tracklistPerformance?.metrics;
+  const performanceSeries = performanceMode === 'USD'
+    ? (tracklistPerformance?.series_usd || [])
+    : (tracklistPerformance?.series_pct || []);
+  const performanceWindow = performanceSeries.slice(-30);
+  const performanceChartData = performanceWindow.map((point: any, index: number) => ({
+    value: Number(point.value || 0),
+    label: index === 0 || index === performanceWindow.length - 1
+      ? String(point.date || '').slice(5)
+      : '',
+  }));
+  const performanceChartIndicators = useMemo(() => {
+    if (!performanceSeries.length) return null;
+    let high = performanceSeries[0];
+    let low = performanceSeries[0];
+    for (const point of performanceSeries) {
+      if ((point.value ?? 0) >= (high.value ?? 0)) high = point;
+      if ((point.value ?? 0) <= (low.value ?? 0)) low = point;
+    }
+    return {
+      start_date: performanceSeries[0].date,
+      end_date: performanceSeries[performanceSeries.length - 1].date,
+      high,
+      low,
+      current: performanceSeries[performanceSeries.length - 1],
+    };
+  }, [performanceSeries]);
+  const formatChartMetricValue = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    return performanceMode === 'USD' ? formatMoney(value) : formatPercent(value);
   };
 
   // Get logo URL from stock data — backend now returns internal /api/logo/ paths
@@ -634,113 +650,157 @@ export default function Dashboard() {
 
         {/* ===== MY PERFORMANCE ===== */}
         <View style={styles.performanceCard} data-testid="my-performance">
-          <Text style={[styles.sectionTitle, { color: '#FFF' }]}>My Performance</Text>
-          <Text style={styles.performanceSubtitle}>Based on your Follow watchlist (equal-weight)</Text>
-          
-          <View style={styles.performanceMetrics}>
-            <View style={styles.metricBox}>
-              <Text style={styles.metricLabel}>Return</Text>
-              <Text style={[
-                styles.metricValue,
-                myPerformance.return >= 0 ? styles.positive : styles.negative
-              ]}>
-                {formatPercent(myPerformance.return)}
+          <View style={styles.performanceHeaderRow}>
+            <View>
+              <Text style={[styles.sectionTitle, { color: '#FFF' }]}>My Tracklist performance</Text>
+              <Text style={styles.performanceSubtitle}>Based on your Tracklist (equal-weight)</Text>
+            </View>
+            <View style={styles.performanceHeaderActions}>
+              <TouchableOpacity
+                style={styles.performanceSettingsButton}
+                onPress={() => router.push('/(tabs)/tracklist')}
+              >
+                <Ionicons name="settings-outline" size={16} color="#FFFFFF" />
+              </TouchableOpacity>
+              <View style={styles.performanceToggle}>
+                <TouchableOpacity
+                  style={[styles.performanceToggleChip, performanceMode === '%' && styles.performanceToggleChipActive]}
+                  onPress={() => setPerformanceMode('%')}
+                >
+                  <Text style={[styles.performanceToggleText, performanceMode === '%' && styles.performanceToggleTextActive]}>%</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.performanceToggleChip, performanceMode === 'USD' && styles.performanceToggleChipActive]}
+                  onPress={() => setPerformanceMode('USD')}
+                >
+                  <Text style={[styles.performanceToggleText, performanceMode === 'USD' && styles.performanceToggleTextActive]}>USD</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+
+          {!tracklistPerformance?.ready || !performanceMetrics ? (
+            <View style={styles.performanceEmptyState}>
+              <Text style={styles.performanceEmptyTitle}>Preparing your automatic Tracklist</Text>
+              <Text style={styles.performanceEmptyText}>
+                We assign the Magnificent 7 basket from your first login date and calculate performance after the first completed close.
               </Text>
             </View>
-            
-            <View style={styles.metricDivider} />
-            
-            <View style={styles.metricBox}>
-              <Text style={styles.metricLabel}>Max Drawdown</Text>
-              <Text style={[styles.metricValue, styles.negative]}>
-                {formatDrawdown(myPerformance.maxDrawdown)}
-              </Text>
-            </View>
-          </View>
+          ) : (
+            <>
+              <View style={styles.performanceMetricsGrid}>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Reward</Text>
+                  <Text style={[styles.metricValue, (performanceMetrics.total_profit_pct || 0) >= 0 ? styles.positive : styles.negative]}>
+                    {performanceMode === 'USD'
+                      ? `${performanceMetrics.total_profit_usd >= 0 ? '+' : '-'}$${Math.abs(performanceMetrics.total_profit_usd).toFixed(2)}`
+                      : formatPercent(performanceMetrics.total_profit_pct)}
+                  </Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Avg. per Year</Text>
+                  <Text style={styles.metricValue}>{formatPercent(performanceMetrics.avg_per_year_pct)}</Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Risk</Text>
+                  <Text style={[styles.metricValue, styles.negative]}>{formatDrawdown(performanceMetrics.max_drawdown_pct)}</Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Duration</Text>
+                  <Text style={styles.metricValue}>{performanceMetrics.duration_days} days</Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Reward / Risk</Text>
+                  <Text style={styles.metricValue}>{performanceMetrics.rrr ?? '—'}</Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Recovered</Text>
+                  <Text style={styles.metricValue}>{performanceMetrics.recovered_date || 'Not yet'}</Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Index</Text>
+                  <Text style={styles.metricValue}>
+                    {performanceMetrics.benchmark_total_pct == null ? '—' : formatPercent(performanceMetrics.benchmark_total_pct)}
+                  </Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Vs. Index</Text>
+                  <Text style={[
+                    styles.metricValue,
+                    (performanceMetrics.vs_benchmark_pct || 0) >= 0 ? styles.positive : styles.negative,
+                  ]}>
+                    {performanceMetrics.vs_benchmark_pct == null ? '—' : formatPercent(performanceMetrics.vs_benchmark_pct)}
+                  </Text>
+                </View>
+              </View>
 
-          <View style={styles.trackRecord}>
-            <Ionicons name="calendar-outline" size={14} color={COLORS.textMuted} />
-            <Text style={styles.trackRecordText}>
-              Track Record: {myPerformance.trackRecord} days
-            </Text>
-          </View>
+              {performanceChartData.length > 1 ? (
+                <View style={styles.performanceChartCard}>
+                  {performanceChartIndicators ? (
+                    <>
+                      <Text style={styles.performanceChartDateRange}>
+                        {formatShortDate(performanceChartIndicators.start_date)} – {formatShortDate(performanceChartIndicators.end_date)}
+                      </Text>
+                      <View style={styles.performanceChartLegend}>
+                        <View style={styles.performanceChartLegendItem}>
+                          <Text style={[styles.performanceChartLegendLabel, styles.performanceChartLegendHigh]}>HIGH</Text>
+                          <Text style={styles.performanceChartLegendValue}>{formatChartMetricValue(performanceChartIndicators.high?.value)}</Text>
+                          <Text style={styles.performanceChartLegendDate}>{formatShortDate(performanceChartIndicators.high?.date)}</Text>
+                        </View>
+                        <View style={styles.performanceChartLegendItem}>
+                          <Text style={[styles.performanceChartLegendLabel, styles.performanceChartLegendLow]}>LOW</Text>
+                          <Text style={styles.performanceChartLegendValue}>{formatChartMetricValue(performanceChartIndicators.low?.value)}</Text>
+                          <Text style={styles.performanceChartLegendDate}>{formatShortDate(performanceChartIndicators.low?.date)}</Text>
+                        </View>
+                        <View style={styles.performanceChartLegendItem}>
+                          <Text style={styles.performanceChartLegendLabel}>CURRENT</Text>
+                          <Text style={styles.performanceChartLegendValue}>{formatChartMetricValue(performanceChartIndicators.current?.value)}</Text>
+                          <Text style={styles.performanceChartLegendDate}>{formatShortDate(performanceChartIndicators.current?.date)}</Text>
+                        </View>
+                      </View>
+                    </>
+                  ) : null}
+                  <LineChart
+                    data={performanceChartData}
+                    width={300}
+                    height={180}
+                    spacing={Math.max(8, Math.floor(260 / Math.max(performanceChartData.length - 1, 1)))}
+                    initialSpacing={0}
+                    endSpacing={0}
+                    color="#FFFFFF"
+                    thickness={2}
+                    hideDataPoints
+                    curved
+                    areaChart
+                    startFillColor="#FFFFFF"
+                    endFillColor="#FFFFFF"
+                    startOpacity={0.18}
+                    endOpacity={0.02}
+                    hideYAxisText
+                    yAxisColor="transparent"
+                    xAxisColor="rgba(255,255,255,0.15)"
+                    xAxisLabelTextStyle={{ color: 'rgba(255,255,255,0.7)', fontSize: 10 }}
+                    rulesColor="rgba(255,255,255,0.08)"
+                  />
+                </View>
+              ) : null}
+            </>
+          )}
         </View>
 
-        {/* ===== MY PORTFOLIOS ===== */}
-        <View style={styles.card} data-testid="my-portfolios">
-          <View style={styles.cardHeader}>
-            <Text style={styles.sectionTitle}>My Portfolios</Text>
-            <TouchableOpacity onPress={() => router.push('/(tabs)/portfolio')}>
-              <Text style={styles.seeAllLink}>Manage</Text>
-            </TouchableOpacity>
-          </View>
-          
-          <View style={styles.portfolioStats}>
-            <View style={styles.portfolioStat}>
-              <View style={[styles.portfolioIcon, { backgroundColor: '#D1FAE5' }]}>
-                <Ionicons name="globe-outline" size={18} color={COLORS.accent} />
-              </View>
-              <View>
-                <Text style={styles.portfolioCount}>{myPortfolios.public}</Text>
-                <Text style={styles.portfolioLabel}>Public</Text>
-              </View>
-            </View>
-            
-            <View style={styles.portfolioStat}>
-              <View style={[styles.portfolioIcon, { backgroundColor: '#E0E7FF' }]}>
-                <Ionicons name="lock-closed-outline" size={18} color={COLORS.primary} />
-              </View>
-              <View>
-                <Text style={styles.portfolioCount}>{myPortfolios.private}</Text>
-                <Text style={styles.portfolioLabel}>Private</Text>
-              </View>
-            </View>
-            
-            <View style={styles.portfolioStat}>
-              <View style={[styles.portfolioIcon, { backgroundColor: '#F3F4F6' }]}>
-                <Ionicons name="folder-outline" size={18} color={COLORS.textLight} />
-              </View>
-              <View>
-                <Text style={styles.portfolioCount}>{myPortfolios.total}/{myPortfolios.maxPro}</Text>
-                <Text style={styles.portfolioLabel}>Total</Text>
-              </View>
-            </View>
-          </View>
-        </View>
-
-        {/* ===== P40: MY STOCKS - Portfolio in title + 4 sort buttons ===== */}
+        {/* ===== MY STOCKS ===== */}
         <View style={styles.card} data-testid="my-stocks">
-          {/* P40 A) Title row with count + Portfolio toggle + Add */}
           <View style={styles.cardHeader}>
             <View style={styles.sectionTitleRow}>
               <Ionicons name="star" size={18} color={COLORS.warning} />
               <Text style={styles.sectionTitle}>My Stocks {loading ? '' : `(${filteredStocks.length})`}</Text>
             </View>
             <View style={styles.titleRightControls}>
-              {/* P40 A) Portfolio toggle in title row */}
-              <TouchableOpacity 
-                style={styles.portfolioToggleInline}
-                onPress={() => setIncludePortfolio(!includePortfolio)}
-                data-testid="portfolio-toggle"
-              >
-                <Text style={styles.portfolioToggleLabelInline}>Portfolio</Text>
-                <View style={[
-                  styles.toggleSwitch,
-                  includePortfolio && styles.toggleSwitchOn
-                ]}>
-                  <View style={[
-                    styles.toggleKnob,
-                    includePortfolio && styles.toggleKnobOn
-                  ]} />
-                </View>
+              <TouchableOpacity style={styles.membershipPill} onPress={() => router.push('/(tabs)/tracklist')}>
+                <Text style={styles.membershipPillText}>Tracklist ({data?.tracklist_count || 0})</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.addButtonWithLabel}
-                onPress={() => router.push('/(tabs)/search?autofocus=true')}
-                data-testid="add-to-watchlist-btn"
-              >
-                <Ionicons name="add-circle" size={24} color={COLORS.primary} />
-                <Text style={styles.addButtonLabel}>Add</Text>
+              <TouchableOpacity style={styles.membershipPill}>
+                <Text style={styles.membershipPillText}>Watchlist ({data?.watchlist_count || 0})</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -872,12 +932,12 @@ export default function Dashboard() {
           {myStocks.length === 0 ? (
             <View style={styles.emptyState}>
               <Ionicons name="star-outline" size={32} color={COLORS.textMuted} />
-              <Text style={styles.emptyText}>No companies followed yet</Text>
+              <Text style={styles.emptyText}>No saved stocks yet</Text>
               <TouchableOpacity 
                 style={styles.emptyButton}
                 onPress={() => router.push('/(tabs)/search?autofocus=true')}
               >
-                <Text style={styles.emptyButtonText}>Find companies</Text>
+                <Text style={styles.emptyButtonText}>Browse companies</Text>
               </TouchableOpacity>
             </View>
           ) : filteredStocks.length === 0 ? (
@@ -1525,6 +1585,140 @@ const styles = StyleSheet.create({
     marginTop: 4,
     marginBottom: 16,
   },
+  performanceHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  performanceHeaderActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  performanceSettingsButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  performanceToggle: {
+    flexDirection: 'row',
+    alignSelf: 'flex-start',
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 999,
+    padding: 4,
+  },
+  performanceToggleChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  performanceToggleChipActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  performanceToggleText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.75)',
+  },
+  performanceToggleTextActive: {
+    color: COLORS.primary,
+  },
+  performanceMetricsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+  },
+  performanceMetricCard: {
+    width: '48%',
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 14,
+    padding: 12,
+  },
+  performanceEmptyState: {
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderRadius: 14,
+    padding: 16,
+  },
+  performanceEmptyTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  performanceEmptyText: {
+    marginTop: 6,
+    fontSize: 13,
+    lineHeight: 19,
+    color: 'rgba(255,255,255,0.72)',
+  },
+  performanceChartCard: {
+    marginTop: 16,
+    paddingTop: 12,
+    paddingHorizontal: 6,
+    paddingBottom: 8,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+  },
+  performanceChartDateRange: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.72)',
+    textAlign: 'center',
+    marginBottom: 10,
+  },
+  performanceChartLegend: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginBottom: 12,
+  },
+  performanceChartLegendItem: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.06)',
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+  },
+  performanceChartLegendLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: 'rgba(255,255,255,0.76)',
+    letterSpacing: 0.5,
+  },
+  performanceChartLegendHigh: {
+    color: '#86EFAC',
+  },
+  performanceChartLegendLow: {
+    color: '#FCA5A5',
+  },
+  performanceChartLegendValue: {
+    marginTop: 4,
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  performanceChartLegendDate: {
+    marginTop: 2,
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.68)',
+  },
+  performanceBars: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 8,
+    marginTop: 16,
+    height: 112,
+  },
+  performanceBarColumn: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  performanceBar: {
+    width: '100%',
+    borderRadius: 999,
+    backgroundColor: '#93C5FD',
+  },
   performanceMetrics: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1760,7 +1954,18 @@ const styles = StyleSheet.create({
   titleRightControls: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
+  },
+  membershipPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: COLORS.primary + '10',
+  },
+  membershipPillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.primary,
   },
   portfolioToggleInline: {
     flexDirection: 'row',

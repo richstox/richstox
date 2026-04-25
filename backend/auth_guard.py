@@ -29,8 +29,10 @@ from starlette.responses import JSONResponse
 logger = logging.getLogger("richstox.auth_guard")
 
 PROTECTED_PREFIXES: tuple[str, ...] = (
+    "/api/homepage",
     "/api/portfolios",
     "/api/positions",
+    "/api/v1/tracklist",
     "/api/v1/watchlist",
     "/api/v1/positions",
     "/api/v1/me/notifications/mark_seen",

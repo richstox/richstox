@@ -109,6 +109,12 @@ EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
 # S&P 500 benchmark ticker
 SP500_TICKER = "GSPC.INDX"  # S&P 500 Index
 SP500_TR_TICKER = "SP500TR.INDX"  # S&P 500 Total Return Index
+TRADING_DAYS_PER_YEAR = 252
+MAGNIFICENT_SEVEN = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"]
+# Backfill the seeded admin account to an early deterministic start date so demo/admin
+# Tracklist performance has a stable historical window even if the legacy user document
+# was created before `users.created_at` started being persisted consistently.
+ADMIN_TRACKLIST_FALLBACK_CREATED_AT = datetime(2024, 1, 2, tzinfo=timezone.utc)
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -349,7 +355,23 @@ class PositionCreate(BaseModel):
     buy_price: float
     buy_date: str
 
+
+class TracklistSetupRequest(BaseModel):
+    tickers: List[str] = Field(..., min_length=7, max_length=7)
+
+
+class TracklistReplaceRequest(BaseModel):
+    old_ticker: str
+    new_ticker: str
+
 # ========== MONGO READ HELPERS (replace runtime EODHD calls) ==========
+
+
+def _legacy_portfolio_disabled() -> None:
+    raise HTTPException(
+        status_code=410,
+        detail="Legacy Portfolio is disabled. Use Watchlist and Tracklist instead.",
+    )
 
 def _normalize_ticker(ticker: str) -> str:
     """Normalize ticker to the canonical DB format (e.g. 'AAPL' -> 'AAPL.US')."""
@@ -1329,99 +1351,19 @@ async def calculate_portfolio_value(
 
 @api_router.post("/portfolios")
 async def create_portfolio(request: Request, portfolio: PortfolioCreate):
-    """Create a new portfolio. Auth: UserAuthMiddleware (user_id from session)."""
-    user = request.state.user
-    portfolio_id = str(uuid.uuid4())
-    doc = {
-        "id": portfolio_id,
-        "name": portfolio.name,
-        "user_id": user["user_id"],
-        "created_at": datetime.utcnow(),
-        "updated_at": datetime.utcnow()
-    }
-    await db.portfolios.insert_one(doc)
-    return {"id": portfolio_id, "name": portfolio.name}
+    _legacy_portfolio_disabled()
 
 @api_router.get("/portfolios")
 async def list_portfolios(request: Request):
-    """List all portfolios for the authenticated user."""
-    user = request.state.user
-    portfolios = await db.portfolios.find(
-        {"user_id": user["user_id"]},
-        {"_id": 0}
-    ).to_list(100)
-    return {"count": len(portfolios), "portfolios": portfolios}
+    _legacy_portfolio_disabled()
 
 @api_router.get("/portfolios/{portfolio_id}")
 async def get_portfolio(portfolio_id: str, request: Request):
-    """Get portfolio with positions and live valuations. Scoped to authenticated user."""
-    user = request.state.user
-    portfolio = await db.portfolios.find_one(
-        {"id": portfolio_id, "user_id": user["user_id"]}, {"_id": 0}
-    )
-    if not portfolio:
-        raise HTTPException(404, "Portfolio not found")
-
-    positions = await db.positions.find(
-        {"portfolio_id": portfolio_id},
-        {"_id": 0}
-    ).to_list(100)
-
-    total_value = 0
-    total_cost = 0
-    enriched_positions = []
-
-    for pos in positions:
-        ticker = pos.get("ticker", "")
-        shares = pos.get("shares", 0)
-        buy_price = pos.get("buy_price", 0)
-
-        latest = await _get_latest_price_from_db(ticker)
-        current_price = (latest.get("adjusted_close") or latest.get("close", buy_price)) if latest else buy_price
-
-        market_value = shares * current_price
-        cost_basis = shares * buy_price
-        gain_loss = market_value - cost_basis
-        gain_loss_pct = (gain_loss / cost_basis * 100) if cost_basis > 0 else 0
-
-        total_value += market_value
-        total_cost += cost_basis
-
-        enriched_positions.append({
-            **pos,
-            "current_price": round(current_price, 2),
-            "market_value": round(market_value, 2),
-            "cost_basis": round(cost_basis, 2),
-            "gain_loss": round(gain_loss, 2),
-            "gain_loss_pct": round(gain_loss_pct, 2)
-        })
-
-    portfolio["positions"] = enriched_positions
-    portfolio["total_value"] = round(total_value, 2)
-    portfolio["total_cost"] = round(total_cost, 2)
-    portfolio["total_gain_loss"] = round(total_value - total_cost, 2)
-    portfolio["total_gain_loss_pct"] = round(((total_value - total_cost) / total_cost * 100) if total_cost > 0 else 0, 2)
-
-    return portfolio
+    _legacy_portfolio_disabled()
 
 @api_router.post("/positions")
 async def create_position(request: Request, position: PositionCreate):
-    """Add a position to a portfolio. Anti-enumeration: 404 if not owned."""
-    user = request.state.user
-    portfolio = await db.portfolios.find_one(
-        {"id": position.portfolio_id, "user_id": user["user_id"]}
-    )
-    if not portfolio:
-        raise HTTPException(404, "Portfolio not found")
-
-    position_id = str(uuid.uuid4())
-    doc = {
-        "id": position_id,
-        **position.dict(),
-        "created_at": datetime.utcnow()
-    }
-    await db.positions.insert_one(doc)
-    return {"id": position_id, "ticker": position.ticker}
+    _legacy_portfolio_disabled()
 
 
 # =============================================================================
@@ -1458,21 +1400,458 @@ def is_before_market_close_prague():
     return prague_now.hour < 21
 
 
+def _normalize_list_ticker(ticker: str) -> str:
+    return ticker.upper().replace(".US", "").strip()
+
+
+def _format_display_date(raw_value: Optional[str]) -> Optional[str]:
+    if not raw_value:
+        return None
+    try:
+        if "T" in raw_value:
+            dt = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            return dt.strftime("%d/%m/%Y")
+        return datetime.fromisoformat(raw_value).strftime("%d/%m/%Y")
+    except Exception:
+        return raw_value
+
+
+async def _resolve_latest_completed_close_date() -> Optional[str]:
+    from services.market_calendar_service import last_n_completed_trading_days
+
+    completed = await last_n_completed_trading_days(db, 1, "US")
+    return completed[0] if completed else None
+
+
+async def _resolve_target_close_date() -> Optional[str]:
+    from services.market_calendar_service import _next_trading_day, market_status_now
+
+    status = await market_status_now(db, "US")
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+    today_str = now_et.date().isoformat()
+    if status.get("is_trading_day") and status.get("state") in {"CLOSED", "PRE_MARKET", "REGULAR"}:
+        return today_str
+    return await _next_trading_day(db, today_str, "US") or today_str
+
+
+async def _get_close_for_date_or_latest(ticker_full: str, target_date: Optional[str]) -> tuple[Optional[float], Optional[str]]:
+    query: Dict[str, Any] = {"ticker": ticker_full}
+    if target_date:
+        query["date"] = {"$lte": target_date}
+    latest_price = await db.stock_prices.find_one(
+        query,
+        {"_id": 0, "date": 1, "close": 1, "adjusted_close": 1},
+        sort=[("date", -1)],
+    )
+    if not latest_price:
+        return None, None
+    return latest_price.get("adjusted_close") or latest_price.get("close"), latest_price.get("date")
+
+
+async def _assert_visible_ticker(ticker_clean: str) -> None:
+    tracked = await db.tracked_tickers.find_one(
+        {"ticker": f"{ticker_clean}.US", "is_visible": True},
+        {"_id": 0, "ticker": 1},
+    )
+    if not tracked:
+        raise HTTPException(400, f"Ticker {ticker_clean} is not visible or doesn't exist")
+
+
+async def _get_watchlist_docs_for_user(user_id: str) -> List[dict]:
+    return await db.user_watchlist.find(
+        {"user_id": user_id},
+        {"_id": 0},
+    ).sort("followed_at", -1).to_list(length=None)
+
+
+async def _get_tracklist_doc_for_user(user_id: str) -> Optional[dict]:
+    return await db.user_tracklists.find_one({"user_id": user_id}, {"_id": 0})
+
+
+def _coerce_utc_datetime(raw_value: Any) -> Optional[datetime]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, datetime):
+        return raw_value if raw_value.tzinfo else raw_value.replace(tzinfo=timezone.utc)
+    if isinstance(raw_value, str):
+        try:
+            parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
+    tracklist_doc = await _get_tracklist_doc_for_user(user_id)
+    if len(_get_tracklist_positions(tracklist_doc)) == 7:
+        return tracklist_doc
+
+    user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "created_at": 1, "updated_at": 1, "role": 1, "email": 1})
+    if not user_doc:
+        return tracklist_doc
+
+    created_at = _coerce_utc_datetime(user_doc.get("created_at"))
+    if created_at is None:
+        created_at = ADMIN_TRACKLIST_FALLBACK_CREATED_AT if user_doc.get("role") == "admin" else datetime.now(timezone.utc)
+        await db.users.update_one(
+            {"user_id": user_id},
+            {"$set": {"created_at": created_at, "updated_at": datetime.now(timezone.utc)}},
+        )
+
+    created_at_iso = created_at.isoformat()
+    effective_date = created_at.date().isoformat()
+    snapshot = await _build_tracklist_snapshot(
+        MAGNIFICENT_SEVEN,
+        100000,
+        effective_date,
+        created_at=created_at_iso,
+    )
+    doc = {
+        "user_id": user_id,
+        "initial_capital": 100000,
+        "positions": snapshot["positions"],
+        "events": [{
+            **snapshot,
+            "event_type": "auto_seed",
+            "seed_name": "magnificent_7",
+            "created_at": created_at_iso,
+        }],
+        "seed_name": "magnificent_7",
+        "seed_tickers": MAGNIFICENT_SEVEN,
+        "seeded_at": created_at_iso,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.user_tracklists.update_one(
+        {"user_id": user_id},
+        {"$set": doc},
+        upsert=True,
+    )
+    return doc
+
+
+def _get_tracklist_positions(tracklist_doc: Optional[dict]) -> List[dict]:
+    if not tracklist_doc:
+        return []
+    positions = [p for p in tracklist_doc.get("positions", []) if p.get("ticker")]
+    return positions if len(positions) == 7 else []
+
+
+def _get_tracklist_draft_tickers(tracklist_doc: Optional[dict]) -> List[str]:
+    if not tracklist_doc:
+        return []
+    raw_draft = tracklist_doc.get("draft_tickers") or []
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for ticker in raw_draft:
+        ticker_clean = _normalize_list_ticker(ticker)
+        if ticker_clean and ticker_clean not in seen:
+            seen.add(ticker_clean)
+            normalized.append(ticker_clean)
+    if normalized:
+        return normalized
+
+    raw_positions = [p for p in tracklist_doc.get("positions", []) if p.get("ticker")]
+    if 0 < len(raw_positions) < 7:
+        for pos in raw_positions:
+            ticker_clean = _normalize_list_ticker(pos.get("ticker", ""))
+            if ticker_clean and ticker_clean not in seen:
+                seen.add(ticker_clean)
+                normalized.append(ticker_clean)
+    return normalized
+
+
+async def _get_membership_state(user_id: str) -> dict:
+    watchlist_docs = await _get_watchlist_docs_for_user(user_id)
+    tracklist_doc = await _ensure_default_tracklist_for_user(user_id)
+    watchlist = {_normalize_list_ticker(doc.get("ticker", "")) for doc in watchlist_docs if doc.get("ticker")}
+    tracklist_positions = _get_tracklist_positions(tracklist_doc)
+    tracklist_draft_tickers = _get_tracklist_draft_tickers(tracklist_doc)
+    tracklist = {
+        _normalize_list_ticker(pos.get("ticker", ""))
+        for pos in tracklist_positions
+        if pos.get("ticker")
+    } | set(tracklist_draft_tickers)
+    return {
+        "watchlist_docs": watchlist_docs,
+        "watchlist": watchlist,
+        "tracklist_doc": tracklist_doc,
+        "tracklist_positions": tracklist_positions,
+        "tracklist_draft_tickers": tracklist_draft_tickers,
+        "tracklist": tracklist,
+        "tracklist_is_full": len(tracklist_positions) >= 7,
+    }
+
+
+async def _build_tracklist_snapshot(
+    tickers: List[str],
+    capital: float,
+    effective_date: str,
+    *,
+    created_at: str,
+) -> dict:
+    positions: List[dict] = []
+    allocation = capital / len(tickers) if tickers else 0
+    for ticker in tickers:
+        close_value, close_date = await _get_close_for_date_or_latest(f"{ticker}.US", effective_date)
+        if not close_value or close_value <= 0:
+            raise HTTPException(400, f"Missing close price for {ticker}")
+        positions.append({
+            "ticker": ticker,
+            "shares": allocation / close_value,
+            "entry_price": round(close_value, 4),
+            "entry_date": close_date or effective_date,
+            "added_at": created_at,
+        })
+    return {
+        "effective_date": effective_date,
+        "positions": positions,
+        "capital": round(capital, 2),
+    }
+
+
+async def _compute_tracklist_value(positions: List[dict], target_date: Optional[str]) -> float:
+    total = 0.0
+    for pos in positions:
+        ticker = _normalize_list_ticker(pos.get("ticker", ""))
+        shares = float(pos.get("shares") or 0)
+        if not ticker or shares <= 0:
+            continue
+        close_value, _ = await _get_close_for_date_or_latest(f"{ticker}.US", target_date)
+        if not close_value or close_value <= 0:
+            close_value = float(pos.get("entry_price") or 0)
+        total += shares * close_value
+    return round(total, 2)
+
+
+async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
+    positions = _get_tracklist_positions(tracklist_doc)
+    snapshots = sorted(tracklist_doc.get("events", []) if tracklist_doc else [], key=lambda item: item.get("effective_date") or "")
+    ready_snapshots = [snap for snap in snapshots if len(snap.get("positions", [])) == 7 and snap.get("effective_date")]
+    if len(positions) < 7 or not ready_snapshots:
+        return {
+            "ready": False,
+            "mode": "USD",
+            "subtitle": "Your Tracklist activates automatically from your first login date.",
+            "series_usd": [],
+            "series_pct": [],
+            "metrics": None,
+            "current_value": None,
+            "chart": None,
+        }
+
+    start_date = ready_snapshots[0]["effective_date"]
+    end_date = await _resolve_latest_completed_close_date()
+    if not end_date or end_date < start_date:
+        return {
+            "ready": False,
+            "mode": "USD",
+            "subtitle": "Waiting for the first completed close.",
+            "series_usd": [],
+            "series_pct": [],
+            "metrics": None,
+            "current_value": None,
+            "chart": None,
+        }
+
+    all_tickers = sorted({_normalize_list_ticker(pos.get("ticker", "")) for snap in ready_snapshots for pos in snap.get("positions", []) if pos.get("ticker")})
+    price_rows = await db.stock_prices.find(
+        {"ticker": {"$in": [f"{ticker}.US" for ticker in all_tickers]}, "date": {"$gte": start_date, "$lte": end_date}},
+        {"_id": 0, "ticker": 1, "date": 1, "adjusted_close": 1, "close": 1},
+    ).sort([("ticker", 1), ("date", 1)]).to_list(length=None)
+    trading_days_rows = await db.market_calendar.find(
+        {"market": "US", "is_trading_day": True, "date": {"$gte": start_date, "$lte": end_date}},
+        {"_id": 0, "date": 1},
+    ).sort("date", 1).to_list(length=None)
+    benchmark_rows = await db.stock_prices.find(
+        {"ticker": SP500_TR_TICKER, "date": {"$gte": start_date, "$lte": end_date}},
+        {"_id": 0, "date": 1, "adjusted_close": 1, "close": 1},
+    ).sort("date", 1).to_list(length=None)
+
+    trading_days = [row["date"] for row in trading_days_rows]
+    price_map: Dict[str, List[tuple[str, float]]] = {}
+    for row in price_rows:
+        ticker = _normalize_list_ticker(row.get("ticker", ""))
+        price = row.get("adjusted_close") or row.get("close")
+        if ticker and price:
+            price_map.setdefault(ticker, []).append((row["date"], float(price)))
+    benchmark_history = [
+        (row["date"], float(row.get("adjusted_close") or row.get("close")))
+        for row in benchmark_rows
+        if row.get("date") and (row.get("adjusted_close") or row.get("close"))
+    ]
+
+    def _value_on_date(ticker: str, target_date: str, fallback_price: float) -> float:
+        history = price_map.get(ticker, [])
+        current_price = fallback_price
+        for date_str, price in history:
+            if date_str > target_date:
+                break
+            current_price = price
+        return current_price
+
+    usd_series: List[dict] = []
+    for index, snapshot in enumerate(ready_snapshots):
+        segment_start = snapshot["effective_date"]
+        has_next_snapshot = index + 1 < len(ready_snapshots)
+        segment_end_exclusive = ready_snapshots[index + 1]["effective_date"] if has_next_snapshot else None
+        for trading_day in trading_days:
+            if trading_day < segment_start:
+                continue
+            if segment_end_exclusive and trading_day >= segment_end_exclusive:
+                break
+            total = 0.0
+            for pos in snapshot.get("positions", []):
+                ticker = _normalize_list_ticker(pos.get("ticker", ""))
+                shares = float(pos.get("shares") or 0)
+                fallback_price = float(pos.get("entry_price") or 0)
+                total += shares * _value_on_date(ticker, trading_day, fallback_price)
+            usd_series.append({"date": trading_day, "value": round(total, 2)})
+
+    if not usd_series:
+        return {
+            "ready": False,
+            "mode": "USD",
+            "subtitle": "Waiting for the first completed close.",
+            "series_usd": [],
+            "series_pct": [],
+            "metrics": None,
+            "current_value": None,
+            "chart": None,
+        }
+
+    initial_value = float(tracklist_doc.get("initial_capital") or 100000)
+    initial_date = usd_series[0]["date"]
+    series_pct = [{
+        "date": point["date"],
+        "value": round(((point["value"] - initial_value) / initial_value) * 100, 2) if initial_value > 0 else 0,
+    } for point in usd_series]
+
+    values = [point["value"] for point in usd_series]
+    peak = values[0]
+    max_drawdown = 0.0
+    drawdown_duration = 0
+    running_duration = 0
+    trough_index = 0
+    drawdown_peak_value = values[0]
+    for value in values:
+        if value >= peak:
+            peak = value
+            running_duration = 0
+        else:
+            running_duration += 1
+            drawdown_duration = max(drawdown_duration, running_duration)
+            if peak > 0:
+                max_drawdown = max(max_drawdown, ((peak - value) / peak) * 100)
+    peak_for_recovery = values[0]
+    for index, value in enumerate(values):
+        if value >= peak_for_recovery:
+            peak_for_recovery = value
+        elif peak_for_recovery > 0:
+            drawdown_pct = ((peak_for_recovery - value) / peak_for_recovery) * 100
+            if drawdown_pct >= max_drawdown:
+                max_drawdown = drawdown_pct
+                trough_index = index
+                drawdown_peak_value = peak_for_recovery
+
+    recovered_date = None
+    if max_drawdown > 0:
+        for index in range(trough_index + 1, len(values)):
+            if values[index] >= drawdown_peak_value:
+                recovered_date = usd_series[index]["date"]
+                break
+
+    years = len(usd_series) / TRADING_DAYS_PER_YEAR
+    end_value = values[-1]
+    avg_per_year = 0.0
+    if len(usd_series) > 1 and years > 0 and initial_value > 0 and end_value > 0:
+        avg_per_year = ((end_value / initial_value) ** (1 / years) - 1) * 100
+    peak_value = max(values)
+    trough_value = min(values)
+    peak_index = values.index(peak_value)
+    trough_index_exact = values.index(trough_value)
+    risk_hist = initial_value - trough_value
+    reward_hist = peak_value - initial_value
+    reward_to_risk_ratio = round(reward_hist / risk_hist, 2) if risk_hist > 0 else None
+    benchmark_start = None
+    benchmark_end = None
+    for date_str, price in benchmark_history:
+        if date_str <= initial_date:
+            benchmark_start = price
+        benchmark_end = price
+    benchmark_total_pct = (
+        round(((benchmark_end - benchmark_start) / benchmark_start) * 100, 2)
+        if benchmark_start and benchmark_end and benchmark_start > 0
+        else None
+    )
+    total_profit_pct = round(((end_value - initial_value) / initial_value) * 100, 2) if initial_value > 0 else 0
+    vs_benchmark_pct = (
+        round(total_profit_pct - benchmark_total_pct, 2)
+        if benchmark_total_pct is not None
+        else None
+    )
+
+    return {
+        "ready": True,
+        "mode": "USD",
+        "subtitle": "Based on your Tracklist (equal-weight)",
+        "series_usd": usd_series,
+        "series_pct": series_pct,
+        "current_value": round(end_value, 2),
+        "chart": {
+            "start_date": initial_date,
+            "end_date": usd_series[-1]["date"],
+            "high": {
+                "value": round(peak_value, 2),
+                "date": usd_series[peak_index]["date"],
+            },
+            "low": {
+                "value": round(trough_value, 2),
+                "date": usd_series[trough_index_exact]["date"],
+            },
+            "current": {
+                "value": round(end_value, 2),
+                "date": usd_series[-1]["date"],
+            },
+        },
+        "metrics": {
+            "total_profit_usd": round(end_value - initial_value, 2),
+            "total_profit_pct": total_profit_pct,
+            "avg_per_year_pct": round(avg_per_year, 2),
+            "max_drawdown_pct": round(max_drawdown, 2),
+            "duration_days": drawdown_duration,
+            "rrr": reward_to_risk_ratio,
+            "track_record_days": len(usd_series),
+            "recovered_date": recovered_date,
+            "benchmark_name": "S&P 500 TR",
+            "benchmark_total_pct": benchmark_total_pct,
+            "vs_benchmark_pct": vs_benchmark_pct,
+        },
+    }
+
+
 @api_router.get("/v1/watchlist/check/{ticker}")
 async def check_if_followed(ticker: str, request: Request):
-    """P33: Check if a ticker is in the authenticated user's watchlist."""
+    """Check list membership for the authenticated user."""
     user = request.state.user
-    ticker_clean = ticker.upper().replace(".US", "")
-    followed = await db.user_watchlist.find_one(
-        {"ticker": ticker_clean, "user_id": user["user_id"]}
-    )
-    return {"ticker": ticker_clean, "is_followed": bool(followed)}
+    ticker_clean = _normalize_list_ticker(ticker)
+    state = await _get_membership_state(user["user_id"])
+    return {
+        "ticker": ticker_clean,
+        "is_followed": ticker_clean in state["watchlist"],
+        "is_in_tracklist": ticker_clean in state["tracklist"],
+        "memberships": {
+            "watchlist": ticker_clean in state["watchlist"],
+            "tracklist": ticker_clean in state["tracklist"],
+        },
+        "tracklist_is_full": state["tracklist_is_full"],
+        "changes_apply_at": "next_close",
+    }
 
 
 @api_router.get("/v1/positions/check/{ticker}")
 async def check_if_followed_legacy(ticker: str, request: Request):
-    """Legacy alias for watchlist check."""
-    return await check_if_followed(ticker, request)
+    raise HTTPException(410, "Legacy Watchlist aliases are disabled. Use /api/v1/lists/check/{ticker}.")
 
 
 @api_router.post("/v1/watchlist/{ticker}")
@@ -1480,7 +1859,11 @@ async def follow_ticker(ticker: str, request: Request):
     """P33: Add a ticker to the authenticated user's watchlist."""
     user = request.state.user
     user_id = user["user_id"]
-    ticker_clean = ticker.upper().replace(".US", "")
+    ticker_clean = _normalize_list_ticker(ticker)
+
+    state = await _get_membership_state(user_id)
+    if ticker_clean in state["tracklist"]:
+        raise HTTPException(409, f"Cannot add {ticker_clean} to Watchlist while it's in your Tracklist. Remove it first or use Replace.")
 
     existing = await db.user_watchlist.find_one(
         {"ticker": ticker_clean, "user_id": user_id}
@@ -1488,24 +1871,11 @@ async def follow_ticker(ticker: str, request: Request):
     if existing:
         return {"ticker": ticker_clean, "status": "already_followed"}
 
-    ticker_full = f"{ticker_clean}.US"
-    tracked = await db.tracked_tickers.find_one(
-        {"ticker": ticker_full, "is_visible": True}
-    )
-    if not tracked:
-        raise HTTPException(400, f"Ticker {ticker_clean} is not visible or doesn't exist")
+    await _assert_visible_ticker(ticker_clean)
 
     prague_now = get_prague_now()
-    follow_price_close = None
-    follow_price_date = None
-
-    latest_price = await db.stock_prices.find_one(
-        {"ticker": ticker_full},
-        sort=[("date", -1)]
-    )
-    if latest_price:
-        follow_price_close = latest_price.get("adjusted_close") or latest_price.get("close")
-        follow_price_date = latest_price.get("date")
+    target_close_date = await _resolve_target_close_date()
+    follow_price_close, follow_price_date = await _get_close_for_date_or_latest(f"{ticker_clean}.US", target_close_date)
 
     doc = {
         "id": str(uuid.uuid4()),
@@ -1514,6 +1884,7 @@ async def follow_ticker(ticker: str, request: Request):
         "followed_at": prague_now.isoformat(),
         "follow_price_close": follow_price_close,
         "follow_price_date": follow_price_date,
+        "effective_close_date": target_close_date,
         "created_at": datetime.utcnow()
     }
     await db.user_watchlist.insert_one(doc)
@@ -1524,20 +1895,21 @@ async def follow_ticker(ticker: str, request: Request):
         "followed_at": prague_now.strftime("%d/%m/%Y %H:%M"),
         "follow_price_close": follow_price_close,
         "follow_price_date": follow_price_date,
+        "effective_close_date": target_close_date,
+        "message": "Changes apply at next close.",
     }
 
 
 @api_router.post("/v1/positions/follow/{ticker}")
 async def follow_ticker_legacy(ticker: str, request: Request):
-    """Legacy alias for watchlist follow."""
-    return await follow_ticker(ticker, request)
+    raise HTTPException(410, "Legacy Watchlist aliases are disabled. Use /api/v1/watchlist/{ticker}.")
 
 
 @api_router.delete("/v1/watchlist/{ticker}")
 async def unfollow_ticker(ticker: str, request: Request):
     """P33: Remove a ticker from the authenticated user's watchlist. 404 = anti-enum."""
     user = request.state.user
-    ticker_clean = ticker.upper().replace(".US", "")
+    ticker_clean = _normalize_list_ticker(ticker)
 
     result = await db.user_watchlist.delete_one(
         {"ticker": ticker_clean, "user_id": user["user_id"]}
@@ -1550,8 +1922,7 @@ async def unfollow_ticker(ticker: str, request: Request):
 
 @api_router.delete("/v1/positions/unfollow/{ticker}")
 async def unfollow_ticker_legacy(ticker: str, request: Request):
-    """Legacy alias for watchlist unfollow."""
-    return await unfollow_ticker(ticker, request)
+    raise HTTPException(410, "Legacy Watchlist aliases are disabled. Use /api/v1/watchlist/{ticker}.")
 
 
 @api_router.get("/v1/watchlist")
@@ -1630,35 +2001,151 @@ async def get_watchlist(request: Request):
     }
 
 
+@api_router.get("/v1/lists/check/{ticker}")
+async def get_list_membership(ticker: str, request: Request):
+    user = request.state.user
+    ticker_clean = _normalize_list_ticker(ticker)
+    state = await _get_membership_state(user["user_id"])
+    return {
+        "ticker": ticker_clean,
+        "memberships": {
+            "watchlist": ticker_clean in state["watchlist"],
+            "tracklist": ticker_clean in state["tracklist"],
+        },
+        "tracklist_is_full": state["tracklist_is_full"],
+        "watchlist_count": len(state["watchlist"]),
+        "tracklist_count": len(state["tracklist"]),
+        "tracklist_ready": state["tracklist_is_full"],
+        "tracklist_draft_count": len(state["tracklist_draft_tickers"]),
+        "changes_apply_note": "Watchlist changes apply at next close. Tracklist is assigned automatically from your first login date.",
+    }
+
+
+@api_router.get("/v1/tracklist")
+async def get_tracklist(request: Request):
+    user = request.state.user
+    state = await _get_membership_state(user["user_id"])
+    tracklist_doc = state["tracklist_doc"] or {
+        "initial_capital": 100000,
+        "positions": [],
+        "events": [],
+        "draft_tickers": [],
+    }
+    performance = await _build_tracklist_performance(tracklist_doc)
+    positions = []
+    for pos in state["tracklist_positions"]:
+        positions.append({
+            "ticker": pos.get("ticker"),
+            "added_at": _format_display_date(pos.get("added_at")),
+            "entry_price": pos.get("entry_price"),
+            "entry_date": pos.get("entry_date"),
+            "shares": round(float(pos.get("shares") or 0), 6),
+        })
+    draft_tickers = state["tracklist_draft_tickers"]
+    return {
+        "count": len(positions),
+        "max_positions": 7,
+        "is_full": len(positions) >= 7,
+        "slots_remaining": max(0, 7 - len(positions)),
+        "ready": len(positions) >= 7,
+        "draft_tickers": draft_tickers,
+        "draft_count": len(draft_tickers),
+        "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+        "seeded_at": tracklist_doc.get("seeded_at") or (tracklist_doc.get("events", [{}])[0].get("created_at") if tracklist_doc.get("events") else None),
+        "seed_tickers": tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN,
+        "positions": positions,
+        "performance": performance,
+        "changes_apply_note": "Tracklist starts automatically from your first login date. Replacements apply at next close.",
+    }
+
+
+@api_router.post("/v1/tracklist/setup")
+async def setup_tracklist(payload: TracklistSetupRequest, request: Request):
+    raise HTTPException(410, "Tracklist is assigned automatically from your first login date.")
+
+
+@api_router.post("/v1/tracklist/draft/{ticker}")
+async def add_tracklist_setup_ticker(ticker: str, request: Request):
+    raise HTTPException(410, "Tracklist is assigned automatically from your first login date.")
+
+
+@api_router.post("/v1/tracklist/replace")
+async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Request):
+    user = request.state.user
+    old_ticker = _normalize_list_ticker(payload.old_ticker)
+    new_ticker = _normalize_list_ticker(payload.new_ticker)
+    if old_ticker == new_ticker:
+        raise HTTPException(400, "Choose a different ticker")
+
+    state = await _get_membership_state(user["user_id"])
+    if old_ticker not in state["tracklist"]:
+        raise HTTPException(404, f"{old_ticker} is not in your Tracklist")
+    if new_ticker in state["tracklist"]:
+        raise HTTPException(409, f"{new_ticker} is already in your Tracklist")
+    if new_ticker in state["watchlist"]:
+        raise HTTPException(409, f"{new_ticker} is already in your Watchlist")
+    if not state["tracklist_is_full"]:
+        raise HTTPException(409, "Tracklist replacements are available after your automatic 7-stock basket is ready.")
+
+    await _assert_visible_ticker(new_ticker)
+    existing_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in state["tracklist_positions"]]
+    target_tickers = [new_ticker if ticker == old_ticker else ticker for ticker in existing_tickers]
+    now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
+    tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "events": []}
+    capital = await _compute_tracklist_value(state["tracklist_positions"], effective_date)
+    snapshot = await _build_tracklist_snapshot(target_tickers, capital, effective_date, created_at=now_iso)
+    events = list(tracklist_doc.get("events", []))
+    events.append({
+        **snapshot,
+        "event_type": "replace",
+        "removed_ticker": old_ticker,
+        "added_ticker": new_ticker,
+        "created_at": now_iso,
+    })
+    await db.user_tracklists.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "user_id": user["user_id"],
+            "initial_capital": float(tracklist_doc.get("initial_capital") or 100000),
+            "draft_tickers": [],
+            "positions": snapshot["positions"],
+            "events": events,
+            "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+            "seed_tickers": tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN,
+            "seeded_at": tracklist_doc.get("seeded_at"),
+            "updated_at": now_iso,
+        }},
+        upsert=True,
+    )
+    return {
+        "status": "replaced",
+        "old_ticker": old_ticker,
+        "new_ticker": new_ticker,
+        "effective_close_date": effective_date,
+        "message": "Replacement is saved and applies at next close.",
+    }
+
+
+@api_router.post("/admin/tracklist/reset/{user_id}")
+async def admin_reset_tracklist(user_id: str, request: Request):
+    await _require_admin_session(request)
+    result = await db.user_tracklists.delete_one({"user_id": user_id})
+    return {"status": "reset", "user_id": user_id, "deleted": result.deleted_count}
+
+
 # ----- Homepage Data -----
 @api_router.get("/homepage")
-async def get_homepage_data():
+async def get_homepage_data(request: Request):
     """
-    P33 (BINDING): Homepage data with union of Watchlist + Portfolio.
-
-    ==========================================================================
-    P33: MY STOCKS = union(Watchlist, Portfolio)
-    DO NOT CHANGE WITHOUT RICHARD APPROVAL (kurtarichard@gmail.com)
-    ==========================================================================
-
-    Rules:
-    - Watchlist: from user_watchlist collection
-    - Portfolio: from positions with shares > 0
-    - Each row shows pill: "Watchlist" / "Portfolio" / "Both"
-    - Sorted: Portfolio first, then Watchlist-only
-    ==========================================================================
+    Homepage data with user-scoped Watchlist + Tracklist state.
     """
-    # --- Phase 1: Parallel fetch of independent setup data ---
+    user = request.state.user
+    user_id = user["user_id"]
+
     benchmark_task = _get_prices_from_db(SP500_TR_TICKER, days=30)
-    watchlist_raw_task = db.user_watchlist.find({}, {"_id": 0}).to_list(length=None)
-    portfolio_docs_task = db.positions.find(
-        {"shares": {"$gt": 0}},
-        {"_id": 0, "ticker": 1}
-    ).to_list(length=None)
-
-    benchmark, watchlist_all_docs, portfolio_docs = await asyncio.gather(
-        benchmark_task, watchlist_raw_task, portfolio_docs_task
-    )
+    membership_task = _get_membership_state(user_id)
+    benchmark, membership_state = await asyncio.gather(benchmark_task, membership_task)
 
     if benchmark:
         sp_current = benchmark[-1].get("adjusted_close", 0)
@@ -1670,26 +2157,16 @@ async def get_homepage_data():
     else:
         sp_current = sp_change = sp_change_pct = sp_ytd_return = 0
 
-    # P33: Build watchlist ticker set + docs lookup from single query
-    watchlist_tickers = set()
-    watchlist_docs = {}
-    for doc in watchlist_all_docs:
-        ticker = doc.get("ticker", "").upper()
-        if ticker:
-            watchlist_tickers.add(ticker.replace(".US", ""))
-            watchlist_docs[ticker.replace(".US", "")] = doc
-
-    # P33: Get PORTFOLIO tickers from positions (shares > 0 ONLY)
-    portfolio_tickers = set(
-        doc["ticker"].upper().replace(".US", "")
-        for doc in portfolio_docs
+    watchlist_docs = {
+        _normalize_list_ticker(doc.get("ticker", "")): doc
+        for doc in membership_state["watchlist_docs"]
         if doc.get("ticker")
-    )
+    }
+    watchlist_tickers = set(watchlist_docs.keys())
+    tracklist_positions = membership_state["tracklist_positions"]
+    tracklist_tickers = set(membership_state["tracklist"])
+    all_tickers = watchlist_tickers | tracklist_tickers
 
-    # P33: Union of both sets
-    all_tickers = watchlist_tickers | portfolio_tickers
-
-    # Filter to only visible tickers
     if all_tickers:
         all_full = [f"{t}.US" for t in all_tickers]
         visible_docs = await db.tracked_tickers.find(
@@ -1700,28 +2177,20 @@ async def get_homepage_data():
     else:
         visible_set = set()
 
-    # P33: Build enriched list with pill classification
-    # Sort: Portfolio first (sorted by ticker), then Watchlist-only (sorted by ticker)
-    portfolio_visible = sorted(portfolio_tickers & visible_set)
-    watchlist_only_visible = sorted((watchlist_tickers - portfolio_tickers) & visible_set)
-    ordered_tickers = portfolio_visible + watchlist_only_visible
+    tracklist_visible = sorted(tracklist_tickers & visible_set)
+    watchlist_visible = sorted((watchlist_tickers - tracklist_tickers) & visible_set)
+    ordered_tickers = tracklist_visible + watchlist_visible
 
     stocks = []
-
-    # --- Phase 2: Batch fetch fundamentals + prices in parallel (no N+1) ---
     all_ticker_dbs = [f"{t}.US" for t in ordered_tickers[:20]]
 
     if all_ticker_dbs:
-        # Single batch query for all fundamentals
         fundamentals_task = db.company_fundamentals_cache.find(
             {"ticker": {"$in": all_ticker_dbs}},
             {"_id": 0, "ticker": 1, "name": 1, "logo_url": 1, "logo_status": 1}
         ).to_list(length=None)
 
-        # Single aggregation for latest 2 prices per ticker (gives us current + previous)
-        # 14-day lookback is enough to cover weekends/holidays and guarantee ≥2 trading days
-        PRICE_LOOKBACK_DAYS = 14
-        price_cutoff = (datetime.now() - timedelta(days=PRICE_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+        price_cutoff = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
         prices_pipeline = [
             {"$match": {"ticker": {"$in": all_ticker_dbs}, "date": {"$gte": price_cutoff}}},
             {"$sort": {"ticker": 1, "date": -1}},
@@ -1733,10 +2202,7 @@ async def get_homepage_data():
                     "adjusted_close": "$adjusted_close"
                 }}
             }},
-            {"$project": {
-                "_id": 1,
-                "prices": {"$slice": ["$prices", 2]}
-            }}
+            {"$project": {"_id": 1, "prices": {"$slice": ["$prices", 2]}}},
         ]
         prices_task = db.stock_prices.aggregate(prices_pipeline).to_list(length=None)
 
@@ -1764,9 +2230,8 @@ async def get_homepage_data():
         dividend_rows = []
         split_rows = []
 
-    # Build lookup dicts
     fund_map = {doc["ticker"]: doc for doc in fundamentals_list}
-    price_map = {}  # ticker_db -> {"current": ..., "prev": ..., "date": ...}
+    price_map = {}
     for doc in prices_agg:
         ticker_db = doc["_id"]
         prices = doc.get("prices", [])
@@ -1780,132 +2245,106 @@ async def get_homepage_data():
                 entry["prev"] = prev.get("adjusted_close") or prev.get("close", 0)
         price_map[ticker_db] = entry
 
-    upcoming_events = []
-    event_type_order = {"Earnings": 0, "Dividend": 1, "Split": 2}
-
-    def _company_meta_for_event(ticker_db: str) -> tuple[str, Optional[str]]:
-        fundamentals = fund_map.get(ticker_db, {})
-        bare = ticker_db.replace(".US", "")
-        logo_url = None
-        if fundamentals.get("logo_status") == "present":
-            logo_url = _internal_logo_url(fundamentals.get("logo_url") or bare)
-        return fundamentals.get("name", bare), logo_url
-
+    earnings_map = {}
     for row in earnings_rows:
-        ticker_db = (row.get("ticker") or "").upper()
-        if not ticker_db:
-            continue
-        company_name, logo_url = _company_meta_for_event(ticker_db)
-        upcoming_events.append({
-            "id": f"earnings-{ticker_db}-{row.get('report_date')}",
-            "ticker": ticker_db.replace(".US", ""),
-            "company_name": company_name,
-            "logo_url": logo_url,
-            "event_type": "Earnings",
-            "title": "Upcoming Earnings",
-            "date": row.get("report_date"),
-            "before_after_market": row.get("before_after_market"),
-            "estimate": row.get("estimate"),
-            "currency": row.get("currency"),
-        })
+        ticker = row.get("ticker")
+        if ticker and ticker not in earnings_map:
+            earnings_map[ticker] = row
 
+    dividends_map = {}
     for row in dividend_rows:
-        ticker_db = (row.get("ticker") or "").upper()
-        if not ticker_db:
-            continue
-        company_name, logo_url = _company_meta_for_event(ticker_db)
-        upcoming_events.append({
-            "id": f"dividend-{ticker_db}-{row.get('next_ex_date')}",
-            "ticker": ticker_db.replace(".US", ""),
-            "company_name": company_name,
-            "logo_url": logo_url,
-            "event_type": "Dividend",
-            "title": "Upcoming Ex-Dividend",
-            "date": row.get("next_ex_date"),
-            "amount": row.get("next_dividend_amount"),
-            "currency": row.get("next_dividend_currency"),
-            "pay_date": row.get("next_pay_date"),
-        })
+        ticker = row.get("ticker")
+        if ticker and ticker not in dividends_map:
+            dividends_map[ticker] = row
 
+    splits_map = {}
     for row in split_rows:
-        ticker_db = (row.get("ticker") or "").upper()
-        if not ticker_db:
-            continue
-        company_name, logo_url = _company_meta_for_event(ticker_db)
-        upcoming_events.append({
-            "id": f"split-{ticker_db}-{row.get('split_date')}",
-            "ticker": ticker_db.replace(".US", ""),
-            "company_name": company_name,
-            "logo_url": logo_url,
-            "event_type": "Split",
-            "title": "Upcoming Split",
-            "date": row.get("split_date"),
-            "split_ratio": _format_split_ratio(
-                row.get("split_ratio"),
-                old_shares=row.get("old_shares"),
-                new_shares=row.get("new_shares"),
-            ),
-        })
+        ticker = row.get("ticker")
+        if ticker and ticker not in splits_map:
+            splits_map[ticker] = row
 
-    upcoming_events.sort(
-        key=lambda item: (
-            item.get("date") or "",
-            event_type_order.get(item.get("event_type") or "", 99),
-            item.get("ticker") or "",
-        )
-    )
-
-    # --- Phase 3: Build response from lookup dicts (no DB calls) ---
-    for ticker in ordered_tickers[:20]:
+    upcoming_events = []
+    for ticker in ordered_tickers:
         ticker_db = f"{ticker}.US"
-        fundamentals = fund_map.get(ticker_db)
-        price_data = price_map.get(ticker_db, {"current": 0, "prev": 0, "date": None})
-
-        current = price_data["current"]
-        change_1d_pct = 0
-        if current and price_data["prev"] and price_data["prev"] > 0:
-            change_1d_pct = ((current - price_data["prev"]) / price_data["prev"]) * 100
-
-        # Build internal logo URL only when logo binary actually exists
+        earnings = earnings_map.get(ticker_db)
+        dividend = dividends_map.get(ticker_db)
+        split = splits_map.get(ticker_db)
+        fundamentals = fund_map.get(ticker_db, {})
+        company_name = fundamentals.get("name", ticker) if fundamentals else ticker
         logo_url = None
         if fundamentals and fundamentals.get("logo_status") == "present":
-            logo_url = _internal_logo_url(
-                fundamentals.get("logo_url") or ticker
-            )
+            logo_url = _internal_logo_url(fundamentals.get("logo_url") or ticker_db)
 
-        # P33: Determine pill type
-        in_watchlist = ticker in watchlist_tickers
-        in_portfolio = ticker in portfolio_tickers
+        if earnings:
+            upcoming_events.append({
+                "id": f"earnings-{ticker}",
+                "ticker": ticker,
+                "company_name": company_name,
+                "logo_url": logo_url,
+                "event_type": "Earnings",
+                "title": "Earnings",
+                "date": earnings.get("report_date"),
+                "before_after_market": earnings.get("before_after_market"),
+                "estimate": earnings.get("estimate"),
+                "currency": earnings.get("currency"),
+            })
+        if dividend:
+            upcoming_events.append({
+                "id": f"dividend-{ticker}",
+                "ticker": ticker,
+                "company_name": company_name,
+                "logo_url": logo_url,
+                "event_type": "Dividend",
+                "title": "Dividend",
+                "date": dividend.get("next_ex_date"),
+                "amount": dividend.get("next_dividend_amount"),
+                "currency": dividend.get("next_dividend_currency"),
+                "pay_date": dividend.get("next_pay_date"),
+            })
+        if split:
+            upcoming_events.append({
+                "id": f"split-{ticker}",
+                "ticker": ticker,
+                "company_name": company_name,
+                "logo_url": logo_url,
+                "event_type": "Split",
+                "title": "Split",
+                "date": split.get("split_date"),
+                "split_ratio": split.get("split_ratio"),
+            })
 
-        if in_watchlist and in_portfolio:
-            pill = "Both"
-        elif in_portfolio:
-            pill = "Portfolio"
-        else:
-            pill = "Watchlist"
+    upcoming_events.sort(key=lambda event: (event.get("date") or "9999-12-31", event.get("ticker") or ""))
+    upcoming_events = upcoming_events[:10]
 
-        # P37+ Part 3 (G): Add change_since_added for watchlist items
+    for ticker in ordered_tickers:
+        ticker_db = f"{ticker}.US"
+        fundamentals = fund_map.get(ticker_db, {})
+        price_data = price_map.get(ticker_db, {"current": 0, "prev": 0, "date": None})
+        current = price_data["current"]
+        prev = price_data["prev"]
+        change_1d_pct = ((current - prev) / prev * 100) if current and prev and prev > 0 else 0
+
+        logo_url = None
+        if fundamentals and fundamentals.get("logo_status") == "present":
+            logo_url = _internal_logo_url(fundamentals.get("logo_url") or ticker_db)
+
+        in_tracklist = ticker in tracklist_tickers
+        pill = "Tracklist" if in_tracklist else "Watchlist"
         added_at = None
         change_since_added = None
         follow_price = None
 
-        if ticker in watchlist_docs:
+        if in_tracklist:
+            pos = next((position for position in tracklist_positions if _normalize_list_ticker(position.get("ticker", "")) == ticker), None)
+            if pos:
+                added_at = _format_display_date(pos.get("added_at"))
+                follow_price = pos.get("entry_price")
+                if follow_price and current and follow_price > 0:
+                    change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
+        elif ticker in watchlist_docs:
             wl_doc = watchlist_docs[ticker]
             follow_price = wl_doc.get("follow_price_close")
-
-            # Format added_at as DD/MM/YYYY
-            followed_at_str = wl_doc.get("followed_at", "")
-            if followed_at_str:
-                try:
-                    if "T" in followed_at_str:
-                        dt = datetime.fromisoformat(followed_at_str.replace("Z", "+00:00"))
-                        added_at = dt.strftime("%d/%m/%Y")
-                    else:
-                        added_at = followed_at_str
-                except:
-                    added_at = None
-
-            # Calculate change since added
+            added_at = _format_display_date(wl_doc.get("followed_at"))
             if follow_price and current and follow_price > 0:
                 change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
 
@@ -1914,13 +2353,14 @@ async def get_homepage_data():
             "name": fundamentals.get("name", ticker) if fundamentals else ticker,
             "logo_url": logo_url,
             "price": round(current, 2) if current else None,
-            "change_1d_pct": round(change_1d_pct, 2),  # P37+: 1D change
+            "change_1d_pct": round(change_1d_pct, 2),
             "pill": pill,
-            # P37+ Part 3 (G): Added date and change since added
             "added_at": added_at,
             "change_since_added": change_since_added,
-            "follow_price": round(follow_price, 2) if follow_price else None
+            "follow_price": round(follow_price, 2) if follow_price else None,
         })
+
+    tracklist_performance = await _build_tracklist_performance(membership_state["tracklist_doc"])
 
     return {
         "last_updated": datetime.utcnow().isoformat(),
@@ -1934,9 +2374,21 @@ async def get_homepage_data():
             "ytd_return": round(sp_ytd_return, 2)
         },
         "my_stocks": stocks,
+        "tracklist": {
+            "count": len(tracklist_positions),
+            "is_full": len(tracklist_positions) >= 7,
+            "positions": [
+                {
+                    "ticker": pos.get("ticker"),
+                    "added_at": _format_display_date(pos.get("added_at")),
+                }
+                for pos in tracklist_positions
+            ],
+            "performance": tracklist_performance,
+        },
         "upcoming_events": upcoming_events,
         "watchlist_count": len(watchlist_tickers & visible_set),
-        "portfolio_count": len(portfolio_tickers & visible_set),
+        "tracklist_count": len(tracklist_tickers & visible_set),
         "total_count": len(ordered_tickers),
         "data_source": "MongoDB",
         "api_mode": "DB_ONLY"
@@ -2171,22 +2623,26 @@ async def whitelist_search(q: str = Query(..., min_length=1), limit: int = Query
     """
     Search the whitelist for tickers.
     Only returns ACTIVE tickers (those with fundamentals).
-    If authenticated, each result includes is_following for the current user.
+    If authenticated, each result includes list memberships for the current user.
     """
-    # Optionally resolve user for is_following annotation (single DB query)
+    tracklist_tickers: set | None = None
     followed_tickers: set | None = None
     if request is not None:
         token = get_session_token_from_request(request)
         if token:
             user = await validate_session(db, token)
             if user:
-                docs = await db.user_watchlist.find(
-                    {"user_id": user["user_id"]},
-                    {"_id": 0, "ticker": 1},
-                ).to_list(length=None)
-                followed_tickers = {d["ticker"] for d in docs}
+                state = await _get_membership_state(user["user_id"])
+                followed_tickers = state["watchlist"]
+                tracklist_tickers = state["tracklist"]
 
-    results = await search_whitelist(db, q, limit, followed_tickers=followed_tickers)
+    results = await search_whitelist(
+        db,
+        q,
+        limit,
+        followed_tickers=followed_tickers,
+        tracklist_tickers=tracklist_tickers,
+    )
     return {"query": q, "count": len(results), "results": results}
 
 @api_router.get("/whitelist/check/{ticker}")

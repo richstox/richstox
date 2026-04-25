@@ -19,7 +19,6 @@ const tabs = [
   { name: 'Home', route: '/(tabs)/dashboard', icon: 'home-outline' as const },
   { name: 'Markets', route: '/(tabs)/markets', icon: 'newspaper-outline' as const },
   { name: 'Leagues', route: '/(tabs)/leagues', icon: 'trophy-outline' as const },
-  { name: 'Portfolio', route: '/(tabs)/portfolio', icon: 'briefcase-outline' as const },
   { name: 'Talk', route: '/(tabs)/talk', icon: 'chatbubbles-outline' as const },
 ];
 
