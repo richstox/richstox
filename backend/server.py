@@ -2679,8 +2679,11 @@ async def browse_all_sectors():
 
     ticker_list = [t["ticker"] for t in all_tickers]
 
-    # 2. Latest price per ticker — limit to 30-day window to avoid a full collection scan
-    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    # 2. Latest price per ticker — 5-day window covers weekends and public holidays
+    #    (US markets never have more than 3 consecutive non-trading days).
+    #    30 days was scanning ~75 000 documents for all visible tickers; 5 days
+    #    cuts that to ~12 500 while still reliably finding the last close.
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
     price_map: dict = {}
     async for doc in db.stock_prices.aggregate([
         {"$match": {"ticker": {"$in": ticker_list}, "date": {"$gte": recent_cutoff}}},
@@ -2752,8 +2755,9 @@ async def browse_sector_industries(sector_name: str):
 
     ticker_list = [t["ticker"] for t in tickers_in_sector]
 
-    # Latest prices — limit to 30-day window to avoid a full collection scan
-    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    # Latest prices — 5-day window (covers weekends/holidays; was 30 days which
+    #    scanned tens of thousands of documents for no benefit)
+    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
     price_map: dict = {}
     async for doc in db.stock_prices.aggregate([
         {"$match": {"ticker": {"$in": ticker_list}, "date": {"$gte": recent_cutoff}}},
