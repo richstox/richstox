@@ -1083,6 +1083,11 @@ export default function StockDetail() {
     }
   }, [ticker, sessionToken]);
 
+  const handleOpenAddTo = useCallback(() => {
+    setAddToVisible(true);
+    fetchListMemberships();
+  }, [fetchListMemberships]);
+
   const handleAddTo = async (target: 'watchlist' | 'tracklist') => {
     if (listActionLoading || !sessionToken) {
       return;
@@ -2593,8 +2598,12 @@ export default function StockDetail() {
                 <Text style={styles.priceDate}>as of {formatDateDMY(price.date)}</Text>
               </View>
               <TouchableOpacity
-                style={[styles.addToButton, (listMemberships.watchlist || listMemberships.tracklist) && styles.addToButtonActive]}
-                onPress={() => setAddToVisible(true)}
+                style={[
+                  styles.addToButton,
+                  listMemberships.watchlist && styles.addToButtonActiveWatchlist,
+                  listMemberships.tracklist && styles.addToButtonActiveTracklist,
+                ]}
+                onPress={handleOpenAddTo}
               >
                 <Ionicons name="add" size={16} color={COLORS.text} />
                 <Text style={styles.addToButtonText}>
@@ -4908,33 +4917,35 @@ export default function StockDetail() {
                 listMemberships.watchlist && styles.addToSheetItemActive,
               ]}
               onPress={() => handleAddTo('watchlist')}
-              disabled={listActionLoading || listMemberships.tracklist}
+              disabled={listActionLoading || listMemberships.watchlist || listMemberships.tracklist}
             >
-              <View style={styles.addToSheetIcon}>
-                <Ionicons name="eye-outline" size={18} color={COLORS.primary} />
+              <View style={[styles.addToSheetIcon, styles.addToSheetIconWatchlist]}>
+                <Ionicons name="eye-outline" size={18} color="#B45309" />
               </View>
               <View style={styles.addToSheetTextWrap}>
                 <Text style={styles.addToSheetItemTitle}>Watchlist</Text>
                 <Text style={styles.addToSheetItemText}>
-                  {listMemberships.tracklist
+                  {listMemberships.watchlist
+                    ? 'Already in your Watchlist.'
+                    : listMemberships.tracklist
                     ? 'Unavailable while this stock is in your Tracklist.'
                     : 'Starts tracking from the next close and appears in My Stocks.'}
                 </Text>
               </View>
-              {listMemberships.watchlist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}
+              {listMemberships.watchlist ? <Ionicons name="checkmark" size={20} color="#B45309" /> : null}
             </TouchableOpacity>
 
             <TouchableOpacity
               style={[
                 styles.addToSheetItem,
                 listMemberships.watchlist && styles.addToSheetItemDisabled,
-                listMemberships.tracklist && styles.addToSheetItemActive,
+                listMemberships.tracklist && styles.addToSheetItemActiveTracklist,
               ]}
               onPress={() => handleAddTo('tracklist')}
-              disabled={listMemberships.watchlist}
+              disabled={listMemberships.watchlist || listMemberships.tracklist}
             >
-              <View style={styles.addToSheetIcon}>
-                <Ionicons name="analytics-outline" size={18} color={COLORS.primary} />
+              <View style={[styles.addToSheetIcon, styles.addToSheetIconTracklist]}>
+                <Ionicons name="analytics-outline" size={18} color="#1D4ED8" />
               </View>
               <View style={styles.addToSheetTextWrap}>
                 <Text style={styles.addToSheetItemTitle}>Tracklist</Text>
@@ -4946,12 +4957,12 @@ export default function StockDetail() {
                       : 'Opens your Tracklist overview where you can replace one current name.'}
                 </Text>
               </View>
-              {listMemberships.tracklist ? <Ionicons name="checkmark" size={20} color={COLORS.primary} /> : null}
+              {listMemberships.tracklist ? <Ionicons name="checkmark" size={20} color="#1D4ED8" /> : null}
             </TouchableOpacity>
 
             <View style={[styles.addToSheetItem, styles.addToSheetItemDisabled]}>
-              <View style={styles.addToSheetIcon}>
-                <Ionicons name="briefcase-outline" size={18} color={COLORS.textMuted} />
+              <View style={[styles.addToSheetIcon, styles.addToSheetIconPortfolio]}>
+                <Ionicons name="briefcase-outline" size={18} color="#065F46" />
               </View>
               <View style={styles.addToSheetTextWrap}>
                 <Text style={styles.addToSheetItemTitle}>Portfolio</Text>
@@ -5292,6 +5303,8 @@ const styles = StyleSheet.create({
   lastCloseTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   addToButton: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 999, backgroundColor: '#F3F4F6' },
   addToButtonActive: { backgroundColor: '#E0E7FF' },
+  addToButtonActiveWatchlist: { backgroundColor: '#FEF3C7' },
+  addToButtonActiveTracklist: { backgroundColor: '#DBEAFE' },
   addToButtonText: { fontSize: 13, fontWeight: '700', color: COLORS.text },
   priceRow: { flexDirection: 'row', alignItems: 'center' },
   priceValueRow: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
@@ -6054,7 +6067,10 @@ const styles = StyleSheet.create({
     borderBottomColor: '#F3F4F6',
   },
   addToSheetItemActive: {
-    backgroundColor: '#F8FAFF',
+    backgroundColor: '#FEF3C7',
+  },
+  addToSheetItemActiveTracklist: {
+    backgroundColor: '#EFF6FF',
   },
   addToSheetItemDisabled: {
     opacity: 0.5,
@@ -6066,6 +6082,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#EEF2FF',
+  },
+  addToSheetIconWatchlist: {
+    backgroundColor: '#FEF3C7',
+  },
+  addToSheetIconTracklist: {
+    backgroundColor: '#DBEAFE',
+  },
+  addToSheetIconPortfolio: {
+    backgroundColor: '#D1FAE5',
   },
   addToSheetTextWrap: {
     flex: 1,

@@ -8,6 +8,7 @@ import {
   FlatList,
   Keyboard,
   Image,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -32,17 +33,33 @@ const COLORS = {
   border: '#E5E7EB',
 };
 
-const MEMBERSHIP_LABELS: Record<string, string> = {
-  watchlist: 'Watchlist',
-  tracklist: 'Tracklist',
+const MEMBERSHIP_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
+  watchlist: { label: 'Watchlist', bg: '#FEF3C7', text: '#B45309' },
+  tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' },
 };
 
-const getMembershipLabel = (membership: unknown): string => {
-  if (typeof membership !== 'string') return '';
+const getMembershipConfig = (membership: unknown) => {
+  if (typeof membership !== 'string') return null;
   const normalized = membership.trim().toLowerCase();
-  if (!normalized) return '';
-  return MEMBERSHIP_LABELS[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  if (!normalized) return null;
+  return MEMBERSHIP_CONFIG[normalized] ?? { label: normalized.charAt(0).toUpperCase() + normalized.slice(1), bg: '#F3F4F6', text: '#374151' };
 };
+
+// GICS-style sectors with icon and color
+const BROWSE_SECTORS: Array<{
+  name: string;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  color: string;
+}> = [
+  { name: 'Technology',          icon: 'hardware-chip-outline',  color: '#6366F1' },
+  { name: 'Healthcare',          icon: 'medkit-outline',         color: '#10B981' },
+  { name: 'Financial Services',  icon: 'bar-chart-outline',      color: '#3B82F6' },
+  { name: 'Industrials',         icon: 'build-outline',          color: '#F59E0B' },
+  { name: 'Energy',              icon: 'flash-outline',          color: '#EF4444' },
+  { name: 'Consumer Cyclical',   icon: 'cart-outline',           color: '#8B5CF6' },
+  { name: 'Real Estate',         icon: 'home-outline',           color: '#EC4899' },
+  { name: 'Utilities',           icon: 'water-outline',          color: '#06B6D4' },
+];
 
 export default function Search() {
   const router = useRouter();
@@ -98,17 +115,27 @@ export default function Search() {
     router.push(`/stock/${item.ticker}`);
   };
 
+  const handleSectorPress = (sectorName: string) => {
+    Keyboard.dismiss();
+    router.push({ pathname: '/browse/sector/[name]', params: { name: sectorName } });
+  };
+
+  const handleViewAllSectors = () => {
+    Keyboard.dismiss();
+    router.push('/browse/sectors');
+  };
+
   const renderMembershipPills = (item: any) => {
     const memberships = Array.isArray(item.memberships) ? item.memberships : [];
     if (!memberships.length) return null;
     return (
       <View style={styles.pillsRow}>
         {memberships.map((membership: string) => {
-          const label = getMembershipLabel(membership);
-          if (!label) return null;
+          const config = getMembershipConfig(membership);
+          if (!config) return null;
           return (
-            <View key={`${item.ticker}-${membership}`} style={styles.membershipPill}>
-              <Text style={styles.membershipPillText}>{label}</Text>
+            <View key={`${item.ticker}-${membership}`} style={[styles.membershipPill, { backgroundColor: config.bg }]}>
+              <Text style={[styles.membershipPillText, { color: config.text }]}>{config.label}</Text>
             </View>
           );
         })}
@@ -151,11 +178,52 @@ export default function Search() {
       {loading && results.length === 0 ? (
         <BrandedLoading message="Searching stocks..." />
       ) : searchQuery.length === 0 ? (
-        <View style={styles.center}>
-          <Ionicons name="search-outline" size={64} color={COLORS.border} />
-          <Text style={styles.emptyTitle}>Search for stocks</Text>
-          <Text style={styles.emptyText}>Enter a ticker or company name</Text>
-        </View>
+        <ScrollView
+          style={styles.discoveryScroll}
+          contentContainerStyle={[styles.discoveryContent, { paddingHorizontal: sp.pageGutter }]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Headline */}
+          <View style={styles.heroBlock}>
+            <Text style={styles.heroTitle}>Find companies you understand</Text>
+            <Text style={styles.heroSubtitle}>
+              Verified fundamentals, dividends, and valuation — with clear risk context.
+            </Text>
+          </View>
+
+          {/* Browse by sector */}
+          <View style={styles.browseBlock}>
+            <View style={styles.browseHeaderRow}>
+              <Text style={styles.browseTitle}>Browse by sector</Text>
+              <TouchableOpacity onPress={handleViewAllSectors} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <Text style={styles.viewAllLink}>View all sectors →</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.sectorGrid}>
+              {BROWSE_SECTORS.map((s) => (
+                <TouchableOpacity
+                  key={s.name}
+                  style={styles.sectorChip}
+                  onPress={() => handleSectorPress(s.name)}
+                  activeOpacity={0.75}
+                >
+                  <Ionicons name={s.icon} size={16} color={s.color} />
+                  <Text style={styles.sectorChipText}>{s.name}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.sectorHint}>Tap a sector to see the biggest companies.</Text>
+          </View>
+
+          {/* Footer tagline */}
+          <View style={styles.taglineBlock}>
+            <Text style={styles.tagline}>No picks. No hype. Just facts you can verify.</Text>
+            <Text style={styles.taglineSub}>Start free — no signup required.</Text>
+          </View>
+        </ScrollView>
       ) : results.length === 0 ? (
         <View style={styles.center}>
           <Ionicons name="alert-circle-outline" size={64} color={COLORS.border} />
@@ -244,8 +312,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     backgroundColor: COLORS.card,
     borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
     paddingHorizontal: 16,
     paddingVertical: 14,
     flexDirection: 'row',
@@ -257,6 +323,34 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.text,
   },
+  // ── Discovery / landing state ─────────────────────────────────────────────
+  discoveryScroll: { flex: 1 },
+  discoveryContent: { paddingBottom: 40 },
+  heroBlock: { marginTop: 8, marginBottom: 24, gap: 8 },
+  heroTitle: { fontSize: 22, fontWeight: '800', color: COLORS.text, lineHeight: 30 },
+  heroSubtitle: { fontSize: 14, color: COLORS.textLight, lineHeight: 21 },
+  browseBlock: { marginBottom: 28, gap: 14 },
+  browseHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  browseTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+  viewAllLink: { fontSize: 13, fontWeight: '600', color: COLORS.primary },
+  sectorGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  sectorChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: COLORS.card,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  sectorChipText: { fontSize: 13, fontWeight: '600', color: COLORS.text },
+  sectorHint: { fontSize: 12, color: COLORS.textMuted },
+  taglineBlock: { marginTop: 8, gap: 6, alignItems: 'center' },
+  tagline: { fontSize: 14, fontWeight: '600', color: COLORS.text, textAlign: 'center' },
+  taglineSub: { fontSize: 13, color: COLORS.textMuted, textAlign: 'center' },
+  // ── Results ───────────────────────────────────────────────────────────────
   list: {
     paddingBottom: 32,
   },
@@ -333,12 +427,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: COLORS.primary + '15',
   },
   membershipPillText: {
     fontSize: 11,
     fontWeight: '700',
-    color: COLORS.primary,
   },
   itemRight: {
     alignItems: 'flex-end',

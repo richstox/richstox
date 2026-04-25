@@ -29,7 +29,7 @@ describe('Tracklist UX regression', () => {
   });
 
   it('keeps search passive and pill-driven only', () => {
-    expect(search).toContain("const MEMBERSHIP_LABELS");
+    expect(search).toContain("const MEMBERSHIP_CONFIG");
     expect(search).toContain("Watchlist");
     expect(search).toContain("Tracklist");
     expect(search).not.toContain("W / T badges show where each ticker already lives.");
