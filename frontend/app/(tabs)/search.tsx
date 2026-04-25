@@ -33,15 +33,15 @@ const COLORS = {
 };
 
 const MEMBERSHIP_LABELS: Record<string, string> = {
-  watchlist: 'W',
-  tracklist: 'T',
+  watchlist: 'Watchlist',
+  tracklist: 'Tracklist',
 };
 
 const getMembershipLabel = (membership: unknown): string => {
-  if (typeof membership !== 'string') return '?';
-  const normalized = membership.trim();
-  if (!normalized) return '?';
-  return MEMBERSHIP_LABELS[normalized] || normalized.charAt(0).toUpperCase();
+  if (typeof membership !== 'string') return '';
+  const normalized = membership.trim().toLowerCase();
+  if (!normalized) return '';
+  return MEMBERSHIP_LABELS[normalized] || normalized.charAt(0).toUpperCase() + normalized.slice(1);
 };
 
 export default function Search() {
@@ -98,18 +98,20 @@ export default function Search() {
     router.push(`/stock/${item.ticker}`);
   };
 
-  const renderMembershipBadges = (item: any) => {
+  const renderMembershipPills = (item: any) => {
     const memberships = Array.isArray(item.memberships) ? item.memberships : [];
     if (!memberships.length) return null;
     return (
-      <View style={styles.badgesRow}>
-        {memberships.map((membership: string) => (
-          <View key={`${item.ticker}-${membership}`} style={styles.badge}>
-            <Text style={styles.badgeText}>
-              {getMembershipLabel(membership)}
-            </Text>
-          </View>
-        ))}
+      <View style={styles.pillsRow}>
+        {memberships.map((membership: string) => {
+          const label = getMembershipLabel(membership);
+          if (!label) return null;
+          return (
+            <View key={`${item.ticker}-${membership}`} style={styles.membershipPill}>
+              <Text style={styles.membershipPillText}>{label}</Text>
+            </View>
+          );
+        })}
       </View>
     );
   };
@@ -122,7 +124,6 @@ export default function Search() {
         </TouchableOpacity>
         <View style={styles.headerCenter}>
           <Text style={styles.headerTitle}>Search Stocks</Text>
-          <Text style={styles.headerSubtitle}>Passive search only — badges show list membership.</Text>
         </View>
         <View style={styles.headerPlaceholder} />
       </View>
@@ -170,7 +171,6 @@ export default function Search() {
           ListHeaderComponent={
             <View style={styles.resultsHeader}>
               <Text style={styles.resultsCount}>{results.length} result{results.length !== 1 ? 's' : ''}</Text>
-              <Text style={styles.resultsHint}>W / T badges show where each ticker already lives.</Text>
             </View>
           }
           renderItem={({ item }) => {
@@ -192,7 +192,7 @@ export default function Search() {
                 <View style={styles.itemInfo}>
                   <View style={styles.itemTopRow}>
                     <Text style={styles.itemTicker}>{item.ticker}</Text>
-                    {renderMembershipBadges(item)}
+                    {renderMembershipPills(item)}
                   </View>
                   <Text style={styles.itemName} numberOfLines={1}>{item.name}</Text>
                 </View>
@@ -236,11 +236,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
   },
-  headerSubtitle: {
-    marginTop: 2,
-    fontSize: 12,
-    color: COLORS.textLight,
-  },
   headerPlaceholder: {
     width: 48,
   },
@@ -272,11 +267,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: COLORS.textLight,
-  },
-  resultsHint: {
-    marginTop: 4,
-    fontSize: 12,
-    color: COLORS.textMuted,
   },
   item: {
     backgroundColor: COLORS.card,
@@ -335,19 +325,17 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textMuted,
   },
-  badgesRow: {
+  pillsRow: {
     flexDirection: 'row',
     gap: 6,
   },
-  badge: {
-    minWidth: 22,
-    paddingHorizontal: 7,
+  membershipPill: {
+    paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 999,
-    backgroundColor: '#EEF2FF',
-    alignItems: 'center',
+    backgroundColor: COLORS.primary + '15',
   },
-  badgeText: {
+  membershipPillText: {
     fontSize: 11,
     fontWeight: '700',
     color: COLORS.primary,
