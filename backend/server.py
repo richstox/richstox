@@ -2082,8 +2082,6 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
         raise HTTPException(404, f"{old_ticker} is not in your Tracklist")
     if new_ticker in state["tracklist"]:
         raise HTTPException(409, f"{new_ticker} is already in your Tracklist")
-    if new_ticker in state["watchlist"]:
-        raise HTTPException(409, f"{new_ticker} is already in your Watchlist")
     if not state["tracklist_is_full"]:
         raise HTTPException(409, "Tracklist replacements are available after your automatic 7-stock basket is ready.")
 
@@ -2118,6 +2116,9 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
         }},
         upsert=True,
     )
+    # Auto-remove new_ticker from watchlist if it was there (moving to Tracklist takes priority)
+    if new_ticker in state["watchlist"]:
+        await db.user_watchlist.delete_one({"ticker": new_ticker, "user_id": user["user_id"]})
     return {
         "status": "replaced",
         "old_ticker": old_ticker,
