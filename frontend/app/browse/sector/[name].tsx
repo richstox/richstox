@@ -35,6 +35,24 @@ function formatMarketCap(n: number | null | undefined): string {
 
 type TopCompany = { ticker: string; logo: string | null };
 
+function SectorLogo({ uri, ticker }: { uri: string | null; ticker: string }) {
+  const [imgError, setImgError] = React.useState(false);
+  if (!uri || imgError) {
+    return (
+      <View style={[styles.companyLogo, styles.companyLogoFallback]}>
+        <Text style={styles.companyLogoInitial}>{ticker.length > 0 ? ticker[0] : '?'}</Text>
+      </View>
+    );
+  }
+  return (
+    <Image
+      source={{ uri: uri.startsWith('http') ? uri : `${API_URL}${uri}` }}
+      style={styles.companyLogo}
+      onError={() => setImgError(true)}
+    />
+  );
+}
+
 type Industry = {
   name: string;
   total_market_cap: number;
@@ -71,7 +89,7 @@ export default function SectorDetailScreen() {
   }, [loadIndustries]);
 
   const handleIndustryPress = (industryName: string) => {
-    router.push({ pathname: '/browse/industry/[name]', params: { name: industryName } });
+    router.push({ pathname: '/browse/industry/[name]', params: { name: industryName, sector: name } });
   };
 
   return (
@@ -124,17 +142,7 @@ export default function SectorDetailScreen() {
                 </Text>
                 <View style={styles.logosRow}>
                   {item.top3_companies.map((c) => (
-                    c.logo ? (
-                      <Image
-                        key={c.ticker}
-                        source={{ uri: c.logo.startsWith('http') ? c.logo : `${API_URL}${c.logo}` }}
-                        style={styles.companyLogo}
-                      />
-                    ) : (
-                      <View key={c.ticker} style={[styles.companyLogo, styles.companyLogoFallback]}>
-                        <Text style={styles.companyLogoInitial}>{c.ticker[0]}</Text>
-                      </View>
-                    )
+                    <SectorLogo key={c.ticker} uri={c.logo} ticker={c.ticker} />
                   ))}
                 </View>
               </View>

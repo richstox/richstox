@@ -1194,7 +1194,7 @@ async def search_whitelist(
     result_tickers = [r["ticker"] for r in results]
     if result_tickers:
         cache_logos = await db.company_fundamentals_cache.find(
-            {"ticker": {"$in": result_tickers}},
+            {"ticker": {"$in": result_tickers}, "logo_status": "present"},
             {"_id": 0, "ticker": 1, "logo_url": 1},
         ).to_list(None)
         logo_map = {d["ticker"]: d.get("logo_url") for d in cache_logos}
@@ -1232,7 +1232,7 @@ async def search_whitelist(
             "asset_type": r.get("asset_type", "Common Stock"),
             "fundamentals_pending": r.get("status") != "active",
             "safety": safety_info,
-            "logo": _build_full_logo_url(logo_map.get(ticker)),
+            "logo": _build_full_logo_url(logo_map.get(ticker) or ticker) if ticker in logo_map else None,
         }
         if followed_tickers is not None:
             entry["is_following"] = ticker_code in followed_tickers
