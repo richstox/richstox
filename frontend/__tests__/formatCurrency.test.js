@@ -53,13 +53,19 @@ const formatCurrencyHub = (value) => {
 };
 
 // ── [ticker].tsx formatCurrency (EU style with negative handling) ────────────
-// EU-style (dots for thousands, comma for decimal)
+// EU-style (spaces for thousands, comma for decimal)
 const toEU = (value, decimals = 2) => {
   if (value === null || value === undefined || isNaN(value)) return 'N/A';
   const fixed = value.toFixed(decimals);
   const [intPart, decPart] = fixed.split('.');
-  const intWithDots = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  return decPart ? `${intWithDots},${decPart}` : intWithDots;
+  const intWithSpaces = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  return decPart ? `${intWithSpaces},${decPart}` : intWithSpaces;
+};
+
+const formatPerformancePercent = (value, showSign = true) => {
+  if (value === null || value === undefined) return 'N/A';
+  const sign = value >= 0 ? (showSign ? '+' : '') : '-';
+  return `${sign}${toEU(Math.abs(value), 0)}%`;
 };
 
 const formatCurrencyTicker = (value) => {
@@ -159,5 +165,16 @@ describe('[ticker].tsx formatCurrency (EU style)', () => {
       expect(r).not.toContain('T');
       expect(r).toContain('B');
     });
+  });
+
+  describe('thousands separators use spaces', () => {
+    test('1_000 → 1 000', () => expect(toEU(1_000, 0)).toBe('1 000'));
+    test('2_712.3 → 2 712,3', () => expect(toEU(2_712.3, 1)).toBe('2 712,3'));
+  });
+
+  describe('Performance Check percentages are rounded to whole numbers', () => {
+    test('2_712.3 → +2 712%', () => expect(formatPerformancePercent(2_712.3)).toBe('+2 712%'));
+    test('215.8 → +216%', () => expect(formatPerformancePercent(215.8)).toBe('+216%'));
+    test('-94.4 → -94%', () => expect(formatPerformancePercent(-94.4)).toBe('-94%'));
   });
 });

@@ -2,12 +2,12 @@
  * EU/CZ Number Formatting Utility
  * ================================
  * Formats numbers according to European (Czech) conventions:
- * - Thousands separator: . (dot)
+ * - Thousands separator: space
  * - Decimal separator: , (comma)
  * 
  * Examples:
- * - 214517 → "214.517"
- * - 2772.3 → "2.772,3"
+ * - 214517 → "214 517"
+ * - 2772.3 → "2 772,3"
  * - 435.62 → "435,62"
  */
 
@@ -25,11 +25,11 @@ export const toEU = (value: number, decimals: number = 2): string => {
   // Split into integer and decimal parts
   const [intPart, decPart] = fixed.split('.');
   
-  // Add thousands separators (dots) to integer part
-  const intWithDots = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  // Add thousands separators (spaces) to integer part
+  const intWithSpaces = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
   
   // Join with comma as decimal separator
-  return decPart ? `${intWithDots},${decPart}` : intWithDots;
+  return decPart ? `${intWithSpaces},${decPart}` : intWithSpaces;
 };
 
 /**
