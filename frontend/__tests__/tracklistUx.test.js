@@ -19,12 +19,12 @@ describe('Tracklist UX regression', () => {
   const appHeader = fs.readFileSync(appHeaderPath, 'utf-8');
 
   it('moves list actions into the Last close card', () => {
-    expect(stockDetail).toContain('Last close');
+    expect(stockDetail).toContain('Last Close');
     expect(stockDetail).toContain('Add to');
     expect(stockDetail).toContain('Watchlist');
     expect(stockDetail).toContain('Tracklist');
     expect(stockDetail).toContain('Portfolio');
-    expect(stockDetail).toContain('Changes apply at next close.');
+    expect(stockDetail).not.toContain('Changes apply at next close.');
     expect(stockDetail).toContain("pathname: '/(tabs)/tracklist'");
   });
 
