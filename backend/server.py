@@ -2668,38 +2668,25 @@ async def browse_all_sectors():
     from whitelist_service import _build_full_logo_url
     from collections import defaultdict
 
-    # 1. All visible tickers that have a sector and shares
+    # 1. All visible tickers that have a sector — last_close already stored by
+    #    the nightly bulk price sync (run_daily_bulk_catchup).
     all_tickers = await db.tracked_tickers.find(
         {"is_visible": True, "sector": {"$exists": True, "$ne": None}},
-        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1, "shares_outstanding": 1},
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1,
+         "shares_outstanding": 1, "last_close": 1},
     ).to_list(length=None)
 
     if not all_tickers:
         return {"sectors": []}
 
-    ticker_list = [t["ticker"] for t in all_tickers]
-
-    # 2. Latest price per ticker — 5-day window covers weekends and public holidays
-    #    (US markets never have more than 3 consecutive non-trading days).
-    #    30 days was scanning ~75 000 documents for all visible tickers; 5 days
-    #    cuts that to ~12 500 while still reliably finding the last close.
-    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
-    price_map: dict = {}
-    async for doc in db.stock_prices.aggregate([
-        {"$match": {"ticker": {"$in": ticker_list}, "date": {"$gte": recent_cutoff}}},
-        {"$sort": {"date": -1}},
-        {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}},
-    ]):
-        price_map[doc["_id"]] = doc.get("price") or 0
-
-    # 3. Group by sector
+    # 2. Group by sector — use last_close stored in tracked_tickers (no stock_prices scan)
     sector_data: dict = defaultdict(lambda: {"items": [], "industries": set()})
     for t in all_tickers:
         sector = (t.get("sector") or "").strip()
         if not sector:
             continue
         shares = float(t.get("shares_outstanding") or 0)
-        price = float(price_map.get(t["ticker"], 0))
+        price = float(t.get("last_close") or 0)
         market_cap = shares * price if shares and price else 0
         sector_data[sector]["items"].append({
             "ticker": t["ticker"].replace(".US", ""),
@@ -2709,7 +2696,7 @@ async def browse_all_sectors():
         if industry:
             sector_data[sector]["industries"].add(industry)
 
-    # 4. Build sector summaries, sort by market cap
+    # 3. Build sector summaries, sort by market cap
     sectors = []
     for name, data in sector_data.items():
         items = data["items"]
@@ -2744,27 +2731,17 @@ async def browse_sector_industries(sector_name: str):
 
     sector_name = unquote(sector_name)
 
+    # last_close is written by the nightly bulk price sync; include it in projection
     tickers_in_sector = await db.tracked_tickers.find(
         {"is_visible": True, "sector": sector_name,
          "industry": {"$exists": True, "$ne": None}},
-        {"_id": 0, "ticker": 1, "industry": 1, "shares_outstanding": 1},
+        {"_id": 0, "ticker": 1, "industry": 1, "shares_outstanding": 1, "last_close": 1},
     ).to_list(length=None)
 
     if not tickers_in_sector:
         raise HTTPException(404, f"Sector '{sector_name}' not found or has no data")
 
     ticker_list = [t["ticker"] for t in tickers_in_sector]
-
-    # Latest prices — 5-day window (covers weekends/holidays; was 30 days which
-    #    scanned tens of thousands of documents for no benefit)
-    recent_cutoff = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
-    price_map: dict = {}
-    async for doc in db.stock_prices.aggregate([
-        {"$match": {"ticker": {"$in": ticker_list}, "date": {"$gte": recent_cutoff}}},
-        {"$sort": {"date": -1}},
-        {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}},
-    ]):
-        price_map[doc["_id"]] = doc.get("price") or 0
 
     # Logos from company_fundamentals_cache
     logo_docs = await db.company_fundamentals_cache.find(
@@ -2773,7 +2750,7 @@ async def browse_sector_industries(sector_name: str):
     ).to_list(length=None)
     logo_map = {d["ticker"]: d.get("logo_url") for d in logo_docs}
 
-    # Group by industry
+    # Group by industry — use last_close stored in tracked_tickers (no stock_prices scan)
     industry_data: dict = defaultdict(list)
     for t in tickers_in_sector:
         industry = (t.get("industry") or "").strip()
@@ -2781,7 +2758,7 @@ async def browse_sector_industries(sector_name: str):
             continue
         ticker_full = t["ticker"]
         shares = float(t.get("shares_outstanding") or 0)
-        price = float(price_map.get(ticker_full, 0))
+        price = float(t.get("last_close") or 0)
         market_cap = shares * price if shares and price else 0
         ticker_code = ticker_full.replace(".US", "")
         industry_data[industry].append({

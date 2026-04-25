@@ -1077,6 +1077,10 @@ async def run_daily_bulk_catchup(
     current_batch_tickers: Set[str] = set()
     parsed_rows: List[Dict[str, Any]] = []
     matched_seeded_tickers: Set[str] = set()
+    # Accumulate last_close per ticker to denormalise into tracked_tickers after
+    # all stock_prices writes succeed.  This lets browse endpoints read the price
+    # directly from tracked_tickers instead of scanning stock_prices.
+    ticker_close_map: Dict[str, float] = {}  # canonical_ticker → adjusted_close
 
     # Tickers that appear in bulk with close=0/None are tracked separately.
     # They are NOT written to stock_prices (the UI says "Close price = 0 or
@@ -1138,6 +1142,14 @@ async def run_daily_bulk_catchup(
             matched_seeded_tickers.add(canonical_ticker)
             # Also track the normalized form for consistent gap-candidate detection
             processed_ticker_set_normalized.add(normalized_ticker)
+            # Record close price for later denormalization into tracked_tickers
+            # (adjusted_close preferred; fall back to raw close).
+            if canonical_ticker not in ticker_close_map:
+                adj = record.get("adjusted_close")
+                raw = record.get("close")
+                close_val = adj if adj else raw
+                if close_val:
+                    ticker_close_map[canonical_ticker] = float(close_val)
 
             if len(current_batch_ops) == BULK_WRITE_BATCH_SIZE:
                 batched_operations_with_tickers.append(
@@ -1323,7 +1335,37 @@ async def run_daily_bulk_catchup(
         f"{records_upserted} records, {bulk_writes} bulk_write batches"
     )
 
-    # ── Auto-remediation: detect tickers in THIS RUN's bulk dataset with ──
+    # ── Denormalise last_close into tracked_tickers ───────────────────────
+    # Write the adjusted_close (or raw close) for each ticker that was
+    # successfully written to stock_prices.  Browse / sector endpoints can
+    # then read the price directly from tracked_tickers instead of scanning
+    # the stock_prices collection.
+    if ticker_close_map:
+        try:
+            from pymongo import UpdateOne as _TtUpdateOne
+            _BATCH = 2000
+            _tc_items = list(ticker_close_map.items())
+            for _i in range(0, len(_tc_items), _BATCH):
+                _slice = _tc_items[_i: _i + _BATCH]
+                _tc_ops = [
+                    _TtUpdateOne(
+                        {"ticker": t},
+                        {"$set": {"last_close": price, "last_close_date": date_seen}},
+                    )
+                    for t, price in _slice
+                ]
+                await db.tracked_tickers.bulk_write(_tc_ops, ordered=False)
+            logger.info(
+                "[BULK CATCHUP] Wrote last_close to tracked_tickers for %d ticker(s)",
+                len(ticker_close_map),
+            )
+        except Exception as _tc_exc:
+            logger.error(
+                "[BULK CATCHUP] Failed to write last_close to tracked_tickers: %s",
+                _tc_exc,
+            )
+
+
     # positive price but missing DB row after the write phase.  This covers
     # the proven incident shape where a ticker is seeded, present in bulk
     # with close>0, yet was skipped (e.g. not in the Step 1 override set
