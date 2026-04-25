@@ -40,7 +40,7 @@ function SectorLogo({ uri, ticker }: { uri: string | null; ticker: string }) {
   if (!uri || imgError) {
     return (
       <View style={[styles.companyLogo, styles.companyLogoFallback]}>
-        <Text style={styles.companyLogoInitial}>{ticker[0]}</Text>
+        <Text style={styles.companyLogoInitial}>{ticker.length > 0 ? ticker[0] : '?'}</Text>
       </View>
     );
   }

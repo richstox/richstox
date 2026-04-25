@@ -69,7 +69,7 @@ function IndustryLogo({ uri, ticker }: { uri: string | null; ticker: string }) {
   if (!uri || imgError) {
     return (
       <View style={[styles.rowLogo, styles.rowLogoFallback]}>
-        <Text style={styles.rowLogoInitial}>{ticker[0]}</Text>
+        <Text style={styles.rowLogoInitial}>{ticker.length > 0 ? ticker[0] : '?'}</Text>
       </View>
     );
   }

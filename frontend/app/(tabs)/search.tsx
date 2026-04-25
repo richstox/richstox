@@ -66,7 +66,7 @@ function StockLogo({ uri, ticker }: { uri: string | null; ticker: string }) {
   if (!uri || imgError) {
     return (
       <View style={styles.itemIcon}>
-        <Text style={styles.itemInitial}>{ticker[0]}</Text>
+        <Text style={styles.itemInitial}>{ticker.length > 0 ? ticker[0] : '?'}</Text>
       </View>
     );
   }
