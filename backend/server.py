@@ -2651,6 +2651,306 @@ async def whitelist_check(ticker: str):
     in_whitelist = await is_ticker_in_whitelist(db, ticker)
     return {"ticker": ticker, "in_whitelist": in_whitelist}
 
+# ─── Browse / Discovery endpoints ────────────────────────────────────────────
+
+@api_router.get("/v1/browse/sectors")
+async def browse_all_sectors():
+    """
+    Return all sectors sorted by total market cap (descending).
+
+    For each sector:
+      - name, total_market_cap, industry_count, company_count
+      - top3_tickers: up to 3 ticker codes (by market cap) as pills
+
+    No authentication required.  All data from MongoDB only.
+    """
+    from whitelist_service import _build_full_logo_url
+    from collections import defaultdict
+
+    # 1. All visible tickers that have a sector and shares
+    all_tickers = await db.tracked_tickers.find(
+        {"is_visible": True, "sector": {"$exists": True, "$ne": None}},
+        {"_id": 0, "ticker": 1, "sector": 1, "industry": 1, "shares_outstanding": 1},
+    ).to_list(length=None)
+
+    if not all_tickers:
+        return {"sectors": []}
+
+    ticker_list = [t["ticker"] for t in all_tickers]
+
+    # 2. Latest price per ticker (single aggregation)
+    price_map: dict = {}
+    async for doc in db.stock_prices.aggregate([
+        {"$match": {"ticker": {"$in": ticker_list}}},
+        {"$sort": {"date": -1}},
+        {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}},
+    ]):
+        price_map[doc["_id"]] = doc.get("price") or 0
+
+    # 3. Group by sector
+    sector_data: dict = defaultdict(lambda: {"items": [], "industries": set()})
+    for t in all_tickers:
+        sector = (t.get("sector") or "").strip()
+        if not sector:
+            continue
+        shares = float(t.get("shares_outstanding") or 0)
+        price = float(price_map.get(t["ticker"], 0))
+        market_cap = shares * price if shares and price else 0
+        sector_data[sector]["items"].append({
+            "ticker": t["ticker"].replace(".US", ""),
+            "market_cap": market_cap,
+        })
+        industry = (t.get("industry") or "").strip()
+        if industry:
+            sector_data[sector]["industries"].add(industry)
+
+    # 4. Build sector summaries, sort by market cap
+    sectors = []
+    for name, data in sector_data.items():
+        items = data["items"]
+        total_cap = sum(it["market_cap"] for it in items)
+        sorted_items = sorted(items, key=lambda x: x["market_cap"], reverse=True)
+        sectors.append({
+            "name": name,
+            "total_market_cap": total_cap,
+            "industry_count": len(data["industries"]),
+            "company_count": len(items),
+            "top3_tickers": [it["ticker"] for it in sorted_items[:3]],
+        })
+
+    sectors.sort(key=lambda x: x["total_market_cap"], reverse=True)
+    return {"sectors": sectors}
+
+
+@api_router.get("/v1/browse/sectors/{sector_name:path}")
+async def browse_sector_industries(sector_name: str):
+    """
+    Return industries within a sector sorted by total market cap.
+
+    For each industry:
+      - name, total_market_cap, company_count
+      - top3_companies: [{ticker, logo}] for the 3 biggest companies
+
+    No authentication required.  All data from MongoDB only.
+    """
+    from urllib.parse import unquote
+    from whitelist_service import _build_full_logo_url
+    from collections import defaultdict
+
+    sector_name = unquote(sector_name)
+
+    tickers_in_sector = await db.tracked_tickers.find(
+        {"is_visible": True, "sector": sector_name,
+         "industry": {"$exists": True, "$ne": None}},
+        {"_id": 0, "ticker": 1, "industry": 1, "shares_outstanding": 1},
+    ).to_list(length=None)
+
+    if not tickers_in_sector:
+        raise HTTPException(404, f"Sector '{sector_name}' not found or has no data")
+
+    ticker_list = [t["ticker"] for t in tickers_in_sector]
+
+    # Latest prices
+    price_map: dict = {}
+    async for doc in db.stock_prices.aggregate([
+        {"$match": {"ticker": {"$in": ticker_list}}},
+        {"$sort": {"date": -1}},
+        {"$group": {"_id": "$ticker", "price": {"$first": "$adjusted_close"}}},
+    ]):
+        price_map[doc["_id"]] = doc.get("price") or 0
+
+    # Logos from company_fundamentals_cache
+    logo_docs = await db.company_fundamentals_cache.find(
+        {"ticker": {"$in": ticker_list}},
+        {"_id": 0, "ticker": 1, "logo_url": 1},
+    ).to_list(length=None)
+    logo_map = {d["ticker"]: d.get("logo_url") for d in logo_docs}
+
+    # Group by industry
+    industry_data: dict = defaultdict(list)
+    for t in tickers_in_sector:
+        industry = (t.get("industry") or "").strip()
+        if not industry:
+            continue
+        ticker_full = t["ticker"]
+        shares = float(t.get("shares_outstanding") or 0)
+        price = float(price_map.get(ticker_full, 0))
+        market_cap = shares * price if shares and price else 0
+        ticker_code = ticker_full.replace(".US", "")
+        industry_data[industry].append({
+            "ticker": ticker_code,
+            "market_cap": market_cap,
+            "logo": _build_full_logo_url(logo_map.get(ticker_full)),
+        })
+
+    industries = []
+    for ind_name, items in industry_data.items():
+        total_cap = sum(it["market_cap"] for it in items)
+        sorted_items = sorted(items, key=lambda x: x["market_cap"], reverse=True)
+        top3 = [{"ticker": it["ticker"], "logo": it["logo"]} for it in sorted_items[:3]]
+        industries.append({
+            "name": ind_name,
+            "total_market_cap": total_cap,
+            "company_count": len(items),
+            "top3_companies": top3,
+        })
+
+    industries.sort(key=lambda x: x["total_market_cap"], reverse=True)
+    return {"sector": sector_name, "industries": industries}
+
+
+@api_router.get("/v1/browse/industries/{industry_name:path}")
+async def browse_industry_companies(industry_name: str):
+    """
+    Return companies in an industry with Performance and Fundamentals data.
+
+    Performance data per company:
+      market_cap, return_1y (%), max_drawdown_1y (%)
+
+    Fundamentals data per company:
+      market_cap, pe_ratio, div_yield (%)
+
+    Sorted by market cap descending.  No authentication required.
+    All data from MongoDB only.
+    """
+    from urllib.parse import unquote
+    from whitelist_service import _build_full_logo_url
+
+    industry_name = unquote(industry_name)
+
+    tickers_in_industry = await db.tracked_tickers.find(
+        {"is_visible": True, "industry": industry_name},
+        {"_id": 0, "ticker": 1, "name": 1, "sector": 1, "shares_outstanding": 1},
+    ).to_list(length=None)
+
+    if not tickers_in_industry:
+        raise HTTPException(404, f"Industry '{industry_name}' not found or has no data")
+
+    sector_name = next(
+        (t.get("sector") for t in tickers_in_industry if t.get("sector")), None
+    )
+    ticker_list = [t["ticker"] for t in tickers_in_industry]
+
+    # ── 1. 1-year price history for return + max drawdown ──────────────────
+    one_year_ago = (datetime.now(timezone.utc) - timedelta(days=370)).strftime("%Y-%m-%d")
+    price_hist_map: dict = {}
+    async for doc in db.stock_prices.aggregate([
+        {"$match": {"ticker": {"$in": ticker_list}, "date": {"$gte": one_year_ago}}},
+        {"$sort": {"ticker": 1, "date": 1}},
+        {"$group": {
+            "_id": "$ticker",
+            "first_price": {"$first": "$adjusted_close"},
+            "last_price": {"$last": "$adjusted_close"},
+            "prices": {"$push": "$adjusted_close"},
+        }},
+    ]):
+        price_hist_map[doc["_id"]] = {
+            "first_price": doc.get("first_price"),
+            "last_price": doc.get("last_price"),
+            "prices": doc.get("prices", []),
+        }
+
+    # ── 2. Logos ────────────────────────────────────────────────────────────
+    logo_docs = await db.company_fundamentals_cache.find(
+        {"ticker": {"$in": ticker_list}},
+        {"_id": 0, "ticker": 1, "logo_url": 1},
+    ).to_list(length=None)
+    logo_map = {d["ticker"]: d.get("logo_url") for d in logo_docs}
+
+    # ── 3. EPS TTM (diluted_eps) from financials_cache ──────────────────────
+    eps_map: dict = {}
+    async for doc in db.financials_cache.aggregate([
+        {"$match": {"ticker": {"$in": ticker_list}, "period_type": "quarterly",
+                    "diluted_eps": {"$ne": None}}},
+        {"$sort": {"ticker": 1, "period_date": -1}},
+        {"$group": {"_id": "$ticker", "eps_quarters": {"$push": "$diluted_eps"}}},
+        {"$project": {"_id": 1,
+                      "ttm_eps": {"$sum": {"$slice": ["$eps_quarters", 4]}}}},
+    ]):
+        eps_map[doc["_id"]] = doc.get("ttm_eps")
+
+    # ── 4. TTM dividends per share from dividend_history ────────────────────
+    div_year_ago = (datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d")
+    div_map: dict = {}
+    async for doc in db.dividend_history.aggregate([
+        {"$match": {
+            "ticker": {"$in": ticker_list},
+            "$or": [
+                {"ex_date": {"$gte": div_year_ago}},
+                {"date": {"$gte": div_year_ago}},
+            ],
+        }},
+        {"$group": {
+            "_id": "$ticker",
+            "total_div": {
+                "$sum": {"$ifNull": ["$amount", {"$ifNull": ["$value", 0]}]}
+            },
+        }},
+    ]):
+        div_map[doc["_id"]] = doc.get("total_div", 0)
+
+    # ── 5. Assemble company records ─────────────────────────────────────────
+    companies = []
+    for t in tickers_in_industry:
+        ticker_full = t["ticker"]
+        ticker_code = ticker_full.replace(".US", "")
+        shares = float(t.get("shares_outstanding") or 0)
+
+        ph = price_hist_map.get(ticker_full, {})
+        last_price = float(ph.get("last_price") or 0)
+        first_price = float(ph.get("first_price") or 0)
+        prices_list = ph.get("prices", [])
+
+        market_cap = shares * last_price if shares and last_price else None
+
+        return_1y: float | None = None
+        if first_price > 0 and last_price > 0:
+            return_1y = round(((last_price - first_price) / first_price) * 100, 1)
+
+        max_drawdown_1y: float | None = None
+        if len(prices_list) > 1:
+            peak = prices_list[0]
+            max_dd = 0.0
+            for p in prices_list:
+                if p > peak:
+                    peak = p
+                if peak > 0:
+                    dd = ((peak - p) / peak) * 100
+                    if dd > max_dd:
+                        max_dd = dd
+            max_drawdown_1y = round(-max_dd, 1) if max_dd > 0 else 0.0
+
+        eps_ttm = eps_map.get(ticker_full)
+        pe_ratio: float | None = None
+        if last_price and eps_ttm and float(eps_ttm) > 0:
+            pe_ratio = round(last_price / float(eps_ttm), 1)
+
+        div_total = div_map.get(ticker_full, 0)
+        div_yield: float | None = None
+        if div_total and last_price and last_price > 0:
+            div_yield = round((div_total / last_price) * 100, 2)
+
+        companies.append({
+            "ticker": ticker_code,
+            "name": t.get("name") or ticker_code,
+            "logo": _build_full_logo_url(logo_map.get(ticker_full)),
+            "market_cap": round(market_cap) if market_cap else None,
+            "return_1y": return_1y,
+            "max_drawdown_1y": max_drawdown_1y,
+            "pe_ratio": pe_ratio,
+            "div_yield": div_yield,
+        })
+
+    companies.sort(key=lambda x: x["market_cap"] or 0, reverse=True)
+
+    return {
+        "industry": industry_name,
+        "sector": sector_name,
+        "company_count": len(companies),
+        "companies": companies,
+    }
+
+
 @api_router.post("/admin/backfill-asset-type")
 async def admin_backfill_asset_type():
     """
