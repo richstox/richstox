@@ -51,7 +51,7 @@ export default function AllSectorsScreen() {
     setLoading(true);
     setError(null);
     try {
-      const res = await axios.get(`${API_URL}/api/v1/browse/sectors`);
+      const res = await axios.get(`${API_URL}/api/v1/browse/sectors`, { timeout: 15000 });
       setSectors(res.data.sectors || []);
     } catch {
       setError('Could not load sectors. Please try again.');

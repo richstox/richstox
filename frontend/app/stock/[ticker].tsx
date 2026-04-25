@@ -1096,10 +1096,6 @@ export default function StockDetail() {
       dialog.alert('Unavailable', `${ticker} is already in your Tracklist.`);
       return;
     }
-    if (target === 'tracklist' && listMemberships.watchlist) {
-      dialog.alert('Unavailable', `${ticker} is already in your Watchlist.`);
-      return;
-    }
     if (target === 'tracklist') {
       setAddToVisible(false);
       router.push({ pathname: '/(tabs)/tracklist', params: { candidate: ticker, manage: '1' } });
@@ -4914,7 +4910,7 @@ export default function StockDetail() {
               style={[
                 styles.addToSheetItem,
                 listMemberships.tracklist && styles.addToSheetItemDisabled,
-                listMemberships.watchlist && styles.addToSheetItemActive,
+                listMemberships.watchlist && styles.addToSheetItemDisabled,
               ]}
               onPress={() => handleAddTo('watchlist')}
               disabled={listActionLoading || listMemberships.watchlist || listMemberships.tracklist}
@@ -4938,11 +4934,10 @@ export default function StockDetail() {
             <TouchableOpacity
               style={[
                 styles.addToSheetItem,
-                listMemberships.watchlist && styles.addToSheetItemDisabled,
                 listMemberships.tracklist && styles.addToSheetItemActiveTracklist,
               ]}
               onPress={() => handleAddTo('tracklist')}
-              disabled={listMemberships.watchlist || listMemberships.tracklist}
+              disabled={listActionLoading}
             >
               <View style={[styles.addToSheetIcon, styles.addToSheetIconTracklist]}>
                 <Ionicons name="analytics-outline" size={18} color="#1D4ED8" />
@@ -4952,9 +4947,7 @@ export default function StockDetail() {
                 <Text style={styles.addToSheetItemText}>
                   {listMemberships.tracklist
                     ? 'Already managed in your Tracklist.'
-                    : listMemberships.watchlist
-                      ? 'Unavailable while this stock is in your Watchlist.'
-                      : 'Opens your Tracklist overview where you can replace one current name.'}
+                    : 'Opens your Tracklist overview where you can replace one current name.'}
                 </Text>
               </View>
               {listMemberships.tracklist ? <Ionicons name="checkmark" size={20} color="#1D4ED8" /> : null}

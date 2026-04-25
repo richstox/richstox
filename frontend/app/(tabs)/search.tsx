@@ -167,6 +167,7 @@ export default function Search() {
           autoCapitalize="characters"
           autoCorrect={false}
           autoFocus
+          underlineColorAndroid="transparent"
         />
         {searchQuery.length > 0 && (
           <TouchableOpacity onPress={() => setSearchQuery('')}>
@@ -322,6 +323,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 16,
     color: COLORS.text,
+    outlineWidth: 0,
   },
   // ── Discovery / landing state ─────────────────────────────────────────────
   discoveryScroll: { flex: 1 },
