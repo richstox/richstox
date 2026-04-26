@@ -564,7 +564,7 @@ export default function Markets() {
   );
 
   useEffect(() => {
-      let cancelled = false;
+    let cancelled = false;
 
     const fetchVisibleTickerNews = async () => {
       try {
@@ -737,14 +737,14 @@ export default function Markets() {
                     onPress={() => setCalendarPickerVisible(true)}
                     accessibilityRole="button"
                   >
-                  <Text style={styles.eventsDateSelectText}>Select</Text>
-                  <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
-                </TouchableOpacity>
-              </View>
-              <Text style={styles.sectionSubtitle}>
+                    <Text style={styles.eventsDateSelectText}>Select</Text>
+                    <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
+                  </TouchableOpacity>
+                </View>
+                <Text style={styles.sectionSubtitle}>
                   {`${periodEvents.length} events • ${newsTotalCount} news`}
-              </Text>
-            </View>
+                </Text>
+              </View>
               <View style={styles.eventsHeaderActions}>
                 {marketFeedMode !== 'events' && aggregateSentiment && (
                   <View
