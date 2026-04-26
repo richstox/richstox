@@ -7707,16 +7707,17 @@ async def _get_recent_global_ticker_mappings(
     if limit <= 0:
         return []
 
-    pipeline: List[Dict[str, Any]] = [
+    pipeline: List[Dict[str, Any]] = []
+    if exclude_article_ids:
+        pipeline.append({"$match": {"article_id": {"$nin": list(exclude_article_ids)}}})
+    pipeline.extend([
         {"$sort": {"published_at": -1}},
         {"$group": {
             "_id": "$article_id",
             "ticker": {"$first": "$ticker"},
             "published_at": {"$first": "$published_at"},
         }},
-    ]
-    if exclude_article_ids:
-        pipeline.append({"$match": {"_id": {"$nin": list(exclude_article_ids)}}})
+    ])
     pipeline.extend([
         {"$sort": {"published_at": -1}},
         {"$limit": limit},

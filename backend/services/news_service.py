@@ -887,6 +887,7 @@ async def create_news_indexes(db):
     # article_ticker_mapping indexes
     await db.article_ticker_mapping.create_index([("article_id", 1), ("ticker", 1)], unique=True)
     await db.article_ticker_mapping.create_index("ticker")
+    await db.article_ticker_mapping.create_index("published_at")
     await db.article_ticker_mapping.create_index([("ticker", 1), ("published_at", -1)])
     
     # news_ticker_sync indexes
