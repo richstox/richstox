@@ -32,6 +32,7 @@ import { COLORS as APP_COLORS } from '../_layout';
 import { formatAggregateSentimentLabel, getAggregateSentimentTooltipContent } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
 import { MetricTooltip } from '../../components/MetricTooltip';
+import { useMarketsStore } from '../../stores/marketsStore';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -247,10 +248,28 @@ const isValidYmd = (value: string): boolean => {
   return !Number.isNaN(parsed.getTime()) && format(parsed, 'yyyy-MM-dd') === value;
 };
 
-const EventLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: string }) => {
+const EventLogo = ({
+  logoUrl,
+  fallbackKey,
+  useRichstoxIcon = false,
+}: {
+  logoUrl?: string;
+  fallbackKey: string;
+  useRichstoxIcon?: boolean;
+}) => {
   const [imageError, setImageError] = useState(false);
 
   if (!logoUrl || imageError) {
+    if (useRichstoxIcon) {
+      return (
+        <View style={[styles.eventLogoFallback, styles.marketLogoFallback]}>
+          <Image
+            source={require('../../assets/images/richstox_icon_only.png')}
+            style={styles.marketLogoIcon}
+          />
+        </View>
+      );
+    }
     return (
       <View style={[styles.eventLogoFallback, { backgroundColor: hashSymbolToColor(fallbackKey) }]}>
         <Text style={styles.eventLogoFallbackText}>{fallbackKey}</Text>
@@ -270,6 +289,8 @@ const EventLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: st
 export default function Markets() {
   const router = useRouter();
   const sp = useLayoutSpacing();
+  const initialMarketsStateRef = useRef(useMarketsStore.getState());
+  const setMarketsState = useMarketsStore((state) => state.setState);
 
   const todayPragueStr = getPragueDateString();
   const todayPrague = parseYmd(todayPragueStr);
@@ -279,25 +300,57 @@ export default function Markets() {
   const rangeStartStr = format(rangeStart, 'yyyy-MM-dd');
   const rangeEndStr = format(rangeEnd, 'yyyy-MM-dd');
   const currentYear = Number(todayPragueStr.slice(0, 4));
+  const storedSelectedDateKey = initialMarketsStateRef.current.selectedDateKey;
+  const storedDisplayMonthKey = initialMarketsStateRef.current.displayMonthKey;
+  const storedCalendarView = initialMarketsStateRef.current.calendarView;
+  const storedSelectedYear = initialMarketsStateRef.current.selectedYear;
+  const storedSelectedEventType = initialMarketsStateRef.current.selectedEventType;
+  const storedVisibleFeedLimit = initialMarketsStateRef.current.visibleFeedLimit;
+  const storedMarketFeedModes = initialMarketsStateRef.current.marketFeedModes;
+  const initialSelectedDate = storedSelectedDateKey && isValidYmd(storedSelectedDateKey)
+    ? parseYmd(storedSelectedDateKey)
+    : todayPrague;
+  const initialDisplayMonth = storedDisplayMonthKey && /^\d{4}-\d{2}$/.test(storedDisplayMonthKey)
+    ? startOfMonth(parseYmd(`${storedDisplayMonthKey}-01`))
+    : startOfMonth(todayPrague);
+  const initialCalendarView = CALENDAR_VIEW_ORDER.includes(storedCalendarView as CalendarViewMode)
+    ? storedCalendarView as CalendarViewMode
+    : 'daily';
+  const initialSelectedYear = Number.isInteger(storedSelectedYear) ? storedSelectedYear : currentYear;
+  const initialSelectedEventType = EVENT_TYPE_ORDER.includes(storedSelectedEventType as EventType)
+    ? storedSelectedEventType as EventType
+    : 'earnings';
+  const initialVisibleFeedLimit = storedVisibleFeedLimit && storedVisibleFeedLimit > 0
+    ? storedVisibleFeedLimit
+    : INITIAL_VISIBLE_FEED_ITEMS;
+  const initialMarketFeedModes = storedMarketFeedModes.filter((mode): mode is MarketFeedMode =>
+    MARKET_FEED_MODE_OPTIONS.some((option) => option.key === mode),
+  );
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [calendarView, setCalendarView] = useState<CalendarViewMode>('daily');
-  const [selectedDate, setSelectedDate] = useState<Date>(todayPrague);
-  const [displayMonth, setDisplayMonth] = useState<Date>(startOfMonth(todayPrague));
-  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
-  const [selectedEventType, setSelectedEventType] = useState<EventType>('earnings');
-  const [tickerFilter, setTickerFilter] = useState('');
-  const [visibleFeedLimit, setVisibleFeedLimit] = useState(INITIAL_VISIBLE_FEED_ITEMS);
+  const [calendarView, setCalendarView] = useState<CalendarViewMode>(initialCalendarView);
+  const [selectedDate, setSelectedDate] = useState<Date>(initialSelectedDate);
+  const [displayMonth, setDisplayMonth] = useState<Date>(initialDisplayMonth);
+  const [selectedYear, setSelectedYear] = useState<number>(initialSelectedYear);
+  const [selectedEventType, setSelectedEventType] = useState<EventType>(initialSelectedEventType);
+  const [tickerFilter, setTickerFilter] = useState(initialMarketsStateRef.current.tickerFilter);
+  const [visibleFeedLimit, setVisibleFeedLimit] = useState(initialVisibleFeedLimit);
   const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);
-  const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(['events', 'news']);
+  const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(
+    initialMarketFeedModes.length > 0 ? initialMarketFeedModes : ['events', 'news'],
+  );
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<MarketNewsItem | null>(null);
   const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);
+  const marketsScrollRef = useRef<ScrollView | null>(null);
+  const didHydratePeriodResetRef = useRef(false);
+  const didHydrateFeedResetRef = useRef(false);
+  const didRestoreScrollRef = useRef(initialMarketsStateRef.current.scrollY <= 0);
   const activeDaysScrollRef = useRef<ScrollView | null>(null);
   const [activeDaysViewportWidth, setActiveDaysViewportWidth] = useState(0);
   const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
@@ -342,6 +395,29 @@ export default function Markets() {
 
   const selectedMonthKey = format(displayMonth, 'yyyy-MM');
   const selectedYearKey = String(selectedYear);
+
+  useEffect(() => {
+    setMarketsState({
+      calendarView,
+      selectedDateKey,
+      displayMonthKey: selectedMonthKey,
+      selectedYear,
+      selectedEventType,
+      tickerFilter,
+      visibleFeedLimit,
+      marketFeedModes,
+    });
+  }, [
+    calendarView,
+    marketFeedModes,
+    selectedDateKey,
+    selectedEventType,
+    selectedMonthKey,
+    selectedYear,
+    setMarketsState,
+    tickerFilter,
+    visibleFeedLimit,
+  ]);
 
   const activeDateKeys = useMemo(
     () => Array.from(new Set(events.map((event) => event.date).filter(isValidYmd))).sort(),
@@ -439,6 +515,10 @@ export default function Markets() {
   }, [calendarView, displayMonth, selectedDateKey, selectedYearKey]);
 
   useEffect(() => {
+    if (!didHydratePeriodResetRef.current) {
+      didHydratePeriodResetRef.current = true;
+      return;
+    }
     setTickerFilter('');
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
   }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey]);
@@ -560,6 +640,10 @@ export default function Markets() {
   const visibleNewsToggleCount = visibleNewsItems.length;
 
   useEffect(() => {
+    if (!didHydrateFeedResetRef.current) {
+      didHydrateFeedResetRef.current = true;
+      return;
+    }
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
   }, [marketFeedModes, normalizedTickerFilter]);
 
@@ -749,11 +833,41 @@ export default function Markets() {
     }
   };
 
+  const restoreMarketsScroll = useCallback(() => {
+    if (didRestoreScrollRef.current) return;
+    const nextY = initialMarketsStateRef.current.scrollY;
+    if (nextY <= 0) {
+      didRestoreScrollRef.current = true;
+      return;
+    }
+    marketsScrollRef.current?.scrollTo({ y: nextY, animated: false });
+    didRestoreScrollRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (loading || newsLoading) return;
+    const frame = requestAnimationFrame(() => {
+      restoreMarketsScroll();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [displayedFeedItems.length, loading, newsLoading, restoreMarketsScroll]);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <AppHeader title="Markets" />
 
-      <ScrollView style={styles.scroll} contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}>
+      <ScrollView
+        ref={marketsScrollRef}
+        style={styles.scroll}
+        contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}
+        onScroll={(event) => {
+          setMarketsState({ scrollY: event.nativeEvent.contentOffset.y });
+        }}
+        onContentSizeChange={() => {
+          restoreMarketsScroll();
+        }}
+        scrollEventThrottle={16}
+      >
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
             <View style={styles.eventsHeaderTop}>
@@ -973,10 +1087,11 @@ export default function Markets() {
                           disabled={!news.ticker}
                           activeOpacity={news.ticker ? 0.8 : 1}
                         >
-                          <EventLogo
-                            logoUrl={resolveEventLogoUrl(news.logo_url, news.ticker)}
-                            fallbackKey={news.fallback_logo_key}
-                          />
+                           <EventLogo
+                             logoUrl={resolveEventLogoUrl(news.logo_url, news.ticker)}
+                             fallbackKey={news.fallback_logo_key}
+                             useRichstoxIcon={news.scope === 'market'}
+                           />
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={styles.eventContent}
@@ -1071,6 +1186,7 @@ export default function Markets() {
                     <EventLogo
                       logoUrl={resolveEventLogoUrl(selectedArticle.logo_url, selectedArticle.ticker)}
                       fallbackKey={selectedArticle.fallback_logo_key}
+                      useRichstoxIcon={selectedArticle.scope === 'market'}
                     />
                     <View>
                       <Text style={styles.articleTicker}>{selectedArticle.ticker || 'Market News'}</Text>
@@ -1656,6 +1772,15 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  marketLogoFallback: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  marketLogoIcon: {
+    width: 28,
+    height: 28,
   },
   eventLogoFallbackText: {
     fontSize: 16,

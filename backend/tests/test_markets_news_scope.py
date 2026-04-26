@@ -35,12 +35,15 @@ def test_markets_news_uses_full_global_corpus_and_full_sentiment():
     assert "GLOBAL_MARKETS_MIN_TICKER_NEWS = 100" in server_source
     assert "GLOBAL_MARKETS_WATCHLIST_TICKER_LIMIT = 10" not in server_source
     assert "GLOBAL_MARKETS_TRACKLIST_TICKER_LIMIT = 10" not in server_source
-    assert "watchlist_tickers = sorted(await _get_global_watchlist_tickers())" in markets_block
-    assert "tracklist_tickers = sorted(await _get_global_tracklist_tickers())" in markets_block
+    assert "async def _filter_visible_list_tickers(tickers: List[str]) -> List[str]:" in server_source
+    assert "requested_tickers = await _filter_visible_list_tickers(requested_tickers_raw)" in markets_block
+    assert "watchlist_tickers = sorted(await _filter_visible_list_tickers(list(await _get_global_watchlist_tickers())))" in markets_block
+    assert "tracklist_tickers = sorted(await _filter_visible_list_tickers(list(await _get_global_tracklist_tickers())))" in markets_block
     assert "_get_ranked_global_watchlist_tickers" not in markets_block
     assert "_get_ranked_global_tracklist_tickers" not in markets_block
     assert "async def _get_recent_global_ticker_mappings(" in server_source
-    assert "fallback_ticker_mappings = await _get_recent_global_ticker_mappings(" in markets_block
+    assert "fallback_candidates = await _get_recent_global_ticker_mappings(" in markets_block
+    assert "visible_fallback_tickers = set(await _filter_visible_list_tickers([" in markets_block
     assert 'GLOBAL_MARKETS_RESPONSE_LIMIT = 1000' in server_source
     assert 'limit: int = Query(GLOBAL_MARKETS_RESPONSE_LIMIT, ge=1, le=GLOBAL_MARKETS_RESPONSE_LIMIT)' in markets_block
     assert '"total_news_count": total_count' in markets_block

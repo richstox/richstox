@@ -38,7 +38,7 @@ describe('Markets events regressions', () => {
   });
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {
-    expect(fileContent).toContain('const EventLogo = ({ logoUrl, fallbackKey }');
+    expect(fileContent).toContain('const EventLogo = ({');
     expect(fileContent).toContain('const normalizedTicker = ticker?.trim().toUpperCase();');
     expect(fileContent).toContain('if (!rawUrl && normalizedTicker) return `${API_URL}/api/logo/${normalizedTicker}`;');
     expect(fileContent).toContain('router.push(`/stock/${event.ticker}`)');
@@ -146,5 +146,15 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('if (news.ticker) router.push(`/stock/${news.ticker}`);');
     expect(fileContent).toContain('<Text style={styles.articleTitle}>{selectedArticle.title}</Text>');
     expect(fileContent).toContain("{selectedArticle.content?.trim() || 'Open the original article to read the full story'}");
+  });
+
+  it('persists markets state and restores the richstox icon for market-only news rows', () => {
+    expect(fileContent).toContain("import { useMarketsStore } from '../../stores/marketsStore';");
+    expect(fileContent).toContain('const initialMarketsStateRef = useRef(useMarketsStore.getState());');
+    expect(fileContent).toContain('setMarketsState({');
+    expect(fileContent).toContain('onScroll={(event) => {');
+    expect(fileContent).toContain("source={require('../../assets/images/richstox_icon_only.png')}");
+    expect(fileContent).toContain("useRichstoxIcon={news.scope === 'market'}");
+    expect(fileContent).toContain("useRichstoxIcon={selectedArticle.scope === 'market'}");
   });
 });
