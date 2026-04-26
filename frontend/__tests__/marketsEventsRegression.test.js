@@ -94,6 +94,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const isDisabled = selectedEventCounts[type] === 0;');
     expect(fileContent).toContain('disabled={isDisabled}');
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
+    expect(fileContent).toContain('<Text style={styles.sectionTitle} numberOfLines={1}>Events & News</Text>');
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
     expect(fileContent).toContain('const visibleEventToggleCount = useMemo(() => {');
     expect(fileContent).toContain('const visibleNewsToggleCount = visibleNewsItems.length;');
@@ -121,7 +122,6 @@ describe('Markets events regressions', () => {
 
   it('keeps the events headline icon and removes the standalone calendar card', () => {
     expect(fileContent).toContain('<Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />');
-    expect(fileContent).toContain('<Text style={styles.sectionTitle} numberOfLines={1}>Events & News</Text>');
     expect(fileContent).toContain("textTransform: 'uppercase'");
     expect(fileContent).toContain('<Text style={styles.selectorTitle}>Events & News calendar</Text>');
     expect(fileContent).not.toContain('<Text style={styles.sectionTitle}>Calendar</Text>');
