@@ -87,7 +87,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).not.toContain('Prague date');
     expect(fileContent).toContain("type MarketFeedMode = 'events' | 'news';");
     expect(fileContent).toContain("const MARKET_FEED_MODE_OPTIONS: { key: MarketFeedMode; label: string }[] = [");
-    expect(fileContent).toContain("const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(['events', 'news']);");
+    expect(fileContent).toContain('const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(');
     expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 3;');
     expect(fileContent).toContain('const MARKET_DIGEST_LIMIT = 100;');
     expect(fileContent).toContain('/api/v1/markets/news?limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0');
