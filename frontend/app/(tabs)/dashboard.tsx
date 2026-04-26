@@ -641,7 +641,7 @@ export default function Dashboard() {
       return stock.added_at ? `Added: ${stock.added_at}` : null;
     }
     const created = stock.created_at_display || stock.added_at;
-    return created ? `Created: ${created}` : null;
+    return created ? `Opened: ${created}` : null;
   };
 
   const getStockRebalancedText = (stock: DashboardStock) => {
