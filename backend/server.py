@@ -2315,6 +2315,7 @@ async def get_homepage_data(request: Request):
             })
 
     upcoming_events.sort(key=lambda event: (event.get("date") or "9999-12-31", event.get("ticker") or ""))
+    upcoming_events_total = len(upcoming_events)
     upcoming_events = upcoming_events[:10]
 
     for ticker in ordered_tickers:
@@ -2388,6 +2389,7 @@ async def get_homepage_data(request: Request):
             "performance": tracklist_performance,
         },
         "upcoming_events": upcoming_events,
+        "upcoming_events_total": upcoming_events_total,
         "watchlist_count": len(watchlist_tickers & visible_set),
         "tracklist_count": len(tracklist_tickers & visible_set),
         "total_count": len(ordered_tickers),

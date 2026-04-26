@@ -240,6 +240,7 @@ export default function Dashboard() {
   const [newsItems, setNewsItems] = useState<any[]>([]);
   const [newsLoading, setNewsLoading] = useState(true);
   const [newsOffset, setNewsOffset] = useState(0);
+  const [totalNewsCount, setTotalNewsCount] = useState(0);
   const [hasMoreNews, setHasMoreNews] = useState(true);
   const [selectedArticle, setSelectedArticle] = useState<any>(null);
   const [aggregateSentiment, setAggregateSentiment] = useState<any>(null);
@@ -428,6 +429,7 @@ export default function Dashboard() {
     if (!sessionToken) {
       setNewsItems([]);
       setAggregateSentiment(null);
+      setTotalNewsCount(0);
       setHasMoreNews(false);
       setNewsLoading(false);
       return;
@@ -440,6 +442,13 @@ export default function Dashboard() {
       const newNews = response.data.news || [];
       setNewsItems((prev) => (append ? [...prev, ...newNews] : newNews));
       setAggregateSentiment(response.data.aggregate_sentiment || null);
+      setTotalNewsCount(
+        typeof response.data.total === 'number'
+          ? response.data.total
+          : Array.isArray(response.data.news)
+            ? response.data.news.length
+            : 0,
+      );
       
       setHasMoreNews(response.data.has_more);
       setNewsOffset(offset + newNews.length);
@@ -479,6 +488,11 @@ export default function Dashboard() {
     () => (Array.isArray(data?.upcoming_events) ? data.upcoming_events : []),
     [data?.upcoming_events],
   );
+  const homepageEventToggleCount = useMemo(
+    () => (typeof data?.upcoming_events_total === 'number' ? data.upcoming_events_total : homepageEvents.length),
+    [data?.upcoming_events_total, homepageEvents.length],
+  );
+  const homepageNewsToggleCount = totalNewsCount;
   const homepageShowsEvents = homepageFeedModes.includes('events');
   const homepageShowsNews = homepageFeedModes.includes('news');
 
@@ -1150,9 +1164,9 @@ export default function Dashboard() {
                       accessibilityLabel={isLocked
                         ? `Cannot disable last active ${option.label.toLowerCase()} filter on homepage`
                         : `Show ${option.label.toLowerCase()} on homepage`}
-                    >
+                      >
                       <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
-                        {option.label}
+                        {option.label} ({option.key === 'events' ? homepageEventToggleCount : homepageNewsToggleCount})
                       </Text>
                     </TouchableOpacity>
                   );

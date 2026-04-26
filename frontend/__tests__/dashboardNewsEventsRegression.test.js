@@ -58,6 +58,10 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('<MetricTooltip');
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}');
+    expect(fileContent).toContain("const [totalNewsCount, setTotalNewsCount] = useState(0);");
+    expect(fileContent).toContain('const homepageEventToggleCount = useMemo(');
+    expect(fileContent).toContain("const homepageNewsToggleCount = totalNewsCount;");
+    expect(fileContent).toContain("{option.label} ({option.key === 'events' ? homepageEventToggleCount : homepageNewsToggleCount})");
   });
 
   it('keeps homepage paging at five items, authenticates the request, and uses API-provided aggregate sentiment for the full corpus', () => {
