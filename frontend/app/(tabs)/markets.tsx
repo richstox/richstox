@@ -351,7 +351,7 @@ export default function Markets() {
   const [selectedArticle, setSelectedArticle] = useState<MarketNewsItem | null>(null);
   const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);
   const marketsScrollRef = useRef<ScrollView | null>(null);
-  const currentScrollYRef = useRef(initialMarketsStateRef.current.scrollY);
+  const currentScrollYRef = useRef(0);
   const persistedScrollYRef = useRef(initialMarketsStateRef.current.scrollY);
   const didHydratePeriodResetRef = useRef(false);
   const didHydrateFeedResetRef = useRef(false);
@@ -878,12 +878,13 @@ export default function Markets() {
   }, [setMarketsState]);
 
   const scrollToPersistedMarketsPosition = useCallback(() => {
-    const nextY = persistedScrollYRef.current || initialMarketsStateRef.current.scrollY;
+    const nextY = persistedScrollYRef.current;
     if (nextY <= 0) {
       didRestoreScrollRef.current = true;
       return;
     }
     marketsScrollRef.current?.scrollTo({ y: nextY, animated: false });
+    currentScrollYRef.current = nextY;
     didRestoreScrollRef.current = true;
   }, []);
 

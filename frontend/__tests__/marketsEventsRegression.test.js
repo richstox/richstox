@@ -150,7 +150,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("import { useMarketsStore } from '../../stores/marketsStore';");
     expect(fileContent).toContain('const initialMarketsStateRef = useRef(useMarketsStore.getState());');
     expect(fileContent).toContain('const persistedScrollY = useMarketsStore((state) => state.scrollY);');
-    expect(fileContent).toContain('const currentScrollYRef = useRef(initialMarketsStateRef.current.scrollY);');
+    expect(fileContent).toContain('const currentScrollYRef = useRef(0);');
     expect(fileContent).toContain('const persistedScrollYRef = useRef(initialMarketsStateRef.current.scrollY);');
     expect(fileContent).toContain('const navigateToStockFromMarkets = useCallback((rawTicker: string) => {');
     expect(fileContent).toContain('scrollY: currentScrollYRef.current,');
