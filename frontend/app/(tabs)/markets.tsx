@@ -114,7 +114,9 @@ const MARKET_NEWS_LIMIT = 1000;
 const YMD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ACTIVE_DAY_CARD_ESTIMATED_WIDTH = 74;
 const ACTIVE_DAY_CARD_GAP = 8;
+// Allow a few pixels of tolerance before disabling the day-strip arrows after inertial scrolling.
 const ACTIVE_DAY_SCROLL_TOLERANCE = 4;
+// Keep a small overlap between pages so users retain context while stepping through dates.
 const ACTIVE_DAY_SCROLL_PAGE_MARGIN = 72;
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
@@ -458,7 +460,8 @@ export default function Markets() {
       (selectedDayIndex * (ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP))
         - Math.max(0, (activeDaysViewportWidth - ACTIVE_DAY_CARD_ESTIMATED_WIDTH) / 2),
     );
-    const nextX = Math.min(Math.max(0, activeDaysContentWidth - activeDaysViewportWidth), centeredOffset);
+    const nextMaxActiveDaysScrollX = Math.max(0, activeDaysContentWidth - activeDaysViewportWidth);
+    const nextX = centeredOffset > nextMaxActiveDaysScrollX ? nextMaxActiveDaysScrollX : centeredOffset;
     // Keep the selected date visible immediately when the picker opens or the month changes.
     activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: false });
     setActiveDaysScrollX(nextX);
