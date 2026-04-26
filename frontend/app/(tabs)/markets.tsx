@@ -214,7 +214,7 @@ const getMarketNewsDateLabel = (dateStr?: string | null): string => {
   if (!dateStr) return 'Latest';
   const parsed = new Date(dateStr);
   if (Number.isNaN(parsed.getTime())) return 'Latest';
-  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return formatDateDMY(parsed.toISOString().slice(0, 10));
 };
 
 const getFeedTimestamp = (dateStr?: string | null): number => {
@@ -988,21 +988,20 @@ export default function Markets() {
                           disabled={!canOpenItem}
                           activeOpacity={canOpenItem ? 0.8 : 1}
                         >
-                          <View style={styles.eventTopRow}>
-                            <View style={styles.eventTickerBlock}>
-                              <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
-                              {news.company_name ? (
-                                <Text style={styles.eventCompanyName} numberOfLines={1}>{news.company_name}</Text>
-                              ) : null}
-                            </View>
+                          <View style={styles.marketNewsTickerRow}>
+                            <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
                             <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
                               <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
                             </View>
+                            <View style={styles.marketNewsMetaSpacer} />
+                            {news.date ? (
+                              <Text style={styles.eventMeta}>{getMarketNewsDateLabel(news.date)}</Text>
+                            ) : null}
                           </View>
+                          {news.company_name ? (
+                            <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
+                          ) : null}
                           <Text style={styles.eventTitle} numberOfLines={2}>{news.title}</Text>
-                          <Text style={styles.eventMeta}>
-                            {[news.source, getMarketNewsDateLabel(news.date)].filter(Boolean).join(' • ')}
-                          </Text>
                         </TouchableOpacity>
                         {canOpenItem ? (
                           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
@@ -1675,6 +1674,22 @@ const styles = StyleSheet.create({
   },
   eventTicker: { fontSize: 13, fontWeight: '700', color: COLORS.primary, textTransform: 'uppercase' },
   eventCompanyName: { fontSize: 13, fontWeight: '600', color: COLORS.textMuted, flexShrink: 1 },
+  marketNewsTickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  marketNewsMetaSpacer: {
+    flex: 1,
+  },
+  marketNewsCompanyName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.textMuted,
+    lineHeight: 18,
+    marginBottom: 4,
+  },
   eventMetaColumn: {
     alignItems: 'flex-end',
     gap: 6,

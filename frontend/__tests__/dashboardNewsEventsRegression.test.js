@@ -32,11 +32,13 @@ describe('Dashboard News & Events regressions', () => {
   it('renders homepage event badges, metadata, and subtitles in the shared feed rows', () => {
     expect(fileContent).toContain('formatHomepageEventSubtitle');
     expect(fileContent).toContain('formatHomepageEventMeta');
+    expect(fileContent).toContain('const formatDashboardDate = (dateStr?: string | null): string => {');
     expect(fileContent).toContain('<View style={styles.homepageEventHeader}>');
     expect(fileContent).toContain('<View style={styles.homepageEventBadge}>');
     expect(fileContent).toContain('<Text style={styles.homepageEventBadgeText}>{item.event.event_type}</Text>');
     expect(fileContent).toContain('<Text style={styles.homepageEventMetaText}>{eventMeta}</Text>');
     expect(fileContent).toContain('<Text style={styles.homepageEventSubtitle} numberOfLines={2}>{eventSubtitle}</Text>');
+    expect(fileContent).toContain('<Text style={styles.homepageEventCompany} numberOfLines={1}>{news.company_name}</Text>');
   });
 
   it('adds homepage sort controls, compact feed chips, and sentiment helper copy to the shared feed header', () => {

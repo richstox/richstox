@@ -73,10 +73,13 @@ const HOMEPAGE_FEED_MODE_OPTIONS: { key: HomepageFeedMode; label: string }[] = [
 
 const formatDashboardDate = (dateStr?: string | null): string => {
   if (!dateStr) return '';
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return '';
-  const parsed = new Date(`${dateStr}T00:00:00Z`);
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? `${dateStr}T00:00:00Z` : dateStr;
+  const parsed = new Date(normalized);
   if (Number.isNaN(parsed.getTime())) return '';
-  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const dd = String(parsed.getUTCDate()).padStart(2, '0');
+  const mm = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+  const yyyy = parsed.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
 };
 
 const formatDashboardCurrency = (value?: number | string | null, currency?: string | null): string | null => {
@@ -1267,9 +1270,12 @@ export default function Dashboard() {
                           </View>
                         ) : null}
                         <Text style={styles.newsMeta}>
-                          {news.date ? new Date(news.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
+                          {formatDashboardDate(news.date)}
                         </Text>
                       </View>
+                      {news.company_name ? (
+                        <Text style={styles.homepageEventCompany} numberOfLines={1}>{news.company_name}</Text>
+                      ) : null}
                       <Text style={styles.newsTitle} numberOfLines={2}>{news.title}</Text>
                     </>
                   )}
@@ -1367,7 +1373,7 @@ export default function Dashboard() {
                     </View>
                   </TouchableOpacity>
                   <Text style={styles.articleMeta}>
-                    {selectedArticle.date ? new Date(selectedArticle.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''} · {selectedArticle.source}
+                    {formatDashboardDate(selectedArticle.date)} · {selectedArticle.source}
                   </Text>
                 </View>
                 

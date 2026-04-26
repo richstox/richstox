@@ -98,6 +98,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
     expect(fileContent).toContain('const visibleEventToggleCount = useMemo(() => {');
     expect(fileContent).toContain('const visibleNewsToggleCount = visibleNewsItems.length;');
+    expect(fileContent).toContain('const getMarketNewsDateLabel = (dateStr?: string | null): string => {');
     expect(fileContent).toContain('const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {');
     expect(fileContent).toContain('const displayedFeedItems = useMemo(');
     expect(fileContent).toContain("const marketShowsEvents = marketFeedModes.includes('events');");
@@ -108,6 +109,9 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('<Text style={styles.feedModePrefix}>Show:</Text>');
     expect(fileContent).toContain("{option.label} ({option.key === 'events' ? visibleEventToggleCount : visibleNewsToggleCount})");
     expect(fileContent).toContain('style={styles.feedModeGroup}');
+    expect(fileContent).toContain('style={styles.marketNewsTickerRow}');
+    expect(fileContent).toContain('<Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>');
+    expect(fileContent).not.toContain("[news.source, getMarketNewsDateLabel(news.date)].filter(Boolean).join(' • ')");
     expect(fileContent).not.toContain('styles.sectionSubtitle');
     expect(fileContent).toContain('No saved market or ticker news available right now');
     expect(fileContent).toContain('Load more</Text>');

@@ -2134,7 +2134,7 @@ export default function StockDetail() {
       ? new Date(dateStr)
       : new Date(`${dateStr}T12:00:00Z`);
     if (isNaN(d.getTime())) return '';
-    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
+    return formatDateDMY(d.toISOString().slice(0, 10));
   };
 
   const openArticle = (article: NewsArticle) => {
@@ -4746,6 +4746,9 @@ export default function StockDetail() {
                           <Text style={styles.newsMeta}>{formatNewsDate(article.date)}</Text>
                         ) : null}
                       </View>
+                      <Text style={styles.newsSubmeta} numberOfLines={1}>
+                        {article.company_name || company.name}
+                      </Text>
                       <Text style={styles.newsTitle} numberOfLines={2}>{article.title}</Text>
                     </TouchableOpacity>
                     <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
