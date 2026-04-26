@@ -1495,6 +1495,12 @@ async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
             non_seed_events = [e for e in events if e.get("event_type") and e.get("event_type") != "auto_seed"]
             if not non_seed_events:
                 seeded_at_raw = tracklist_doc.get("seeded_at") or (events[0].get("created_at") if events else None)
+                if not seeded_at_raw:
+                    inner_user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "created_at": 1, "role": 1})
+                    if inner_user:
+                        seeded_at_raw = inner_user.get("created_at")
+                        if not seeded_at_raw and (inner_user.get("role") == "admin"):
+                            seeded_at_raw = ADMIN_TRACKLIST_FALLBACK_CREATED_AT.isoformat()
                 created_at_dt = _coerce_utc_datetime(seeded_at_raw) or datetime.now(timezone.utc)
                 created_at_iso = created_at_dt.isoformat()
                 effective_date = created_at_dt.date().isoformat()
@@ -2601,8 +2607,23 @@ async def get_homepage_data(request: Request):
     except Exception:
         prague_today = datetime.utcnow().date().isoformat()
     tracklist_rebalance_pending = bool(
-        tracklist_effective_date and tracklist_effective_date > prague_today
+        tracklist_effective_date and tracklist_effective_date >= prague_today
     )
+
+    # Compute the account opening date for display on Tracklist positions.
+    # Use the auto_seed event's effective_date (= actual market close on seeding day)
+    # and the user's registration date as candidates; take the earlier of the two so
+    # that a re-migration with today's date as fallback cannot override the real date.
+    seed_event_for_opened = next(
+        (e for e in tracklist_doc.get("events", []) if e.get("event_type") == "auto_seed"),
+        None,
+    )
+    seed_effective_date_for_opened = seed_event_for_opened.get("effective_date") if seed_event_for_opened else None
+    user_created_at_raw = user.get("created_at") if user else None
+    user_created_date = str(user_created_at_raw)[:10] if user_created_at_raw else None
+    account_open_date_candidates = [d for d in [seed_effective_date_for_opened, user_created_date] if d]
+    account_open_date = min(account_open_date_candidates) if account_open_date_candidates else None
+    account_opened_display = _format_display_date(account_open_date)
 
     for ticker in ordered_tickers:
         ticker_db = f"{ticker}.US"
@@ -2633,8 +2654,13 @@ async def get_homepage_data(request: Request):
             pos = next((position for position in tracklist_positions if _normalize_list_ticker(position.get("ticker", "")) == ticker), None)
             if pos:
                 added_at = _format_display_date(pos.get("added_at"))
-                position_created_at_display = added_at
                 position_entry_date = pos.get("entry_date")
+                # Seed positions share the account opening close date; replaced positions
+                # have an entry_date strictly after the account opening date.
+                if position_entry_date and account_open_date and position_entry_date > account_open_date:
+                    position_created_at_display = _format_display_date(position_entry_date)
+                else:
+                    position_created_at_display = account_opened_display or _format_display_date(position_entry_date)
                 follow_price = pos.get("entry_price")
                 if follow_price and current and follow_price > 0:
                     change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
