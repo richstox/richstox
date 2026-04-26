@@ -17,7 +17,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   addDays,
@@ -350,6 +350,7 @@ export default function Markets() {
   const [selectedArticle, setSelectedArticle] = useState<MarketNewsItem | null>(null);
   const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);
   const marketsScrollRef = useRef<ScrollView | null>(null);
+  const currentScrollYRef = useRef(initialMarketsStateRef.current.scrollY);
   const didHydratePeriodResetRef = useRef(false);
   const didHydrateFeedResetRef = useRef(false);
   const didRestoreScrollRef = useRef(initialMarketsStateRef.current.scrollY <= 0);
@@ -835,9 +836,38 @@ export default function Markets() {
     }
   };
 
-  const restoreMarketsScroll = useCallback(() => {
-    if (didRestoreScrollRef.current) return;
-    const nextY = initialMarketsStateRef.current.scrollY;
+
+  const navigateToStockFromMarkets = useCallback((rawTicker: string) => {
+    const nextTicker = rawTicker.trim().toUpperCase();
+    if (!nextTicker) return;
+    setMarketsState({
+      calendarView,
+      selectedDateKey,
+      displayMonthKey: selectedMonthKey,
+      selectedYear,
+      selectedEventType,
+      tickerFilter,
+      visibleFeedLimit,
+      marketFeedModes,
+      scrollY: currentScrollYRef.current,
+    });
+    router.push(`/stock/${nextTicker}?from=markets` as any);
+  }, [
+    calendarView,
+    marketFeedModes,
+    router,
+    selectedDateKey,
+    selectedEventType,
+    selectedMonthKey,
+    selectedYear,
+    setMarketsState,
+    tickerFilter,
+    visibleFeedLimit,
+  ]);
+
+  const restoreMarketsScroll = useCallback((force = false) => {
+    if (!force && didRestoreScrollRef.current) return;
+    const nextY = useMarketsStore.getState().scrollY || initialMarketsStateRef.current.scrollY;
     if (nextY <= 0) {
       didRestoreScrollRef.current = true;
       return;
@@ -845,6 +875,15 @@ export default function Markets() {
     marketsScrollRef.current?.scrollTo({ y: nextY, animated: false });
     didRestoreScrollRef.current = true;
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      const frame = requestAnimationFrame(() => {
+        restoreMarketsScroll(true);
+      });
+      return () => cancelAnimationFrame(frame);
+    }, [restoreMarketsScroll]),
+  );
 
   useEffect(() => {
     if (loading || newsLoading) return;
@@ -863,7 +902,8 @@ export default function Markets() {
         style={styles.scroll}
         contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}
         onScroll={(event) => {
-          setMarketsState({ scrollY: event.nativeEvent.contentOffset.y });
+          currentScrollYRef.current = event.nativeEvent.contentOffset.y;
+          setMarketsState({ scrollY: currentScrollYRef.current });
         }}
         onContentSizeChange={() => {
           restoreMarketsScroll();
@@ -877,19 +917,6 @@ export default function Markets() {
                 <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
                 <Text style={styles.sectionTitle} numberOfLines={1}>EVENTS & NEWS</Text>
               </View>
-              <View style={styles.eventsDateBlock}>
-                <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
-                <TouchableOpacity
-                  style={styles.eventsDateSelectControl}
-                  onPress={() => setCalendarPickerVisible(true)}
-                  accessibilityRole="button"
-                >
-                  <Text style={styles.eventsDateSelectText}>Select</Text>
-                  <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
-                </TouchableOpacity>
-              </View>
-            </View>
-            <View style={styles.eventsHeaderActions}>
               {aggregateSentiment && (
                 <TouchableOpacity
                   style={[
@@ -907,6 +934,21 @@ export default function Markets() {
                   </Text>
                 </TouchableOpacity>
               )}
+            </View>
+            <View style={styles.eventsHeaderMetaRow}>
+              <View style={styles.eventsDateBlock}>
+                <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
+                <TouchableOpacity
+                  style={styles.eventsDateSelectControl}
+                  onPress={() => setCalendarPickerVisible(true)}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.eventsDateSelectText}>Select</Text>
+                  <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
+                </TouchableOpacity>
+              </View>
+            </View>
+            <View style={styles.eventsHeaderActions}>
               <View style={styles.feedModeRow}>
                 <View style={styles.feedModeGroup}>
                   {MARKET_FEED_MODE_OPTIONS.map((option) => {
@@ -1042,7 +1084,7 @@ export default function Markets() {
                           key={item.id}
                           style={[styles.eventRow, isLastRow && styles.lastEventRow]}
                           onPress={() => {
-                            if (event.ticker) router.push(`/stock/${event.ticker}`);
+                            if (event.ticker) navigateToStockFromMarkets(event.ticker);
                           }}
                           disabled={!canOpenTicker}
                           activeOpacity={canOpenTicker ? 0.8 : 1}
@@ -1082,7 +1124,7 @@ export default function Markets() {
                       <View key={item.id} style={[styles.eventRow, isLastRow && styles.lastEventRow]}>
                         <TouchableOpacity
                           onPress={() => {
-                            if (news.ticker) router.push(`/stock/${news.ticker}`);
+                            if (news.ticker) navigateToStockFromMarkets(news.ticker);
                           }}
                           disabled={!news.ticker}
                           activeOpacity={news.ticker ? 0.8 : 1}
@@ -1180,7 +1222,7 @@ export default function Markets() {
                     onPress={() => {
                       closeArticle();
                       if (selectedArticle.ticker) {
-                        router.push(`/stock/${selectedArticle.ticker}`);
+                        navigateToStockFromMarkets(selectedArticle.ticker);
                       }
                     }}
                     disabled={!selectedArticle.ticker}
@@ -1576,12 +1618,16 @@ const styles = StyleSheet.create({
   },
   eventsHeaderTop: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
+  eventsHeaderMetaRow: {
+    marginTop: 6,
+    alignItems: 'flex-start',
+  },
   eventsDateBlock: {
-    alignItems: 'flex-end',
+    alignItems: 'flex-start',
     flexShrink: 0,
     gap: 2,
   },
