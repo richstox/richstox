@@ -27,10 +27,13 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain("No news or events available");
   });
 
-  it('renders homepage event badges and subtitles in the shared feed rows', () => {
+  it('renders homepage event badges, metadata, and subtitles in the shared feed rows', () => {
     expect(fileContent).toContain('formatHomepageEventSubtitle');
+    expect(fileContent).toContain('formatHomepageEventMeta');
+    expect(fileContent).toContain('<View style={styles.homepageEventHeader}>');
     expect(fileContent).toContain('<View style={styles.homepageEventBadge}>');
     expect(fileContent).toContain('<Text style={styles.homepageEventBadgeText}>{item.event.event_type}</Text>');
+    expect(fileContent).toContain('<Text style={styles.homepageEventMetaText}>{eventMeta}</Text>');
     expect(fileContent).toContain('<Text style={styles.homepageEventSubtitle} numberOfLines={2}>{eventSubtitle}</Text>');
   });
 
@@ -54,6 +57,6 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`, {');
     expect(fileContent).toContain("headers: { Authorization: `Bearer ${sessionToken}` }");
     expect(fileContent).toContain('setAggregateSentiment(response.data.aggregate_sentiment || null);');
-    expect(fileContent).toContain('<Text style={styles.loadMoreText}>Load more events & news</Text>');
+    expect(fileContent).toContain('<Text style={styles.loadMoreText}>Load more</Text>');
   });
 });

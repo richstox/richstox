@@ -31,11 +31,8 @@ describe('Markets events regressions', () => {
     expect(fileContent).not.toContain('const ACTIVE_DAY_DOT_LAYOUT: EventType[][] = [');
     expect(fileContent).not.toContain('const activeDayTypes = new Set(dayEvents.map((event) => event.type));');
     expect(fileContent).not.toContain('<Text style={[styles.activeDayCount, isSelected && styles.activeDayTextSelected]}>');
-    expect(fileContent).toContain('const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;');
-    expect(fileContent).toContain('const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;');
-    expect(fileContent).toContain("const scrollActiveDaysBy = (scrollDirection: 'left' | 'right') => {");
-    expect(fileContent).toContain("scrollActiveDaysBy('left')");
-    expect(fileContent).toContain("scrollActiveDaysBy('right')");
+    expect(fileContent).toContain('activeDayKeysForDisplayMonth.map((dayKey) => {');
+    expect(fileContent).toContain('<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeDaysScrollContent}>');
     expect(fileContent).toContain('minWidth: 58,');
   });
 
@@ -53,16 +50,14 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('<Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>');
   });
 
-  it('supports daily monthly and yearly calendar views and keeps the logo clickable', () => {
+  it('supports daily monthly and yearly calendar views inside the selector popup and keeps the logo clickable', () => {
     expect(fileContent).toContain("type CalendarViewMode = 'daily' | 'monthly' | 'yearly';");
     expect(fileContent).toContain("const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];");
-    expect(fileContent).toContain('const MAX_VISIBLE_MONTH_CARDS = 4;');
     expect(fileContent).toContain('const activeDayKeysForDisplayMonth = useMemo(');
     expect(fileContent).toContain("activeMonthKeys.find((monthKey) => monthKey >= todayMonthKey) ?? activeMonthKeys[0]");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'last')");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'first')");
     expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
-    expect(fileContent).toContain("Show full calendar");
     expect(fileContent).toContain("const INITIAL_VISIBLE_FEED_ITEMS = 5;");
     expect(fileContent).toContain("const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);");
     expect(fileContent).toContain('<Text style={styles.eventsDateSelectText}>Select</Text>');
@@ -70,12 +65,14 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
     expect(fileContent).toContain("setSelectedYear(year);");
+    expect(fileContent).toContain('style={styles.eventsDateSelectControl}');
+    expect(fileContent).toContain('style={styles.selectorDetailSection}');
+    expect(fileContent).toContain('style={styles.selectorMonthHeader}');
     expect(fileContent).toContain("import AppHeader from '../../components/AppHeader';");
     expect(fileContent).toContain('<AppHeader title="Markets" />');
   });
 
   it('replaces the Prague date label, disables zero-count tabs, and merges +News into Events & News', () => {
-    expect(fileContent).toContain('<Text style={styles.sectionSubtitle}>For next 3 months</Text>');
     expect(fileContent).not.toContain('Prague date');
     expect(fileContent).toContain('const [includeNews, setIncludeNews] = useState(true);');
     expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>+News</Text>');
@@ -92,22 +89,23 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('aggregateSentiment && (');
     expect(fileContent).toContain('No saved market or ticker news available right now');
-    expect(fileContent).toContain('Load more events & news');
+    expect(fileContent).toContain('Load more</Text>');
     expect(fileContent).not.toContain('Load more news</Text>');
   });
 
-  it('adds icons to the calendar and events headlines and removes the redundant top-right total', () => {
-    expect(fileContent).toContain('<Ionicons name="calendar-clear-outline" size={18} color={COLORS.primary} />');
-    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Calendar</Text>');
+  it('keeps the events headline icon and removes the standalone calendar card', () => {
     expect(fileContent).toContain('<Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />');
     expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
+    expect(fileContent).toContain('<Text style={styles.selectorTitle}>Events & News calendar</Text>');
+    expect(fileContent).not.toContain('<Text style={styles.sectionTitle}>Calendar</Text>');
     expect(fileContent).not.toContain('<Text style={styles.eventsCount}>{periodEvents.length}</Text>');
   });
 
   it('uses the compact selector flow instead of a standalone show-details button and resolves news logos like event logos', () => {
-    expect(fileContent).toContain("setIsCalendarExpanded((prev) => !prev);");
-    expect(fileContent).toContain("<Text style={styles.calendarHeaderActionText}>Hide Details</Text>");
     expect(fileContent).toContain("<Text style={styles.eventsDateSelectText}>Select</Text>");
+    expect(fileContent).toContain('style={styles.selectorDetailSection}');
+    expect(fileContent).not.toContain('setIsCalendarExpanded((prev) => !prev);');
+    expect(fileContent).not.toContain('Hide Details');
     expect(fileContent).not.toContain('Show calendar details');
     expect(fileContent).toContain('resolveEventLogoUrl(news.logo_url, news.ticker)');
   });
