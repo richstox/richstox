@@ -24,6 +24,7 @@ import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { API_URL } from '../../utils/config';
+import { formatAggregateSentimentLabel } from '../../utils/sentiment';
 import { useMyStocksStore } from '../../stores/myStocksStore';
 
 const COLORS = {
@@ -230,7 +231,7 @@ export default function Dashboard() {
   const [selectedArticle, setSelectedArticle] = useState<any>(null);
   const [aggregateSentiment, setAggregateSentiment] = useState<any>(null);
   const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');
-  const [includeHomepageEvents, setIncludeHomepageEvents] = useState(true);
+  const [includeHomepageNews, setIncludeHomepageNews] = useState(true);
   const [newsFeedFilter, setNewsFeedFilter] = useState('');
   
   // Fix 3: News pagination with See less
@@ -492,18 +493,18 @@ export default function Dashboard() {
   );
 
   const newsFeedItems = useMemo<DashboardFeedItem[]>(() => {
-    const eventItems = includeHomepageEvents
-      ? homepageEvents.map((event) => ({
-          kind: 'event' as const,
-          id: event.id,
-          event,
+    const eventItems = homepageEvents.map((event) => ({
+      kind: 'event' as const,
+      id: event.id,
+      event,
+    }));
+    const articleItems = includeHomepageNews
+      ? newsItems.map((article) => ({
+          kind: 'article' as const,
+          id: article.id,
+          article,
         }))
       : [];
-    const articleItems = newsItems.map((article) => ({
-      kind: 'article' as const,
-      id: article.id,
-      article,
-    }));
     const mergedItems = [...eventItems, ...articleItems];
 
     switch (homepageFeedSort) {
@@ -517,7 +518,7 @@ export default function Dashboard() {
       default:
         return mergedItems.sort((a, b) => getDashboardFeedDateValue(b) - getDashboardFeedDateValue(a));
     }
-  }, [homepageEvents, homepageFeedSort, includeHomepageEvents, newsItems]);
+  }, [homepageEvents, homepageFeedSort, includeHomepageNews, newsItems]);
 
   const normalizedNewsFeedFilter = newsFeedFilter.trim().toLowerCase();
   const filteredNewsFeedItems = useMemo<DashboardFeedItem[]>(() => {
@@ -547,7 +548,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     setNewsLimit(INITIAL_NEWS_LIMIT);
-  }, [homepageFeedSort, includeHomepageEvents]);
+  }, [homepageFeedSort, includeHomepageNews]);
 
   const formatPercent = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   const formatDrawdown = (v: number) => `-${Math.abs(v).toFixed(2)}%`;
@@ -1068,11 +1069,11 @@ export default function Dashboard() {
                 {/* P35 Item 1: Section icon */}
                 <Ionicons name="newspaper" size={18} color={COLORS.primary} />
                 <View>
-                  <Text style={styles.sectionTitle}>News & Events</Text>
+                  <Text style={styles.sectionTitle}>Events & News</Text>
                 </View>
               </View>
               {/* Aggregate Sentiment Badge */}
-              {aggregateSentiment && (
+              {includeHomepageNews && aggregateSentiment && (
                 <View 
                   style={[
                     styles.aggregateSentimentBadge,
@@ -1082,8 +1083,7 @@ export default function Dashboard() {
                 >
                   <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                   <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
-                    {aggregateSentiment.label === 'positive' ? 'Positive' : 
-                     aggregateSentiment.label === 'negative' ? 'Negative' : 'Neutral'}
+                    {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
                   </Text>
                 </View>
               )}
@@ -1133,12 +1133,15 @@ export default function Dashboard() {
               </View>
               <TouchableOpacity
                 style={styles.portfolioToggleInline}
-                onPress={() => setIncludeHomepageEvents((prev) => !prev)}
+                onPress={() => setIncludeHomepageNews((prev) => !prev)}
                 data-testid="homepage-events-toggle"
+                accessibilityRole="switch"
+                accessibilityLabel="Toggle homepage news"
+                accessibilityState={{ checked: includeHomepageNews }}
               >
-                <Text style={styles.portfolioToggleLabelInline}>Events</Text>
-                <View style={[styles.toggleSwitch, includeHomepageEvents && styles.toggleSwitchOn]}>
-                  <View style={[styles.toggleKnob, includeHomepageEvents && styles.toggleKnobOn]} />
+                <Text style={styles.portfolioToggleLabelInline}>+News</Text>
+                <View style={[styles.toggleSwitch, includeHomepageNews && styles.toggleSwitchOn]}>
+                  <View style={[styles.toggleKnob, includeHomepageNews && styles.toggleKnobOn]} />
                 </View>
               </TouchableOpacity>
             </View>

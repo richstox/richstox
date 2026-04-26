@@ -28,6 +28,7 @@ import {
 } from 'date-fns';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
+import { formatAggregateSentimentLabel } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
 
 const COLORS = {
@@ -97,6 +98,7 @@ type AggregateSentiment = {
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const INITIAL_VISIBLE_EVENTS = 5;
+const INITIAL_VISIBLE_NEWS = 5;
 const MAX_VISIBLE_MONTH_CARDS = 4;
 const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;
 const ACTIVE_DAYS_SCROLL_PERCENTAGE = 0.8;
@@ -264,7 +266,9 @@ export default function Markets() {
   const [selectedEventType, setSelectedEventType] = useState<EventType>('earnings');
   const [tickerFilter, setTickerFilter] = useState('');
   const [visibleEventLimit, setVisibleEventLimit] = useState(INITIAL_VISIBLE_EVENTS);
+  const [visibleNewsLimit, setVisibleNewsLimit] = useState(INITIAL_VISIBLE_NEWS);
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
+  const [isFullCalendarExpanded, setIsFullCalendarExpanded] = useState(false);
   const [includeNews, setIncludeNews] = useState(true);
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
@@ -394,6 +398,10 @@ export default function Markets() {
   }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey]);
 
   useEffect(() => {
+    setIsFullCalendarExpanded(false);
+  }, [calendarView, selectedMonthKey]);
+
+  useEffect(() => {
     setSelectedYear(Number(format(displayMonth, 'yyyy')));
   }, [displayMonth]);
 
@@ -450,6 +458,32 @@ export default function Markets() {
     () => visibleEvents.slice(0, visibleEventLimit),
     [visibleEventLimit, visibleEvents],
   );
+
+  const visibleNewsItems = useMemo(() => {
+    if (!includeNews) return [];
+    if (!normalizedTickerFilter) return newsItems;
+    return newsItems.filter((item) => {
+      const haystack = [
+        item.ticker,
+        item.company_name,
+        item.title,
+        item.source,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(normalizedTickerFilter);
+    });
+  }, [includeNews, newsItems, normalizedTickerFilter]);
+
+  const displayedNewsItems = useMemo(
+    () => visibleNewsItems.slice(0, visibleNewsLimit),
+    [visibleNewsItems, visibleNewsLimit],
+  );
+
+  useEffect(() => {
+    setVisibleNewsLimit(INITIAL_VISIBLE_NEWS);
+  }, [includeNews, normalizedTickerFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -649,7 +683,23 @@ export default function Markets() {
             })}
           </View>
 
-          {calendarView === 'daily' ? (
+          <TouchableOpacity
+            style={styles.calendarToggleButton}
+            onPress={() => setIsCalendarExpanded((prev) => !prev)}
+            accessibilityRole="button"
+            accessibilityLabel={isCalendarExpanded ? 'Hide calendar details' : 'Show calendar details'}
+          >
+            <Text style={styles.calendarToggleText}>
+              {isCalendarExpanded ? 'Hide calendar details' : 'Show calendar details'}
+            </Text>
+            <Ionicons
+              name={isCalendarExpanded ? 'chevron-up' : 'chevron-down'}
+              size={16}
+              color={COLORS.primary}
+            />
+          </TouchableOpacity>
+
+          {isCalendarExpanded && (calendarView === 'daily' ? (
             <>
               <View style={styles.monthHeader}>
                 <TouchableOpacity
@@ -728,19 +778,21 @@ export default function Markets() {
 
               <TouchableOpacity
                 style={styles.calendarToggleButton}
-                onPress={() => setIsCalendarExpanded((prev) => !prev)}
+                onPress={() => setIsFullCalendarExpanded((prev) => !prev)}
+                accessibilityRole="button"
+                accessibilityLabel={isFullCalendarExpanded ? 'Hide full calendar' : 'Show full calendar'}
               >
                 <Text style={styles.calendarToggleText}>
-                  {isCalendarExpanded ? 'Hide full calendar' : 'Show full calendar'}
+                  {isFullCalendarExpanded ? 'Hide full calendar' : 'Show full calendar'}
                 </Text>
                 <Ionicons
-                  name={isCalendarExpanded ? 'chevron-up' : 'chevron-down'}
+                  name={isFullCalendarExpanded ? 'chevron-up' : 'chevron-down'}
                   size={16}
                   color={COLORS.primary}
                 />
               </TouchableOpacity>
 
-              {isCalendarExpanded && (
+              {isFullCalendarExpanded && (
                 <>
                   <View style={styles.weekdayRow}>
                     {WEEKDAY_LABELS.map((day) => (
@@ -875,7 +927,7 @@ export default function Markets() {
                 );
               })}
             </View>
-          )}
+          ))}
         </View>
 
         <View style={styles.card}>
@@ -884,71 +936,42 @@ export default function Markets() {
               <View style={styles.eventsTitleBlock}>
                 <View style={styles.sectionTitleRow}>
                   <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
-                  <Text style={styles.sectionTitle}>Events</Text>
+                  <Text style={styles.sectionTitle}>Events & News</Text>
                 </View>
                 <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
-                <Text style={styles.sectionSubtitle}>{periodEvents.length} events</Text>
+                <Text style={styles.sectionSubtitle}>
+                  {includeNews ? `${periodEvents.length} events • ${newsItems.length} news` : `${periodEvents.length} events`}
+                </Text>
               </View>
-              <TouchableOpacity
-                style={styles.portfolioToggleInline}
-                onPress={() => setIncludeNews((prev) => !prev)}
-              >
-                <Text style={styles.portfolioToggleLabelInline}>+News</Text>
-                <View style={[styles.toggleSwitch, includeNews && styles.toggleSwitchOn]}>
-                  <View style={[styles.toggleKnob, includeNews && styles.toggleKnobOn]} />
-                </View>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <View style={styles.eventTabsRow}>
-            {EVENT_TYPE_ORDER.map((type) => {
-              const meta = EVENT_META[type];
-              const isActive = selectedEventType === type;
-              const isDisabled = selectedEventCounts[type] === 0;
-              return (
-                <TouchableOpacity
-                  key={type}
-                  style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}
-                  onPress={() => {
-                    setSelectedEventType(type);
-                    setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);
-                  }}
-                  disabled={isDisabled}
-                  accessibilityRole="button"
-                >
-                  <View style={styles.eventTabLabelRow}>
-                    <View style={[styles.eventTabDot, { backgroundColor: meta.color }]} />
-                    <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive, isDisabled && styles.eventTabTextDisabled]}>
-                      {meta.shortLabel}
+              <View style={styles.eventsHeaderActions}>
+                {includeNews && aggregateSentiment && (
+                  <View
+                    style={[
+                      styles.aggregateSentimentBadge,
+                      styles.aggregateSentimentHeadlineBadge,
+                      { backgroundColor: `${aggregateSentiment.color}20` },
+                    ]}
+                  >
+                    <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
+                    <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
+                      {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
                     </Text>
                   </View>
-                  <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive, isDisabled && styles.eventTabTextDisabled]}>
-                    {selectedEventCounts[type]}
-                  </Text>
+                )}
+                <TouchableOpacity
+                  style={styles.portfolioToggleInline}
+                  onPress={() => setIncludeNews((prev) => !prev)}
+                  accessibilityRole="switch"
+                  accessibilityLabel="Toggle market news"
+                  accessibilityState={{ checked: includeNews }}
+                >
+                  <Text style={styles.portfolioToggleLabelInline}>+News</Text>
+                  <View style={[styles.toggleSwitch, includeNews && styles.toggleSwitchOn]}>
+                    <View style={[styles.toggleKnob, includeNews && styles.toggleKnobOn]} />
+                  </View>
                 </TouchableOpacity>
-              );
-            })}
-          </View>
-          <View style={styles.filterSearchWrap}>
-            <Ionicons name="search" size={20} color={COLORS.textMuted} />
-            <TextInput
-              style={[
-                styles.filterSearchInput,
-                Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null,
-              ]}
-              placeholder="Search ticker or company"
-              placeholderTextColor={COLORS.textMuted}
-              value={tickerFilter}
-              onChangeText={setTickerFilter}
-              autoCapitalize="characters"
-              autoCorrect={false}
-            />
-            {tickerFilter.length > 0 && (
-              <TouchableOpacity onPress={() => setTickerFilter('')}>
-                <Ionicons name="close-circle" size={20} color={COLORS.textMuted} />
-              </TouchableOpacity>
-            )}
+              </View>
+            </View>
           </View>
 
           {loading ? (
@@ -962,161 +985,206 @@ export default function Markets() {
               <Ionicons name="calendar-outline" size={28} color={COLORS.textMuted} />
               <Text style={styles.emptyText}>No events for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
             </View>
-          ) : typeFilteredEvents.length === 0 ? (
-            <View style={styles.emptyWrap}>
-              <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
-            </View>
-          ) : visibleEvents.length === 0 ? (
-            <View style={styles.emptyWrap}>
-              <Text style={styles.emptyText}>No matches for “{tickerFilter}”</Text>
-            </View>
           ) : (
-            displayedEvents.map((event, index) => {
-              const meta = EVENT_META[event.type];
-              const fallbackKey = getEventFallbackKey(event.ticker, event.company_name);
-              const canOpenTicker = Boolean(event.ticker);
-              return (
-                <TouchableOpacity
-                  key={`${event.type}-${event.ticker || 'na'}-${event.date}-${index}`}
-                  style={[styles.eventRow, index === displayedEvents.length - 1 && styles.lastEventRow]}
-                  onPress={() => {
-                    if (event.ticker) router.push(`/stock/${event.ticker}`);
-                  }}
-                  disabled={!canOpenTicker}
-                  activeOpacity={canOpenTicker ? 0.8 : 1}
-                >
-                  <EventLogo
-                    logoUrl={resolveEventLogoUrl(event.logo_url, event.ticker)}
-                    fallbackKey={fallbackKey}
-                  />
-                  <View style={styles.eventContent}>
-                    <View style={styles.eventTopRow}>
-                      <View style={styles.eventTickerBlock}>
-                        <Text style={styles.eventTicker}>{event.ticker || 'Market'}</Text>
-                        {event.company_name ? (
-                          <Text style={styles.eventCompanyName} numberOfLines={1}>{event.company_name}</Text>
-                        ) : null}
-                      </View>
-                      <View style={[styles.eventPill, { backgroundColor: `${meta.color}15` }]}>
-                        <Text style={[styles.eventPillText, { color: meta.color }]}>{meta.singularLabel}</Text>
-                      </View>
-                    </View>
-                    <Text style={styles.eventTitle} numberOfLines={2}>{event.label}</Text>
-                    <Text style={styles.eventMeta}>{formatEventSecondary(event)}</Text>
-                  </View>
-                  {canOpenTicker ? (
-                    <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
-                  ) : null}
-                </TouchableOpacity>
-              );
-            })
-          )}
-
-          {visibleEvents.length > 0 && (
-            <View style={styles.eventsButtonsRow}>
-              {visibleEventLimit < visibleEvents.length && (
-                <TouchableOpacity
-                  style={styles.loadMoreButtonFull}
-                  onPress={() => setVisibleEventLimit((prev) => prev + INITIAL_VISIBLE_EVENTS)}
-                >
-                  <Text style={styles.loadMoreText}>Load more events</Text>
-                </TouchableOpacity>
-              )}
-              {visibleEventLimit > INITIAL_VISIBLE_EVENTS && (
-                <TouchableOpacity
-                  style={styles.seeLessButtonFull}
-                  onPress={() => setVisibleEventLimit(INITIAL_VISIBLE_EVENTS)}
-                >
-                  <Text style={styles.seeLessText}>See less</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
-
-          {includeNews && (
-            <View style={styles.marketNewsSection}>
-              <View style={styles.marketNewsHeader}>
-                <View style={styles.marketNewsHeaderTop}>
-                  <View>
-                    <Text style={styles.marketNewsTitle}>Markets news</Text>
-                    <Text style={styles.marketNewsSubtitle}>
-                      General market news and top stories from tracked companies
-                    </Text>
-                  </View>
-                  {aggregateSentiment && (
-                    <View
-                      style={[
-                        styles.aggregateSentimentBadge,
-                        { backgroundColor: `${aggregateSentiment.color}20` },
-                      ]}
-                    >
-                      <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
-                      <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
-                        {aggregateSentiment.label === 'positive'
-                          ? 'Positive'
-                          : aggregateSentiment.label === 'negative'
-                            ? 'Negative'
-                            : 'Neutral'}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              </View>
-
-              {newsLoading ? (
-                <View style={styles.loadingWrap}>
-                  <ActivityIndicator size="small" color={COLORS.primary} />
-                </View>
-              ) : newsError ? (
-                <Text style={styles.errorText}>{newsError}</Text>
-              ) : newsItems.length === 0 ? (
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyText}>No saved market or ticker news available right now</Text>
-                </View>
-              ) : (
-                newsItems.map((item, index) => {
-                  const tone = getSentimentTone(item.sentiment_label);
-                  const canOpenItem = Boolean(item.link || item.ticker);
+            <>
+              <View style={styles.eventTabsRow}>
+                {EVENT_TYPE_ORDER.map((type) => {
+                  const meta = EVENT_META[type];
+                  const isActive = selectedEventType === type;
+                  const isDisabled = selectedEventCounts[type] === 0;
                   return (
                     <TouchableOpacity
-                      key={item.id}
-                      style={[styles.eventRow, index === newsItems.length - 1 && styles.lastEventRow]}
+                      key={type}
+                      style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}
                       onPress={() => {
-                        if (!canOpenItem) return;
-                        void openNewsItem(item);
+                        setSelectedEventType(type);
+                        setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);
                       }}
-                      disabled={!canOpenItem}
-                      activeOpacity={canOpenItem ? 0.8 : 1}
+                      disabled={isDisabled}
+                      accessibilityRole="button"
                     >
-                      <EventLogo
-                        logoUrl={item.logo_url}
-                        fallbackKey={item.fallback_logo_key}
-                      />
-                      <View style={styles.eventContent}>
-                        <View style={styles.eventTopRow}>
-                          <View style={styles.eventTickerBlock}>
-                            <Text style={styles.eventTicker}>{item.ticker || 'Market'}</Text>
-                            {item.company_name ? (
-                              <Text style={styles.eventCompanyName} numberOfLines={1}>{item.company_name}</Text>
-                            ) : null}
-                          </View>
-                          <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
-                            <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
-                          </View>
-                        </View>
-                        <Text style={styles.eventTitle} numberOfLines={2}>{item.title}</Text>
-                        <Text style={styles.eventMeta}>
-                          {[item.source, getMarketNewsDateLabel(item.date)].filter(Boolean).join(' • ')}
+                      <View style={styles.eventTabLabelRow}>
+                        <View style={[styles.eventTabDot, { backgroundColor: meta.color }]} />
+                        <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive, isDisabled && styles.eventTabTextDisabled]}>
+                          {meta.shortLabel}
                         </Text>
                       </View>
-                      {canOpenItem ? (
-                        <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
-                      ) : null}
+                      <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive, isDisabled && styles.eventTabTextDisabled]}>
+                        {selectedEventCounts[type]}
+                      </Text>
                     </TouchableOpacity>
                   );
-                })
+                })}
+              </View>
+              <View style={styles.filterSearchWrap}>
+                <Ionicons name="search" size={20} color={COLORS.textMuted} />
+                <TextInput
+                  style={[
+                    styles.filterSearchInput,
+                    Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null,
+                  ]}
+                  placeholder="Search ticker or company"
+                  placeholderTextColor={COLORS.textMuted}
+                  value={tickerFilter}
+                  onChangeText={setTickerFilter}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                />
+                {tickerFilter.length > 0 && (
+                  <TouchableOpacity onPress={() => setTickerFilter('')}>
+                    <Ionicons name="close-circle" size={20} color={COLORS.textMuted} />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {typeFilteredEvents.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
+                </View>
+              ) : visibleEvents.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>No matches for “{tickerFilter}”</Text>
+                </View>
+              ) : (
+                <>
+                  {displayedEvents.map((event, index) => {
+                    const meta = EVENT_META[event.type];
+                    const fallbackKey = getEventFallbackKey(event.ticker, event.company_name);
+                    const canOpenTicker = Boolean(event.ticker);
+                    const isLastEventRow = index === displayedEvents.length - 1 && (!includeNews || displayedNewsItems.length === 0);
+                    return (
+                      <TouchableOpacity
+                        key={`${event.type}-${event.ticker || 'na'}-${event.date}-${index}`}
+                        style={[styles.eventRow, isLastEventRow && styles.lastEventRow]}
+                        onPress={() => {
+                          if (event.ticker) router.push(`/stock/${event.ticker}`);
+                        }}
+                        disabled={!canOpenTicker}
+                        activeOpacity={canOpenTicker ? 0.8 : 1}
+                      >
+                        <EventLogo
+                          logoUrl={resolveEventLogoUrl(event.logo_url, event.ticker)}
+                          fallbackKey={fallbackKey}
+                        />
+                        <View style={styles.eventContent}>
+                          <View style={styles.eventTopRow}>
+                            <View style={styles.eventTickerBlock}>
+                              <Text style={styles.eventTicker}>{event.ticker || 'Market'}</Text>
+                              {event.company_name ? (
+                                <Text style={styles.eventCompanyName} numberOfLines={1}>{event.company_name}</Text>
+                              ) : null}
+                            </View>
+                            <View style={[styles.eventPill, { backgroundColor: `${meta.color}15` }]}>
+                              <Text style={[styles.eventPillText, { color: meta.color }]}>{meta.singularLabel}</Text>
+                            </View>
+                          </View>
+                          <Text style={styles.eventTitle} numberOfLines={2}>{event.label}</Text>
+                          <Text style={styles.eventMeta}>{formatEventSecondary(event)}</Text>
+                        </View>
+                        {canOpenTicker ? (
+                          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                        ) : null}
+                      </TouchableOpacity>
+                    );
+                  })}
+
+                  {includeNews && (
+                    newsLoading ? (
+                      <View style={styles.loadingWrap}>
+                        <ActivityIndicator size="small" color={COLORS.primary} />
+                      </View>
+                    ) : newsError ? (
+                      <Text style={styles.errorText}>{newsError}</Text>
+                    ) : newsItems.length === 0 ? (
+                      <View style={styles.emptyWrap}>
+                        <Text style={styles.emptyText}>No saved market or ticker news available right now</Text>
+                      </View>
+                    ) : visibleNewsItems.length === 0 ? (
+                      <View style={styles.emptyWrap}>
+                        <Text style={styles.emptyText}>No news matches for “{tickerFilter}”</Text>
+                      </View>
+                    ) : (
+                      displayedNewsItems.map((item, index) => {
+                        const tone = getSentimentTone(item.sentiment_label);
+                        const canOpenItem = Boolean(item.link || item.ticker);
+                        return (
+                          <TouchableOpacity
+                            key={item.id}
+                            style={[styles.eventRow, index === displayedNewsItems.length - 1 && styles.lastEventRow]}
+                            onPress={() => {
+                              if (!canOpenItem) return;
+                              void openNewsItem(item);
+                            }}
+                            disabled={!canOpenItem}
+                            activeOpacity={canOpenItem ? 0.8 : 1}
+                          >
+                            <EventLogo
+                              logoUrl={item.logo_url}
+                              fallbackKey={item.fallback_logo_key}
+                            />
+                            <View style={styles.eventContent}>
+                              <View style={styles.eventTopRow}>
+                                <View style={styles.eventTickerBlock}>
+                                  <Text style={styles.eventTicker}>{item.ticker || 'Market'}</Text>
+                                  {item.company_name ? (
+                                    <Text style={styles.eventCompanyName} numberOfLines={1}>{item.company_name}</Text>
+                                  ) : null}
+                                </View>
+                                <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
+                                  <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
+                                </View>
+                              </View>
+                              <Text style={styles.eventTitle} numberOfLines={2}>{item.title}</Text>
+                              <Text style={styles.eventMeta}>
+                                {[item.source, getMarketNewsDateLabel(item.date)].filter(Boolean).join(' • ')}
+                              </Text>
+                            </View>
+                            {canOpenItem ? (
+                              <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                            ) : null}
+                          </TouchableOpacity>
+                        );
+                      })
+                    )
+                  )}
+                </>
               )}
-            </View>
+
+              <View style={styles.eventsButtonsRow}>
+                {visibleEventLimit < visibleEvents.length && (
+                  <TouchableOpacity
+                    style={styles.loadMoreButtonFull}
+                    onPress={() => setVisibleEventLimit((prev) => prev + INITIAL_VISIBLE_EVENTS)}
+                  >
+                    <Text style={styles.loadMoreText}>Load more events</Text>
+                  </TouchableOpacity>
+                )}
+                {visibleEventLimit > INITIAL_VISIBLE_EVENTS && (
+                  <TouchableOpacity
+                    style={styles.seeLessButtonFull}
+                    onPress={() => setVisibleEventLimit(INITIAL_VISIBLE_EVENTS)}
+                  >
+                    <Text style={styles.seeLessText}>See less events</Text>
+                  </TouchableOpacity>
+                )}
+                {includeNews && visibleNewsItems.length > 0 && visibleNewsLimit < visibleNewsItems.length && (
+                  <TouchableOpacity
+                    style={styles.loadMoreButtonFull}
+                    onPress={() => setVisibleNewsLimit((prev) => prev + INITIAL_VISIBLE_NEWS)}
+                  >
+                    <Text style={styles.loadMoreText}>Load more news</Text>
+                  </TouchableOpacity>
+                )}
+                {includeNews && visibleNewsLimit > INITIAL_VISIBLE_NEWS && (
+                  <TouchableOpacity
+                    style={styles.seeLessButtonFull}
+                    onPress={() => setVisibleNewsLimit(INITIAL_VISIBLE_NEWS)}
+                  >
+                    <Text style={styles.seeLessText}>See less news</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </>
           )}
         </View>
       </ScrollView>
@@ -1339,6 +1407,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
+  eventsHeaderActions: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
   eventsTitleBlock: {
     flex: 1,
   },
@@ -1433,6 +1505,7 @@ const styles = StyleSheet.create({
   eventsButtonsRow: {
     flexDirection: 'row',
     justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: 12,
     marginTop: 12,
   },
@@ -1538,6 +1611,9 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     gap: 6,
+  },
+  aggregateSentimentHeadlineBadge: {
+    maxWidth: 220,
   },
   aggregateSentimentDot: {
     width: 8,

@@ -63,9 +63,11 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'last')");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'first')");
     expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
+    expect(fileContent).toContain("Show calendar details");
     expect(fileContent).toContain("Show full calendar");
     expect(fileContent).toContain("Load more events");
     expect(fileContent).toContain("const INITIAL_VISIBLE_EVENTS = 5;");
+    expect(fileContent).toContain("const INITIAL_VISIBLE_NEWS = 5;");
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
     expect(fileContent).toContain("setSelectedYear(year);");
@@ -73,7 +75,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('<AppHeader title="Markets" />');
   });
 
-  it('replaces the Prague date label, disables zero-count tabs, and adds the Markets +News toggle', () => {
+  it('replaces the Prague date label, disables zero-count tabs, and merges +News into Events & News', () => {
     expect(fileContent).toContain('<Text style={styles.sectionSubtitle}>For next 3 months</Text>');
     expect(fileContent).not.toContain('Prague date');
     expect(fileContent).toContain('const [includeNews, setIncludeNews] = useState(true);');
@@ -83,17 +85,20 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const isDisabled = selectedEventCounts[type] === 0;');
     expect(fileContent).toContain('disabled={isDisabled}');
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
-    expect(fileContent).toContain('Markets news');
-    expect(fileContent).toContain('General market news and top stories from tracked companies');
+    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
+    expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
+    expect(fileContent).toContain('const displayedNewsItems = useMemo(');
+    expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('aggregateSentiment && (');
     expect(fileContent).toContain('No saved market or ticker news available right now');
+    expect(fileContent).toContain('Load more news');
   });
 
   it('adds icons to the calendar and events headlines and removes the redundant top-right total', () => {
     expect(fileContent).toContain('<Ionicons name="calendar-clear-outline" size={18} color={COLORS.primary} />');
     expect(fileContent).toContain('<Text style={styles.sectionTitle}>Calendar</Text>');
     expect(fileContent).toContain('<Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />');
-    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events</Text>');
+    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
     expect(fileContent).not.toContain('<Text style={styles.eventsCount}>{periodEvents.length}</Text>');
   });
 });

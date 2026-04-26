@@ -9,8 +9,8 @@ describe('Dashboard News & Events regressions', () => {
     fileContent = fs.readFileSync(dashboardPath, 'utf-8');
   });
 
-  it('renames the homepage feed to News & Events and merges upcoming events into the feed', () => {
-    expect(fileContent).toContain("<Text style={styles.sectionTitle}>News & Events</Text>");
+  it('renames the homepage feed to Events & News and merges upcoming events into the feed', () => {
+    expect(fileContent).toContain("<Text style={styles.sectionTitle}>Events & News</Text>");
     expect(fileContent).not.toContain("News plus upcoming followed-ticker events");
     expect(fileContent).toContain("const homepageEvents = useMemo<HomepageEvent[]>(");
     expect(fileContent).toContain("const newsFeedItems = useMemo<DashboardFeedItem[]>(");
@@ -18,10 +18,12 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain("kind: 'event' as const");
     expect(fileContent).toContain("kind: 'article' as const");
     expect(fileContent).toContain("const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');");
-    expect(fileContent).toContain("const [includeHomepageEvents, setIncludeHomepageEvents] = useState(true);");
+    expect(fileContent).toContain("const [includeHomepageNews, setIncludeHomepageNews] = useState(true);");
     expect(fileContent).toContain("const [newsFeedFilter, setNewsFeedFilter] = useState('');");
     expect(fileContent).toContain("getDashboardFeedDateValue");
     expect(fileContent).toContain("getDashboardFeedAlphaKey");
+    expect(fileContent).toContain("const eventItems = homepageEvents.map((event) => ({");
+    expect(fileContent).toContain("const articleItems = includeHomepageNews");
     expect(fileContent).toContain("No news or events available");
   });
 
@@ -32,7 +34,7 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('<Text style={styles.homepageEventSubtitle} numberOfLines={2}>{eventSubtitle}</Text>');
   });
 
-  it('adds homepage sort controls and an events toggle to the shared feed header', () => {
+  it('adds homepage sort controls and a +News toggle to the shared feed header', () => {
     expect(fileContent).toContain('<View style={styles.newsControlsRow}>');
     expect(fileContent).toContain("Date {homepageFeedSort === 'date_asc' ? '↑' : '↓'}");
     expect(fileContent).toContain("A‑Z {homepageFeedSort === 'za' ? '↑' : '↓'}");
@@ -41,6 +43,8 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('newsSearchWrapper: {');
     expect(fileContent).toContain('marginTop: 8,');
     expect(fileContent).toContain('data-testid="homepage-events-toggle"');
-    expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>Events</Text>');
+    expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>+News</Text>');
+    expect(fileContent).toContain('includeHomepageNews && aggregateSentiment');
+    expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
   });
 });
