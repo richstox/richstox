@@ -1857,6 +1857,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_usd": [],
             "series_pct": [],
             "metrics": None,
+            "equity_value": None,
             "current_value": None,
             "chart": None,
         }
@@ -1871,6 +1872,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_usd": [],
             "series_pct": [],
             "metrics": None,
+            "equity_value": None,
             "current_value": None,
             "chart": None,
         }
@@ -1938,6 +1940,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_usd": [],
             "series_pct": [],
             "metrics": None,
+            "equity_value": None,
             "current_value": None,
             "chart": None,
         }
@@ -2038,6 +2041,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         "subtitle": "Based on your Tracklist (equal-weight)",
         "series_usd": usd_series,
         "series_pct": series_pct,
+        "equity_value": round(end_value, 2),
         "current_value": round(end_value, 2),
         "chart": {
             "start_date": initial_date,
@@ -2584,7 +2588,7 @@ async def get_homepage_data(request: Request):
     tracklist_events = sorted(
         [
             event for event in tracklist_doc.get("events", [])
-            if len(event.get("positions", [])) == 7 and event.get("effective_date")
+            if len(event.get("positions", [])) == len(MAGNIFICENT_SEVEN) and event.get("effective_date")
         ],
         key=lambda event: event.get("effective_date") or "",
     )

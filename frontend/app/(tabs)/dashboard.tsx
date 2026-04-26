@@ -767,7 +767,9 @@ export default function Dashboard() {
               <View style={styles.performanceMetricsGrid}>
                 <View style={styles.performanceMetricCard}>
                   <Text style={styles.metricLabel}>Equity value</Text>
-                  <Text style={styles.metricValue}>{formatWholeMoney(tracklistPerformance?.current_value)}</Text>
+                  <Text style={styles.metricValue}>
+                    {formatWholeMoney(tracklistPerformance?.equity_value ?? tracklistPerformance?.current_value)}
+                  </Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
                   <Text style={styles.metricLabel}>Reward</Text>
