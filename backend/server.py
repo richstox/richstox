@@ -57,6 +57,7 @@ import asyncio
 import httpx
 import json
 import hashlib
+import math
 import re
 from services.admin_jobs_service import recover_stale_job_run, resolve_db_job_name
 
@@ -1485,6 +1486,52 @@ def _coerce_utc_datetime(raw_value: Any) -> Optional[datetime]:
 async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
     tracklist_doc = await _get_tracklist_doc_for_user(user_id)
     if len(_get_tracklist_positions(tracklist_doc)) == 7:
+        # Lazy-migrate legacy seeds (fractional shares, no cash_balance) for users who
+        # have not yet performed any replace. Keeps inception curve consistent with the
+        # new integer-shares + cash_balance standard. Docs with replacement history are
+        # left untouched to preserve their realized P/L history.
+        if tracklist_doc and tracklist_doc.get("cash_balance") is None:
+            events = tracklist_doc.get("events") or []
+            non_seed_events = [e for e in events if e.get("event_type") and e.get("event_type") != "auto_seed"]
+            if not non_seed_events:
+                seeded_at_raw = tracklist_doc.get("seeded_at") or (events[0].get("created_at") if events else None)
+                created_at_dt = _coerce_utc_datetime(seeded_at_raw) or datetime.now(timezone.utc)
+                created_at_iso = created_at_dt.isoformat()
+                effective_date = created_at_dt.date().isoformat()
+                seed_tickers = tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN
+                initial_capital = float(tracklist_doc.get("initial_capital") or 100000)
+                try:
+                    snapshot = await _build_initial_seed_snapshot(
+                        seed_tickers,
+                        initial_capital,
+                        effective_date,
+                        created_at=created_at_iso,
+                    )
+                except HTTPException:
+                    return tracklist_doc
+                migrated_doc = {
+                    "user_id": user_id,
+                    "initial_capital": initial_capital,
+                    "positions": snapshot["positions"],
+                    "cash_balance": snapshot["cash_balance"],
+                    "realized_pnl_total": 0.0,
+                    "events": [{
+                        **snapshot,
+                        "event_type": "auto_seed",
+                        "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+                        "created_at": created_at_iso,
+                    }],
+                    "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+                    "seed_tickers": seed_tickers,
+                    "seeded_at": created_at_iso,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                await db.user_tracklists.update_one(
+                    {"user_id": user_id},
+                    {"$set": migrated_doc},
+                    upsert=True,
+                )
+                return migrated_doc
         return tracklist_doc
 
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "created_at": 1, "updated_at": 1, "role": 1, "email": 1})
@@ -1501,7 +1548,7 @@ async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
 
     created_at_iso = created_at.isoformat()
     effective_date = created_at.date().isoformat()
-    snapshot = await _build_tracklist_snapshot(
+    snapshot = await _build_initial_seed_snapshot(
         MAGNIFICENT_SEVEN,
         100000,
         effective_date,
@@ -1511,6 +1558,8 @@ async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
         "user_id": user_id,
         "initial_capital": 100000,
         "positions": snapshot["positions"],
+        "cash_balance": snapshot["cash_balance"],
+        "realized_pnl_total": 0.0,
         "events": [{
             **snapshot,
             "event_type": "auto_seed",
@@ -1583,35 +1632,207 @@ async def _get_membership_state(user_id: str) -> dict:
     }
 
 
-async def _build_tracklist_snapshot(
+# ⚠️ BINDING RULE: TRACKLIST PORTFOLIO INVARIANTS
+# ============================================
+# These two invariants MUST hold for every snapshot produced by the seed and
+# every rebalance helper below. Violating either of them desynchronizes the
+# inception curve and breaks realized/unrealized P/L accounting.
+#
+#   1. total_value = Σ(shares × close) + cash_balance
+#      Cash is part of the portfolio. Even when the user "doesn't deal with
+#      cash", the system must track it for precision.
+#
+#   2. shares are integers. Any rounding residue from `floor(allocation / close)`
+#      flows into cash_balance. This rule applies to BOTH the initial seed and
+#      every rebalance — they share one code path so the curve stays consistent.
+#
+# Realized P/L per sell = (sell_price − avg_cost) × shares_sold (weighted-average
+# cost basis, no FIFO). Realized P/L % and total return % are reported against
+# `initial_capital` (the seed value), not against current portfolio value.
+# ============================================
+async def _build_initial_seed_snapshot(
     tickers: List[str],
     capital: float,
     effective_date: str,
     *,
     created_at: str,
 ) -> dict:
+    """
+    Build a fresh seed snapshot using equal-weight integer shares + cash residue.
+
+    Each of the N tickers gets an allocation of capital/N. Shares = floor(allocation/close).
+    Any leftover from rounding plus uninvested capital becomes the cash_balance.
+    """
+    if not tickers:
+        return {
+            "effective_date": effective_date,
+            "positions": [],
+            "cash_balance": round(capital, 2),
+            "capital": round(capital, 2),
+            "realized_pnl": 0.0,
+        }
+
+    allocation = capital / len(tickers)
     positions: List[dict] = []
-    allocation = capital / len(tickers) if tickers else 0
+    invested_total = 0.0
     for ticker in tickers:
         close_value, close_date = await _get_close_for_date_or_latest(f"{ticker}.US", effective_date)
         if not close_value or close_value <= 0:
             raise HTTPException(400, f"Missing close price for {ticker}")
+        shares = int(math.floor(allocation / close_value))
+        cost = shares * close_value
+        invested_total += cost
         positions.append({
             "ticker": ticker,
-            "shares": allocation / close_value,
+            "shares": shares,
             "entry_price": round(close_value, 4),
             "entry_date": close_date or effective_date,
             "added_at": created_at,
+            "avg_cost": round(close_value, 4),
         })
+    cash_balance = round(capital - invested_total, 2)
     return {
         "effective_date": effective_date,
         "positions": positions,
+        "cash_balance": cash_balance,
         "capital": round(capital, 2),
+        "realized_pnl": 0.0,
     }
 
 
-async def _compute_tracklist_value(positions: List[dict], target_date: Optional[str]) -> float:
-    total = 0.0
+async def _build_rebalance_snapshot(
+    existing_positions: List[dict],
+    cash_balance: float,
+    target_tickers: List[str],
+    effective_date: str,
+    *,
+    created_at: str,
+) -> dict:
+    """
+    Rebalance the entire tracklist to equal-weight integer shares.
+
+    Invariants (see binding rule above _build_initial_seed_snapshot):
+      - total_value = Σ(shares × close) + cash_balance  (cash is in the portfolio)
+      - shares are integers; rounding residue flows into cash_balance
+
+    For each existing ticker that stays: compute target_shares = floor(per_slot/close)
+    and trade the delta (buy or sell). Buys roll into the weighted-average cost basis;
+    sells realize P/L = (close - avg_cost) * shares_sold and leave avg_cost unchanged.
+
+    For each ticker dropped from target_tickers: sell all shares (full realized P/L).
+    For each ticker added to target_tickers: buy floor(per_slot/close) shares, avg_cost = close.
+
+    Returns a snapshot dict with positions, cash_balance, realized_pnl (this event), capital.
+    """
+    cash = float(cash_balance or 0)
+    realized = 0.0
+
+    existing_map: Dict[str, dict] = {}
+    for pos in existing_positions:
+        ticker = _normalize_list_ticker(pos.get("ticker", ""))
+        if ticker:
+            existing_map[ticker] = pos
+
+    target_set = {_normalize_list_ticker(t) for t in target_tickers}
+
+    # Resolve closes for every ticker we'll touch (existing + target).
+    all_tickers = sorted(set(existing_map.keys()) | target_set)
+    close_map: Dict[str, tuple[float, Optional[str]]] = {}
+    for ticker in all_tickers:
+        close_value, close_date = await _get_close_for_date_or_latest(f"{ticker}.US", effective_date)
+        if not close_value or close_value <= 0:
+            raise HTTPException(400, f"Missing close price for {ticker}")
+        close_map[ticker] = (float(close_value), close_date)
+
+    # Total portfolio value at the rebalance close = positions marked-to-market + cash.
+    total_value = cash
+    for ticker, pos in existing_map.items():
+        shares = int(pos.get("shares") or 0)
+        close_value, _ = close_map[ticker]
+        total_value += shares * close_value
+
+    per_slot = total_value / len(target_tickers) if target_tickers else 0
+
+    # Sell-out tickers that are dropped.
+    for ticker, pos in existing_map.items():
+        if ticker in target_set:
+            continue
+        shares = int(pos.get("shares") or 0)
+        if shares <= 0:
+            continue
+        close_value, _ = close_map[ticker]
+        avg_cost = float(pos.get("avg_cost") or pos.get("entry_price") or close_value)
+        proceeds = shares * close_value
+        realized += (close_value - avg_cost) * shares
+        cash += proceeds
+
+    # Build new positions in the order of target_tickers (preserves UI ordering).
+    new_positions: List[dict] = []
+    for raw_ticker in target_tickers:
+        ticker = _normalize_list_ticker(raw_ticker)
+        close_value, close_date = close_map[ticker]
+        target_shares = int(math.floor(per_slot / close_value)) if close_value > 0 else 0
+
+        if ticker in existing_map:
+            old = existing_map[ticker]
+            old_shares = int(old.get("shares") or 0)
+            old_avg = float(old.get("avg_cost") or old.get("entry_price") or close_value)
+            delta = target_shares - old_shares
+            if delta > 0:
+                buy_cost = delta * close_value
+                # Weighted-average cost across kept + added shares.
+                if (old_shares + delta) > 0:
+                    new_avg = (old_shares * old_avg + delta * close_value) / (old_shares + delta)
+                else:
+                    new_avg = close_value
+                cash -= buy_cost
+            elif delta < 0:
+                sold = -delta
+                realized += (close_value - old_avg) * sold
+                cash += sold * close_value
+                new_avg = old_avg  # avg cost unchanged on partial sell
+            else:
+                new_avg = old_avg
+
+            new_positions.append({
+                "ticker": ticker,
+                "shares": target_shares,
+                "entry_price": old.get("entry_price") or round(close_value, 4),
+                "entry_date": old.get("entry_date") or close_date or effective_date,
+                "added_at": old.get("added_at") or created_at,
+                "avg_cost": round(new_avg, 4),
+            })
+        else:
+            # Brand-new ticker entering the basket.
+            buy_cost = target_shares * close_value
+            cash -= buy_cost
+            new_positions.append({
+                "ticker": ticker,
+                "shares": target_shares,
+                "entry_price": round(close_value, 4),
+                "entry_date": close_date or effective_date,
+                "added_at": created_at,
+                "avg_cost": round(close_value, 4),
+            })
+
+    return {
+        "effective_date": effective_date,
+        "positions": new_positions,
+        "cash_balance": round(cash, 2),
+        "capital": round(total_value, 2),
+        "realized_pnl": round(realized, 2),
+    }
+
+
+async def _compute_tracklist_value(
+    positions: List[dict],
+    target_date: Optional[str],
+    cash_balance: float = 0.0,
+) -> float:
+    # Invariant: total_value = Σ(shares × close) + cash_balance.
+    # Cash MUST be passed in (never default to 0 when a doc has cash); otherwise
+    # the inception curve drifts after the first rebalance.
+    total = float(cash_balance or 0)
     for pos in positions:
         ticker = _normalize_list_ticker(pos.get("ticker", ""))
         shares = float(pos.get("shares") or 0)
@@ -1695,12 +1916,13 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         segment_start = snapshot["effective_date"]
         has_next_snapshot = index + 1 < len(ready_snapshots)
         segment_end_exclusive = ready_snapshots[index + 1]["effective_date"] if has_next_snapshot else None
+        snapshot_cash = float(snapshot.get("cash_balance") or 0)
         for trading_day in trading_days:
             if trading_day < segment_start:
                 continue
             if segment_end_exclusive and trading_day >= segment_end_exclusive:
                 break
-            total = 0.0
+            total = snapshot_cash
             for pos in snapshot.get("positions", []):
                 ticker = _normalize_list_ticker(pos.get("ticker", ""))
                 shares = float(pos.get("shares") or 0)
@@ -1791,6 +2013,25 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         else None
     )
 
+    # --- Realized & Unrealized P/L ---
+    # Realized: cumulative P/L from prior rebalance sales, persisted on the doc.
+    # Unrealized: current mark-to-market vs weighted-average cost across open positions.
+    realized_pnl_usd = round(float(tracklist_doc.get("realized_pnl_total") or 0), 2)
+    end_date_for_pnl = usd_series[-1]["date"]
+    unrealized_pnl_usd = 0.0
+    for pos in positions:
+        ticker = _normalize_list_ticker(pos.get("ticker", ""))
+        shares = float(pos.get("shares") or 0)
+        if not ticker or shares <= 0:
+            continue
+        avg_cost = float(pos.get("avg_cost") or pos.get("entry_price") or 0)
+        fallback_price = float(pos.get("entry_price") or 0)
+        current_price = _value_on_date(ticker, end_date_for_pnl, fallback_price)
+        unrealized_pnl_usd += (current_price - avg_cost) * shares
+    unrealized_pnl_usd = round(unrealized_pnl_usd, 2)
+    realized_pnl_pct = round((realized_pnl_usd / initial_value) * 100, 2) if initial_value > 0 else 0
+    unrealized_pnl_pct = round((unrealized_pnl_usd / initial_value) * 100, 2) if initial_value > 0 else 0
+
     return {
         "ready": True,
         "mode": "USD",
@@ -1817,6 +2058,10 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         "metrics": {
             "total_profit_usd": round(end_value - initial_value, 2),
             "total_profit_pct": total_profit_pct,
+            "realized_pnl_usd": realized_pnl_usd,
+            "realized_pnl_pct": realized_pnl_pct,
+            "unrealized_pnl_usd": unrealized_pnl_usd,
+            "unrealized_pnl_pct": unrealized_pnl_pct,
             "avg_per_year_pct": round(avg_per_year, 2),
             "max_drawdown_pct": round(max_drawdown, 2),
             "duration_days": drawdown_duration,
@@ -2039,7 +2284,8 @@ async def get_tracklist(request: Request):
             "added_at": _format_display_date(pos.get("added_at")),
             "entry_price": pos.get("entry_price"),
             "entry_date": pos.get("entry_date"),
-            "shares": round(float(pos.get("shares") or 0), 6),
+            "shares": int(pos.get("shares") or 0),
+            "avg_cost": pos.get("avg_cost") or pos.get("entry_price"),
         })
     draft_tickers = state["tracklist_draft_tickers"]
     return {
@@ -2054,6 +2300,8 @@ async def get_tracklist(request: Request):
         "seeded_at": tracklist_doc.get("seeded_at") or (tracklist_doc.get("events", [{}])[0].get("created_at") if tracklist_doc.get("events") else None),
         "seed_tickers": tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN,
         "positions": positions,
+        "cash_balance": round(float(tracklist_doc.get("cash_balance") or 0), 2),
+        "realized_pnl_total": round(float(tracklist_doc.get("realized_pnl_total") or 0), 2),
         "performance": performance,
         "changes_apply_note": "Tracklist starts automatically from your first login date. Replacements apply at next close.",
     }
@@ -2088,11 +2336,20 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
     await _assert_visible_ticker(new_ticker)
     existing_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in state["tracklist_positions"]]
     target_tickers = [new_ticker if ticker == old_ticker else ticker for ticker in existing_tickers]
-    now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
     effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
     tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "events": []}
-    capital = await _compute_tracklist_value(state["tracklist_positions"], effective_date)
-    snapshot = await _build_tracklist_snapshot(target_tickers, capital, effective_date, created_at=now_iso)
+    cash_balance = float(tracklist_doc.get("cash_balance") or 0)
+    snapshot = await _build_rebalance_snapshot(
+        state["tracklist_positions"],
+        cash_balance,
+        target_tickers,
+        effective_date,
+        created_at=now_iso,
+    )
+    realized_event = float(snapshot.get("realized_pnl") or 0)
+    new_cash_balance = float(snapshot.get("cash_balance") or 0)
+    realized_pnl_total = round(float(tracklist_doc.get("realized_pnl_total") or 0) + realized_event, 2)
     events = list(tracklist_doc.get("events", []))
     events.append({
         **snapshot,
@@ -2108,6 +2365,8 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
             "initial_capital": float(tracklist_doc.get("initial_capital") or 100000),
             "draft_tickers": [],
             "positions": snapshot["positions"],
+            "cash_balance": new_cash_balance,
+            "realized_pnl_total": realized_pnl_total,
             "events": events,
             "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
             "seed_tickers": tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN,
@@ -2124,6 +2383,9 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
         "old_ticker": old_ticker,
         "new_ticker": new_ticker,
         "effective_close_date": effective_date,
+        "realized_pnl_event": round(realized_event, 2),
+        "realized_pnl_total": realized_pnl_total,
+        "cash_balance": new_cash_balance,
         "message": "Replacement is saved and applies at next close.",
     }
 
@@ -2335,6 +2597,11 @@ async def get_homepage_data(request: Request):
         added_at = None
         change_since_added = None
         follow_price = None
+        position_shares: Optional[int] = None
+        position_avg_cost: Optional[float] = None
+        position_value: Optional[float] = None
+        position_pl_usd: Optional[float] = None
+        position_pl_pct: Optional[float] = None
 
         if in_tracklist:
             pos = next((position for position in tracklist_positions if _normalize_list_ticker(position.get("ticker", "")) == ticker), None)
@@ -2343,6 +2610,16 @@ async def get_homepage_data(request: Request):
                 follow_price = pos.get("entry_price")
                 if follow_price and current and follow_price > 0:
                     change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
+                position_shares = int(pos.get("shares") or 0)
+                avg_cost_raw = pos.get("avg_cost") or pos.get("entry_price")
+                position_avg_cost = round(float(avg_cost_raw), 4) if avg_cost_raw else None
+                if position_shares > 0 and current:
+                    position_value = round(position_shares * current, 2)
+                    if position_avg_cost is not None:
+                        cost_basis = position_shares * position_avg_cost
+                        position_pl_usd = round(position_shares * current - cost_basis, 2)
+                        if cost_basis > 0:
+                            position_pl_pct = round((position_pl_usd / cost_basis) * 100, 2)
         elif ticker in watchlist_docs:
             wl_doc = watchlist_docs[ticker]
             follow_price = wl_doc.get("follow_price_close")
@@ -2360,6 +2637,11 @@ async def get_homepage_data(request: Request):
             "added_at": added_at,
             "change_since_added": change_since_added,
             "follow_price": round(follow_price, 2) if follow_price else None,
+            "shares": position_shares,
+            "avg_cost": position_avg_cost,
+            "position_value": position_value,
+            "position_pl_usd": position_pl_usd,
+            "position_pl_pct": position_pl_pct,
         })
 
     tracklist_performance = await _build_tracklist_performance(membership_state["tracklist_doc"])
