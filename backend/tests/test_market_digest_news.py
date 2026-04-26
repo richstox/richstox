@@ -5,6 +5,7 @@ Market digest + Tracklist news regressions.
 
 import os
 import sys
+import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -156,3 +157,21 @@ class TestRefreshFullNews:
         assert result["sample_tickers"] == ["AAPL", "MSFT"]
         assert result["ticker_news"]["new_ticker_mappings"] == 8
         assert result["market_digest"]["job_type"] == "market_digest_refresh"
+
+
+def test_scheduler_news_refresh_uses_full_news_refresh():
+    import scheduler
+
+    source = inspect.getsource(scheduler.scheduler_loop)
+
+    assert "from services.news_service import refresh_full_news" in source
+    assert 'run_job_with_retry("news_refresh", refresh_full_news, db)' in source
+
+
+def test_admin_news_refresh_uses_full_news_refresh():
+    server_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "server.py")
+    with open(server_path, "r", encoding="utf-8") as fh:
+        source = fh.read()
+
+    assert "from services.news_service import refresh_full_news" in source
+    assert '"news_refresh": refresh_full_news' in source
