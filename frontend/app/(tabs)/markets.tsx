@@ -595,9 +595,11 @@ export default function Markets() {
       ? event.metadata.before_after_market
       : event.description;
     if (!rawTiming) return null;
-    const normalized = rawTiming.toLowerCase().replace(/[\s_-]+/g, '');
+    const trimmedTiming = rawTiming.trim();
+    const normalized = trimmedTiming.toLowerCase().replace(/[\s_-]+/g, '');
     if (normalized.startsWith('before')) return 'Before Market';
     if (normalized.startsWith('after')) return 'After Market';
+    if (trimmedTiming && trimmedTiming !== 'Scheduled earnings') return trimmedTiming;
     return null;
   };
 
