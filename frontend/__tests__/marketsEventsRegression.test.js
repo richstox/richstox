@@ -32,7 +32,8 @@ describe('Markets events regressions', () => {
     expect(fileContent).not.toContain('const activeDayTypes = new Set(dayEvents.map((event) => event.type));');
     expect(fileContent).not.toContain('<Text style={[styles.activeDayCount, isSelected && styles.activeDayTextSelected]}>');
     expect(fileContent).toContain('activeDayKeysForDisplayMonth.map((dayKey) => {');
-    expect(fileContent).toContain('<ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeDaysScrollContent}>');
+    expect(fileContent).toContain('<View style={styles.activeDaysCarouselRow}>');
+    expect(fileContent).toContain('contentContainerStyle={styles.activeDaysScrollContent}');
     expect(fileContent).toContain('minWidth: 58,');
   });
 
@@ -57,6 +58,9 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("activeMonthKeys.find((monthKey) => monthKey >= todayMonthKey) ?? activeMonthKeys[0]");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'last')");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'first')");
+    expect(fileContent).toContain('const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);');
+    expect(fileContent).toContain('const canScrollActiveDaysNext = activeDaysScrollX < maxActiveDaysScrollX - 4;');
+    expect(fileContent).toContain('activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: true });');
     expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
     expect(fileContent).toContain("const INITIAL_VISIBLE_FEED_ITEMS = 5;");
     expect(fileContent).toContain("const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);");
@@ -64,6 +68,9 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('visible={calendarPickerVisible}');
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
+    expect(fileContent).toContain('accessibilityLabel="Scroll days left"');
+    expect(fileContent).toContain('accessibilityLabel="Scroll days right"');
+    expect(fileContent).toContain('style={styles.activeDaysCarouselRow}');
     expect(fileContent).toContain("setSelectedYear(year);");
     expect(fileContent).toContain('style={styles.eventsDateSelectControl}');
     expect(fileContent).toContain('style={styles.selectorDetailSection}');

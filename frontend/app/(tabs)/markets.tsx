@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
+  type LayoutChangeEvent,
   Linking,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -109,6 +112,8 @@ const EARNINGS_FALLBACK_LABEL = 'Scheduled earnings';
 // while we still fetch this feed in a single request before incremental paging lands.
 const MARKET_NEWS_LIMIT = 1000;
 const YMD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const ACTIVE_DAY_CARD_ESTIMATED_WIDTH = 74;
+const ACTIVE_DAY_CARD_GAP = 8;
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
   if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
@@ -280,6 +285,10 @@ export default function Markets() {
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
+  const activeDaysScrollRef = useRef<ScrollView | null>(null);
+  const [activeDaysViewportWidth, setActiveDaysViewportWidth] = useState(0);
+  const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
+  const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -367,6 +376,30 @@ export default function Markets() {
     return activeYearKeys.map((yearKey) => Number(yearKey));
   }, [activeYearKeys]);
 
+  const maxActiveDaysScrollX = Math.max(0, activeDaysContentWidth - activeDaysViewportWidth);
+  const canScrollActiveDaysPrev = activeDaysScrollX > 4;
+  const canScrollActiveDaysNext = activeDaysScrollX < maxActiveDaysScrollX - 4;
+
+  const handleActiveDaysLayout = useCallback((event: LayoutChangeEvent) => {
+    setActiveDaysViewportWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const handleActiveDaysScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    setActiveDaysScrollX(Math.max(0, contentOffset.x));
+    setActiveDaysViewportWidth(layoutMeasurement.width);
+    setActiveDaysContentWidth(contentSize.width);
+  }, []);
+
+  const scrollActiveDaysBy = useCallback((direction: -1 | 1) => {
+    const step = activeDaysViewportWidth > 0
+      ? Math.max(activeDaysViewportWidth - 72, ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP)
+      : ACTIVE_DAY_CARD_ESTIMATED_WIDTH * 3;
+    const nextX = Math.max(0, Math.min(maxActiveDaysScrollX, activeDaysScrollX + (direction * step)));
+    activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: true });
+    setActiveDaysScrollX(nextX);
+  }, [activeDaysScrollX, activeDaysViewportWidth, maxActiveDaysScrollX]);
+
   const periodEvents = useMemo(() => {
     if (calendarView === 'daily') return selectedEvents;
     if (calendarView === 'monthly') {
@@ -415,6 +448,26 @@ export default function Markets() {
     const nextDateKey = activeDayKeysForDisplayMonth.find((dateKey) => dateKey >= todayPragueStr) ?? activeDayKeysForDisplayMonth[0];
     if (nextDateKey) setSelectedDate(parseYmd(nextDateKey));
   }, [activeDayKeysForDisplayMonth, calendarView, selectedDateKey, todayPragueStr]);
+
+  useEffect(() => {
+    if (calendarView !== 'daily' || activeDayKeysForDisplayMonth.length === 0 || activeDaysViewportWidth <= 0) return;
+    const selectedDayIndex = Math.max(activeDayKeysForDisplayMonth.indexOf(selectedDateKey), 0);
+    const centeredOffset = Math.max(
+      0,
+      (selectedDayIndex * (ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP))
+        - Math.max(0, (activeDaysViewportWidth - ACTIVE_DAY_CARD_ESTIMATED_WIDTH) / 2),
+    );
+    const nextX = Math.min(maxActiveDaysScrollX, centeredOffset);
+    activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: false });
+    setActiveDaysScrollX(nextX);
+  }, [
+    activeDayKeysForDisplayMonth,
+    activeDaysViewportWidth,
+    calendarPickerVisible,
+    calendarView,
+    maxActiveDaysScrollX,
+    selectedDateKey,
+  ]);
 
   useEffect(() => {
     const nextType = EVENT_TYPE_ORDER.find((type) => selectedEventCounts[type] > 0) ?? 'earnings';
@@ -970,29 +1023,57 @@ export default function Markets() {
                     {activeDayKeysForDisplayMonth.length === 0 ? (
                       <Text style={styles.selectorEmptyText}>No events in this month.</Text>
                     ) : (
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeDaysScrollContent}>
-                        {activeDayKeysForDisplayMonth.map((dayKey) => {
-                          const day = parseYmd(dayKey);
-                          const isSelected = dayKey === selectedDateKey;
-                          return (
-                            <TouchableOpacity
-                              key={dayKey}
-                              style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
-                              onPress={() => {
-                                setSelectedDate(day);
-                                setCalendarPickerVisible(false);
-                              }}
-                            >
-                              <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
-                                {format(day, 'EEE')}
-                              </Text>
-                              <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
-                                {format(day, 'd')}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </ScrollView>
+                      <View style={styles.activeDaysCarouselRow}>
+                        <TouchableOpacity
+                          style={[styles.monthNavButton, styles.activeDaysNavButton, !canScrollActiveDaysPrev && styles.monthNavButtonDisabled]}
+                          onPress={() => scrollActiveDaysBy(-1)}
+                          disabled={!canScrollActiveDaysPrev}
+                          accessibilityLabel="Scroll days left"
+                        >
+                          <Ionicons name="chevron-back" size={16} color={canScrollActiveDaysPrev ? COLORS.primary : COLORS.textMuted} />
+                        </TouchableOpacity>
+                        <ScrollView
+                          ref={activeDaysScrollRef}
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          contentContainerStyle={styles.activeDaysScrollContent}
+                          style={styles.activeDaysScroll}
+                          onLayout={handleActiveDaysLayout}
+                          onContentSizeChange={(contentWidth) => setActiveDaysContentWidth(contentWidth)}
+                          onScroll={handleActiveDaysScroll}
+                          scrollEventThrottle={16}
+                        >
+                          {activeDayKeysForDisplayMonth.map((dayKey) => {
+                            const day = parseYmd(dayKey);
+                            const isSelected = dayKey === selectedDateKey;
+                            return (
+                              <TouchableOpacity
+                                key={dayKey}
+                                style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
+                                onPress={() => {
+                                  setSelectedDate(day);
+                                  setCalendarPickerVisible(false);
+                                }}
+                              >
+                                <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
+                                  {format(day, 'EEE')}
+                                </Text>
+                                <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
+                                  {format(day, 'd')}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </ScrollView>
+                        <TouchableOpacity
+                          style={[styles.monthNavButton, styles.activeDaysNavButton, !canScrollActiveDaysNext && styles.monthNavButtonDisabled]}
+                          onPress={() => scrollActiveDaysBy(1)}
+                          disabled={!canScrollActiveDaysNext}
+                          accessibilityLabel="Scroll days right"
+                        >
+                          <Ionicons name="chevron-forward" size={16} color={canScrollActiveDaysNext ? COLORS.primary : COLORS.textMuted} />
+                        </TouchableOpacity>
+                      </View>
                     )}
                   </>
                 ) : calendarView === 'monthly' ? (
@@ -1121,6 +1202,17 @@ const styles = StyleSheet.create({
     backgroundColor: '#EEF2FF',
   },
   monthNavButtonDisabled: { backgroundColor: '#F3F4F6' },
+  activeDaysCarouselRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  activeDaysNavButton: {
+    flexShrink: 0,
+  },
+  activeDaysScroll: {
+    flex: 1,
+  },
   activeDaysScrollContent: {
     gap: 8,
     paddingRight: 4,
