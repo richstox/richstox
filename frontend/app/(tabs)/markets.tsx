@@ -399,7 +399,6 @@ export default function Markets() {
       : ACTIVE_DAY_CARD_ESTIMATED_WIDTH * 3;
     const nextX = Math.max(0, Math.min(maxActiveDaysScrollX, activeDaysScrollX + (direction * step)));
     activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: true });
-    setActiveDaysScrollX(nextX);
   }, [activeDaysScrollX, activeDaysViewportWidth, maxActiveDaysScrollX]);
 
   const periodEvents = useMemo(() => {
@@ -459,16 +458,16 @@ export default function Markets() {
       (selectedDayIndex * (ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP))
         - Math.max(0, (activeDaysViewportWidth - ACTIVE_DAY_CARD_ESTIMATED_WIDTH) / 2),
     );
-    const nextX = Math.min(maxActiveDaysScrollX, centeredOffset);
+    const nextX = Math.min(Math.max(0, activeDaysContentWidth - activeDaysViewportWidth), centeredOffset);
     // Keep the selected date visible immediately when the picker opens or the month changes.
     activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: false });
     setActiveDaysScrollX(nextX);
   }, [
     activeDayKeysForDisplayMonth,
+    activeDaysContentWidth,
     activeDaysViewportWidth,
     calendarPickerVisible,
     calendarView,
-    maxActiveDaysScrollX,
     selectedDateKey,
   ]);
 
