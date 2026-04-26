@@ -111,10 +111,12 @@ const MIN_ACTIVE_DAYS_SCROLL_STEP = 140;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 const MARKET_NEWS_PER_TICKER = 3;
+// Keep these values aligned with backend/server.py GLOBAL_MARKETS_* constants.
 const MARKET_WATCHLIST_TICKER_LIMIT = 10;
 const MARKET_TRACKLIST_TICKER_LIMIT = 10;
 const MARKET_DIGEST_LIMIT = 100;
 const MARKET_NEWS_LIMIT = MARKET_DIGEST_LIMIT + ((MARKET_WATCHLIST_TICKER_LIMIT + MARKET_TRACKLIST_TICKER_LIMIT) * MARKET_NEWS_PER_TICKER);
+const YMD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
   if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
@@ -225,7 +227,7 @@ const generateNewsItemId = (ticker: string, article: TickerNewsApiArticle, index
 };
 
 const isValidYmd = (value: string): boolean => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  if (!YMD_DATE_PATTERN.test(value)) return false;
   const parsed = parseYmd(value);
   return !Number.isNaN(parsed.getTime()) && format(parsed, 'yyyy-MM-dd') === value;
 };
@@ -502,10 +504,10 @@ export default function Markets() {
 
     return mergedItems.sort((left, right) => {
       const leftDate = left.date
-        ? Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(left.date) ? `${left.date}T00:00:00Z` : left.date)
+        ? Date.parse(YMD_DATE_PATTERN.test(left.date) ? `${left.date}T00:00:00Z` : left.date)
         : 0;
       const rightDate = right.date
-        ? Date.parse(/^\d{4}-\d{2}-\d{2}$/.test(right.date) ? `${right.date}T00:00:00Z` : right.date)
+        ? Date.parse(YMD_DATE_PATTERN.test(right.date) ? `${right.date}T00:00:00Z` : right.date)
         : 0;
       return (Number.isFinite(rightDate) ? rightDate : 0) - (Number.isFinite(leftDate) ? leftDate : 0);
     });
