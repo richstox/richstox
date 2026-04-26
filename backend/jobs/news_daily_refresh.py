@@ -57,33 +57,19 @@ async def run_daily_refresh():
     try:
         # Import services
         from services.news_service import (
-            get_hot_symbols,
-            refresh_hot_tickers_news,
-            refresh_market_digest,
-            create_indexes,
+            refresh_full_news,
         )
-        
-        # Ensure indexes exist
-        await create_indexes(db)
-        
-        # 1. Run the full news refresh (handles HOT tickers internally)
-        logger.info("Running news refresh for HOT tickers...")
-        result = await refresh_hot_tickers_news(db)
-        total_inserted = result.get("inserted", 0)
-        total_skipped = result.get("skipped", 0)
-        hot_tickers = result.get("symbols", [])
-        logger.info(f"HOT tickers: {hot_tickers}")
-        logger.info(f"  -> Inserted: {total_inserted}, Skipped: {total_skipped}")
-        
-        # 2. Fetch Market Digest (general news)
-        logger.info("Fetching Market Digest...")
-        try:
-            result = await refresh_market_digest(db)
-            total_inserted += result.get("inserted", 0)
-            total_skipped += result.get("skipped", 0)
-            logger.info(f"  -> Inserted: {result.get('inserted')}, Skipped: {result.get('skipped')}")
-        except Exception as e:
-            logger.error(f"  -> Error: {e}")
+
+        logger.info("Running full news refresh...")
+        result = await refresh_full_news(db)
+        total_inserted = result.get("new_articles_stored", 0)
+        total_skipped = 0
+        hot_tickers = result.get("sample_tickers", [])
+        logger.info(f"HOT tickers sample: {hot_tickers}")
+        logger.info(
+            "  -> Inserted: %s (ticker + market digest)",
+            total_inserted,
+        )
         
         # 4. Summary
         logger.info("=" * 60)

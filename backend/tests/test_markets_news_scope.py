@@ -32,13 +32,24 @@ def test_markets_news_uses_full_global_corpus_and_full_sentiment():
     markets_block = _slice_between(server_source, '@api_router.get("/v1/markets/news")', "async def refresh_news_cache_for_tickers")
 
     assert "GLOBAL_MARKETS_MARKET_NEWS_LIMIT = 100" in server_source
+    assert "GLOBAL_MARKETS_MIN_TICKER_NEWS = 100" in server_source
     assert "GLOBAL_MARKETS_WATCHLIST_TICKER_LIMIT = 10" not in server_source
     assert "GLOBAL_MARKETS_TRACKLIST_TICKER_LIMIT = 10" not in server_source
     assert "watchlist_tickers = sorted(await _get_global_watchlist_tickers())" in markets_block
     assert "tracklist_tickers = sorted(await _get_global_tracklist_tickers())" in markets_block
     assert "_get_ranked_global_watchlist_tickers" not in markets_block
     assert "_get_ranked_global_tracklist_tickers" not in markets_block
+    assert "async def _get_recent_global_ticker_mappings(" in server_source
+    assert "fallback_ticker_mappings = await _get_recent_global_ticker_mappings(" in markets_block
     assert 'GLOBAL_MARKETS_RESPONSE_LIMIT = 1000' in server_source
     assert 'limit: int = Query(GLOBAL_MARKETS_RESPONSE_LIMIT, ge=1, le=GLOBAL_MARKETS_RESPONSE_LIMIT)' in markets_block
     assert '"total_news_count": total_count' in markets_block
     assert '"aggregate_sentiment": _build_aggregate_sentiment(merged_news)' in markets_block
+
+
+def test_ticker_detail_news_returns_full_stored_content():
+    server_source = _server_source()
+    ticker_block = _slice_between(server_source, '@api_router.get("/news/ticker/{ticker}")', '@api_router.get("/news/{article_id}")')
+
+    assert '"content": article.get("content", "")' in ticker_block
+    assert '[:500]' not in ticker_block

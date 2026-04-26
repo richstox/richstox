@@ -20,5 +20,8 @@ describe('Stock news sentiment regressions', () => {
   it('keeps the article logo routed to ticker detail while article taps stay in-app', () => {
     expect(fileContent).toContain('<TouchableOpacity onPress={() => router.push(`/stock/${article.ticker || ticker}`)}>');
     expect(fileContent).toContain('<TouchableOpacity style={styles.newsContent} onPress={() => openArticle(article)}>');
+    expect(fileContent).toContain('const formatNewsDate = (dateStr?: string | null): string => {');
+    expect(fileContent).toContain('return formatDateDMY(d.toISOString().slice(0, 10));');
+    expect(fileContent).toContain('<Text style={styles.newsSubmeta} numberOfLines={1}>');
   });
 });

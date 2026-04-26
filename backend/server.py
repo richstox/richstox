@@ -2315,6 +2315,7 @@ async def get_homepage_data(request: Request):
             })
 
     upcoming_events.sort(key=lambda event: (event.get("date") or "9999-12-31", event.get("ticker") or ""))
+    upcoming_events_total = len(upcoming_events)
     upcoming_events = upcoming_events[:10]
 
     for ticker in ordered_tickers:
@@ -2388,6 +2389,7 @@ async def get_homepage_data(request: Request):
             "performance": tracklist_performance,
         },
         "upcoming_events": upcoming_events,
+        "upcoming_events_total": upcoming_events_total,
         "watchlist_count": len(watchlist_tickers & visible_set),
         "tracklist_count": len(tracklist_tickers & visible_set),
         "total_count": len(ordered_tickers),
@@ -7644,6 +7646,7 @@ async def _get_global_tracklist_tickers() -> set[str]:
 
 GLOBAL_MARKETS_MARKET_NEWS_LIMIT = 100
 GLOBAL_MARKETS_PER_TICKER_LIMIT = 3
+GLOBAL_MARKETS_MIN_TICKER_NEWS = 100
 # UI fetch ceiling until Markets screen adds incremental paging.
 GLOBAL_MARKETS_RESPONSE_LIMIT = 1000
 
@@ -7697,6 +7700,39 @@ def _build_aggregate_sentiment(news_items: List[Dict[str, Any]]) -> Dict[str, An
         "negative_count": negative_count,
         "neutral_count": neutral_count,
     }
+
+
+async def _get_recent_global_ticker_mappings(
+    limit: int,
+    exclude_article_ids: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    excluded_article_ids = list(exclude_article_ids) if exclude_article_ids else None
+    pipeline: List[Dict[str, Any]] = []
+    if excluded_article_ids:
+        pipeline.append({"$match": {"article_id": {"$nin": excluded_article_ids}}})
+    pipeline.extend([
+        {"$sort": {"published_at": -1}},
+        {"$group": {
+            "_id": "$article_id",
+            "ticker": {"$first": "$ticker"},
+            "published_at": {"$first": "$published_at"},
+        }},
+    ])
+    pipeline.extend([
+        {"$sort": {"published_at": -1}},
+        {"$limit": limit},
+        {"$project": {
+            "_id": 0,
+            "article_id": "$_id",
+            "ticker": 1,
+            "published_at": 1,
+        }},
+    ])
+
+    return await db.article_ticker_mapping.aggregate(pipeline).to_list(length=limit)
 
 @api_router.get("/news")
 async def get_news(
@@ -8066,7 +8102,7 @@ async def get_markets_news(
     market_limit: int = Query(GLOBAL_MARKETS_MARKET_NEWS_LIMIT, ge=1, le=100),
     per_ticker_limit: int = Query(GLOBAL_MARKETS_PER_TICKER_LIMIT, ge=1, le=3),
 ):
-    """Merged Markets news from the full global Watchlist/Tracklist corpus plus MARKETS articles."""
+    """Merged Markets news from scoped tickers, latest global ticker news, and MARKETS articles."""
     requested_tickers: List[str] = []
     seen_requested: set[str] = set()
     for raw in tickers.split(","):
@@ -8111,6 +8147,19 @@ async def get_markets_news(
                 "published_at": "$mappings.published_at",
             }},
         ]).to_list(length=None)
+
+    existing_article_ids = {
+        mapping.get("article_id")
+        for mapping in article_mappings
+        if mapping.get("article_id")
+    }
+    fallback_needed = max(GLOBAL_MARKETS_MIN_TICKER_NEWS - len(existing_article_ids), 0)
+    if fallback_needed > 0:
+        fallback_ticker_mappings = await _get_recent_global_ticker_mappings(
+            fallback_needed,
+            existing_article_ids,
+        )
+        article_mappings.extend(fallback_ticker_mappings)
 
     selected_tickers = sorted({mapping.get("ticker") for mapping in article_mappings if mapping.get("ticker")})
     ticker_full_list = [f"{ticker}.US" for ticker in selected_tickers]
@@ -8402,7 +8451,7 @@ async def get_ticker_news(
             result_articles.append({
                 "article_id": article.get("article_id"),
                 "title": article.get("title"),
-                "content": article.get("content", "")[:500] + "..." if len(article.get("content", "")) > 500 else article.get("content", ""),
+                "content": article.get("content", ""),
                 "published_at": article.get("published_at"),
                 "source_link": article.get("source_link"),
                 "sentiment_label": article.get("sentiment_label"),
@@ -8826,7 +8875,7 @@ async def admin_run_job_now(
     from scheduler_service import save_step3_visibility_exclusion_report as _save_step3_vis_report
     from benchmark_service import update_all_benchmarks
     from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
-    from services.news_service import refresh_hot_tickers_news
+    from services.news_service import refresh_full_news
     from key_metrics_service import compute_peer_benchmarks_v3
 
     async def _market_calendar_refresh(database):
@@ -8852,7 +8901,7 @@ async def admin_run_job_now(
         "recompute_visibility_with_zombies": recompute_visibility_with_zombie_cleanup,
         "benchmark_update": update_all_benchmarks,
         "market_calendar": _market_calendar_refresh,
-        "news_refresh": refresh_hot_tickers_news,
+        "news_refresh": refresh_full_news,
         "peer_medians": compute_peer_benchmarks_v3,
         "dividend_upcoming_calendar": sync_upcoming_dividend_calendar_for_visible_tickers,
         "earnings_upcoming_calendar": sync_upcoming_earnings_calendar_for_visible_tickers,
