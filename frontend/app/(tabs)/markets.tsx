@@ -599,7 +599,7 @@ export default function Markets() {
     const normalized = trimmedTiming.toLowerCase().replace(/[\s_-]+/g, '');
     if (normalized.startsWith('before')) return 'Before Market';
     if (normalized.startsWith('after')) return 'After Market';
-    if (!hasStructuredTiming && /market/i.test(trimmedTiming) && trimmedTiming !== EARNINGS_FALLBACK_LABEL) {
+    if (!hasStructuredTiming && /\bmarket\b/i.test(trimmedTiming) && trimmedTiming !== EARNINGS_FALLBACK_LABEL) {
       return trimmedTiming;
     }
     return null;
