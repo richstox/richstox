@@ -63,6 +63,22 @@ type DashboardFeedItem =
   | { kind: 'event'; id: string; event: HomepageEvent }
   | { kind: 'article'; id: string; article: any };
 
+type DashboardStock = {
+  ticker: string;
+  name?: string | null;
+  logo_url?: string | null;
+  pill?: string | null;
+  added_at?: string | null;
+  change_since_added?: number | null;
+  change_1d_pct?: number | null;
+  shares?: number | null;
+  avg_cost?: number | null;
+  position_value?: number | null;
+  entry_date?: string | null;
+  tracklist_effective_date?: string | null;
+  tracklist_event_type?: string | null;
+};
+
 type HomepageFeedSort = 'date_desc' | 'date_asc' | 'az' | 'za';
 type HomepageFeedMode = 'events' | 'news';
 
@@ -612,7 +628,7 @@ export default function Dashboard() {
     return `${values.year}-${values.month}-${values.day}`;
   };
 
-  const getStockStatusText = (stock: any) => {
+  const getStockStatusText = (stock: DashboardStock) => {
     if (stock.pill !== 'Tracklist') {
       return stock.added_at ? `Added: ${stock.added_at}` : null;
     }
@@ -1045,7 +1061,7 @@ export default function Dashboard() {
             </View>
           ) : (
             <>
-              {filteredStocks.slice(0, stocksLimit).map((stock: any, index: number) => {
+              {filteredStocks.slice(0, stocksLimit).map((stock: DashboardStock, index: number) => {
                 const logoUrl = getLogoUrl(stock);
                 const pillConfig = getMembershipPillConfig(stock.pill);
                 const isLastVisible = index === Math.min(stocksLimit, filteredStocks.length) - 1;
