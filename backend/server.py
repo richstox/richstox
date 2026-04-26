@@ -7652,6 +7652,9 @@ async def _filter_visible_list_tickers(tickers: List[str]) -> List[str]:
     if not normalized_tickers:
         return []
 
+    # article_ticker_mapping stores bare symbols, while the visible app universe
+    # is keyed in tracked_tickers as "<TICKER>.US"; map once here and keep the
+    # rest of the Markets news pipeline bare-ticker based.
     visible_docs = await db.tracked_tickers.find(
         {"ticker": {"$in": [f"{ticker}.US" for ticker in normalized_tickers]}, **VISIBLE_UNIVERSE_QUERY},
         {"_id": 0, "ticker": 1},
@@ -8173,6 +8176,9 @@ async def get_markets_news(
     }
     fallback_needed = max(GLOBAL_MARKETS_MIN_TICKER_NEWS - len(existing_article_ids), 0)
     if fallback_needed > 0:
+        # Over-fetch visible candidates because the recent global pool can include
+        # invisible symbols; 10x keeps the fallback filled without changing the
+        # downstream per-ticker caps or merged response limit.
         fallback_candidates = await _get_recent_global_ticker_mappings(
             max(fallback_needed * 10, fallback_needed),
             existing_article_ids,

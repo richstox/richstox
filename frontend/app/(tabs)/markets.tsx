@@ -310,13 +310,15 @@ export default function Markets() {
   const initialSelectedDate = storedSelectedDateKey && isValidYmd(storedSelectedDateKey)
     ? parseYmd(storedSelectedDateKey)
     : todayPrague;
-  const initialDisplayMonth = storedDisplayMonthKey && /^\d{4}-\d{2}$/.test(storedDisplayMonthKey)
+  const initialDisplayMonth = storedDisplayMonthKey && isValidYmd(`${storedDisplayMonthKey}-01`)
     ? startOfMonth(parseYmd(`${storedDisplayMonthKey}-01`))
     : startOfMonth(todayPrague);
   const initialCalendarView = CALENDAR_VIEW_ORDER.includes(storedCalendarView as CalendarViewMode)
     ? storedCalendarView as CalendarViewMode
     : 'daily';
-  const initialSelectedYear = Number.isInteger(storedSelectedYear) ? storedSelectedYear : currentYear;
+  const initialSelectedYear = Number.isInteger(storedSelectedYear) && storedSelectedYear >= 2000 && storedSelectedYear <= currentYear + 10
+    ? storedSelectedYear
+    : currentYear;
   const initialSelectedEventType = EVENT_TYPE_ORDER.includes(storedSelectedEventType as EventType)
     ? storedSelectedEventType as EventType
     : 'earnings';
@@ -1087,11 +1089,11 @@ export default function Markets() {
                           disabled={!news.ticker}
                           activeOpacity={news.ticker ? 0.8 : 1}
                         >
-                           <EventLogo
-                             logoUrl={resolveEventLogoUrl(news.logo_url, news.ticker)}
-                             fallbackKey={news.fallback_logo_key}
-                             useRichstoxIcon={news.scope === 'market'}
-                           />
+                          <EventLogo
+                            logoUrl={resolveEventLogoUrl(news.logo_url, news.ticker)}
+                            fallbackKey={news.fallback_logo_key}
+                            useRichstoxIcon={news.scope === 'market'}
+                          />
                         </TouchableOpacity>
                         <TouchableOpacity
                           style={styles.eventContent}
@@ -1102,20 +1104,20 @@ export default function Markets() {
                           disabled={!canOpenItem}
                           activeOpacity={canOpenItem ? 0.8 : 1}
                         >
-                            <View style={styles.marketNewsTickerRow}>
-                              <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
-                              <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
-                                <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
-                              </View>
+                          <View style={styles.marketNewsTickerRow}>
+                            <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
+                            <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
+                              <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
                             </View>
-                            {news.company_name ? (
-                              <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
-                            ) : null}
-                            <Text style={styles.eventTitle} numberOfLines={2}>{news.title}</Text>
-                            <Text style={styles.marketNewsFooterMeta}>
-                              {[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')}
-                            </Text>
-                          </TouchableOpacity>
+                          </View>
+                          {news.company_name ? (
+                            <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
+                          ) : null}
+                          <Text style={styles.eventTitle} numberOfLines={2}>{news.title}</Text>
+                          <Text style={styles.marketNewsFooterMeta}>
+                            {[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')}
+                          </Text>
+                        </TouchableOpacity>
                         {canOpenItem ? (
                           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
                         ) : null}
