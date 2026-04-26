@@ -411,15 +411,20 @@ export default function Dashboard() {
   };
 
   const fetchNews = async (offset: number = 0, append: boolean = false) => {
+    if (!sessionToken) {
+      setNewsItems([]);
+      setAggregateSentiment(null);
+      setHasMoreNews(false);
+      setNewsLoading(false);
+      return;
+    }
     try {
       setNewsLoading(true);
-      const response = await axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`);
+      const response = await axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`, {
+        headers: { Authorization: `Bearer ${sessionToken}` },
+      });
       const newNews = response.data.news || [];
-      if (append) {
-        setNewsItems([...newsItems, ...newNews]);
-      } else {
-        setNewsItems(newNews);
-      }
+      setNewsItems((prev) => (append ? [...prev, ...newNews] : newNews));
       setAggregateSentiment(response.data.aggregate_sentiment || null);
       
       setHasMoreNews(response.data.has_more);
@@ -439,10 +444,10 @@ export default function Dashboard() {
   // This avoids two parallel API calls blocking first paint.
   const dataLoaded = !loading && data != null;
   useEffect(() => {
-    if (dataLoaded) {
+    if (dataLoaded && sessionToken) {
       fetchNews(0, false);
     }
-  }, [dataLoaded]);
+  }, [dataLoaded, sessionToken]);
   
   const onRefresh = () => { 
     setRefreshing(true); 

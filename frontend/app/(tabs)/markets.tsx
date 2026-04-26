@@ -111,12 +111,10 @@ const MIN_ACTIVE_DAYS_SCROLL_STEP = 140;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 const MARKET_NEWS_PER_TICKER = 3;
-// Keep these values aligned with backend/server.py GLOBAL_MARKETS_* constants:
-// 10 global watchlist tickers + 10 global tracklist tickers, capped to 3 articles each, plus 100 MARKETS articles.
-const MARKET_WATCHLIST_TICKER_LIMIT = 10;
-const MARKET_TRACKLIST_TICKER_LIMIT = 10;
 const MARKET_DIGEST_LIMIT = 100;
-const MARKET_NEWS_LIMIT = MARKET_DIGEST_LIMIT + ((MARKET_WATCHLIST_TICKER_LIMIT + MARKET_TRACKLIST_TICKER_LIMIT) * MARKET_NEWS_PER_TICKER);
+// Markets aggregates ALL distinct Watchlist/Tracklist tickers across users,
+// so request a large enough page to avoid truncating the merged corpus client-side.
+const MARKET_NEWS_LIMIT = 1000;
 const YMD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
