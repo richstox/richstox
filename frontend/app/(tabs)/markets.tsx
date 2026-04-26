@@ -85,12 +85,6 @@ type MarketNewsItem = {
   scope?: 'market' | 'ticker';
 };
 
-type VisibleTickerConfig = {
-  ticker: string;
-  company_name?: string | null;
-  logo_url?: string;
-};
-
 type AggregateSentiment = {
   score: number;
   label: SentimentCategory;
@@ -457,21 +451,6 @@ export default function Markets() {
     [visibleEventLimit, visibleEvents],
   );
 
-  const visibleTickerConfigs = useMemo(() => {
-    const seenTickers = new Set<string>();
-    return displayedEvents.reduce<VisibleTickerConfig[]>((acc, event) => {
-      const normalizedTicker = event.ticker?.trim().toUpperCase();
-      if (!normalizedTicker || seenTickers.has(normalizedTicker)) return acc;
-      seenTickers.add(normalizedTicker);
-      acc.push({
-        ticker: normalizedTicker,
-        company_name: event.company_name ?? null,
-        logo_url: resolveEventLogoUrl(event.logo_url, event.ticker),
-      });
-      return acc;
-    }, []);
-  }, [displayedEvents]);
-
   useEffect(() => {
     let cancelled = false;
 
@@ -487,9 +466,8 @@ export default function Markets() {
       try {
         setNewsLoading(true);
         setNewsError(null);
-        const tickerParam = visibleTickerConfigs.map((tickerConfig) => tickerConfig.ticker).join(',');
         const response = await fetch(
-          `${API_URL}/api/v1/markets/news?tickers=${encodeURIComponent(tickerParam)}&limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0`,
+          `${API_URL}/api/v1/markets/news?limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0`,
         );
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
@@ -501,10 +479,7 @@ export default function Markets() {
         const seenIds = new Set<string>();
         const mergedItems = (Array.isArray(payload?.news) ? payload.news : [])
           .map((item: any, index: number) => {
-            const ticker = item?.ticker?.trim?.().toUpperCase?.() ?? null;
-            const matchingTickerConfig = ticker
-              ? visibleTickerConfigs.find((tickerConfig) => tickerConfig.ticker === ticker)
-              : undefined;
+            const ticker = typeof item?.ticker === 'string' ? item.ticker.trim().toUpperCase() : null;
             const sourceLink = item?.link ?? null;
             return {
               id: item?.id || generateNewsItemId(ticker ?? 'MARKET', {
@@ -514,9 +489,9 @@ export default function Markets() {
                 source_link: sourceLink,
               }, index),
               ticker,
-              company_name: item?.scope === 'market' ? null : (item?.company_name ?? matchingTickerConfig?.company_name ?? null),
-              logo_url: item?.scope === 'market' ? undefined : (item?.logo_url ?? matchingTickerConfig?.logo_url),
-              fallback_logo_key: item?.fallback_logo_key || getEventFallbackKey(ticker, item?.company_name ?? matchingTickerConfig?.company_name),
+              company_name: item?.scope === 'market' ? null : (item?.company_name ?? null),
+              logo_url: item?.scope === 'market' ? undefined : item?.logo_url,
+              fallback_logo_key: item?.fallback_logo_key || getEventFallbackKey(ticker, item?.company_name ?? null),
               title: item?.title || `${ticker ?? 'Market'} news`,
               date: item?.date ?? null,
               source: item?.source ?? getMarketNewsSource(sourceLink),
@@ -554,7 +529,7 @@ export default function Markets() {
     return () => {
       cancelled = true;
     };
-  }, [includeNews, visibleTickerConfigs]);
+  }, [includeNews]);
 
   const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;
   const canScrollActiveDaysLeft = activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
@@ -1065,9 +1040,7 @@ export default function Markets() {
                   <View>
                     <Text style={styles.marketNewsTitle}>Markets news</Text>
                     <Text style={styles.marketNewsSubtitle}>
-                      {visibleTickerConfigs.length > 0
-                        ? `MARKETS feed + up to ${MARKET_NEWS_PER_TICKER} saved article${MARKET_NEWS_PER_TICKER === 1 ? '' : 's'} per visible ticker`
-                        : 'MARKETS feed'}
+                      {`MARKETS feed + shared global ticker-news corpus (up to ${MARKET_NEWS_PER_TICKER} saved articles per ticker)`}
                     </Text>
                   </View>
                   {aggregateSentiment && (
@@ -1098,7 +1071,7 @@ export default function Markets() {
                 <Text style={styles.errorText}>{newsError}</Text>
               ) : newsItems.length === 0 ? (
                 <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyText}>No saved news available for the currently visible tickers</Text>
+                  <Text style={styles.emptyText}>No saved market or ticker news available right now</Text>
                 </View>
               ) : (
                 newsItems.map((item, index) => {

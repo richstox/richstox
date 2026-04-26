@@ -8045,16 +8045,47 @@ async def get_markets_news(
     market_limit: int = Query(20, ge=1, le=100),
     per_ticker_limit: int = Query(3, ge=1, le=3),
 ):
-    """Merged Markets news from stored MARKETS articles plus stored ticker articles."""
-    ticker_list: List[str] = []
-    seen_tickers: set[str] = set()
+    """Merged Markets news from the shared global ticker corpus plus MARKETS articles."""
+    requested_tickers: List[str] = []
+    seen_requested: set[str] = set()
     for raw in tickers.split(","):
         ticker = _normalize_list_ticker(raw)
-        if ticker and ticker not in seen_tickers:
-            seen_tickers.add(ticker)
-            ticker_list.append(ticker)
+        if ticker and ticker not in seen_requested:
+            seen_requested.add(ticker)
+            requested_tickers.append(ticker)
 
-    ticker_full_list = [f"{ticker}.US" for ticker in ticker_list]
+    mapping_match: Dict[str, Any] = {}
+    if requested_tickers:
+        mapping_match = {"ticker": {"$in": requested_tickers}}
+
+    article_mappings = await db.article_ticker_mapping.aggregate([
+        {"$match": mapping_match} if mapping_match else {"$match": {"ticker": {"$exists": True, "$ne": ""}}},
+        {"$sort": {"ticker": 1, "published_at": -1}},
+        {"$group": {
+            "_id": "$ticker",
+            "mappings": {
+                "$push": {
+                    "article_id": "$article_id",
+                    "published_at": "$published_at",
+                }
+            },
+        }},
+        {"$project": {
+            "_id": 0,
+            "ticker": "$_id",
+            "mappings": {"$slice": ["$mappings", per_ticker_limit]},
+        }},
+        {"$unwind": "$mappings"},
+        {"$project": {
+            "_id": 0,
+            "ticker": 1,
+            "article_id": "$mappings.article_id",
+            "published_at": "$mappings.published_at",
+        }},
+    ]).to_list(length=None)
+
+    selected_tickers = sorted({mapping.get("ticker") for mapping in article_mappings if mapping.get("ticker")})
+    ticker_full_list = [f"{ticker}.US" for ticker in selected_tickers]
     company_docs = await db.company_fundamentals_cache.find(
         {"ticker": {"$in": ticker_full_list}},
         {"_id": 0, "ticker": 1, "logo_url": 1, "name": 1, "logo_status": 1},
@@ -8071,66 +8102,46 @@ async def get_markets_news(
             "name": doc.get("name", bare),
         }
 
+    article_to_tickers: Dict[str, List[str]] = {}
+    for mapping in article_mappings:
+        aid = mapping.get("article_id")
+        ticker = mapping.get("ticker")
+        if aid and ticker:
+            article_to_tickers.setdefault(aid, []).append(ticker)
+
+    ticker_articles = []
+    if article_to_tickers:
+        ticker_articles = await db.news_articles.find(
+            {"article_id": {"$in": list(article_to_tickers.keys())}},
+            {"_id": 0},
+        ).sort("published_at", -1).to_list(length=None)
+
     ticker_news: List[Dict[str, Any]] = []
-    if ticker_list:
-        article_mappings = await db.article_ticker_mapping.find(
-            {"ticker": {"$in": ticker_list}},
-            {"_id": 0, "article_id": 1, "ticker": 1},
-        ).sort([("ticker", 1), ("published_at", -1)]).to_list(length=None)
-
-        article_to_tickers: Dict[str, List[str]] = {}
-        for mapping in article_mappings:
-            aid = mapping.get("article_id")
-            ticker = mapping.get("ticker")
-            if aid and ticker:
-                article_to_tickers.setdefault(aid, []).append(ticker)
-
-        ticker_articles = []
-        if article_to_tickers:
-            ticker_articles = await db.news_articles.find(
-                {"article_id": {"$in": list(article_to_tickers.keys())}},
-                {"_id": 0},
-            ).sort("published_at", -1).to_list(length=None)
-
-        articles_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
-        for article in ticker_articles:
-            aid = article.get("article_id")
-            if not aid:
-                continue
-
-            primary_ticker = None
-            for ticker in article_to_tickers.get(aid, []):
-                if ticker in ticker_list:
-                    primary_ticker = ticker
-                    break
-            if not primary_ticker:
-                continue
-
-            articles_by_ticker.setdefault(primary_ticker, [])
-            if len(articles_by_ticker[primary_ticker]) >= per_ticker_limit:
-                continue
-            articles_by_ticker[primary_ticker].append(article)
-
-        for ticker, articles in articles_by_ticker.items():
-            info = ticker_info.get(ticker, {})
-            for article in articles:
-                link = article.get("source_link") or article.get("link") or ""
-                ticker_news.append({
-                    "id": article.get("article_id") or hashlib.md5(link.encode()).hexdigest()[:16],
-                    "title": article.get("title"),
-                    "content": article.get("content", ""),
-                    "source": extract_source(link),
-                    "link": link,
-                    "date": article.get("published_at") or article.get("date"),
-                    "ticker": ticker,
-                    "company_name": info.get("name", ticker),
-                    "logo_url": info.get("logo_url"),
-                    "fallback_logo_key": ticker[0].upper() if ticker else "N",
-                    "sentiment": article.get("sentiment", {}),
-                    "sentiment_label": article.get("sentiment_label", "neutral"),
-                    "tags": article.get("tags", []),
-                    "scope": "ticker",
-                })
+    for article in ticker_articles:
+        aid = article.get("article_id")
+        if not aid:
+            continue
+        primary_ticker = (article_to_tickers.get(aid) or [None])[0]
+        if not primary_ticker:
+            continue
+        info = ticker_info.get(primary_ticker, {})
+        link = article.get("source_link") or article.get("link") or ""
+        ticker_news.append({
+            "id": article.get("article_id") or hashlib.md5(link.encode()).hexdigest()[:16],
+            "title": article.get("title"),
+            "content": article.get("content", ""),
+            "source": extract_source(link),
+            "link": link,
+            "date": article.get("published_at") or article.get("date"),
+            "ticker": primary_ticker,
+            "company_name": info.get("name", primary_ticker),
+            "logo_url": info.get("logo_url"),
+            "fallback_logo_key": primary_ticker[0].upper() if primary_ticker else "N",
+            "sentiment": article.get("sentiment", {}),
+            "sentiment_label": article.get("sentiment_label", "neutral"),
+            "tags": article.get("tags", []),
+            "scope": "ticker",
+        })
 
     market_articles = await db.market_news.find(
         {"topic": "MARKETS"},
@@ -8186,8 +8197,8 @@ async def get_markets_news(
         "limit": limit,
         "total": total_count,
         "has_more": (offset + len(paginated_news)) < total_count,
-        "tickers": ticker_list,
-        "ticker_count": len(ticker_list),
+        "tickers": selected_tickers,
+        "ticker_count": len(selected_tickers),
         "market_news_count": len(market_news),
         "ticker_news_count": len(ticker_news),
         "per_ticker_cap": per_ticker_limit,
