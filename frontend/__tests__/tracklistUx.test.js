@@ -30,6 +30,15 @@ describe('Tracklist UX regression', () => {
     expect(stockDetail).toContain("pathname: '/(tabs)/tracklist'");
   });
 
+  it('disables Tracklist actions for tickers already in Tracklist', () => {
+    expect(stockDetail).toContain("if (target === 'tracklist') {");
+    expect(stockDetail).toContain('if (listMemberships.tracklist) {');
+    expect(stockDetail).toContain('disabled={listMemberships.tracklist}');
+    expect(stockDetail).toContain('listMemberships.tracklist && styles.addToButtonDisabled');
+    expect(stockDetail).toContain('listMemberships.tracklist && styles.addToSheetItemDisabled');
+    expect(stockDetail).toContain('disabled={listActionLoading || listMemberships.tracklist}');
+  });
+
   it('keeps search passive and pill-driven only', () => {
     expect(search).toContain("getMembershipPillConfig");
     expect(search).not.toContain("W / T badges show where each ticker already lives.");

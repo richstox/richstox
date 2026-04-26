@@ -94,7 +94,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const isDisabled = selectedEventCounts[type] === 0;');
     expect(fileContent).toContain('disabled={isDisabled}');
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
-    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
+    expect(fileContent).toContain('<Text style={styles.sectionTitle} numberOfLines={1}>EVENTS & NEWS</Text>');
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
     expect(fileContent).toContain('const visibleEventToggleCount = useMemo(() => {');
     expect(fileContent).toContain('const visibleNewsToggleCount = visibleNewsItems.length;');
@@ -111,9 +111,8 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('style={styles.marketNewsTickerRow}');
     expect(fileContent).toContain('<Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>');
-    expect(fileContent).toContain('<Text style={styles.marketNewsFooterMeta}>');
-    expect(fileContent).toContain("[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')");
-    expect(fileContent).not.toContain("[news.source, getMarketNewsDateLabel(news.date)].filter(Boolean).join(' • ')");
+    expect(fileContent).toContain('<Text style={styles.marketNewsDateMeta}>{getMarketNewsDateLabel(news.date)}</Text>');
+    expect(fileContent).not.toContain("[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')");
     expect(fileContent).not.toContain('styles.sectionSubtitle');
     expect(fileContent).toContain('No saved market or ticker news available right now');
     expect(fileContent).toContain('Load more</Text>');
@@ -123,7 +122,6 @@ describe('Markets events regressions', () => {
 
   it('keeps the events headline icon and removes the standalone calendar card', () => {
     expect(fileContent).toContain('<Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />');
-    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
     expect(fileContent).toContain('<Text style={styles.selectorTitle}>Events & News calendar</Text>');
     expect(fileContent).not.toContain('<Text style={styles.sectionTitle}>Calendar</Text>');
     expect(fileContent).not.toContain('<Text style={styles.eventsCount}>{periodEvents.length}</Text>');
@@ -156,5 +154,14 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("source={require('../../assets/images/richstox_icon_only.png')}");
     expect(fileContent).toContain("useRichstoxIcon={news.scope === 'market'}");
     expect(fileContent).toContain("useRichstoxIcon={selectedArticle.scope === 'market'}");
+  });
+
+  it('pins the header date to the upper right and removes source text from markets news UI', () => {
+    expect(fileContent).toContain('style={styles.eventsDateBlock}');
+    expect(fileContent).toContain('<Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>');
+    expect(fileContent).toContain("<Text style={styles.articleCompany}>{selectedArticle.company_name || 'Market News'}</Text>");
+    expect(fileContent).toContain('<Text style={styles.articleMeta}>{getMarketNewsDateLabel(selectedArticle.date)}</Text>');
+    expect(fileContent).not.toContain('selectedArticle.company_name || selectedArticle.source ||');
+    expect(fileContent).not.toContain("[getMarketNewsDateLabel(selectedArticle.date), selectedArticle.source].filter(Boolean).join(' • ')");
   });
 });
