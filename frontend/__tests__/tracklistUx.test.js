@@ -32,6 +32,7 @@ describe('Tracklist UX regression', () => {
     expect(search).toContain("const MEMBERSHIP_CONFIG");
     expect(search).toContain("Watchlist");
     expect(search).toContain("Tracklist");
+    expect(search).toContain("portfolio: { label: 'Portfolio', bg: '#EDE9FE', text: '#7C3AED' }");
     expect(search).not.toContain("W / T badges show where each ticker already lives.");
     expect(search).not.toContain("Passive search only");
     expect(search).not.toContain('star-toggle-');
@@ -43,6 +44,9 @@ describe('Tracklist UX regression', () => {
   it('shows tracklist performance on the homepage', () => {
     expect(dashboard).toContain('My Tracklist performance');
     expect(dashboard).toContain('Based on your Tracklist (equal-weight)');
+    expect(dashboard).toContain('+Watchlist');
+    expect(dashboard).toContain("tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' }");
+    expect(dashboard).toContain("portfolio: { label: 'Portfolio', bg: '#EDE9FE', text: '#7C3AED' }");
     expect(dashboard).toContain("setPerformanceMode('USD')");
     expect(dashboard).toContain('Reward / Risk');
     expect(dashboard).toContain('Vs. Index');

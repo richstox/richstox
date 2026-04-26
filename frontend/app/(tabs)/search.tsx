@@ -36,6 +36,7 @@ const COLORS = {
 const MEMBERSHIP_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
   watchlist: { label: 'Watchlist', bg: '#FEF3C7', text: '#B45309' },
   tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' },
+  portfolio: { label: 'Portfolio', bg: '#EDE9FE', text: '#7C3AED' },
 };
 
 const getMembershipConfig = (membership: unknown) => {
