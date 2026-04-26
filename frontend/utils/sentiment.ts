@@ -1,4 +1,4 @@
-export const AGGREGATE_SENTIMENT_HELPER_TEXT = 'Score = (positive − negative) ÷ total articles. Range: -1.00 bearish to +1.00 bullish.';
+export const AGGREGATE_SENTIMENT_HELPER_TEXT = 'Sentiment = (positive − negative) ÷ total articles, shown as -100% to +100%.';
 
 export type AggregateSentimentBreakdown = {
   total_articles?: number | null;
@@ -26,7 +26,7 @@ export const getAggregateSentimentTooltipContent = (aggregateSentiment?: Aggrega
     title: 'Aggregate Sentiment',
     body: [
       AGGREGATE_SENTIMENT_HELPER_TEXT,
-      '+1.00 means all tracked articles are positive. -1.00 means all tracked articles are negative.',
+      '+100% means all tracked articles are positive. -100% means all tracked articles are negative.',
     ].join('\n\n'),
     howToRead: `Current mix: ${positiveCount} positive • ${negativeCount} negative • ${neutralCount} neutral (${articleCountLabel}).`,
   };
@@ -37,7 +37,8 @@ export const formatAggregateSentimentLabel = (label?: string | null, score?: num
     ? `${label.trim().charAt(0).toUpperCase()}${label.trim().slice(1)}`
     : 'Neutral';
   const normalizedScore = typeof score === 'number' && Number.isFinite(score) ? score : 0;
-  return `${normalizedLabel} ${normalizedScore >= 0 ? '+' : ''}${normalizedScore.toFixed(2)}`;
+  const percentage = Math.round(normalizedScore * 100);
+  return `${normalizedLabel} ${percentage >= 0 ? '+' : ''}${percentage}%`;
 };
 
 export const formatAggregateSentimentHelperText = (aggregateSentiment?: AggregateSentimentBreakdown | null): string => {

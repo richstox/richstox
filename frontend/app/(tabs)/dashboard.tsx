@@ -255,7 +255,7 @@ export default function Dashboard() {
   const [newsLimit, setNewsLimit] = useState(INITIAL_NEWS_LIMIT);
   
   // P34 Fix 1: My Stocks pagination state
-  const [stocksLimit, setStocksLimit] = useState(5);
+  const [stocksLimit, setStocksLimit] = useState(7);
   const STOCKS_PAGE_SIZE = 5;
   
   // P35 Item 2: Unfollow confirmation modal
@@ -340,7 +340,7 @@ export default function Dashboard() {
    }, [myStocks, stocksFilter, stocksSort, includeWatchlist]);
   
   // P36 Item 4: hasMoreStocks and hasLessStocks for Load more / See less
-  const INITIAL_STOCKS_LIMIT = 5;
+  const INITIAL_STOCKS_LIMIT = 7;
   const hasMoreStocks = stocksLimit < filteredStocks.length;
   const hasLessStocks = stocksLimit > INITIAL_STOCKS_LIMIT && filteredStocks.length > INITIAL_STOCKS_LIMIT;
   

@@ -131,6 +131,26 @@ def _sentiment_label_from_payload(sentiment: Optional[Dict[str, Any]]) -> str:
     return "neutral"
 
 
+def _extract_mappable_symbols(symbols: Any) -> List[str]:
+    """Return unique ticker symbols from an EODHD symbols payload that can map to ticker news."""
+    if not isinstance(symbols, list):
+        return []
+
+    clean_symbols: List[str] = []
+    seen: set[str] = set()
+    for raw in symbols:
+        if not isinstance(raw, str):
+            continue
+        bare = _bare_ticker(raw)
+        if not bare or "-USD" in bare or len(bare) > 5:
+            continue
+        if bare in seen:
+            continue
+        seen.add(bare)
+        clean_symbols.append(bare)
+    return clean_symbols
+
+
 async def fetch_news_batch_from_eodhd(
     symbols: List[str],
     from_date: str,
@@ -671,9 +691,10 @@ async def fetch_market_digest_from_eodhd(
 async def store_market_digest_articles(db, articles: List[Dict[str, Any]]) -> Dict[str, int]:
     """Store general market news in a dedicated collection with FIFO retention."""
     if not articles:
-        return {"new_articles": 0}
+        return {"new_articles": 0, "new_ticker_articles": 0, "new_ticker_mappings": 0}
 
     new_articles = 0
+    ticker_mapping_articles: List[Dict[str, Any]] = []
 
     for article in articles:
         source_link = article.get("link", "")
@@ -682,6 +703,8 @@ async def store_market_digest_articles(db, articles: List[Dict[str, Any]]) -> Di
         article_id = generate_article_id(source_link, title, published_at)
         sentiment = article.get("sentiment", {})
         sentiment_label = _sentiment_label_from_payload(sentiment)
+        raw_symbols = article.get("symbols", [])
+        mappable_symbols = _extract_mappable_symbols(raw_symbols)
 
         doc = {
             "article_id": article_id,
@@ -690,7 +713,7 @@ async def store_market_digest_articles(db, articles: List[Dict[str, Any]]) -> Di
             "title": title,
             "content": article.get("content", ""),
             "tags": article.get("tags", []),
-            "symbols": article.get("symbols", []),
+            "symbols": raw_symbols if isinstance(raw_symbols, list) else [],
             "sentiment": sentiment,
             "sentiment_label": sentiment_label,
             "topic": "MARKETS",
@@ -704,6 +727,16 @@ async def store_market_digest_articles(db, articles: List[Dict[str, Any]]) -> Di
         )
         if result.upserted_id:
             new_articles += 1
+        if mappable_symbols:
+            ticker_mapping_articles.append({
+                "link": source_link,
+                "title": title,
+                "date": published_at,
+                "content": article.get("content", ""),
+                "tags": article.get("tags", []),
+                "symbols": mappable_symbols,
+                "sentiment": sentiment,
+            })
 
     existing_count = await db.market_news.count_documents({})
     if existing_count > MARKET_DIGEST_RETENTION:
@@ -715,8 +748,16 @@ async def store_market_digest_articles(db, articles: List[Dict[str, Any]]) -> Di
         if oldest:
             await db.market_news.delete_many({"_id": {"$in": [doc["_id"] for doc in oldest]}})
 
+    ticker_mapping_result = {"new_articles": 0, "new_mappings": 0}
+    if ticker_mapping_articles:
+        ticker_mapping_result = await store_articles_with_mapping(db, ticker_mapping_articles)
+
     logger.info(f"Stored {new_articles} new market digest articles")
-    return {"new_articles": new_articles}
+    return {
+        "new_articles": new_articles,
+        "new_ticker_articles": ticker_mapping_result["new_articles"],
+        "new_ticker_mappings": ticker_mapping_result["new_mappings"],
+    }
 
 
 async def refresh_market_digest(db) -> Dict[str, Any]:
@@ -731,6 +772,8 @@ async def refresh_market_digest(db) -> Dict[str, Any]:
         "status": "completed",
         "total_articles_fetched": len(articles),
         "new_articles_stored": result["new_articles"],
+        "new_ticker_articles": result.get("new_ticker_articles", 0),
+        "new_ticker_mappings": result.get("new_ticker_mappings", 0),
         "api_calls": 1,
         "started_at": started_at.isoformat(),
         "finished_at": finished_at.isoformat(),
@@ -762,10 +805,15 @@ async def refresh_full_news(db) -> Dict[str, Any]:
             ticker_result.get("new_articles_stored", 0)
             + market_result.get("new_articles_stored", 0)
         ),
-        "new_ticker_mappings": ticker_result.get("new_ticker_mappings", 0),
+        "new_ticker_mappings": (
+            ticker_result.get("new_ticker_mappings", 0)
+            + market_result.get("new_ticker_mappings", 0)
+        ),
         "hot_symbols_count": ticker_result.get("hot_symbols_count", 0),
         "market_digest_articles_fetched": market_result.get("total_articles_fetched", 0),
         "market_digest_new_articles_stored": market_result.get("new_articles_stored", 0),
+        "market_digest_new_ticker_articles_stored": market_result.get("new_ticker_articles", 0),
+        "market_digest_new_ticker_mappings": market_result.get("new_ticker_mappings", 0),
         "orphans_deleted": ticker_result.get("orphans_deleted", 0),
         "errors": ticker_result.get("errors", 0),
         "from_date": ticker_result.get("from_date"),

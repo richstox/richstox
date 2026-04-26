@@ -793,7 +793,6 @@ export default function Markets() {
                   </TouchableOpacity>
                 )}
                 <View style={styles.feedModeRow}>
-                  <Text style={styles.feedModePrefix}>Show:</Text>
                   <View style={styles.feedModeGroup}>
                     {MARKET_FEED_MODE_OPTIONS.map((option) => {
                       const isActive = marketFeedModes.includes(option.key);
@@ -988,21 +987,20 @@ export default function Markets() {
                           disabled={!canOpenItem}
                           activeOpacity={canOpenItem ? 0.8 : 1}
                         >
-                          <View style={styles.marketNewsTickerRow}>
-                            <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
-                            <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
-                              <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
+                            <View style={styles.marketNewsTickerRow}>
+                              <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
+                              <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
+                                <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
+                              </View>
                             </View>
-                            <View style={styles.marketNewsMetaSpacer} />
-                            {news.date ? (
-                              <Text style={styles.eventMeta}>{getMarketNewsDateLabel(news.date)}</Text>
+                            {news.company_name ? (
+                              <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
                             ) : null}
-                          </View>
-                          {news.company_name ? (
-                            <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
-                          ) : null}
-                          <Text style={styles.eventTitle} numberOfLines={2}>{news.title}</Text>
-                        </TouchableOpacity>
+                            <Text style={styles.eventTitle} numberOfLines={2}>{news.title}</Text>
+                            <Text style={styles.marketNewsFooterMeta}>
+                              {[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')}
+                            </Text>
+                          </TouchableOpacity>
                         {canOpenItem ? (
                           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
                         ) : null}
@@ -1454,12 +1452,15 @@ const styles = StyleSheet.create({
   },
   eventsHeaderTop: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
   eventsHeaderActions: {
-    alignItems: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexShrink: 1,
     gap: 8,
   },
   eventsTitleBlock: {
@@ -1678,10 +1679,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 4,
-  },
-  marketNewsMetaSpacer: {
-    flex: 1,
   },
   marketNewsCompanyName: {
     fontSize: 13,
@@ -1689,6 +1686,12 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     lineHeight: 18,
     marginBottom: 4,
+  },
+  marketNewsFooterMeta: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    lineHeight: 16,
+    marginTop: 8,
   },
   eventMetaColumn: {
     alignItems: 'flex-end',
@@ -1773,23 +1776,18 @@ const styles = StyleSheet.create({
   feedModeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
+    flexShrink: 1,
     justifyContent: 'flex-end',
-    gap: 8,
-  },
-  feedModePrefix: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textLight,
+    minWidth: 0,
   },
   feedModeGroup: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexShrink: 1,
     justifyContent: 'flex-end',
     gap: 6,
   },
   feedModeChip: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: COLORS.background,
@@ -1804,7 +1802,7 @@ const styles = StyleSheet.create({
     opacity: 0.75,
   },
   feedModeChipText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: COLORS.textLight,
   },
