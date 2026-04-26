@@ -15,6 +15,7 @@ from services import news_service
 from services.news_service import (
     fetch_market_digest_from_eodhd,
     get_hot_symbols,
+    refresh_full_news,
     store_market_digest_articles,
 )
 
@@ -106,3 +107,52 @@ class TestGetHotSymbols:
         hot_symbols = await get_hot_symbols(db, n=10)
 
         assert {"PLTR", "NVDA", "SOFI"}.issubset(set(hot_symbols))
+
+
+class TestRefreshFullNews:
+    @pytest.mark.asyncio
+    async def test_runs_ticker_news_and_market_digest(self, monkeypatch):
+        db = MagicMock()
+
+        create_indexes = AsyncMock()
+        ticker_refresh = AsyncMock(return_value={
+            "job_type": "news_daily_refresh",
+            "status": "completed",
+            "api_calls": 3,
+            "total_articles_fetched": 12,
+            "new_articles_stored": 5,
+            "new_ticker_mappings": 8,
+            "hot_symbols_count": 4,
+            "orphans_deleted": 2,
+            "errors": 0,
+            "from_date": "2026-04-25",
+            "to_date": "2026-04-26",
+            "api_endpoint_template": "ticker-template",
+            "sample_tickers": ["AAPL", "MSFT"],
+        })
+        market_refresh = AsyncMock(return_value={
+            "job_type": "market_digest_refresh",
+            "status": "completed",
+            "api_calls": 1,
+            "total_articles_fetched": 7,
+            "new_articles_stored": 3,
+            "api_endpoint_template": "market-template",
+        })
+
+        monkeypatch.setattr(news_service, "create_news_indexes", create_indexes)
+        monkeypatch.setattr(news_service, "refresh_hot_tickers_news", ticker_refresh)
+        monkeypatch.setattr(news_service, "refresh_market_digest", market_refresh)
+
+        result = await refresh_full_news(db)
+
+        create_indexes.assert_awaited_once_with(db)
+        ticker_refresh.assert_awaited_once_with(db)
+        market_refresh.assert_awaited_once_with(db)
+        assert result["api_calls"] == 4
+        assert result["total_articles_fetched"] == 19
+        assert result["new_articles_stored"] == 8
+        assert result["market_digest_articles_fetched"] == 7
+        assert result["market_digest_new_articles_stored"] == 3
+        assert result["sample_tickers"] == ["AAPL", "MSFT"]
+        assert result["ticker_news"]["new_ticker_mappings"] == 8
+        assert result["market_digest"]["job_type"] == "market_digest_refresh"

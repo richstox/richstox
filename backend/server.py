@@ -8875,7 +8875,7 @@ async def admin_run_job_now(
     from scheduler_service import save_step3_visibility_exclusion_report as _save_step3_vis_report
     from benchmark_service import update_all_benchmarks
     from services.market_calendar_service import refresh_market_calendar, ensure_indexes as _mc_ensure_indexes
-    from services.news_service import refresh_hot_tickers_news
+    from services.news_service import refresh_full_news
     from key_metrics_service import compute_peer_benchmarks_v3
 
     async def _market_calendar_refresh(database):
@@ -8901,7 +8901,7 @@ async def admin_run_job_now(
         "recompute_visibility_with_zombies": recompute_visibility_with_zombie_cleanup,
         "benchmark_update": update_all_benchmarks,
         "market_calendar": _market_calendar_refresh,
-        "news_refresh": refresh_hot_tickers_news,
+        "news_refresh": refresh_full_news,
         "peer_medians": compute_peer_benchmarks_v3,
         "dividend_upcoming_calendar": sync_upcoming_dividend_calendar_for_visible_tickers,
         "earnings_upcoming_calendar": sync_upcoming_earnings_calendar_for_visible_tickers,

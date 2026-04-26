@@ -739,6 +739,50 @@ async def refresh_market_digest(db) -> Dict[str, Any]:
     }
 
 
+async def refresh_full_news(db) -> Dict[str, Any]:
+    """Run the full daily news refresh: ticker news plus the MARKETS digest."""
+    started_at = datetime.now(timezone.utc)
+
+    await create_news_indexes(db)
+
+    ticker_result = await refresh_hot_tickers_news(db)
+    market_result = await refresh_market_digest(db)
+
+    finished_at = datetime.now(timezone.utc)
+
+    return {
+        "job_type": "news_daily_refresh",
+        "status": "completed",
+        "api_calls": ticker_result.get("api_calls", 0) + market_result.get("api_calls", 0),
+        "total_articles_fetched": (
+            ticker_result.get("total_articles_fetched", 0)
+            + market_result.get("total_articles_fetched", 0)
+        ),
+        "new_articles_stored": (
+            ticker_result.get("new_articles_stored", 0)
+            + market_result.get("new_articles_stored", 0)
+        ),
+        "new_ticker_mappings": ticker_result.get("new_ticker_mappings", 0),
+        "hot_symbols_count": ticker_result.get("hot_symbols_count", 0),
+        "market_digest_articles_fetched": market_result.get("total_articles_fetched", 0),
+        "market_digest_new_articles_stored": market_result.get("new_articles_stored", 0),
+        "orphans_deleted": ticker_result.get("orphans_deleted", 0),
+        "errors": ticker_result.get("errors", 0),
+        "from_date": ticker_result.get("from_date"),
+        "to_date": ticker_result.get("to_date"),
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+        "api_endpoint_template": {
+            "ticker_news": ticker_result.get("api_endpoint_template", ""),
+            "market_digest": market_result.get("api_endpoint_template", ""),
+        },
+        "sample_tickers": ticker_result.get("sample_tickers", []),
+        "ticker_news": ticker_result,
+        "market_digest": market_result,
+    }
+
+
 async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     """
     Remove news_articles documents that have zero references in BOTH

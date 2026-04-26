@@ -931,8 +931,8 @@ async def scheduler_loop():
                 # News refresh at 13:00 Sunday (catch-up enabled)
                 if should_run("news_refresh", NEWS_REFRESH_HOUR, NEWS_REFRESH_MINUTE, last_run, today_str, current_hour, current_minute):
                     logger.info(f"Triggering news_refresh (hour={current_hour}, scheduled={NEWS_REFRESH_HOUR}:{NEWS_REFRESH_MINUTE:02d})")
-                    from services.news_service import refresh_hot_tickers_news
-                    await run_job_with_retry("news_refresh", refresh_hot_tickers_news, db)
+                    from services.news_service import refresh_full_news
+                    await run_job_with_retry("news_refresh", refresh_full_news, db)
                     last_run["news_refresh"] = today_str
                     await set_last_run_state(last_run)
                 
@@ -1418,8 +1418,8 @@ async def scheduler_loop():
             if should_run("news_refresh", NEWS_REFRESH_HOUR, NEWS_REFRESH_MINUTE, last_run, today_str, current_hour, current_minute):
                 logger.info(f"Triggering news_refresh (hour={current_hour}, scheduled={NEWS_REFRESH_HOUR}:{NEWS_REFRESH_MINUTE:02d})")
                 try:
-                    from services.news_service import refresh_hot_tickers_news
-                    await run_job_with_retry("news_refresh", refresh_hot_tickers_news, db)
+                    from services.news_service import refresh_full_news
+                    await run_job_with_retry("news_refresh", refresh_full_news, db)
                     last_run["news_refresh"] = today_str
                     await set_last_run_state(last_run)
                 except Exception as exc:
