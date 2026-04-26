@@ -1465,13 +1465,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     flex: 1,
+    // Allow the uppercase headline to truncate instead of forcing the header row to wrap.
     minWidth: 0,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: '800',
     color: COLORS.text,
-    flexShrink: 1,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
   },
