@@ -82,12 +82,23 @@ type MarketNewsItem = {
   source?: string | null;
   link?: string | null;
   sentiment_label?: SentimentCategory | null;
+  scope?: 'market' | 'ticker';
 };
 
 type VisibleTickerConfig = {
   ticker: string;
   company_name?: string | null;
   logo_url?: string;
+};
+
+type AggregateSentiment = {
+  score: number;
+  label: SentimentCategory;
+  color: string;
+  total_articles: number;
+  positive_count: number;
+  negative_count: number;
+  neutral_count: number;
 };
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -98,7 +109,9 @@ const ACTIVE_DAYS_SCROLL_PERCENTAGE = 0.8;
 const MIN_ACTIVE_DAYS_SCROLL_STEP = 140;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
-const MARKET_NEWS_PER_TICKER = 1;
+const MARKET_NEWS_PER_TICKER = 3;
+const MARKET_NEWS_LIMIT = 40;
+const MARKET_DIGEST_LIMIT = 20;
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
   if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
@@ -260,6 +273,7 @@ export default function Markets() {
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
   const [includeNews, setIncludeNews] = useState(true);
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
+  const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);
@@ -462,8 +476,9 @@ export default function Markets() {
     let cancelled = false;
 
     const fetchVisibleTickerNews = async () => {
-      if (!includeNews || visibleTickerConfigs.length === 0) {
+      if (!includeNews) {
         setNewsItems([]);
+        setAggregateSentiment(null);
         setNewsError(null);
         setNewsLoading(false);
         return;
@@ -472,38 +487,44 @@ export default function Markets() {
       try {
         setNewsLoading(true);
         setNewsError(null);
-
-        const responses = await Promise.allSettled(
-          visibleTickerConfigs.map(async (tickerConfig) => {
-            const response = await fetch(
-              `${API_URL}/api/news/ticker/${encodeURIComponent(tickerConfig.ticker)}?limit=${MARKET_NEWS_PER_TICKER}&offset=0`,
-            );
-            if (!response.ok) {
-              throw new Error(`HTTP ${response.status}`);
-            }
-            const payload = await response.json();
-            const articles: TickerNewsApiArticle[] = Array.isArray(payload?.articles) ? payload.articles : [];
-            return articles.map((article, index) => ({
-              id: generateNewsItemId(tickerConfig.ticker, article, index),
-              ticker: tickerConfig.ticker,
-              company_name: tickerConfig.company_name ?? null,
-              logo_url: tickerConfig.logo_url,
-              fallback_logo_key: getEventFallbackKey(tickerConfig.ticker, tickerConfig.company_name),
-              title: article.title || `${tickerConfig.ticker} news`,
-              date: article.published_at ?? null,
-              source: getMarketNewsSource(article.source_link),
-              link: article.source_link ?? null,
-              sentiment_label: article.sentiment_label ?? null,
-            }));
-          }),
+        const tickerParam = visibleTickerConfigs.map((tickerConfig) => tickerConfig.ticker).join(',');
+        const response = await fetch(
+          `${API_URL}/api/v1/markets/news?tickers=${encodeURIComponent(tickerParam)}&limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0`,
         );
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
 
         if (cancelled) return;
 
-        const rejectedResponses = responses.filter((result) => result.status === 'rejected').length;
         const seenIds = new Set<string>();
-        const mergedItems = responses
-          .flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+        const mergedItems = (Array.isArray(payload?.news) ? payload.news : [])
+          .map((item: any, index: number) => {
+            const ticker = item?.ticker?.trim?.().toUpperCase?.() ?? null;
+            const matchingTickerConfig = ticker
+              ? visibleTickerConfigs.find((tickerConfig) => tickerConfig.ticker === ticker)
+              : undefined;
+            const sourceLink = item?.link ?? null;
+            return {
+              id: item?.id || generateNewsItemId(ticker ?? 'MARKET', {
+                article_id: item?.id ?? null,
+                title: item?.title ?? null,
+                published_at: item?.date ?? null,
+                source_link: sourceLink,
+              }, index),
+              ticker,
+              company_name: item?.scope === 'market' ? null : (item?.company_name ?? matchingTickerConfig?.company_name ?? null),
+              logo_url: item?.scope === 'market' ? undefined : (item?.logo_url ?? matchingTickerConfig?.logo_url),
+              fallback_logo_key: item?.fallback_logo_key || getEventFallbackKey(ticker, item?.company_name ?? matchingTickerConfig?.company_name),
+              title: item?.title || `${ticker ?? 'Market'} news`,
+              date: item?.date ?? null,
+              source: item?.source ?? getMarketNewsSource(sourceLink),
+              link: sourceLink,
+              sentiment_label: item?.sentiment_label ?? null,
+              scope: item?.scope === 'market' ? 'market' : 'ticker',
+            } as MarketNewsItem;
+          })
           .filter((item) => {
             if (seenIds.has(item.id)) return false;
             seenIds.add(item.id);
@@ -516,13 +537,12 @@ export default function Markets() {
           });
 
         setNewsItems(mergedItems);
-        if (mergedItems.length === 0 && rejectedResponses === responses.length) {
-          setNewsError('Could not load news');
-        }
+        setAggregateSentiment(payload?.aggregate_sentiment ?? null);
       } catch (err) {
         if (cancelled) return;
         console.error('Error fetching Markets news:', err);
         setNewsItems([]);
+        setAggregateSentiment(null);
         setNewsError('Could not load news');
       } finally {
         if (!cancelled) setNewsLoading(false);
@@ -1038,13 +1058,36 @@ export default function Markets() {
             </View>
           )}
 
-          {includeNews && visibleTickerConfigs.length > 0 && (
+          {includeNews && (
             <View style={styles.marketNewsSection}>
               <View style={styles.marketNewsHeader}>
-                <Text style={styles.marketNewsTitle}>News from visible tickers</Text>
-                <Text style={styles.marketNewsSubtitle}>
-                  {visibleTickerConfigs.length} ticker{visibleTickerConfigs.length === 1 ? '' : 's'}
-                </Text>
+                <View style={styles.marketNewsHeaderTop}>
+                  <View>
+                    <Text style={styles.marketNewsTitle}>Markets news</Text>
+                    <Text style={styles.marketNewsSubtitle}>
+                      {visibleTickerConfigs.length > 0
+                        ? `MARKETS feed + up to ${MARKET_NEWS_PER_TICKER} saved article${MARKET_NEWS_PER_TICKER === 1 ? '' : 's'} per visible ticker`
+                        : 'MARKETS feed'}
+                    </Text>
+                  </View>
+                  {aggregateSentiment && (
+                    <View
+                      style={[
+                        styles.aggregateSentimentBadge,
+                        { backgroundColor: `${aggregateSentiment.color}20` },
+                      ]}
+                    >
+                      <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
+                      <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
+                        {aggregateSentiment.label === 'positive'
+                          ? 'Positive'
+                          : aggregateSentiment.label === 'negative'
+                            ? 'Negative'
+                            : 'Neutral'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
               </View>
 
               {newsLoading ? (
@@ -1499,6 +1542,12 @@ const styles = StyleSheet.create({
   marketNewsHeader: {
     marginBottom: 10,
   },
+  marketNewsHeaderTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
   marketNewsTitle: {
     fontSize: 15,
     fontWeight: '700',
@@ -1508,6 +1557,23 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: COLORS.textMuted,
     marginTop: 2,
+  },
+  aggregateSentimentBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    gap: 6,
+  },
+  aggregateSentimentDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 999,
+  },
+  aggregateSentimentText: {
+    fontSize: 12,
+    fontWeight: '700',
   },
   toggleSwitch: {
     width: 44,

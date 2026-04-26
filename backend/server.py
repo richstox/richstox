@@ -7610,6 +7610,66 @@ async def get_ticker_ipo(ticker: str):
 
 # ----- News Endpoints (FROM CACHE - updated daily) -----
 
+
+async def _get_global_tracklist_tickers() -> set[str]:
+    """Global union of Tracklist tickers across all users."""
+    docs = await db.user_tracklists.find(
+        {},
+        {"_id": 0, "positions.ticker": 1, "draft_tickers": 1},
+    ).to_list(length=None)
+
+    tickers: set[str] = set()
+    for doc in docs:
+        for pos in doc.get("positions") or []:
+            ticker = _normalize_list_ticker((pos or {}).get("ticker", ""))
+            if ticker:
+                tickers.add(ticker)
+        for raw in doc.get("draft_tickers") or []:
+            ticker = _normalize_list_ticker(raw)
+            if ticker:
+                tickers.add(ticker)
+    return tickers
+
+
+def _build_aggregate_sentiment(news_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    positive_count = 0
+    negative_count = 0
+    neutral_count = 0
+
+    for news_item in news_items:
+        label = news_item.get("sentiment_label", "neutral")
+        if label == "positive":
+            positive_count += 1
+        elif label == "negative":
+            negative_count += 1
+        else:
+            neutral_count += 1
+
+    total_articles = positive_count + negative_count + neutral_count
+    aggregate_sentiment_score = (
+        (positive_count - negative_count) / total_articles if total_articles else 0
+    )
+
+    if aggregate_sentiment_score > 0.3:
+        aggregate_sentiment_label = "positive"
+        aggregate_sentiment_color = "#10B981"
+    elif aggregate_sentiment_score < -0.3:
+        aggregate_sentiment_label = "negative"
+        aggregate_sentiment_color = "#EF4444"
+    else:
+        aggregate_sentiment_label = "neutral"
+        aggregate_sentiment_color = "#F59E0B"
+
+    return {
+        "score": round(aggregate_sentiment_score, 2),
+        "label": aggregate_sentiment_label,
+        "color": aggregate_sentiment_color,
+        "total_articles": total_articles,
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "neutral_count": neutral_count,
+    }
+
 @api_router.get("/news")
 async def get_news(
     tickers: str = Query(None, description="Comma-separated tickers, e.g. AAPL,MSFT,GOOGL"),
@@ -7657,6 +7717,7 @@ async def get_news(
         # Step 1: Get watchlist tickers (always included)
         watchlist_raw = await db.user_watchlist.distinct("ticker")
         watchlist_tickers = set(t.upper().replace(".US", "") for t in watchlist_raw if t)
+        tracklist_tickers = await _get_global_tracklist_tickers()
 
         # Step 2: Get portfolio tickers (only if include_portfolio=True)
         if include_portfolio:
@@ -7673,7 +7734,7 @@ async def get_news(
             portfolio_tickers = set()
 
         # Step 3: Union based on toggle
-        all_followed = watchlist_tickers | portfolio_tickers
+        all_followed = watchlist_tickers | tracklist_tickers | portfolio_tickers
 
         if not all_followed:
             return {
@@ -7695,7 +7756,7 @@ async def get_news(
         # Step 4: Filter to only is_visible=true tickers
         all_full = [f"{t}.US" for t in all_followed]
         visible_docs = await db.tracked_tickers.find(
-            {"ticker": {"$in": all_full}, "is_visible": True},
+            {"ticker": {"$in": all_full}, **VISIBLE_UNIVERSE_QUERY},
             {"_id": 0, "ticker": 1}
         ).to_list(length=None)
 
@@ -7957,29 +8018,6 @@ async def get_news(
     # Calculate has_more
     has_more = (offset + len(cached_news)) < total_count
 
-    # Calculate aggregate sentiment
-    sentiment_scores = []
-    for news_item in cached_news:
-        label = news_item.get("sentiment_label", "neutral")
-        if label == "positive":
-            sentiment_scores.append(1)
-        elif label == "negative":
-            sentiment_scores.append(-1)
-        else:
-            sentiment_scores.append(0)
-
-    aggregate_sentiment_score = sum(sentiment_scores) / len(sentiment_scores) if sentiment_scores else 0
-
-    if aggregate_sentiment_score > 0.3:
-        aggregate_sentiment_label = "positive"
-        aggregate_sentiment_color = "#10B981"
-    elif aggregate_sentiment_score < -0.3:
-        aggregate_sentiment_label = "negative"
-        aggregate_sentiment_color = "#EF4444"
-    else:
-        aggregate_sentiment_label = "neutral"
-        aggregate_sentiment_color = "#F59E0B"
-
     # P38.4: Count unique tickers appearing in results
     tickers_in_results = set(n.get("ticker") for n in cached_news if n.get("ticker"))
 
@@ -7995,11 +8033,165 @@ async def get_news(
         "tickers_with_news_count": len(tickers_in_results),
         "include_portfolio": include_portfolio if 'include_portfolio' in dir() else True,
         "per_ticker_cap": 3,
-        "aggregate_sentiment": {
-            "score": round(aggregate_sentiment_score, 2),
-            "label": aggregate_sentiment_label,
-            "color": aggregate_sentiment_color,
+        "aggregate_sentiment": _build_aggregate_sentiment(cached_news),
+    }
+
+
+@api_router.get("/v1/markets/news")
+async def get_markets_news(
+    tickers: str = Query("", description="Comma-separated visible event tickers"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(40, ge=1, le=100),
+    market_limit: int = Query(20, ge=1, le=100),
+    per_ticker_limit: int = Query(3, ge=1, le=3),
+):
+    """Merged Markets news from stored MARKETS articles plus stored ticker articles."""
+    ticker_list: List[str] = []
+    seen_tickers: set[str] = set()
+    for raw in tickers.split(","):
+        ticker = _normalize_list_ticker(raw)
+        if ticker and ticker not in seen_tickers:
+            seen_tickers.add(ticker)
+            ticker_list.append(ticker)
+
+    ticker_full_list = [f"{ticker}.US" for ticker in ticker_list]
+    company_docs = await db.company_fundamentals_cache.find(
+        {"ticker": {"$in": ticker_full_list}},
+        {"_id": 0, "ticker": 1, "logo_url": 1, "name": 1, "logo_status": 1},
+    ).to_list(length=None)
+
+    ticker_info: Dict[str, dict] = {}
+    for doc in company_docs:
+        bare = doc.get("ticker", "").replace(".US", "").upper()
+        logo_url = None
+        if doc.get("logo_status") == "present":
+            logo_url = _internal_logo_url(doc.get("logo_url") or bare)
+        ticker_info[bare] = {
+            "logo_url": logo_url,
+            "name": doc.get("name", bare),
         }
+
+    ticker_news: List[Dict[str, Any]] = []
+    if ticker_list:
+        article_mappings = await db.article_ticker_mapping.find(
+            {"ticker": {"$in": ticker_list}},
+            {"_id": 0, "article_id": 1, "ticker": 1},
+        ).sort([("ticker", 1), ("published_at", -1)]).to_list(length=None)
+
+        article_to_tickers: Dict[str, List[str]] = {}
+        for mapping in article_mappings:
+            aid = mapping.get("article_id")
+            ticker = mapping.get("ticker")
+            if aid and ticker:
+                article_to_tickers.setdefault(aid, []).append(ticker)
+
+        ticker_articles = []
+        if article_to_tickers:
+            ticker_articles = await db.news_articles.find(
+                {"article_id": {"$in": list(article_to_tickers.keys())}},
+                {"_id": 0},
+            ).sort("published_at", -1).to_list(length=None)
+
+        articles_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
+        for article in ticker_articles:
+            aid = article.get("article_id")
+            if not aid:
+                continue
+
+            primary_ticker = None
+            for ticker in article_to_tickers.get(aid, []):
+                if ticker in ticker_list:
+                    primary_ticker = ticker
+                    break
+            if not primary_ticker:
+                continue
+
+            articles_by_ticker.setdefault(primary_ticker, [])
+            if len(articles_by_ticker[primary_ticker]) >= per_ticker_limit:
+                continue
+            articles_by_ticker[primary_ticker].append(article)
+
+        for ticker, articles in articles_by_ticker.items():
+            info = ticker_info.get(ticker, {})
+            for article in articles:
+                link = article.get("source_link") or article.get("link") or ""
+                ticker_news.append({
+                    "id": article.get("article_id") or hashlib.md5(link.encode()).hexdigest()[:16],
+                    "title": article.get("title"),
+                    "content": article.get("content", ""),
+                    "source": extract_source(link),
+                    "link": link,
+                    "date": article.get("published_at") or article.get("date"),
+                    "ticker": ticker,
+                    "company_name": info.get("name", ticker),
+                    "logo_url": info.get("logo_url"),
+                    "fallback_logo_key": ticker[0].upper() if ticker else "N",
+                    "sentiment": article.get("sentiment", {}),
+                    "sentiment_label": article.get("sentiment_label", "neutral"),
+                    "tags": article.get("tags", []),
+                    "scope": "ticker",
+                })
+
+    market_articles = await db.market_news.find(
+        {"topic": "MARKETS"},
+        {"_id": 0},
+    ).sort("published_at", -1).limit(market_limit).to_list(length=market_limit)
+
+    market_news = []
+    for article in market_articles:
+        link = article.get("source_link") or article.get("link") or ""
+        market_news.append({
+            "id": article.get("article_id") or hashlib.md5(link.encode()).hexdigest()[:16],
+            "title": article.get("title"),
+            "content": article.get("content", ""),
+            "source": extract_source(link),
+            "link": link,
+            "date": article.get("published_at") or article.get("date"),
+            "ticker": None,
+            "company_name": "Market",
+            "logo_url": None,
+            "fallback_logo_key": "M",
+            "sentiment": article.get("sentiment", {}),
+            "sentiment_label": article.get("sentiment_label", "neutral"),
+            "tags": article.get("tags", []),
+            "scope": "market",
+        })
+
+    def _sort_key(item: Dict[str, Any]) -> datetime:
+        raw = item.get("date")
+        if isinstance(raw, str):
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                return datetime.min.replace(tzinfo=timezone.utc)
+        if isinstance(raw, datetime):
+            return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    merged_news: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for item in sorted(market_news + ticker_news, key=_sort_key, reverse=True):
+        dedupe_key = item.get("id") or item.get("link")
+        if dedupe_key in seen_ids:
+            continue
+        seen_ids.add(dedupe_key)
+        merged_news.append(item)
+
+    total_count = len(merged_news)
+    paginated_news = merged_news[offset:offset + limit]
+
+    return {
+        "news": paginated_news,
+        "offset": offset,
+        "limit": limit,
+        "total": total_count,
+        "has_more": (offset + len(paginated_news)) < total_count,
+        "tickers": ticker_list,
+        "ticker_count": len(ticker_list),
+        "market_news_count": len(market_news),
+        "ticker_news_count": len(ticker_news),
+        "per_ticker_cap": per_ticker_limit,
+        "aggregate_sentiment": _build_aggregate_sentiment(paginated_news),
     }
 
 

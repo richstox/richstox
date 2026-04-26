@@ -69,9 +69,11 @@ ADMIN_REPORT_MINUTE = 0
 
 ### 2. News Refresh (Daily 13:00, including Sunday)
 - **File**: `/app/backend/services/news_service.py` → `news_daily_refresh()` → `refresh_hot_tickers_news()`
-- **Purpose**: Fetch 3 newest articles per ticker for ALL users' followed tickers (global union)
-- **API**: `GET https://eodhd.com/api/news?s={TICKER}.US&limit=3`
-- **Cost**: N API calls/day (N = unique tickers across all users)
+- **Purpose**: Fetch up to 10 ticker-news articles for the global union of Watchlist + Portfolio + Tracklist tickers, plus refresh the MARKETS digest feed
+- **API**:
+  - `GET https://eodhd.com/api/news?s={TICKER}.US&limit=10`
+  - `GET https://eodhd.com/api/news?t=MARKETS&limit=100`
+- **Cost**: N+1 API calls/day (N = unique tickers across all users, plus one MARKETS digest call)
 - **Dedup**: `$setOnInsert` by article_id prevents duplicate storage
 
 ### 3. Price Sync (Mon-Sat, after Step 1 completion)

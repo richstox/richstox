@@ -78,12 +78,14 @@ describe('Markets events regressions', () => {
     expect(fileContent).not.toContain('Prague date');
     expect(fileContent).toContain('const [includeNews, setIncludeNews] = useState(true);');
     expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>+News</Text>');
-    expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 1;');
-    expect(fileContent).toContain('/api/news/ticker/${encodeURIComponent(tickerConfig.ticker)}?limit=${MARKET_NEWS_PER_TICKER}&offset=0');
+    expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 3;');
+    expect(fileContent).toContain('/api/v1/markets/news?tickers=${encodeURIComponent(tickerParam)}&limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0');
     expect(fileContent).toContain('const isDisabled = selectedEventCounts[type] === 0;');
     expect(fileContent).toContain('disabled={isDisabled}');
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
-    expect(fileContent).toContain('News from visible tickers');
+    expect(fileContent).toContain('Markets news');
+    expect(fileContent).toContain('MARKETS feed + up to');
+    expect(fileContent).toContain('aggregateSentiment && (');
     expect(fileContent).toContain('No saved news available for the currently visible tickers');
   });
 

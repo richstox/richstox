@@ -42,6 +42,8 @@ BATCH_SIZE = 50  # Tickers per API request
 GLOBAL_FEED_LIMIT = 3  # Max articles per ticker in global feed (Talk, Markets)
 TICKER_DETAIL_LIMIT = 100  # Max articles per ticker in detail view
 EODHD_FETCH_LIMIT = 10  # Articles to fetch per ticker from EODHD (balance cost vs coverage)
+MARKET_DIGEST_FETCH_LIMIT = 100  # Fetch up to 100 general market articles per refresh
+MARKET_DIGEST_RETENTION = 500  # Keep the newest 500 market-wide articles in storage
 
 _PRAGUE = ZoneInfo("Europe/Prague")
 
@@ -115,6 +117,18 @@ def generate_article_id(source_link: str, title: str = "", published_at: str = "
         return hashlib.md5(source_link.encode()).hexdigest()[:16]
     fallback = f"{title}|{published_at}"
     return hashlib.md5(fallback.encode()).hexdigest()[:16]
+
+
+def _sentiment_label_from_payload(sentiment: Optional[Dict[str, Any]]) -> str:
+    """Normalize EODHD sentiment payload to the app sentiment label."""
+    sentiment = sentiment or {}
+    pos = sentiment.get("pos", 0) or 0
+    neg = sentiment.get("neg", 0) or 0
+    if pos > neg:
+        return "positive"
+    if neg > pos:
+        return "negative"
+    return "neutral"
 
 
 async def fetch_news_batch_from_eodhd(
@@ -227,14 +241,7 @@ async def store_articles_with_mapping(db, articles: List[Dict[str, Any]]) -> Dic
         
         # Parse sentiment
         sentiment = article.get("sentiment", {})
-        pos = sentiment.get("pos", 0)
-        neg = sentiment.get("neg", 0)
-        if pos > neg:
-            sentiment_label = "positive"
-        elif neg > pos:
-            sentiment_label = "negative"
-        else:
-            sentiment_label = "neutral"
+        sentiment_label = _sentiment_label_from_payload(sentiment)
         
         # P53: Get all tickers from EODHD symbols
         eodhd_symbols_raw = article.get("symbols", [])
@@ -322,6 +329,11 @@ async def get_hot_symbols(db, n: int = 50) -> List[str]:
     follows = await db.user_watchlist.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS).to_list(100)
     holdings = await db.positions.aggregate(pipeline, maxTimeMS=_AGG_TIMEOUT_MS).to_list(100)
     
+    tracklist_docs = await db.user_tracklists.find(
+        {},
+        {"_id": 0, "positions.ticker": 1, "draft_tickers": 1},
+    ).to_list(length=None)
+
     # Merge and dedupe — normalise to bare tickers so "AAPL.US" isn't
     # filtered out by the len<=5 check and gets merged with "AAPL".
     all_symbols: Dict[str, int] = {}
@@ -332,6 +344,17 @@ async def get_hot_symbols(db, n: int = 50) -> List[str]:
         ticker = _bare_ticker(raw)
         if ticker and len(ticker) <= 5:
             all_symbols[ticker] = all_symbols.get(ticker, 0) + item.get("count", 0)
+
+    for doc in tracklist_docs:
+        raw_positions = doc.get("positions") or []
+        for pos in raw_positions:
+            ticker = _bare_ticker((pos or {}).get("ticker", ""))
+            if ticker and len(ticker) <= 5:
+                all_symbols[ticker] = all_symbols.get(ticker, 0) + 1
+        for raw in doc.get("draft_tickers") or []:
+            ticker = _bare_ticker(raw)
+            if ticker and len(ticker) <= 5:
+                all_symbols[ticker] = all_symbols.get(ticker, 0) + 1
     
     # Fallback to popular tickers if no user data
     if not all_symbols:
@@ -609,6 +632,111 @@ async def refresh_hot_tickers_news(db) -> Dict[str, Any]:
     }
 
 
+async def fetch_market_digest_from_eodhd(
+    limit: int = MARKET_DIGEST_FETCH_LIMIT,
+    offset: int = 0,
+) -> tuple[List[Dict[str, Any]], str]:
+    """Fetch general market news from EODHD via the MARKETS topic feed."""
+    if not EODHD_API_KEY:
+        logger.error("EODHD_API_KEY not set")
+        return [], ""
+
+    params = {
+        "api_token": EODHD_API_KEY,
+        "t": "MARKETS",
+        "limit": limit,
+        "offset": offset,
+        "fmt": "json",
+    }
+    api_url_template = "https://eodhd.com/api/news?t=MARKETS&offset=0&limit=100&fmt=json"
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            "https://eodhd.com/api/news",
+            params=params,
+            headers={"User-Agent": "RICHSTOX/1.0"},
+        )
+        response.raise_for_status()
+        articles = response.json()
+
+    if not isinstance(articles, list):
+        logger.warning("MARKETS news returned unexpected payload type: %s", type(articles).__name__)
+        return [], api_url_template
+
+    return articles, api_url_template
+
+
+async def store_market_digest_articles(db, articles: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Store general market news in a dedicated collection with FIFO retention."""
+    if not articles:
+        return {"new_articles": 0}
+
+    new_articles = 0
+
+    for article in articles:
+        source_link = article.get("link", "")
+        title = article.get("title", "")
+        published_at = article.get("date", "")
+        article_id = generate_article_id(source_link, title, published_at)
+        sentiment = article.get("sentiment", {})
+        sentiment_label = _sentiment_label_from_payload(sentiment)
+
+        doc = {
+            "article_id": article_id,
+            "source_link": source_link,
+            "published_at": published_at,
+            "title": title,
+            "content": article.get("content", ""),
+            "tags": article.get("tags", []),
+            "symbols": article.get("symbols", []),
+            "sentiment": sentiment,
+            "sentiment_label": sentiment_label,
+            "topic": "MARKETS",
+            "created_at": datetime.now(timezone.utc),
+        }
+
+        result = await db.market_news.update_one(
+            {"article_id": article_id},
+            {"$setOnInsert": doc},
+            upsert=True,
+        )
+        if result.upserted_id:
+            new_articles += 1
+
+    existing_count = await db.market_news.count_documents({})
+    if existing_count > MARKET_DIGEST_RETENTION:
+        overflow = existing_count - MARKET_DIGEST_RETENTION
+        oldest = await db.market_news.find(
+            {},
+            {"_id": 1},
+        ).sort("published_at", 1).limit(overflow).to_list(length=overflow)
+        if oldest:
+            await db.market_news.delete_many({"_id": {"$in": [doc["_id"] for doc in oldest]}})
+
+    logger.info(f"Stored {new_articles} new market digest articles")
+    return {"new_articles": new_articles}
+
+
+async def refresh_market_digest(db) -> Dict[str, Any]:
+    """Fetch and store the MARKETS topic feed used by the Markets page."""
+    started_at = datetime.now(timezone.utc)
+    articles, api_url_template = await fetch_market_digest_from_eodhd()
+    result = await store_market_digest_articles(db, articles)
+    finished_at = datetime.now(timezone.utc)
+
+    return {
+        "job_type": "market_digest_refresh",
+        "status": "completed",
+        "total_articles_fetched": len(articles),
+        "new_articles_stored": result["new_articles"],
+        "api_calls": 1,
+        "started_at": started_at.isoformat(),
+        "finished_at": finished_at.isoformat(),
+        "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+        "api_endpoint_template": api_url_template,
+    }
+
+
 async def cleanup_orphaned_articles(db) -> Dict[str, int]:
     """
     Remove news_articles documents that have zero references in BOTH
@@ -761,5 +889,16 @@ async def create_news_indexes(db):
     
     # news_ticker_sync indexes
     await db.news_ticker_sync.create_index("ticker", unique=True)
+
+    # market_news indexes
+    await db.market_news.create_index("article_id", unique=True)
+    await db.market_news.create_index("source_link", unique=True, sparse=True)
+    await db.market_news.create_index("published_at")
+    await db.market_news.create_index("topic")
     
     logger.info("Created news collection indexes")
+
+
+async def create_indexes(db):
+    """Backward-compatible alias used by the standalone news refresh job."""
+    await create_news_indexes(db)
