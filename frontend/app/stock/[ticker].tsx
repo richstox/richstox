@@ -1123,6 +1123,9 @@ export default function StockDetail() {
       return;
     }
     if (target === 'tracklist') {
+      if (listMemberships.tracklist) {
+        return;
+      }
       setAddToVisible(false);
       router.push({ pathname: '/(tabs)/tracklist', params: { candidate: ticker, manage: '1' } });
       return;
@@ -2624,8 +2627,10 @@ export default function StockDetail() {
                   styles.addToButton,
                   listMemberships.watchlist && styles.addToButtonActiveWatchlist,
                   listMemberships.tracklist && styles.addToButtonActiveTracklist,
+                  listMemberships.tracklist && styles.addToButtonDisabled,
                 ]}
                 onPress={handleOpenAddTo}
+                disabled={listMemberships.tracklist}
               >
                 <Ionicons name="add" size={16} color={COLORS.text} />
                 <Text style={styles.addToButtonText}>
@@ -4970,9 +4975,10 @@ export default function StockDetail() {
               style={[
                 styles.addToSheetItem,
                 listMemberships.tracklist && styles.addToSheetItemActiveTracklist,
+                listMemberships.tracklist && styles.addToSheetItemDisabled,
               ]}
               onPress={() => handleAddTo('tracklist')}
-              disabled={listActionLoading}
+              disabled={listActionLoading || listMemberships.tracklist}
             >
               <View style={[styles.addToSheetIcon, styles.addToSheetIconTracklist]}>
                 <Ionicons name="analytics-outline" size={18} color="#1D4ED8" />
@@ -5335,6 +5341,7 @@ const styles = StyleSheet.create({
   addToButtonActive: { backgroundColor: '#E0E7FF' },
   addToButtonActiveWatchlist: { backgroundColor: '#FEF3C7' },
   addToButtonActiveTracklist: { backgroundColor: '#DBEAFE' },
+  addToButtonDisabled: { opacity: 0.65 },
   addToButtonText: { fontSize: 13, fontWeight: '700', color: COLORS.text },
   priceRow: { flexDirection: 'row', alignItems: 'center' },
   priceValueRow: { flexDirection: 'row', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
