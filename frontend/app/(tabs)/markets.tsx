@@ -102,6 +102,7 @@ const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 const MARKET_NEWS_PER_TICKER = 3;
 const MARKET_DIGEST_LIMIT = 100;
+const EARNINGS_FALLBACK_LABEL = 'Scheduled earnings';
 // Markets aggregates ALL distinct Watchlist/Tracklist tickers across users,
 // so request a large enough page to avoid truncating the merged corpus client-side.
 // 1000 keeps the current full corpus retrievable (3 per ticker + 100 MARKETS)
@@ -599,7 +600,7 @@ export default function Markets() {
     const normalized = trimmedTiming.toLowerCase().replace(/[\s_-]+/g, '');
     if (normalized.startsWith('before')) return 'Before Market';
     if (normalized.startsWith('after')) return 'After Market';
-    if (trimmedTiming && trimmedTiming !== 'Scheduled earnings') return trimmedTiming;
+    if (trimmedTiming && trimmedTiming !== EARNINGS_FALLBACK_LABEL) return trimmedTiming;
     return null;
   };
 
@@ -619,7 +620,7 @@ export default function Markets() {
       const details: string[] = [];
       const formattedEstimate = formatEventAmount(event.estimate, event.currency);
       if (formattedEstimate) details.push(`Exp. ${formattedEstimate}`);
-      return details.join(' • ') || 'Scheduled earnings';
+      return details.join(' • ') || EARNINGS_FALLBACK_LABEL;
     }
     if (event.type === 'ipo') {
       const details: string[] = [];
