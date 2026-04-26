@@ -1498,7 +1498,10 @@ async def _rebuild_tracklist_from_seed(
     After correction, a `seed_date_corrected` flag is stored on the doc so this
     migration only runs once per user.
     """
-    events = sorted(tracklist_doc.get("events") or [], key=lambda e: e.get("effective_date") or "")
+    events = sorted(
+        tracklist_doc.get("events") or [],
+        key=lambda e: e.get("effective_date") or "1970-01-01",
+    )
     seed_event = next((e for e in events if e.get("event_type") == "auto_seed"), None)
     replace_events = [e for e in events if e.get("event_type") == "replace"]
 
@@ -1639,19 +1642,22 @@ async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
                     if not real_created_at and inner_user.get("role") == "admin":
                         real_created_at = ADMIN_TRACKLIST_FALLBACK_CREATED_AT
                     if real_created_at:
-                        real_created_date = real_created_at.date().isoformat()
-                        if seed_eff > real_created_date:
-                            delta_days = (
-                                datetime.fromisoformat(seed_eff).date() -
-                                datetime.fromisoformat(real_created_date).date()
-                            ).days
+                        real_created_date = real_created_at.date()
+                        try:
+                            seed_date = datetime.fromisoformat(seed_eff).date()
+                        except (ValueError, TypeError):
+                            seed_date = None
+                        if seed_date and seed_date > real_created_date:
+                            delta_days = (seed_date - real_created_date).days
                             if delta_days > 7:
                                 try:
                                     return await _rebuild_tracklist_from_seed(
                                         user_id, tracklist_doc, real_created_at
                                     )
                                 except Exception:
-                                    pass  # Don't break the homepage if correction fails
+                                    logger.exception(
+                                        "seed date correction failed for user_id=%s", user_id
+                                    )
         return tracklist_doc
 
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "created_at": 1, "updated_at": 1, "role": 1, "email": 1})
