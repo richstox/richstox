@@ -875,7 +875,7 @@ export default function Markets() {
             <View style={styles.eventsHeaderTop}>
               <View style={styles.sectionTitleRow}>
                 <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
-                <Text style={styles.sectionTitle} numberOfLines={1}>Events & News</Text>
+                <Text style={styles.sectionTitle} numberOfLines={1}>EVENTS & NEWS</Text>
               </View>
               <View style={styles.eventsDateBlock}>
                 <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
@@ -1470,10 +1470,9 @@ const styles = StyleSheet.create({
   },
   sectionTitle: {
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '700',
     color: COLORS.text,
     letterSpacing: 0.5,
-    textTransform: 'uppercase',
   },
   monthNavButton: {
     width: 32,
