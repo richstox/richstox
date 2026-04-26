@@ -2929,8 +2929,9 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
         ) : (
           <Text style={s.neverRun}>Never run</Text>
         )}
-        <Text style={[s.detailValue, { marginTop: 4 }]}>Fetch news + compute sentiment for tracked tickers</Text>
-        <Text style={s.apiText}>· https://eodhd.com/api/news?s={'{SYMBOL}'}.US&api_token=YOUR_API_TOKEN&limit=10&offset=0&fmt=json  (per tracked ticker)</Text>
+        <Text style={[s.detailValue, { marginTop: 4 }]}>Fetch news + compute sentiment for hot Watchlist / Portfolio / Tracklist tickers and the MARKETS digest</Text>
+        <Text style={s.apiText}>· https://eodhd.com/api/news?s={'{SYMBOL}'}.US&api_token=YOUR_API_TOKEN&limit=10&offset=0&fmt=json  (per hot ticker)</Text>
+        <Text style={s.apiText}>· https://eodhd.com/api/news?t=MARKETS&api_token=YOUR_API_TOKEN&limit=100&offset=0&fmt=json  (market-wide digest)</Text>
       </View>
 
       {/* Benchmark Update — independent job, not part of universe pipeline */}
@@ -3080,7 +3081,8 @@ export default function PipelineTab({ sessionToken }: PipelineProps) {
 
           <Text style={[s.detailLabel, { marginTop: 10, marginBottom: 4 }]}>EODHD — INDEPENDENT JOBS</Text>
           <Text style={s.apiText}>· GET https://eodhd.com/api/exchange-details/US?api_token=YOUR_API_TOKEN&fmt=json  (Market Calendar · daily 02:00 · 1 credit)</Text>
-          <Text style={s.apiText}>· GET https://eodhd.com/api/news?s={'{SYMBOL}'}.US&api_token=YOUR_API_TOKEN&limit=10&offset=0&fmt=json  (News Refresh · 13:00 · 1 credit/ticker)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/news?s={'{SYMBOL}'}.US&api_token=YOUR_API_TOKEN&limit=10&offset=0&fmt=json  (News Refresh · 13:00 · 1 credit/hot ticker)</Text>
+          <Text style={s.apiText}>· GET https://eodhd.com/api/news?t=MARKETS&api_token=YOUR_API_TOKEN&limit=100&offset=0&fmt=json  (Market Digest · 13:00 · 1 credit)</Text>
           <Text style={s.apiText}>· GET https://eodhd.com/api/eod/SP500TR.INDX?api_token=YOUR_API_TOKEN&from={'{DATE}'}&to={'{DATE}'}&fmt=json  (Benchmark · 04:15 · 1 credit)</Text>
 
           <Text style={[s.detailLabel, { marginTop: 10, marginBottom: 4 }]}>GOOGLE OAUTH (on user login)</Text>
