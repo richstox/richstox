@@ -291,6 +291,7 @@ export default function Markets() {
   const sp = useLayoutSpacing();
   const initialMarketsStateRef = useRef(useMarketsStore.getState());
   const setMarketsState = useMarketsStore((state) => state.setState);
+  const persistedScrollY = useMarketsStore((state) => state.scrollY);
 
   const todayPragueStr = getPragueDateString();
   const todayPrague = parseYmd(todayPragueStr);
@@ -351,6 +352,7 @@ export default function Markets() {
   const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);
   const marketsScrollRef = useRef<ScrollView | null>(null);
   const currentScrollYRef = useRef(initialMarketsStateRef.current.scrollY);
+  const persistedScrollYRef = useRef(initialMarketsStateRef.current.scrollY);
   const didHydratePeriodResetRef = useRef(false);
   const didHydrateFeedResetRef = useRef(false);
   const didRestoreScrollRef = useRef(initialMarketsStateRef.current.scrollY <= 0);
@@ -865,13 +867,20 @@ export default function Markets() {
     visibleFeedLimit,
   ]);
 
-  const persistMarketsScroll = useCallback(() => {
-    setMarketsState({ scrollY: currentScrollYRef.current });
+  useEffect(() => {
+    persistedScrollYRef.current = persistedScrollY;
+    currentScrollYRef.current = persistedScrollY;
+  }, [persistedScrollY]);
+
+  const persistMarketsScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const nextY = event.nativeEvent.contentOffset.y;
+    currentScrollYRef.current = nextY;
+    setMarketsState({ scrollY: nextY });
   }, [setMarketsState]);
 
   const restoreMarketsScroll = useCallback((force = false) => {
     if (!force && didRestoreScrollRef.current) return;
-    const nextY = currentScrollYRef.current;
+    const nextY = persistedScrollYRef.current || initialMarketsStateRef.current.scrollY;
     if (nextY <= 0) {
       didRestoreScrollRef.current = true;
       return;
@@ -905,9 +914,6 @@ export default function Markets() {
         ref={marketsScrollRef}
         style={styles.scroll}
         contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}
-        onScroll={(event) => {
-          currentScrollYRef.current = event.nativeEvent.contentOffset.y;
-        }}
         onScrollEndDrag={persistMarketsScroll}
         onMomentumScrollEnd={persistMarketsScroll}
         onContentSizeChange={() => {

@@ -149,14 +149,17 @@ describe('Markets events regressions', () => {
   it('persists markets state and restores the richstox icon for market-only news rows', () => {
     expect(fileContent).toContain("import { useMarketsStore } from '../../stores/marketsStore';");
     expect(fileContent).toContain('const initialMarketsStateRef = useRef(useMarketsStore.getState());');
+    expect(fileContent).toContain('const persistedScrollY = useMarketsStore((state) => state.scrollY);');
     expect(fileContent).toContain('const currentScrollYRef = useRef(initialMarketsStateRef.current.scrollY);');
+    expect(fileContent).toContain('const persistedScrollYRef = useRef(initialMarketsStateRef.current.scrollY);');
     expect(fileContent).toContain('const navigateToStockFromMarkets = useCallback((rawTicker: string) => {');
     expect(fileContent).toContain('scrollY: currentScrollYRef.current,');
     expect(fileContent).toContain('router.push(`/stock/${nextTicker}?from=markets` as any);');
     expect(fileContent).toContain('useFocusEffect(');
     expect(fileContent).toContain('restoreMarketsScroll(true);');
     expect(fileContent).toContain('setMarketsState({');
-    expect(fileContent).toContain('onScroll={(event) => {');
+    expect(fileContent).toContain('onScrollEndDrag={persistMarketsScroll}');
+    expect(fileContent).toContain('onMomentumScrollEnd={persistMarketsScroll}');
     expect(fileContent).toContain("source={require('../../assets/images/richstox_icon_only.png')}");
     expect(fileContent).toContain("useRichstoxIcon={news.scope === 'market'}");
     expect(fileContent).toContain("useRichstoxIcon={selectedArticle.scope === 'market'}");
