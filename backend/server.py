@@ -2633,8 +2633,8 @@ async def get_homepage_data(request: Request):
             pos = next((position for position in tracklist_positions if _normalize_list_ticker(position.get("ticker", "")) == ticker), None)
             if pos:
                 added_at = _format_display_date(pos.get("added_at"))
-                position_created_at_display = added_at
                 position_entry_date = pos.get("entry_date")
+                position_created_at_display = _format_display_date(position_entry_date)
                 follow_price = pos.get("entry_price")
                 if follow_price and current and follow_price > 0:
                     change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
