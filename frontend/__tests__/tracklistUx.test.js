@@ -5,6 +5,7 @@ describe('Tracklist UX regression', () => {
   const stockDetailPath = path.join(__dirname, '../app/stock/[ticker].tsx');
   const dashboardPath = path.join(__dirname, '../app/(tabs)/dashboard.tsx');
   const searchPath = path.join(__dirname, '../app/(tabs)/search.tsx');
+  const membershipPillsPath = path.join(__dirname, '../constants/membershipPills.ts');
   const tabsLayoutPath = path.join(__dirname, '../app/(tabs)/_layout.tsx');
   const portfolioPath = path.join(__dirname, '../app/(tabs)/portfolio.tsx');
   const tracklistPath = path.join(__dirname, '../app/(tabs)/tracklist.tsx');
@@ -13,6 +14,7 @@ describe('Tracklist UX regression', () => {
   const stockDetail = fs.readFileSync(stockDetailPath, 'utf-8');
   const dashboard = fs.readFileSync(dashboardPath, 'utf-8');
   const search = fs.readFileSync(searchPath, 'utf-8');
+  const membershipPills = fs.readFileSync(membershipPillsPath, 'utf-8');
   const tabsLayout = fs.readFileSync(tabsLayoutPath, 'utf-8');
   const portfolioSoonPage = fs.readFileSync(portfolioPath, 'utf-8');
   const tracklistPage = fs.readFileSync(tracklistPath, 'utf-8');
@@ -29,10 +31,7 @@ describe('Tracklist UX regression', () => {
   });
 
   it('keeps search passive and pill-driven only', () => {
-    expect(search).toContain("const MEMBERSHIP_CONFIG");
-    expect(search).toContain("Watchlist");
-    expect(search).toContain("Tracklist");
-    expect(search).toContain("portfolio: { label: 'Portfolio', bg: '#EDE9FE', text: '#7C3AED' }");
+    expect(search).toContain("getMembershipPillConfig");
     expect(search).not.toContain("W / T badges show where each ticker already lives.");
     expect(search).not.toContain("Passive search only");
     expect(search).not.toContain('star-toggle-');
@@ -45,13 +44,19 @@ describe('Tracklist UX regression', () => {
     expect(dashboard).toContain('My Tracklist performance');
     expect(dashboard).toContain('Based on your Tracklist (equal-weight)');
     expect(dashboard).toContain('+Watchlist');
-    expect(dashboard).toContain("tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' }");
-    expect(dashboard).toContain("portfolio: { label: 'Portfolio', bg: '#EDE9FE', text: '#7C3AED' }");
+    expect(dashboard).toContain("getMembershipPillConfig");
     expect(dashboard).toContain("setPerformanceMode('USD')");
     expect(dashboard).toContain('Reward / Risk');
     expect(dashboard).toContain('Vs. Index');
     expect(dashboard).toContain('HIGH');
     expect(dashboard).toContain('LOW');
+  });
+
+  it('shares membership pill colors across screens', () => {
+    expect(membershipPills).toContain("watchlist: { label: 'Watchlist', bg: '#FEF3C7', text: '#B45309' }");
+    expect(membershipPills).toContain("tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' }");
+    expect(membershipPills).toContain("portfolio: { label: 'Portfolio', bg: '#EDE9FE', text: '#7C3AED' }");
+    expect(membershipPills).toContain('getMembershipPillConfig');
   });
 
   it('hides portfolio and tracklist from bottom tabs while keeping dedicated screens', () => {

@@ -22,6 +22,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
 import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
+import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { API_URL } from '../../utils/config';
 import { useMyStocksStore } from '../../stores/myStocksStore';
 
@@ -36,23 +37,6 @@ const COLORS = {
   background: '#F5F7FA',
   card: '#FFFFFF',
   border: '#E5E7EB',
-};
-
-const MEMBERSHIP_PILL_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
-  watchlist: { label: 'Watchlist', bg: '#FEF3C7', text: '#B45309' },
-  tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' },
-  portfolio: { label: 'Portfolio', bg: '#EDE9FE', text: '#7C3AED' },
-};
-
-const getMembershipPillConfig = (membership: unknown) => {
-  if (typeof membership !== 'string') return null;
-  const normalized = membership.trim().toLowerCase();
-  if (!normalized) return null;
-  return MEMBERSHIP_PILL_CONFIG[normalized] ?? {
-    label: membership.trim(),
-    bg: '#F3F4F6',
-    text: '#374151',
-  };
 };
 
 const HOMEPAGE_EVENT_SEPARATOR = ' • ';
@@ -967,7 +951,11 @@ export default function Dashboard() {
             </View>
           ) : filteredStocks.length === 0 ? (
             <View style={styles.emptyState}>
-              <Ionicons name="search-outline" size={32} color={COLORS.textMuted} />
+              <Ionicons
+                name={stocksFilter ? 'search-outline' : 'list-outline'}
+                size={32}
+                color={COLORS.textMuted}
+              />
               <Text style={styles.emptyText}>
                 {stocksFilter ? `No matches for "${stocksFilter}"` : 'No Tracklist stocks yet'}
               </Text>
