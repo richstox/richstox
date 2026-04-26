@@ -250,6 +250,8 @@ export default function Dashboard() {
   // View as tier (admin feature to switch between subscription views)
   // P36 Item 3: My Stocks filter state
   const [stocksFilter, setStocksFilter] = useState('');
+  // Watchlist toggle: when ON, include watchlist tickers in My Stocks; when OFF, show only Tracklist
+  const [includeWatchlist, setIncludeWatchlist] = useState(false);
   const [performanceMode, setPerformanceMode] = useState<'USD' | '%'>('%');
   
   // P37++ A) Sort state with ascending/descending options
@@ -262,6 +264,11 @@ export default function Dashboard() {
   // P37++ Filter and sort stocks
   const filteredStocks = useMemo(() => {
     let stocks = [...myStocks];
+
+    // Watchlist toggle: hide watchlist-only tickers when toggle is OFF
+    if (!includeWatchlist) {
+      stocks = stocks.filter((stock: any) => stock.pill !== 'Watchlist');
+    }
 
     // Filter by ticker or name search
     if (stocksFilter) {
@@ -312,7 +319,7 @@ export default function Dashboard() {
     }
      
      return stocks;
-   }, [myStocks, stocksFilter, stocksSort]);
+   }, [myStocks, stocksFilter, stocksSort, includeWatchlist]);
   
   // P36 Item 4: hasMoreStocks and hasLessStocks for Load more / See less
   const INITIAL_STOCKS_LIMIT = 5;
@@ -793,11 +800,15 @@ export default function Dashboard() {
               <Text style={styles.sectionTitle}>My Stocks {loading ? '' : `(${filteredStocks.length})`}</Text>
             </View>
             <View style={styles.titleRightControls}>
-              <TouchableOpacity style={styles.membershipPill} onPress={() => router.push('/(tabs)/tracklist')}>
-                <Text style={styles.membershipPillText}>Tracklist ({data?.tracklist_count || 0})</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.membershipPill}>
-                <Text style={styles.membershipPillText}>Watchlist ({data?.watchlist_count || 0})</Text>
+              <TouchableOpacity
+                style={styles.portfolioToggleInline}
+                onPress={() => setIncludeWatchlist((prev) => !prev)}
+                data-testid="my-stocks-watchlist-toggle"
+              >
+                <Text style={styles.portfolioToggleLabelInline}>Watchlist ({data?.watchlist_count || 0})</Text>
+                <View style={[styles.toggleSwitch, includeWatchlist && styles.toggleSwitchOn]}>
+                  <View style={[styles.toggleKnob, includeWatchlist && styles.toggleKnobOn]} />
+                </View>
               </TouchableOpacity>
             </View>
           </View>
