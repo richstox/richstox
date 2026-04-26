@@ -1465,7 +1465,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     flex: 1,
-    // Allow the uppercase headline to truncate instead of forcing the header row to wrap.
+    // Allow the title row to shrink so the uppercase headline can truncate instead of wrapping.
     minWidth: 0,
   },
   sectionTitle: {

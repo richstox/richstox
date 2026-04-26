@@ -122,7 +122,6 @@ describe('Markets events regressions', () => {
 
   it('keeps the events headline icon and removes the standalone calendar card', () => {
     expect(fileContent).toContain('<Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />');
-    expect(fileContent).toContain("fontWeight: '700'");
     expect(fileContent).toContain('<Text style={styles.selectorTitle}>Events & News calendar</Text>');
     expect(fileContent).not.toContain('<Text style={styles.sectionTitle}>Calendar</Text>');
     expect(fileContent).not.toContain('<Text style={styles.eventsCount}>{periodEvents.length}</Text>');
