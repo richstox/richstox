@@ -38,6 +38,7 @@ def test_markets_news_uses_full_global_corpus_and_full_sentiment():
     assert "tracklist_tickers = sorted(await _get_global_tracklist_tickers())" in markets_block
     assert "_get_ranked_global_watchlist_tickers" not in markets_block
     assert "_get_ranked_global_tracklist_tickers" not in markets_block
-    assert 'limit: int = Query(1000, ge=1, le=1000)' in markets_block
+    assert 'GLOBAL_MARKETS_RESPONSE_LIMIT = 1000' in server_source
+    assert 'limit: int = Query(GLOBAL_MARKETS_RESPONSE_LIMIT, ge=1, le=GLOBAL_MARKETS_RESPONSE_LIMIT)' in markets_block
     assert '"total_news_count": total_count' in markets_block
     assert '"aggregate_sentiment": _build_aggregate_sentiment(merged_news)' in markets_block

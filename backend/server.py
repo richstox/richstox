@@ -7644,6 +7644,8 @@ async def _get_global_tracklist_tickers() -> set[str]:
 
 GLOBAL_MARKETS_MARKET_NEWS_LIMIT = 100
 GLOBAL_MARKETS_PER_TICKER_LIMIT = 3
+# UI fetch ceiling until Markets screen adds incremental paging.
+GLOBAL_MARKETS_RESPONSE_LIMIT = 1000
 
 
 def _build_aggregate_sentiment(news_items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -7742,6 +7744,8 @@ async def get_news(
     else:
         # PRODUCT RULE: Homepage news is strictly user-scoped.
         # Do not expand this to global or "top" universes without explicit Richard approval.
+        # /api/news stays publicly routable for explicit ticker queries, so
+        # homepage mode performs inline auth instead of relying on middleware.
         user = getattr(request.state, "user", None) if request else None
         if not user and request:
             session_token = get_session_token_from_request(request)
@@ -8058,7 +8062,7 @@ async def get_news(
 async def get_markets_news(
     tickers: str = Query("", description="Comma-separated visible event tickers"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(1000, ge=1, le=1000),
+    limit: int = Query(GLOBAL_MARKETS_RESPONSE_LIMIT, ge=1, le=GLOBAL_MARKETS_RESPONSE_LIMIT),
     market_limit: int = Query(GLOBAL_MARKETS_MARKET_NEWS_LIMIT, ge=1, le=100),
     per_ticker_limit: int = Query(GLOBAL_MARKETS_PER_TICKER_LIMIT, ge=1, le=3),
 ):

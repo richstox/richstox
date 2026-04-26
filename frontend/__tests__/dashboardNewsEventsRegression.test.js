@@ -48,7 +48,7 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
   });
 
-  it('keeps homepage paging at five items and uses API-provided aggregate sentiment for the full corpus', () => {
+  it('keeps homepage paging at five items, authenticates the request, and uses API-provided aggregate sentiment for the full corpus', () => {
     expect(fileContent).toContain('const INITIAL_NEWS_LIMIT = 5;');
     expect(fileContent).toContain('const NEWS_PAGE_SIZE = 5;');
     expect(fileContent).toContain('axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`, {');
