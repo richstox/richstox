@@ -114,6 +114,8 @@ const MARKET_NEWS_LIMIT = 1000;
 const YMD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const ACTIVE_DAY_CARD_ESTIMATED_WIDTH = 74;
 const ACTIVE_DAY_CARD_GAP = 8;
+const ACTIVE_DAY_SCROLL_TOLERANCE = 4;
+const ACTIVE_DAY_SCROLL_PAGE_MARGIN = 72;
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
   if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
@@ -377,8 +379,8 @@ export default function Markets() {
   }, [activeYearKeys]);
 
   const maxActiveDaysScrollX = Math.max(0, activeDaysContentWidth - activeDaysViewportWidth);
-  const canScrollActiveDaysPrev = activeDaysScrollX > 4;
-  const canScrollActiveDaysNext = activeDaysScrollX < maxActiveDaysScrollX - 4;
+  const canScrollActiveDaysPrev = activeDaysScrollX > ACTIVE_DAY_SCROLL_TOLERANCE;
+  const canScrollActiveDaysNext = activeDaysScrollX < maxActiveDaysScrollX - ACTIVE_DAY_SCROLL_TOLERANCE;
 
   const handleActiveDaysLayout = useCallback((event: LayoutChangeEvent) => {
     setActiveDaysViewportWidth(event.nativeEvent.layout.width);
@@ -393,7 +395,7 @@ export default function Markets() {
 
   const scrollActiveDaysBy = useCallback((direction: -1 | 1) => {
     const step = activeDaysViewportWidth > 0
-      ? Math.max(activeDaysViewportWidth - 72, ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP)
+      ? Math.max(activeDaysViewportWidth - ACTIVE_DAY_SCROLL_PAGE_MARGIN, ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP)
       : ACTIVE_DAY_CARD_ESTIMATED_WIDTH * 3;
     const nextX = Math.max(0, Math.min(maxActiveDaysScrollX, activeDaysScrollX + (direction * step)));
     activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: true });
@@ -458,6 +460,7 @@ export default function Markets() {
         - Math.max(0, (activeDaysViewportWidth - ACTIVE_DAY_CARD_ESTIMATED_WIDTH) / 2),
     );
     const nextX = Math.min(maxActiveDaysScrollX, centeredOffset);
+    // Keep the selected date visible immediately when the picker opens or the month changes.
     activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: false });
     setActiveDaysScrollX(nextX);
   }, [

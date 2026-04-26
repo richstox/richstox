@@ -59,7 +59,8 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'last')");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'first')");
     expect(fileContent).toContain('const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);');
-    expect(fileContent).toContain('const canScrollActiveDaysNext = activeDaysScrollX < maxActiveDaysScrollX - 4;');
+    expect(fileContent).toContain('const ACTIVE_DAY_SCROLL_TOLERANCE = 4;');
+    expect(fileContent).toContain('const canScrollActiveDaysNext = activeDaysScrollX < maxActiveDaysScrollX - ACTIVE_DAY_SCROLL_TOLERANCE;');
     expect(fileContent).toContain('activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: true });');
     expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
     expect(fileContent).toContain("const INITIAL_VISIBLE_FEED_ITEMS = 5;");
@@ -71,6 +72,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('accessibilityLabel="Scroll days left"');
     expect(fileContent).toContain('accessibilityLabel="Scroll days right"');
     expect(fileContent).toContain('style={styles.activeDaysCarouselRow}');
+    expect(fileContent).toContain('Keep the selected date visible immediately when the picker opens or the month changes.');
     expect(fileContent).toContain("setSelectedYear(year);");
     expect(fileContent).toContain('style={styles.eventsDateSelectControl}');
     expect(fileContent).toContain('style={styles.selectorDetailSection}');
