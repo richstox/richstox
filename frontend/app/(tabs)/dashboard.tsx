@@ -1154,6 +1154,7 @@ export default function Dashboard() {
                 {HOMEPAGE_FEED_MODE_OPTIONS.map((option) => {
                   const isActive = homepageFeedModes.includes(option.key);
                   const isLocked = isActive && homepageFeedModes.length === 1;
+                  const optionCount = option.key === 'events' ? homepageEventToggleCount : homepageNewsToggleCount;
                   return (
                     <TouchableOpacity
                       key={option.key}
@@ -1162,11 +1163,11 @@ export default function Dashboard() {
                       disabled={isLocked}
                       accessibilityRole="button"
                       accessibilityLabel={isLocked
-                        ? `Cannot disable last active ${option.label.toLowerCase()} filter on homepage`
-                        : `Show ${option.label.toLowerCase()} on homepage`}
-                      >
+                        ? `Cannot disable last active ${option.label.toLowerCase()} (${optionCount}) filter on homepage`
+                        : `Show ${option.label.toLowerCase()} (${optionCount}) on homepage`}
+                    >
                       <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
-                        {option.label} ({option.key === 'events' ? homepageEventToggleCount : homepageNewsToggleCount})
+                        {option.label} ({optionCount})
                       </Text>
                     </TouchableOpacity>
                   );

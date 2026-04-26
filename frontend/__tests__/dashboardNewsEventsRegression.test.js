@@ -61,7 +61,9 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain("const [totalNewsCount, setTotalNewsCount] = useState(0);");
     expect(fileContent).toContain('const homepageEventToggleCount = useMemo(');
     expect(fileContent).toContain("const homepageNewsToggleCount = totalNewsCount;");
-    expect(fileContent).toContain("{option.label} ({option.key === 'events' ? homepageEventToggleCount : homepageNewsToggleCount})");
+    expect(fileContent).toContain("const optionCount = option.key === 'events' ? homepageEventToggleCount : homepageNewsToggleCount;");
+    expect(fileContent).toContain('{option.label} ({optionCount})');
+    expect(fileContent).toContain("Show ${option.label.toLowerCase()} (${optionCount}) on homepage");
   });
 
   it('keeps homepage paging at five items, authenticates the request, and uses API-provided aggregate sentiment for the full corpus', () => {
