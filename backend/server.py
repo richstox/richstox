@@ -7632,6 +7632,17 @@ async def _get_global_tracklist_tickers() -> set[str]:
 
 
 def _build_aggregate_sentiment(news_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    if not news_items:
+        return {
+            "score": 0,
+            "label": "neutral",
+            "color": "#F59E0B",
+            "total_articles": 0,
+            "positive_count": 0,
+            "negative_count": 0,
+            "neutral_count": 0,
+        }
+
     positive_count = 0
     negative_count = 0
     neutral_count = 0

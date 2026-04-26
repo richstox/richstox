@@ -648,7 +648,9 @@ async def fetch_market_digest_from_eodhd(
         "offset": offset,
         "fmt": "json",
     }
-    api_url_template = "https://eodhd.com/api/news?t=MARKETS&offset=0&limit=100&fmt=json"
+    api_url_template = (
+        f"https://eodhd.com/api/news?t=MARKETS&offset={offset}&limit={limit}&fmt=json"
+    )
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(
@@ -900,5 +902,5 @@ async def create_news_indexes(db):
 
 
 async def create_indexes(db):
-    """Backward-compatible alias used by the standalone news refresh job."""
+    """Backward-compatible alias for the standalone job until stale imports are consolidated."""
     await create_news_indexes(db)

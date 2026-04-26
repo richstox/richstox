@@ -1040,7 +1040,7 @@ export default function Markets() {
                   <View>
                     <Text style={styles.marketNewsTitle}>Markets news</Text>
                     <Text style={styles.marketNewsSubtitle}>
-                      {`MARKETS feed + shared global ticker-news corpus (up to ${MARKET_NEWS_PER_TICKER} saved articles per ticker)`}
+                      General market news and top stories from tracked companies
                     </Text>
                   </View>
                   {aggregateSentiment && (

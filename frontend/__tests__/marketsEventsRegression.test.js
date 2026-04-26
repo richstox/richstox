@@ -84,7 +84,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('disabled={isDisabled}');
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
     expect(fileContent).toContain('Markets news');
-    expect(fileContent).toContain('shared global ticker-news corpus');
+    expect(fileContent).toContain('General market news and top stories from tracked companies');
     expect(fileContent).toContain('aggregateSentiment && (');
     expect(fileContent).toContain('No saved market or ticker news available right now');
   });
