@@ -24,7 +24,7 @@ import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { API_URL } from '../../utils/config';
-import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { formatAggregateSentimentHelperText, formatAggregateSentimentLabel } from '../../utils/sentiment';
 import { useMyStocksStore } from '../../stores/myStocksStore';
 
 const COLORS = {
@@ -63,10 +63,9 @@ type DashboardFeedItem =
   | { kind: 'article'; id: string; article: any };
 
 type HomepageFeedSort = 'date_desc' | 'date_asc' | 'az' | 'za';
-type HomepageFeedMode = 'all' | 'events' | 'news';
+type HomepageFeedMode = 'events' | 'news';
 
 const HOMEPAGE_FEED_MODE_OPTIONS: { key: HomepageFeedMode; label: string }[] = [
-  { key: 'all', label: 'All' },
   { key: 'events', label: 'Events' },
   { key: 'news', label: 'News' },
 ];
@@ -241,7 +240,8 @@ export default function Dashboard() {
   const [selectedArticle, setSelectedArticle] = useState<any>(null);
   const [aggregateSentiment, setAggregateSentiment] = useState<any>(null);
   const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');
-  const [homepageFeedMode, setHomepageFeedMode] = useState<HomepageFeedMode>('all');
+  const [homepageFeedModes, setHomepageFeedModes] = useState<HomepageFeedMode[]>(['events', 'news']);
+  const [showAggregateSentimentHelp, setShowAggregateSentimentHelp] = useState(false);
   const [newsFeedFilter, setNewsFeedFilter] = useState('');
   
   // Fix 3: News pagination with See less
@@ -475,16 +475,27 @@ export default function Dashboard() {
     () => (Array.isArray(data?.upcoming_events) ? data.upcoming_events : []),
     [data?.upcoming_events],
   );
+  const homepageShowsEvents = homepageFeedModes.includes('events');
+  const homepageShowsNews = homepageFeedModes.includes('news');
+
+  const toggleHomepageFeedMode = useCallback((mode: HomepageFeedMode) => {
+    setHomepageFeedModes((prev) => {
+      if (prev.includes(mode)) {
+        return prev.length === 1 ? prev : prev.filter((item) => item !== mode);
+      }
+      return [...prev, mode];
+    });
+  }, []);
 
   const newsFeedItems = useMemo<DashboardFeedItem[]>(() => {
-    const eventItems = homepageFeedMode !== 'news'
+    const eventItems = homepageShowsEvents
       ? homepageEvents.map((event) => ({
           kind: 'event' as const,
           id: event.id,
           event,
         }))
       : [];
-    const articleItems = homepageFeedMode !== 'events'
+    const articleItems = homepageShowsNews
       ? newsItems.map((article) => ({
           kind: 'article' as const,
           id: article.id,
@@ -504,7 +515,7 @@ export default function Dashboard() {
       default:
         return mergedItems.sort((a, b) => getDashboardFeedDateValue(b) - getDashboardFeedDateValue(a));
     }
-  }, [homepageEvents, homepageFeedMode, homepageFeedSort, newsItems]);
+  }, [homepageEvents, homepageShowsEvents, homepageShowsNews, homepageFeedSort, newsItems]);
 
   const normalizedNewsFeedFilter = newsFeedFilter.trim().toLowerCase();
   const filteredNewsFeedItems = useMemo<DashboardFeedItem[]>(() => {
@@ -534,7 +545,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     setNewsLimit(INITIAL_NEWS_LIMIT);
-  }, [homepageFeedMode, homepageFeedSort]);
+  }, [homepageFeedModes, homepageFeedSort]);
 
   const formatPercent = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   const formatDrawdown = (v: number) => `-${Math.abs(v).toFixed(2)}%`;
@@ -1059,23 +1070,26 @@ export default function Dashboard() {
                 </View>
               </View>
               {/* Aggregate Sentiment Badge */}
-              {homepageFeedMode !== 'events' && aggregateSentiment && (
-                <View 
+              {aggregateSentiment && (
+                <TouchableOpacity
                   style={[
                     styles.aggregateSentimentBadge,
                     { backgroundColor: aggregateSentiment.color + '20' }
                   ]}
+                  onPress={() => setShowAggregateSentimentHelp((prev) => !prev)}
+                  accessibilityRole="button"
+                  accessibilityLabel={showAggregateSentimentHelp ? 'Hide aggregate sentiment help' : 'Show aggregate sentiment help'}
                   data-testid="aggregate-sentiment"
                 >
                   <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                   <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
                     {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
                   </Text>
-                </View>
+                </TouchableOpacity>
               )}
             </View>
-            {homepageFeedMode !== 'events' && aggregateSentiment && (
-              <Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>
+            {aggregateSentiment && showAggregateSentimentHelp && (
+              <Text style={styles.aggregateSentimentHelperText}>{formatAggregateSentimentHelperText(aggregateSentiment)}</Text>
             )}
             <View style={styles.newsControlsRow}>
               <View style={styles.newsSortButtons}>
@@ -1122,12 +1136,12 @@ export default function Dashboard() {
               </View>
               <View style={styles.feedModeGroup} data-testid="homepage-events-toggle">
                 {HOMEPAGE_FEED_MODE_OPTIONS.map((option) => {
-                  const isActive = homepageFeedMode === option.key;
+                  const isActive = homepageFeedModes.includes(option.key);
                   return (
                     <TouchableOpacity
                       key={option.key}
                       style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}
-                      onPress={() => setHomepageFeedMode(option.key)}
+                      onPress={() => toggleHomepageFeedMode(option.key)}
                       accessibilityRole="button"
                       accessibilityLabel={`Show ${option.label.toLowerCase()} on homepage`}
                     >

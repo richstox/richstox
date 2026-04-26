@@ -18,13 +18,14 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain("kind: 'event' as const");
     expect(fileContent).toContain("kind: 'article' as const");
     expect(fileContent).toContain("const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');");
-    expect(fileContent).toContain("type HomepageFeedMode = 'all' | 'events' | 'news';");
-    expect(fileContent).toContain("const [homepageFeedMode, setHomepageFeedMode] = useState<HomepageFeedMode>('all');");
+    expect(fileContent).toContain("type HomepageFeedMode = 'events' | 'news';");
+    expect(fileContent).toContain("const [homepageFeedModes, setHomepageFeedModes] = useState<HomepageFeedMode[]>(['events', 'news']);");
     expect(fileContent).toContain("const [newsFeedFilter, setNewsFeedFilter] = useState('');");
     expect(fileContent).toContain("getDashboardFeedDateValue");
     expect(fileContent).toContain("getDashboardFeedAlphaKey");
-    expect(fileContent).toContain("const eventItems = homepageFeedMode !== 'news'");
-    expect(fileContent).toContain("const articleItems = homepageFeedMode !== 'events'");
+    expect(fileContent).toContain("const homepageShowsEvents = homepageFeedModes.includes('events');");
+    expect(fileContent).toContain("const homepageShowsNews = homepageFeedModes.includes('news');");
+    expect(fileContent).not.toContain("{ key: 'all', label: 'All' }");
     expect(fileContent).toContain("No news or events available");
   });
 
@@ -49,9 +50,9 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('marginTop: 8,');
     expect(fileContent).toContain('data-testid="homepage-events-toggle"');
     expect(fileContent).toContain("const HOMEPAGE_FEED_MODE_OPTIONS: { key: HomepageFeedMode; label: string }[] = [");
-    expect(fileContent).toContain("homepageFeedMode !== 'events' && aggregateSentiment");
+    expect(fileContent).toContain("const [showAggregateSentimentHelp, setShowAggregateSentimentHelp] = useState(false);");
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
-    expect(fileContent).toContain('AGGREGATE_SENTIMENT_HELPER_TEXT');
+    expect(fileContent).toContain('formatAggregateSentimentHelperText(aggregateSentiment)');
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}');
   });

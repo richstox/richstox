@@ -4688,16 +4688,17 @@ export default function StockDetail() {
                 const article = item.article;
                 const articleTone = getSentimentTone(article.sentiment_label);
                 return (
-                  <TouchableOpacity
+                  <View
                     key={item.id}
                     style={[styles.newsRow, isLastVisible && styles.lastNewsRow]}
-                    onPress={() => openArticle(article)}
                   >
-                    <NewsLogo
-                      logoUrl={resolveNewsLogoUrl(article.logo_url)}
-                      fallbackKey={getNewsFallbackKey(article.fallback_logo_key, article.ticker || ticker)}
-                    />
-                    <View style={styles.newsContent}>
+                    <TouchableOpacity onPress={() => router.push(`/stock/${article.ticker || ticker}`)}>
+                      <NewsLogo
+                        logoUrl={resolveNewsLogoUrl(article.logo_url)}
+                        fallbackKey={getNewsFallbackKey(article.fallback_logo_key, article.ticker || ticker)}
+                      />
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.newsContent} onPress={() => openArticle(article)}>
                       <View style={styles.newsTickerRow}>
                         <Text style={styles.newsTickerText}>{(article.ticker || ticker).toUpperCase()}</Text>
                         {article.sentiment_label && (
@@ -4719,9 +4720,9 @@ export default function StockDetail() {
                         ) : null}
                       </View>
                       <Text style={styles.newsTitle} numberOfLines={2}>{article.title}</Text>
-                    </View>
+                    </TouchableOpacity>
                     <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
-                  </TouchableOpacity>
+                  </View>
                 );
               });
               })()}

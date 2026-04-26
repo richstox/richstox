@@ -15,4 +15,9 @@ describe('Stock news sentiment regressions', () => {
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('<Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>');
   });
+
+  it('keeps the article logo routed to ticker detail while article taps stay in-app', () => {
+    expect(fileContent).toContain('<TouchableOpacity onPress={() => router.push(`/stock/${article.ticker || ticker}`)}>');
+    expect(fileContent).toContain('<TouchableOpacity style={styles.newsContent} onPress={() => openArticle(article)}>');
+  });
 });
