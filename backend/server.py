@@ -1857,6 +1857,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_usd": [],
             "series_pct": [],
             "metrics": None,
+            "equity_value": None,
             "current_value": None,
             "chart": None,
         }
@@ -1871,6 +1872,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_usd": [],
             "series_pct": [],
             "metrics": None,
+            "equity_value": None,
             "current_value": None,
             "chart": None,
         }
@@ -1938,6 +1940,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
             "series_usd": [],
             "series_pct": [],
             "metrics": None,
+            "equity_value": None,
             "current_value": None,
             "chart": None,
         }
@@ -2038,6 +2041,7 @@ async def _build_tracklist_performance(tracklist_doc: Optional[dict]) -> dict:
         "subtitle": "Based on your Tracklist (equal-weight)",
         "series_usd": usd_series,
         "series_pct": series_pct,
+        "equity_value": round(end_value, 2),
         "current_value": round(end_value, 2),
         "chart": {
             "start_date": initial_date,
@@ -2580,6 +2584,18 @@ async def get_homepage_data(request: Request):
     upcoming_events_total = len(upcoming_events)
     upcoming_events = upcoming_events[:10]
 
+    tracklist_doc = membership_state["tracklist_doc"] or {}
+    tracklist_events = sorted(
+        [
+            event for event in tracklist_doc.get("events", [])
+            if len(event.get("positions", [])) == len(MAGNIFICENT_SEVEN) and event.get("effective_date")
+        ],
+        key=lambda event: event.get("effective_date") or "",
+    )
+    current_tracklist_event = tracklist_events[-1] if tracklist_events else {}
+    tracklist_effective_date = current_tracklist_event.get("effective_date")
+    tracklist_event_type = current_tracklist_event.get("event_type")
+
     for ticker in ordered_tickers:
         ticker_db = f"{ticker}.US"
         fundamentals = fund_map.get(ticker_db, {})
@@ -2602,11 +2618,13 @@ async def get_homepage_data(request: Request):
         position_value: Optional[float] = None
         position_pl_usd: Optional[float] = None
         position_pl_pct: Optional[float] = None
+        position_entry_date: Optional[str] = None
 
         if in_tracklist:
             pos = next((position for position in tracklist_positions if _normalize_list_ticker(position.get("ticker", "")) == ticker), None)
             if pos:
                 added_at = _format_display_date(pos.get("added_at"))
+                position_entry_date = pos.get("entry_date")
                 follow_price = pos.get("entry_price")
                 if follow_price and current and follow_price > 0:
                     change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
@@ -2642,6 +2660,9 @@ async def get_homepage_data(request: Request):
             "position_value": position_value,
             "position_pl_usd": position_pl_usd,
             "position_pl_pct": position_pl_pct,
+            "entry_date": position_entry_date,
+            "tracklist_effective_date": tracklist_effective_date if in_tracklist else None,
+            "tracklist_event_type": tracklist_event_type if in_tracklist else None,
         })
 
     tracklist_performance = await _build_tracklist_performance(membership_state["tracklist_doc"])

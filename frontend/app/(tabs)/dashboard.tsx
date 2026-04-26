@@ -63,6 +63,22 @@ type DashboardFeedItem =
   | { kind: 'event'; id: string; event: HomepageEvent }
   | { kind: 'article'; id: string; article: any };
 
+type DashboardStock = {
+  ticker: string;
+  name?: string | null;
+  logo_url?: string | null;
+  pill?: string | null;
+  added_at?: string | null;
+  change_since_added?: number | null;
+  change_1d_pct?: number | null;
+  shares?: number | null;
+  avg_cost?: number | null;
+  position_value?: number | null;
+  entry_date?: string | null;
+  tracklist_effective_date?: string | null;
+  tracklist_event_type?: string | null;
+};
+
 type HomepageFeedSort = 'date_desc' | 'date_asc' | 'az' | 'za';
 type HomepageFeedMode = 'events' | 'news';
 
@@ -589,6 +605,44 @@ export default function Dashboard() {
     return `$${value.toFixed(2)}`;
   };
 
+  const formatWholeMoney = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
+    const sign = value < 0 ? '-' : '';
+    const wholeValue = Math.round(Math.abs(value));
+    return `${sign}$${String(wholeValue).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')}`;
+  };
+
+  const formatPositionPrice = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    return `$${value.toFixed(2)}`;
+  };
+
+  const getPragueTodayISO = () => {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Europe/Prague',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).formatToParts(new Date());
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    return `${values.year}-${values.month}-${values.day}`;
+  };
+
+  const getStockStatusText = (stock: DashboardStock) => {
+    if (stock.pill !== 'Tracklist') {
+      return stock.added_at ? `Added: ${stock.added_at}` : null;
+    }
+    if (stock.tracklist_effective_date && stock.tracklist_effective_date > getPragueTodayISO()) {
+      return 'Pending';
+    }
+    const effectiveDate = stock.tracklist_effective_date || stock.entry_date;
+    const formattedDate = effectiveDate ? formatDashboardDate(effectiveDate) : stock.added_at;
+    if (!formattedDate) return null;
+    return stock.tracklist_event_type === 'replace'
+      ? `Rebalanced: ${formattedDate}`
+      : `Started: ${formattedDate}`;
+  };
+
   const openExternalLink = (url: string) => {
     Linking.openURL(url);
   };
@@ -711,6 +765,12 @@ export default function Dashboard() {
           ) : (
             <>
               <View style={styles.performanceMetricsGrid}>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Equity value</Text>
+                  <Text style={styles.metricValue}>
+                    {formatWholeMoney(tracklistPerformance?.equity_value ?? tracklistPerformance?.current_value)}
+                  </Text>
+                </View>
                 <View style={styles.performanceMetricCard}>
                   <Text style={styles.metricLabel}>Reward</Text>
                   <Text style={[styles.metricValue, (performanceMetrics.total_profit_pct || 0) >= 0 ? styles.positive : styles.negative]}>
@@ -1003,10 +1063,12 @@ export default function Dashboard() {
             </View>
           ) : (
             <>
-              {filteredStocks.slice(0, stocksLimit).map((stock: any, index: number) => {
+              {filteredStocks.slice(0, stocksLimit).map((stock: DashboardStock, index: number) => {
                 const logoUrl = getLogoUrl(stock);
                 const pillConfig = getMembershipPillConfig(stock.pill);
                 const isLastVisible = index === Math.min(stocksLimit, filteredStocks.length) - 1;
+                const statusText = getStockStatusText(stock);
+                const positionPriceText = formatPositionPrice(stock.avg_cost);
                 return (
                   <View 
                     key={stock.ticker}
@@ -1041,25 +1103,25 @@ export default function Dashboard() {
                                 {pillConfig?.label ?? stock.pill}
                               </Text>
                             </View>
+                            {typeof stock.shares === 'number' && stock.shares > 0 && positionPriceText ? (
+                              <Text style={styles.stockOpenPositionInline} numberOfLines={1}>
+                                {stock.shares} sh × {positionPriceText}
+                              </Text>
+                            ) : null}
                           </View>
                           <Text style={styles.companyName} numberOfLines={1}>{stock.name || stock.ticker}</Text>
-                          {/* P37+ Part 3 (G): Show added date */}
-                          {stock.added_at && (
-                            <Text style={styles.stockAddedAt}>Added: {stock.added_at}</Text>
-                          )}
-                          {/* Position details for tracklist holdings (whole shares only) */}
-                          {typeof stock.shares === 'number' && stock.shares > 0 && (
-                            <Text style={styles.stockPositionDetails} numberOfLines={1}>
-                              {stock.shares} sh
-                              {typeof stock.avg_cost === 'number' ? ` × $${stock.avg_cost.toFixed(2)}` : ''}
-                              {typeof stock.position_value === 'number' ? ` = $${stock.position_value.toFixed(2)}` : ''}
-                            </Text>
-                          )}
+                          {statusText ? (
+                            <Text style={styles.stockAddedAt}>{statusText}</Text>
+                          ) : null}
                         </View>
                       </View>
                       {/* P37+ Part 3 (G): Show change since added + 1D change */}
                       <View style={styles.stockChangesColumn}>
-                        {stock.change_since_added !== null && stock.change_since_added !== undefined && (
+                        {typeof stock.position_value === 'number' ? (
+                          <Text style={styles.stockTotalValue} numberOfLines={1}>
+                            {formatWholeMoney(stock.position_value)}
+                          </Text>
+                        ) : stock.change_since_added !== null && stock.change_since_added !== undefined && (
                           <Text style={[
                             styles.stockChangeSinceAdded,
                             stock.change_since_added >= 0 ? styles.positive : styles.negative
@@ -1074,21 +1136,6 @@ export default function Dashboard() {
                         ]}>
                           ({(stock.change_1d_pct || 0) >= 0 ? '+' : ''}{(stock.change_1d_pct || 0).toFixed(2)}%)
                         </Text>
-                        {/* Position P/L for tracklist holdings */}
-                        {typeof stock.position_pl_usd === 'number' && (
-                          <Text
-                            style={[
-                              styles.stockPositionPl,
-                              stock.position_pl_usd >= 0 ? styles.positive : styles.negative,
-                            ]}
-                            numberOfLines={1}
-                          >
-                            {stock.position_pl_usd >= 0 ? '+' : '-'}${Math.abs(stock.position_pl_usd).toFixed(2)}
-                            {typeof stock.position_pl_pct === 'number'
-                              ? ` (${stock.position_pl_pct >= 0 ? '+' : ''}${stock.position_pl_pct.toFixed(2)}%)`
-                              : ''}
-                          </Text>
-                        )}
                       </View>
                     </TouchableOpacity>
                   </View>
@@ -2167,6 +2214,12 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 2,
   },
+  stockOpenPositionInline: {
+    flexShrink: 1,
+    fontSize: 10,
+    color: COLORS.textLight,
+    fontWeight: '500',
+  },
   stockPositionDetails: {
     fontSize: 11,
     color: COLORS.textLight,
@@ -2178,6 +2231,11 @@ const styles = StyleSheet.create({
   stockChangeSinceAdded: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  stockTotalValue: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.text,
   },
   stock1dChange: {
     fontSize: 11,
