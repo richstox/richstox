@@ -869,7 +869,6 @@ export default function Markets() {
 
   useEffect(() => {
     persistedScrollYRef.current = persistedScrollY;
-    currentScrollYRef.current = persistedScrollY;
   }, [persistedScrollY]);
 
   const persistMarketsScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -878,8 +877,7 @@ export default function Markets() {
     setMarketsState({ scrollY: nextY });
   }, [setMarketsState]);
 
-  const restoreMarketsScroll = useCallback((force = false) => {
-    if (!force && didRestoreScrollRef.current) return;
+  const scrollToPersistedMarketsPosition = useCallback(() => {
     const nextY = persistedScrollYRef.current || initialMarketsStateRef.current.scrollY;
     if (nextY <= 0) {
       didRestoreScrollRef.current = true;
@@ -889,13 +887,18 @@ export default function Markets() {
     didRestoreScrollRef.current = true;
   }, []);
 
+  const restoreMarketsScroll = useCallback(() => {
+    if (didRestoreScrollRef.current) return;
+    scrollToPersistedMarketsPosition();
+  }, [scrollToPersistedMarketsPosition]);
+
   useFocusEffect(
     useCallback(() => {
       const frame = requestAnimationFrame(() => {
-        restoreMarketsScroll(true);
+        scrollToPersistedMarketsPosition();
       });
       return () => cancelAnimationFrame(frame);
-    }, [restoreMarketsScroll]),
+    }, [scrollToPersistedMarketsPosition]),
   );
 
   useEffect(() => {

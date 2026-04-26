@@ -156,7 +156,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('scrollY: currentScrollYRef.current,');
     expect(fileContent).toContain('router.push(`/stock/${nextTicker}?from=markets` as any);');
     expect(fileContent).toContain('useFocusEffect(');
-    expect(fileContent).toContain('restoreMarketsScroll(true);');
+    expect(fileContent).toContain('scrollToPersistedMarketsPosition();');
     expect(fileContent).toContain('setMarketsState({');
     expect(fileContent).toContain('onScrollEndDrag={persistMarketsScroll}');
     expect(fileContent).toContain('onMomentumScrollEnd={persistMarketsScroll}');
