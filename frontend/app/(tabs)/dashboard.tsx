@@ -1146,7 +1146,9 @@ export default function Dashboard() {
                       onPress={() => toggleHomepageFeedMode(option.key)}
                       disabled={isLocked}
                       accessibilityRole="button"
-                      accessibilityLabel={`Show ${option.label.toLowerCase()} on homepage`}
+                      accessibilityLabel={isLocked
+                        ? `Cannot disable last active ${option.label.toLowerCase()} filter on homepage`
+                        : `Show ${option.label.toLowerCase()} on homepage`}
                     >
                       <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
                         {option.label}

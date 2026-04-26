@@ -789,7 +789,9 @@ export default function Markets() {
                         onPress={() => toggleMarketFeedMode(option.key)}
                         disabled={isLocked}
                         accessibilityRole="button"
-                        accessibilityLabel={`Show ${option.label.toLowerCase()} on markets`}
+                        accessibilityLabel={isLocked
+                          ? `Cannot disable last active ${option.label.toLowerCase()} filter on markets`
+                          : `Show ${option.label.toLowerCase()} on markets`}
                       >
                         <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
                           {option.label}
