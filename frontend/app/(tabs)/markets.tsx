@@ -692,6 +692,8 @@ export default function Markets() {
           <TouchableOpacity
             style={styles.calendarToggleButton}
             onPress={() => setIsCalendarExpanded((prev) => !prev)}
+            accessibilityRole="button"
+            accessibilityLabel={isCalendarExpanded ? 'Hide calendar details' : 'Show calendar details'}
           >
             <Text style={styles.calendarToggleText}>
               {isCalendarExpanded ? 'Hide calendar details' : 'Show calendar details'}
@@ -783,6 +785,8 @@ export default function Markets() {
               <TouchableOpacity
                 style={styles.calendarToggleButton}
                 onPress={() => setIsFullCalendarExpanded((prev) => !prev)}
+                accessibilityRole="button"
+                accessibilityLabel={isFullCalendarExpanded ? 'Hide full calendar' : 'Show full calendar'}
               >
                 <Text style={styles.calendarToggleText}>
                   {isFullCalendarExpanded ? 'Hide full calendar' : 'Show full calendar'}
@@ -963,6 +967,9 @@ export default function Markets() {
                 <TouchableOpacity
                   style={styles.portfolioToggleInline}
                   onPress={() => setIncludeNews((prev) => !prev)}
+                  accessibilityRole="switch"
+                  accessibilityLabel="Toggle market news"
+                  accessibilityState={{ checked: includeNews }}
                 >
                   <Text style={styles.portfolioToggleLabelInline}>+News</Text>
                   <View style={[styles.toggleSwitch, includeNews && styles.toggleSwitchOn]}>

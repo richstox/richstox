@@ -1141,6 +1141,9 @@ export default function Dashboard() {
                 style={styles.portfolioToggleInline}
                 onPress={() => setIncludeHomepageNews((prev) => !prev)}
                 data-testid="homepage-events-toggle"
+                accessibilityRole="switch"
+                accessibilityLabel="Toggle homepage news"
+                accessibilityState={{ checked: includeHomepageNews }}
               >
                 <Text style={styles.portfolioToggleLabelInline}>+News</Text>
                 <View style={[styles.toggleSwitch, includeHomepageNews && styles.toggleSwitchOn]}>
