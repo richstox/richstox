@@ -693,7 +693,7 @@ export default function Markets() {
       <AppHeader title="Markets" />
 
       <ScrollView style={styles.scroll} contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}>
-        {isCalendarExpanded ? (
+        {isCalendarExpanded && (
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View>
@@ -942,7 +942,7 @@ export default function Markets() {
             </View>
           )}
         </View>
-        ) : null}
+        )}
 
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
@@ -959,7 +959,7 @@ export default function Markets() {
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.sectionSubtitle}>
-                  {includeNews ? `${periodEvents.length} events • ${newsTotalCount} news` : `${periodEvents.length} events`}
+                  {`${periodEvents.length} events${includeNews ? ` • ${newsTotalCount} news` : ''}`}
                 </Text>
               </View>
               <View style={styles.eventsHeaderActions}>
