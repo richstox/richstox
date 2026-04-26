@@ -200,6 +200,14 @@ const getSentimentTone = (sentiment?: SentimentCategory | null) => {
   return { backgroundColor: '#E0E7FF', color: '#4F46E5', label: 'News' };
 };
 
+const generateNewsItemId = (ticker: string, article: TickerNewsApiArticle, index: number): string => {
+  return (
+    article.article_id ||
+    article.source_link ||
+    `${encodeURIComponent(ticker)}-${encodeURIComponent(article.title ?? 'untitled')}-${encodeURIComponent(article.published_at ?? 'no-date')}-${index}`
+  );
+};
+
 const isValidYmd = (value: string): boolean => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = parseYmd(value);
@@ -399,6 +407,7 @@ export default function Markets() {
     const nextType = EVENT_TYPE_ORDER.find((type) => selectedEventCounts[type] > 0) ?? 'earnings';
     if (selectedEventCounts[selectedEventType] === 0 && nextType !== selectedEventType) {
       setSelectedEventType(nextType);
+      setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);
       setTickerFilter('');
     }
   }, [selectedEventCounts, selectedEventType]);
@@ -475,10 +484,7 @@ export default function Markets() {
             const payload = await response.json();
             const articles: TickerNewsApiArticle[] = Array.isArray(payload?.articles) ? payload.articles : [];
             return articles.map((article, index) => ({
-              id:
-                article.article_id ||
-                article.source_link ||
-                `${encodeURIComponent(tickerConfig.ticker)}-${encodeURIComponent(article.title ?? 'untitled')}-${encodeURIComponent(article.published_at ?? 'no-date')}-${index}`,
+              id: generateNewsItemId(tickerConfig.ticker, article, index),
               ticker: tickerConfig.ticker,
               company_name: tickerConfig.company_name ?? null,
               logo_url: tickerConfig.logo_url,
