@@ -106,11 +106,12 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('getAggregateSentimentTooltipContent(aggregateSentiment)');
     expect(fileContent).toContain('<MetricTooltip');
-    expect(fileContent).toContain('<Text style={styles.feedModePrefix}>Show:</Text>');
+    expect(fileContent).not.toContain('<Text style={styles.feedModePrefix}>Show:</Text>');
     expect(fileContent).toContain("{option.label} ({option.key === 'events' ? visibleEventToggleCount : visibleNewsToggleCount})");
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('style={styles.marketNewsTickerRow}');
     expect(fileContent).toContain('<Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>');
+    expect(fileContent).toContain('<Text style={styles.marketNewsFooterMeta}>');
     expect(fileContent).not.toContain("[news.source, getMarketNewsDateLabel(news.date)].filter(Boolean).join(' • ')");
     expect(fileContent).not.toContain('styles.sectionSubtitle');
     expect(fileContent).toContain('No saved market or ticker news available right now');
