@@ -85,9 +85,9 @@ describe('Markets events regressions', () => {
 
   it('replaces the Prague date label, adds compact feed chips, and merges market news into Events & News', () => {
     expect(fileContent).not.toContain('Prague date');
-    expect(fileContent).toContain("type MarketFeedMode = 'all' | 'events' | 'news';");
+    expect(fileContent).toContain("type MarketFeedMode = 'events' | 'news';");
     expect(fileContent).toContain("const MARKET_FEED_MODE_OPTIONS: { key: MarketFeedMode; label: string }[] = [");
-    expect(fileContent).toContain("const [marketFeedMode, setMarketFeedMode] = useState<MarketFeedMode>('all');");
+    expect(fileContent).toContain("const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(['events', 'news']);");
     expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 3;');
     expect(fileContent).toContain('const MARKET_DIGEST_LIMIT = 100;');
     expect(fileContent).toContain('/api/v1/markets/news?limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0');
@@ -98,13 +98,15 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
     expect(fileContent).toContain('const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {');
     expect(fileContent).toContain('const displayedFeedItems = useMemo(');
-    expect(fileContent).toContain("marketFeedMode !== 'events' && aggregateSentiment");
+    expect(fileContent).toContain("const marketShowsEvents = marketFeedModes.includes('events');");
+    expect(fileContent).toContain("const marketShowsNews = marketFeedModes.includes('news');");
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
-    expect(fileContent).toContain('AGGREGATE_SENTIMENT_HELPER_TEXT');
+    expect(fileContent).toContain('formatAggregateSentimentHelperText(aggregateSentiment)');
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('No saved market or ticker news available right now');
     expect(fileContent).toContain('Load more</Text>');
     expect(fileContent).not.toContain('Load more news</Text>');
+    expect(fileContent).not.toContain("{ key: 'all', label: 'All' }");
   });
 
   it('keeps the events headline icon and removes the standalone calendar card', () => {
@@ -122,5 +124,14 @@ describe('Markets events regressions', () => {
     expect(fileContent).not.toContain('Hide Details');
     expect(fileContent).not.toContain('Show calendar details');
     expect(fileContent).toContain('resolveEventLogoUrl(news.logo_url, news.ticker)');
+  });
+
+  it('keeps article taps inside the app and routes article logos to ticker detail', () => {
+    expect(fileContent).toContain("const [selectedArticle, setSelectedArticle] = useState<MarketNewsItem | null>(null);");
+    expect(fileContent).toContain('const openNewsItem = (item: MarketNewsItem) => {');
+    expect(fileContent).toContain('setSelectedArticle(item);');
+    expect(fileContent).toContain('visible={!!selectedArticle}');
+    expect(fileContent).toContain('if (news.ticker) router.push(`/stock/${news.ticker}`);');
+    expect(fileContent).toContain('<Text style={styles.articleTitle}>{selectedArticle.title}</Text>');
   });
 });

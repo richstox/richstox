@@ -29,7 +29,7 @@ import {
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
 import { COLORS as APP_COLORS } from '../_layout';
-import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { formatAggregateSentimentHelperText, formatAggregateSentimentLabel } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
 
 const COLORS = {
@@ -49,7 +49,7 @@ const COLORS = {
 type EventType = 'earnings' | 'dividend' | 'split' | 'ipo';
 type CalendarViewMode = 'daily' | 'monthly' | 'yearly';
 type SentimentCategory = 'positive' | 'negative' | 'neutral';
-type MarketFeedMode = 'all' | 'events' | 'news';
+type MarketFeedMode = 'events' | 'news';
 
 type CalendarEvent = {
   date: string;
@@ -121,7 +121,6 @@ const ACTIVE_DAY_SCROLL_TOLERANCE = 4;
 // Keep a small overlap between pages so users retain context while stepping through dates.
 const ACTIVE_DAY_SCROLL_PAGE_MARGIN = 72;
 const MARKET_FEED_MODE_OPTIONS: { key: MarketFeedMode; label: string }[] = [
-  { key: 'all', label: 'All' },
   { key: 'events', label: 'Events' },
   { key: 'news', label: 'News' },
 ];
@@ -290,12 +289,14 @@ export default function Markets() {
   const [tickerFilter, setTickerFilter] = useState('');
   const [visibleFeedLimit, setVisibleFeedLimit] = useState(INITIAL_VISIBLE_FEED_ITEMS);
   const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);
-  const [marketFeedMode, setMarketFeedMode] = useState<MarketFeedMode>('all');
+  const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(['events', 'news']);
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
   const [newsTotalCount, setNewsTotalCount] = useState(0);
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
+  const [selectedArticle, setSelectedArticle] = useState<MarketNewsItem | null>(null);
+  const [showAggregateSentimentHelp, setShowAggregateSentimentHelp] = useState(false);
   const activeDaysScrollRef = useRef<ScrollView | null>(null);
   const [activeDaysViewportWidth, setActiveDaysViewportWidth] = useState(0);
   const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
@@ -494,6 +495,18 @@ export default function Markets() {
     () => periodEvents.filter((event) => event.type === selectedEventType),
     [periodEvents, selectedEventType],
   );
+  const marketShowsEvents = marketFeedModes.includes('events');
+  const marketShowsNews = marketFeedModes.includes('news');
+
+  const toggleMarketFeedMode = useCallback((mode: MarketFeedMode) => {
+    setMarketFeedModes((prev) => {
+      if (prev.includes(mode)) {
+        // Keep at least one content mode active so the feed never collapses into an empty toggle state.
+        return prev.length === 1 ? prev : prev.filter((item) => item !== mode);
+      }
+      return [...prev, mode];
+    });
+  }, []);
 
   const normalizedTickerFilter = tickerFilter.trim().toLowerCase();
   const visibleEvents = useMemo(() => {
@@ -530,10 +543,10 @@ export default function Markets() {
 
   useEffect(() => {
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
-  }, [marketFeedMode, normalizedTickerFilter]);
+  }, [marketFeedModes, normalizedTickerFilter]);
 
   const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {
-    const eventItems = marketFeedMode !== 'news'
+    const eventItems = marketShowsEvents
       ? visibleEvents.map((event, index) => ({
           kind: 'event' as const,
           id: `${event.type}-${event.ticker || 'na'}-${event.date}-${index}`,
@@ -544,7 +557,7 @@ export default function Markets() {
       : [];
     const mergedItems: MarketFeedItem[] = [
       ...eventItems,
-      ...(marketFeedMode !== 'events'
+      ...(marketShowsNews
         ? visibleNewsItems.map((news) => ({
             kind: 'news' as const,
             id: news.id,
@@ -556,7 +569,7 @@ export default function Markets() {
     ];
 
     return mergedItems.sort((left, right) => right.sortTimestamp - left.sortTimestamp);
-  }, [marketFeedMode, visibleEvents, visibleNewsItems]);
+  }, [marketShowsEvents, marketShowsNews, visibleEvents, visibleNewsItems]);
 
   const displayedFeedItems = useMemo(
     () => filteredFeedItems.slice(0, visibleFeedLimit),
@@ -703,17 +716,19 @@ export default function Markets() {
       .join(' • ');
   };
 
-  const openNewsItem = async (item: MarketNewsItem) => {
-    if (item.link) {
-      try {
-        await Linking.openURL(item.link);
-        return;
-      } catch (err) {
-        console.error('Error opening Markets news article:', err);
-      }
-    }
-    if (item.ticker) {
-      router.push(`/stock/${item.ticker}`);
+  const openNewsItem = (item: MarketNewsItem) => {
+    setSelectedArticle(item);
+  };
+
+  const closeArticle = () => {
+    setSelectedArticle(null);
+  };
+
+  const openExternalLink = async (url: string) => {
+    try {
+      await Linking.openURL(url);
+    } catch (err) {
+      console.error('Error opening Markets news article externally:', err);
     }
   };
 
@@ -746,30 +761,37 @@ export default function Markets() {
                 </Text>
               </View>
               <View style={styles.eventsHeaderActions}>
-                {marketFeedMode !== 'events' && aggregateSentiment && (
-                  <View
+                {aggregateSentiment && (
+                  <TouchableOpacity
                     style={[
                       styles.aggregateSentimentBadge,
                       styles.aggregateSentimentHeadlineBadge,
                       { backgroundColor: `${aggregateSentiment.color}20` },
                     ]}
+                    onPress={() => setShowAggregateSentimentHelp((prev) => !prev)}
+                    accessibilityRole="button"
+                    accessibilityLabel={showAggregateSentimentHelp ? 'Hide aggregate sentiment help' : 'Show aggregate sentiment help'}
                   >
                     <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                     <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
                       {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 )}
                 <View style={styles.feedModeGroup}>
                   {MARKET_FEED_MODE_OPTIONS.map((option) => {
-                    const isActive = marketFeedMode === option.key;
+                    const isActive = marketFeedModes.includes(option.key);
+                    const isLocked = isActive && marketFeedModes.length === 1;
                     return (
                       <TouchableOpacity
                         key={option.key}
-                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}
-                        onPress={() => setMarketFeedMode(option.key)}
+                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}
+                        onPress={() => toggleMarketFeedMode(option.key)}
+                        disabled={isLocked}
                         accessibilityRole="button"
-                        accessibilityLabel={`Show ${option.label.toLowerCase()} on markets`}
+                        accessibilityLabel={isLocked
+                          ? `Cannot disable last active ${option.label.toLowerCase()} filter on markets`
+                          : `Show ${option.label.toLowerCase()} on markets`}
                       >
                         <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
                           {option.label}
@@ -780,8 +802,8 @@ export default function Markets() {
                 </View>
               </View>
             </View>
-            {marketFeedMode !== 'events' && aggregateSentiment && (
-              <Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>
+            {aggregateSentiment && showAggregateSentimentHelp && (
+              <Text style={styles.aggregateSentimentHelperText}>{formatAggregateSentimentHelperText(aggregateSentiment)}</Text>
             )}
           </View>
 
@@ -852,26 +874,30 @@ export default function Markets() {
                 <View style={styles.loadingWrap}>
                   <ActivityIndicator size="small" color={COLORS.primary} />
                 </View>
-              ) : marketFeedMode !== 'events' && newsError && visibleEvents.length === 0 ? (
+              ) : marketShowsNews && newsError && visibleEvents.length === 0 ? (
                 <Text style={styles.errorText}>{newsError}</Text>
-              ) : marketFeedMode === 'events' && typeFilteredEvents.length === 0 ? (
+              ) : !marketShowsNews && typeFilteredEvents.length === 0 ? (
                 <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
+                  <Text style={styles.emptyText}>
+                    {normalizedTickerFilter ? `No matches for “${tickerFilter}”` : `No ${EVENT_META[selectedEventType].label.toLowerCase()} for this ${CALENDAR_VIEW_META[calendarView].emptyLabel}`}
+                  </Text>
                 </View>
-              ) : marketFeedMode === 'news' && visibleNewsItems.length === 0 ? (
+              ) : !marketShowsEvents && visibleNewsItems.length === 0 ? (
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyText}>
                     {normalizedTickerFilter ? `No matches for “${tickerFilter}”` : 'No saved market or ticker news available right now'}
                   </Text>
                 </View>
-              ) : marketFeedMode === 'all' && typeFilteredEvents.length === 0 && visibleNewsItems.length === 0 ? (
-                <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
-                </View>
               ) : filteredFeedItems.length === 0 ? (
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyText}>
-                    {normalizedTickerFilter ? `No matches for “${tickerFilter}”` : 'No saved market or ticker news available right now'}
+                    {normalizedTickerFilter
+                      ? `No matches for “${tickerFilter}”`
+                      : marketShowsEvents && marketShowsNews
+                        ? `No ${EVENT_META[selectedEventType].label.toLowerCase()} or news for this ${CALENDAR_VIEW_META[calendarView].emptyLabel}`
+                        : !marketShowsNews
+                          ? `No ${EVENT_META[selectedEventType].label.toLowerCase()} for this ${CALENDAR_VIEW_META[calendarView].emptyLabel}`
+                          : 'No saved market or ticker news available right now'}
                   </Text>
                 </View>
               ) : (
@@ -926,21 +952,28 @@ export default function Markets() {
                     const tone = getSentimentTone(news.sentiment_label);
                     const canOpenItem = Boolean(news.link || news.ticker);
                     return (
-                      <TouchableOpacity
-                        key={item.id}
-                        style={[styles.eventRow, isLastRow && styles.lastEventRow]}
-                        onPress={() => {
-                          if (!canOpenItem) return;
-                          void openNewsItem(news);
-                        }}
-                        disabled={!canOpenItem}
-                        activeOpacity={canOpenItem ? 0.8 : 1}
-                      >
-                        <EventLogo
-                          logoUrl={resolveEventLogoUrl(news.logo_url, news.ticker)}
-                          fallbackKey={news.fallback_logo_key}
-                        />
-                        <View style={styles.eventContent}>
+                      <View key={item.id} style={[styles.eventRow, isLastRow && styles.lastEventRow]}>
+                        <TouchableOpacity
+                          onPress={() => {
+                            if (news.ticker) router.push(`/stock/${news.ticker}`);
+                          }}
+                          disabled={!news.ticker}
+                          activeOpacity={news.ticker ? 0.8 : 1}
+                        >
+                          <EventLogo
+                            logoUrl={resolveEventLogoUrl(news.logo_url, news.ticker)}
+                            fallbackKey={news.fallback_logo_key}
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.eventContent}
+                          onPress={() => {
+                            if (!canOpenItem) return;
+                            openNewsItem(news);
+                          }}
+                          disabled={!canOpenItem}
+                          activeOpacity={canOpenItem ? 0.8 : 1}
+                        >
                           <View style={styles.eventTopRow}>
                             <View style={styles.eventTickerBlock}>
                               <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
@@ -956,11 +989,11 @@ export default function Markets() {
                           <Text style={styles.eventMeta}>
                             {[news.source, getMarketNewsDateLabel(news.date)].filter(Boolean).join(' • ')}
                           </Text>
-                        </View>
+                        </TouchableOpacity>
                         {canOpenItem ? (
                           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
                         ) : null}
-                      </TouchableOpacity>
+                      </View>
                     );
                   })}
                 </>
@@ -988,6 +1021,85 @@ export default function Markets() {
           )}
         </View>
       </ScrollView>
+
+      <Modal
+        visible={!!selectedArticle}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={closeArticle}
+      >
+        <SafeAreaView style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={closeArticle} style={styles.modalCloseButton}>
+              <Ionicons name="close" size={28} color={COLORS.text} />
+            </TouchableOpacity>
+            <Text style={styles.modalHeaderTitle}>Article</Text>
+            <TouchableOpacity
+              onPress={() => selectedArticle?.link && openExternalLink(selectedArticle.link)}
+              style={styles.modalExternalButton}
+              disabled={!selectedArticle?.link}
+            >
+              <Ionicons name="open-outline" size={22} color={selectedArticle?.link ? COLORS.primary : COLORS.textMuted} />
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+            {selectedArticle && (
+              <>
+                <View style={styles.articleHeader}>
+                  <TouchableOpacity
+                    style={styles.articleTickerRow}
+                    onPress={() => {
+                      closeArticle();
+                      if (selectedArticle.ticker) {
+                        router.push(`/stock/${selectedArticle.ticker}`);
+                      }
+                    }}
+                    disabled={!selectedArticle.ticker}
+                  >
+                    <EventLogo
+                      logoUrl={resolveEventLogoUrl(selectedArticle.logo_url, selectedArticle.ticker)}
+                      fallbackKey={selectedArticle.fallback_logo_key}
+                    />
+                    <View>
+                      <Text style={styles.articleTicker}>{selectedArticle.ticker || 'Market News'}</Text>
+                      <Text style={styles.articleCompany}>{selectedArticle.company_name || selectedArticle.source || 'Market News'}</Text>
+                    </View>
+                  </TouchableOpacity>
+                  <Text style={styles.articleMeta}>
+                    {[getMarketNewsDateLabel(selectedArticle.date), selectedArticle.source].filter(Boolean).join(' • ')}
+                  </Text>
+                </View>
+
+                <Text style={styles.articleTitle}>{selectedArticle.title}</Text>
+
+                {(() => {
+                  const selectedArticleTone = getSentimentTone(selectedArticle.sentiment_label);
+                  return (
+                    <View style={styles.sentimentRow}>
+                      <View style={[styles.eventPill, { backgroundColor: selectedArticleTone.backgroundColor }]}>
+                        <Text style={[styles.eventPillText, { color: selectedArticleTone.color }]}>
+                          {selectedArticleTone.label} sentiment
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })()}
+
+                {selectedArticle.link && (
+                  <TouchableOpacity
+                    style={styles.readOriginalButton}
+                    onPress={() => openExternalLink(selectedArticle.link)}
+                  >
+                    <Text style={styles.readOriginalText}>Read original article</Text>
+                    <Ionicons name="open-outline" size={16} color={COLORS.primary} />
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
 
       <Modal
         visible={calendarPickerVisible}
@@ -1354,6 +1466,70 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     color: COLORS.textMuted,
   },
+  modalContainer: { flex: 1, backgroundColor: COLORS.background },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.card,
+  },
+  modalCloseButton: { padding: 4 },
+  modalHeaderTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  modalExternalButton: { padding: 4 },
+  modalScroll: { flex: 1 },
+  modalScrollContent: { padding: 20, paddingBottom: 40 },
+  articleHeader: { marginBottom: 20 },
+  articleTickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  articleTicker: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: COLORS.primary,
+    textTransform: 'uppercase',
+  },
+  articleCompany: {
+    fontSize: 15,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  articleMeta: {
+    fontSize: 14,
+    color: COLORS.textLight,
+  },
+  articleTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: COLORS.text,
+    lineHeight: 36,
+    marginBottom: 16,
+  },
+  sentimentRow: { marginBottom: 20 },
+  readOriginalButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: COLORS.primarySoft,
+  },
+  readOriginalText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
   eventTabsRow: {
     flexDirection: 'row',
     gap: 8,
@@ -1573,6 +1749,9 @@ const styles = StyleSheet.create({
   feedModeChipActive: {
     backgroundColor: APP_COLORS.primary,
     borderColor: APP_COLORS.primary,
+  },
+  feedModeChipLocked: {
+    opacity: 0.75,
   },
   feedModeChipText: {
     fontSize: 11,
