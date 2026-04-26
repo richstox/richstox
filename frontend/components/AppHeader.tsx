@@ -240,17 +240,16 @@ export default function AppHeader({
                       </TouchableOpacity>
                     )}
 
-                    <TouchableOpacity
-                      style={styles.menuItem}
-                      onPress={() => handleMenuItemPress('portfolio')}
+                    <View
+                      style={[styles.menuItem, styles.menuItemDisabled]}
                       testID="menu-portfolio"
                     >
-                      <Ionicons name="briefcase-outline" size={20} color={COLORS.text} />
-                      <Text style={styles.menuItemText}>Portfolio</Text>
+                      <Ionicons name="briefcase-outline" size={20} color={COLORS.textMuted} />
+                      <Text style={[styles.menuItemText, styles.menuItemTextDisabled]}>Portfolio</Text>
                       <View style={styles.menuSoonBadge}>
                         <Text style={styles.menuSoonBadgeText}>Soon</Text>
                       </View>
-                    </TouchableOpacity>
+                    </View>
                     
                     <TouchableOpacity 
                       style={styles.menuItem}
@@ -465,6 +464,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: FONTS.body,
     color: COLORS.text,
+  },
+  menuItemDisabled: {
+    cursor: 'default',
+    opacity: 0.6,
+  },
+  menuItemTextDisabled: {
+    color: COLORS.textMuted,
   },
   menuSoonBadge: {
     marginLeft: 'auto',
