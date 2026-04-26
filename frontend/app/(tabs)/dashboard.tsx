@@ -481,6 +481,7 @@ export default function Dashboard() {
   const toggleHomepageFeedMode = useCallback((mode: HomepageFeedMode) => {
     setHomepageFeedModes((prev) => {
       if (prev.includes(mode)) {
+        // Keep at least one content mode active so the feed never collapses into an empty toggle state.
         return prev.length === 1 ? prev : prev.filter((item) => item !== mode);
       }
       return [...prev, mode];

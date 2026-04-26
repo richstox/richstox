@@ -131,7 +131,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const openNewsItem = (item: MarketNewsItem) => {');
     expect(fileContent).toContain('setSelectedArticle(item);');
     expect(fileContent).toContain('visible={!!selectedArticle}');
-    expect(fileContent).toContain('Review the ticker, source, date, and sentiment here first.');
     expect(fileContent).toContain('if (news.ticker) router.push(`/stock/${news.ticker}`);');
+    expect(fileContent).toContain('<Text style={styles.articleTitle}>{selectedArticle.title}</Text>');
   });
 });
