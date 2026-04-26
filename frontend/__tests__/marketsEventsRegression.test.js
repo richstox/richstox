@@ -96,6 +96,8 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
     expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
+    expect(fileContent).toContain('const visibleEventToggleCount = useMemo(() => {');
+    expect(fileContent).toContain('const visibleNewsToggleCount = visibleNewsItems.length;');
     expect(fileContent).toContain('const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {');
     expect(fileContent).toContain('const displayedFeedItems = useMemo(');
     expect(fileContent).toContain("const marketShowsEvents = marketFeedModes.includes('events');");
@@ -103,7 +105,10 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('getAggregateSentimentTooltipContent(aggregateSentiment)');
     expect(fileContent).toContain('<MetricTooltip');
+    expect(fileContent).toContain('<Text style={styles.feedModePrefix}>Show:</Text>');
+    expect(fileContent).toContain("{option.label} ({option.key === 'events' ? visibleEventToggleCount : visibleNewsToggleCount})");
     expect(fileContent).toContain('style={styles.feedModeGroup}');
+    expect(fileContent).not.toContain('styles.sectionSubtitle');
     expect(fileContent).toContain('No saved market or ticker news available right now');
     expect(fileContent).toContain('Load more</Text>');
     expect(fileContent).not.toContain('Load more news</Text>');
@@ -134,5 +139,6 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('visible={!!selectedArticle}');
     expect(fileContent).toContain('if (news.ticker) router.push(`/stock/${news.ticker}`);');
     expect(fileContent).toContain('<Text style={styles.articleTitle}>{selectedArticle.title}</Text>');
+    expect(fileContent).toContain("{selectedArticle.content?.trim() || 'Open the original article to read the full story'}");
   });
 });

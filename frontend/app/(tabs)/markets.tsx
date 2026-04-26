@@ -82,6 +82,7 @@ type MarketNewsItem = {
   logo_url?: string;
   fallback_logo_key: string;
   title: string;
+  content?: string | null;
   date?: string | null;
   source?: string | null;
   link?: string | null;
@@ -292,7 +293,6 @@ export default function Markets() {
   const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);
   const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(['events', 'news']);
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
-  const [newsTotalCount, setNewsTotalCount] = useState(0);
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
@@ -526,6 +526,22 @@ export default function Markets() {
     });
   }, [normalizedTickerFilter, typeFilteredEvents]);
 
+  const visibleEventToggleCount = useMemo(() => {
+    if (!normalizedTickerFilter) return periodEvents.length;
+    return periodEvents.filter((event) => {
+      const haystack = [
+        event.ticker,
+        event.company_name,
+        event.label,
+        event.description,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(normalizedTickerFilter);
+    }).length;
+  }, [normalizedTickerFilter, periodEvents]);
+
   const visibleNewsItems = useMemo(() => {
     if (!normalizedTickerFilter) return newsItems;
     return newsItems.filter((item) => {
@@ -541,6 +557,7 @@ export default function Markets() {
       return haystack.includes(normalizedTickerFilter);
     });
   }, [newsItems, normalizedTickerFilter]);
+  const visibleNewsToggleCount = visibleNewsItems.length;
 
   useEffect(() => {
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
@@ -611,6 +628,7 @@ export default function Markets() {
               logo_url: item?.scope === 'market' ? undefined : item?.logo_url,
               fallback_logo_key: item?.fallback_logo_key || getEventFallbackKey(ticker, item?.company_name ?? null),
               title: item?.title || `${ticker ?? 'Market'} news`,
+              content: item?.content ?? null,
               date: item?.date ?? null,
               source: item?.source ?? getMarketNewsSource(sourceLink),
               link: sourceLink,
@@ -630,13 +648,11 @@ export default function Markets() {
           });
 
         setNewsItems(mergedItems);
-        setNewsTotalCount(typeof payload?.total_news_count === 'number' ? payload.total_news_count : mergedItems.length);
         setAggregateSentiment(payload?.aggregate_sentiment ?? null);
       } catch (err) {
         if (cancelled) return;
         console.error('Error fetching Markets news:', err);
         setNewsItems([]);
-        setNewsTotalCount(0);
         setAggregateSentiment(null);
         setNewsError('Could not load news');
       } finally {
@@ -757,9 +773,6 @@ export default function Markets() {
                     <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
                   </TouchableOpacity>
                 </View>
-                <Text style={styles.sectionSubtitle}>
-                  {`${periodEvents.length} events • ${newsTotalCount} news`}
-                </Text>
               </View>
               <View style={styles.eventsHeaderActions}>
                 {aggregateSentiment && (
@@ -779,27 +792,30 @@ export default function Markets() {
                     </Text>
                   </TouchableOpacity>
                 )}
-                <View style={styles.feedModeGroup}>
-                  {MARKET_FEED_MODE_OPTIONS.map((option) => {
-                    const isActive = marketFeedModes.includes(option.key);
-                    const isLocked = isActive && marketFeedModes.length === 1;
-                    return (
-                      <TouchableOpacity
-                        key={option.key}
-                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}
-                        onPress={() => toggleMarketFeedMode(option.key)}
-                        disabled={isLocked}
-                        accessibilityRole="button"
-                        accessibilityLabel={isLocked
-                          ? `Cannot disable last active ${option.label.toLowerCase()} filter on markets`
-                          : `Show ${option.label.toLowerCase()} on markets`}
-                      >
-                        <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
-                          {option.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
+                <View style={styles.feedModeRow}>
+                  <Text style={styles.feedModePrefix}>Show:</Text>
+                  <View style={styles.feedModeGroup}>
+                    {MARKET_FEED_MODE_OPTIONS.map((option) => {
+                      const isActive = marketFeedModes.includes(option.key);
+                      const isLocked = isActive && marketFeedModes.length === 1;
+                      return (
+                        <TouchableOpacity
+                          key={option.key}
+                          style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}
+                          onPress={() => toggleMarketFeedMode(option.key)}
+                          disabled={isLocked}
+                          accessibilityRole="button"
+                          accessibilityLabel={isLocked
+                            ? `Cannot disable last active ${option.label.toLowerCase()} filter on markets`
+                            : `Show ${option.label.toLowerCase()} on markets`}
+                        >
+                          <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
+                            {option.label} ({option.key === 'events' ? visibleEventToggleCount : visibleNewsToggleCount})
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
                 </View>
               </View>
             </View>
@@ -1084,6 +1100,10 @@ export default function Markets() {
                   );
                 })()}
 
+                <Text style={styles.articleContent}>
+                  {selectedArticle.content?.trim() || 'Open the original article to read the full story'}
+                </Text>
+
                 {selectedArticle.link && (
                   <TouchableOpacity
                     style={styles.readOriginalButton}
@@ -1333,7 +1353,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
-  sectionSubtitle: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
   monthNavButton: {
     width: 32,
     height: 32,
@@ -1736,6 +1755,18 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
+  feedModeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  feedModePrefix: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
   feedModeGroup: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1764,6 +1795,12 @@ const styles = StyleSheet.create({
   },
   feedModeChipTextActive: {
     color: '#FFFFFF',
+  },
+  articleContent: {
+    fontSize: 15,
+    lineHeight: 24,
+    color: COLORS.text,
+    marginBottom: 20,
   },
   toggleSwitch: {
     width: 44,

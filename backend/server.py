@@ -7644,6 +7644,7 @@ async def _get_global_tracklist_tickers() -> set[str]:
 
 GLOBAL_MARKETS_MARKET_NEWS_LIMIT = 100
 GLOBAL_MARKETS_PER_TICKER_LIMIT = 3
+GLOBAL_MARKETS_MIN_TICKER_NEWS = 100
 # UI fetch ceiling until Markets screen adds incremental paging.
 GLOBAL_MARKETS_RESPONSE_LIMIT = 1000
 
@@ -7697,6 +7698,37 @@ def _build_aggregate_sentiment(news_items: List[Dict[str, Any]]) -> Dict[str, An
         "negative_count": negative_count,
         "neutral_count": neutral_count,
     }
+
+
+async def _get_recent_global_ticker_mappings(
+    limit: int,
+    exclude_article_ids: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    pipeline: List[Dict[str, Any]] = [
+        {"$sort": {"published_at": -1}},
+        {"$group": {
+            "_id": "$article_id",
+            "ticker": {"$first": "$ticker"},
+            "published_at": {"$first": "$published_at"},
+        }},
+    ]
+    if exclude_article_ids:
+        pipeline.append({"$match": {"_id": {"$nin": list(exclude_article_ids)}}})
+    pipeline.extend([
+        {"$sort": {"published_at": -1}},
+        {"$limit": limit},
+        {"$project": {
+            "_id": 0,
+            "article_id": "$_id",
+            "ticker": 1,
+            "published_at": 1,
+        }},
+    ])
+
+    return await db.article_ticker_mapping.aggregate(pipeline).to_list(length=limit)
 
 @api_router.get("/news")
 async def get_news(
@@ -8066,7 +8098,7 @@ async def get_markets_news(
     market_limit: int = Query(GLOBAL_MARKETS_MARKET_NEWS_LIMIT, ge=1, le=100),
     per_ticker_limit: int = Query(GLOBAL_MARKETS_PER_TICKER_LIMIT, ge=1, le=3),
 ):
-    """Merged Markets news from the full global Watchlist/Tracklist corpus plus MARKETS articles."""
+    """Merged Markets news from scoped tickers, latest global ticker news, and MARKETS articles."""
     requested_tickers: List[str] = []
     seen_requested: set[str] = set()
     for raw in tickers.split(","):
@@ -8111,6 +8143,19 @@ async def get_markets_news(
                 "published_at": "$mappings.published_at",
             }},
         ]).to_list(length=None)
+
+    existing_article_ids = {
+        mapping.get("article_id")
+        for mapping in article_mappings
+        if mapping.get("article_id")
+    }
+    fallback_needed = max(GLOBAL_MARKETS_MIN_TICKER_NEWS - len(existing_article_ids), 0)
+    if fallback_needed > 0:
+        fallback_ticker_mappings = await _get_recent_global_ticker_mappings(
+            fallback_needed,
+            existing_article_ids,
+        )
+        article_mappings.extend(fallback_ticker_mappings)
 
     selected_tickers = sorted({mapping.get("ticker") for mapping in article_mappings if mapping.get("ticker")})
     ticker_full_list = [f"{ticker}.US" for ticker in selected_tickers]
@@ -8402,7 +8447,7 @@ async def get_ticker_news(
             result_articles.append({
                 "article_id": article.get("article_id"),
                 "title": article.get("title"),
-                "content": article.get("content", "")[:500] + "..." if len(article.get("content", "")) > 500 else article.get("content", ""),
+                "content": article.get("content", ""),
                 "published_at": article.get("published_at"),
                 "source_link": article.get("source_link"),
                 "sentiment_label": article.get("sentiment_label"),
