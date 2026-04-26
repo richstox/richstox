@@ -45,6 +45,6 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('data-testid="homepage-events-toggle"');
     expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>+News</Text>');
     expect(fileContent).toContain('includeHomepageNews && aggregateSentiment');
-    expect(fileContent).toContain('getDashboardAggregateSentimentLabel(aggregateSentiment)');
+    expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
   });
 });

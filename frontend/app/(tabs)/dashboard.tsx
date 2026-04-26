@@ -24,6 +24,7 @@ import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { API_URL } from '../../utils/config';
+import { formatAggregateSentimentLabel } from '../../utils/sentiment';
 import { useMyStocksStore } from '../../stores/myStocksStore';
 
 const COLORS = {
@@ -118,13 +119,6 @@ const getDashboardFeedAlphaKey = (item: DashboardFeedItem): string => {
     ? item.event.ticker || item.event.company_name || item.event.title
     : item.article?.ticker || item.article?.company_name || item.article?.title || '';
   return String(primary).toUpperCase();
-};
-
-const getDashboardAggregateSentimentLabel = (sentiment: { label: string; score: number }): string => {
-  const score = typeof sentiment.score === 'number' && Number.isFinite(sentiment.score)
-    ? sentiment.score
-    : 0;
-  return `${sentiment.label.charAt(0).toUpperCase()}${sentiment.label.slice(1)} ${score >= 0 ? '+' : ''}${score.toFixed(2)}`;
 };
 
 // P31 LOGO GUARANTEE: Component that always renders logo or fallback badge
@@ -1089,7 +1083,7 @@ export default function Dashboard() {
                 >
                   <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                   <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
-                    {getDashboardAggregateSentimentLabel(aggregateSentiment)}
+                    {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
                   </Text>
                 </View>
               )}

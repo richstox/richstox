@@ -28,6 +28,7 @@ import {
 } from 'date-fns';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
+import { formatAggregateSentimentLabel } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
 
 const COLORS = {
@@ -206,13 +207,6 @@ const getSentimentTone = (sentiment?: SentimentCategory | null) => {
     return { backgroundColor: '#FEE2E2', color: COLORS.danger, label: 'Negative' };
   }
   return { backgroundColor: '#E0E7FF', color: '#4F46E5', label: 'News' };
-};
-
-const getAggregateSentimentLabel = (sentiment: AggregateSentiment): string => {
-  const score = typeof sentiment.score === 'number' && Number.isFinite(sentiment.score)
-    ? sentiment.score
-    : 0;
-  return `${sentiment.label.charAt(0).toUpperCase()}${sentiment.label.slice(1)} ${score >= 0 ? '+' : ''}${score.toFixed(2)}`;
 };
 
 const generateNewsItemId = (ticker: string, article: TickerNewsApiArticle, index: number): string => {
@@ -960,7 +954,7 @@ export default function Markets() {
                   >
                     <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                     <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
-                      {getAggregateSentimentLabel(aggregateSentiment)}
+                      {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
                     </Text>
                   </View>
                 )}

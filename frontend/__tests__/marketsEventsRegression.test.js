@@ -88,7 +88,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
     expect(fileContent).toContain('const displayedNewsItems = useMemo(');
-    expect(fileContent).toContain('getAggregateSentimentLabel(aggregateSentiment)');
+    expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('aggregateSentiment && (');
     expect(fileContent).toContain('No saved market or ticker news available right now');
     expect(fileContent).toContain('Load more news');
