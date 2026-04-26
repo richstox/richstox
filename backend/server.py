@@ -7707,9 +7707,10 @@ async def _get_recent_global_ticker_mappings(
     if limit <= 0:
         return []
 
+    excluded_article_ids = list(exclude_article_ids) if exclude_article_ids else None
     pipeline: List[Dict[str, Any]] = []
-    if exclude_article_ids:
-        pipeline.append({"$match": {"article_id": {"$nin": list(exclude_article_ids)}}})
+    if excluded_article_ids:
+        pipeline.append({"$match": {"article_id": {"$nin": excluded_article_ids}}})
     pipeline.extend([
         {"$sort": {"published_at": -1}},
         {"$group": {
