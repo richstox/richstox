@@ -51,7 +51,8 @@ describe('Dashboard News & Events regressions', () => {
   it('keeps homepage paging at five items and uses API-provided aggregate sentiment for the full corpus', () => {
     expect(fileContent).toContain('const INITIAL_NEWS_LIMIT = 5;');
     expect(fileContent).toContain('const NEWS_PAGE_SIZE = 5;');
-    expect(fileContent).toContain('axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`)');
+    expect(fileContent).toContain('axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`, {');
+    expect(fileContent).toContain("headers: { Authorization: `Bearer ${sessionToken}` }");
     expect(fileContent).toContain('setAggregateSentiment(response.data.aggregate_sentiment || null);');
     expect(fileContent).toContain('<Text style={styles.loadMoreText}>Load more events & news</Text>');
   });
