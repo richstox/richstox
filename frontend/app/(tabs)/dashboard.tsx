@@ -236,6 +236,7 @@ export default function Dashboard() {
   
   // Fix 3: News pagination with See less
   const INITIAL_NEWS_LIMIT = 5;
+  const NEWS_PAGE_SIZE = 5;
   const [newsLimit, setNewsLimit] = useState(INITIAL_NEWS_LIMIT);
   
   // P34 Fix 1: My Stocks pagination state
@@ -412,46 +413,14 @@ export default function Dashboard() {
   const fetchNews = async (offset: number = 0, append: boolean = false) => {
     try {
       setNewsLoading(true);
-      const response = await axios.get(`${API_URL}/api/news?offset=${offset}&limit=10`);
+      const response = await axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`);
       const newNews = response.data.news || [];
-      
-      let allNewsItems: any[];
       if (append) {
-        allNewsItems = [...newsItems, ...newNews];
-        setNewsItems(allNewsItems);
+        setNewsItems([...newsItems, ...newNews]);
       } else {
-        allNewsItems = newNews;
         setNewsItems(newNews);
       }
-      
-      // Recalculate aggregate sentiment from all loaded news
-      // Formula: average of all sentiment scores
-      // +1 = positive (pos > neg), -1 = negative (neg > pos), 0 = neutral
-      // Result: >0.3 = Positive, <-0.3 = Negative, else Neutral
-      const sentimentScores = allNewsItems.map((n: any) => {
-        if (n.sentiment_label === 'positive') return 1;
-        if (n.sentiment_label === 'negative') return -1;
-        return 0;
-      });
-      
-      const total = sentimentScores.length;
-      const avgScore = total > 0 ? sentimentScores.reduce((a: number, b: number) => a + b, 0) / total : 0;
-      
-      let label = 'neutral';
-      let color = '#F59E0B'; // Yellow
-      if (avgScore > 0.3) {
-        label = 'positive';
-        color = '#10B981'; // Green
-      } else if (avgScore < -0.3) {
-        label = 'negative';
-        color = '#EF4444'; // Red
-      }
-      
-      setAggregateSentiment({
-        score: Math.round(avgScore * 100) / 100,
-        label,
-        color,
-      });
+      setAggregateSentiment(response.data.aggregate_sentiment || null);
       
       setHasMoreNews(response.data.has_more);
       setNewsOffset(offset + newNews.length);
@@ -1269,7 +1238,7 @@ export default function Dashboard() {
                   {newsLoading ? (
                     <ActivityIndicator size="small" color={COLORS.primary} />
                   ) : (
-                    <Text style={styles.loadMoreText}>Load more news & events</Text>
+                      <Text style={styles.loadMoreText}>Load more events & news</Text>
                   )}
                 </TouchableOpacity>
               )}
