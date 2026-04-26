@@ -28,7 +28,8 @@ import {
 } from 'date-fns';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
-import { formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { COLORS as APP_COLORS } from '../_layout';
+import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
 
 const COLORS = {
@@ -48,6 +49,7 @@ const COLORS = {
 type EventType = 'earnings' | 'dividend' | 'split' | 'ipo';
 type CalendarViewMode = 'daily' | 'monthly' | 'yearly';
 type SentimentCategory = 'positive' | 'negative' | 'neutral';
+type MarketFeedMode = 'all' | 'events' | 'news';
 
 type CalendarEvent = {
   date: string;
@@ -118,6 +120,11 @@ const ACTIVE_DAY_CARD_GAP = 8;
 const ACTIVE_DAY_SCROLL_TOLERANCE = 4;
 // Keep a small overlap between pages so users retain context while stepping through dates.
 const ACTIVE_DAY_SCROLL_PAGE_MARGIN = 72;
+const MARKET_FEED_MODE_OPTIONS: { key: MarketFeedMode; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'events', label: 'Events' },
+  { key: 'news', label: 'News' },
+];
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
   if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
@@ -283,7 +290,7 @@ export default function Markets() {
   const [tickerFilter, setTickerFilter] = useState('');
   const [visibleFeedLimit, setVisibleFeedLimit] = useState(INITIAL_VISIBLE_FEED_ITEMS);
   const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);
-  const [includeNews, setIncludeNews] = useState(true);
+  const [marketFeedMode, setMarketFeedMode] = useState<MarketFeedMode>('all');
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
   const [newsTotalCount, setNewsTotalCount] = useState(0);
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
@@ -506,7 +513,6 @@ export default function Markets() {
   }, [normalizedTickerFilter, typeFilteredEvents]);
 
   const visibleNewsItems = useMemo(() => {
-    if (!includeNews) return [];
     if (!normalizedTickerFilter) return newsItems;
     return newsItems.filter((item) => {
       const haystack = [
@@ -520,33 +526,37 @@ export default function Markets() {
         .toLowerCase();
       return haystack.includes(normalizedTickerFilter);
     });
-  }, [includeNews, newsItems, normalizedTickerFilter]);
+  }, [newsItems, normalizedTickerFilter]);
 
   useEffect(() => {
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
-  }, [includeNews, normalizedTickerFilter]);
+  }, [marketFeedMode, normalizedTickerFilter]);
 
   const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {
-    const eventItems = visibleEvents.map((event, index) => ({
-      kind: 'event' as const,
-      id: `${event.type}-${event.ticker || 'na'}-${event.date}-${index}`,
-      date: event.date,
-      sortTimestamp: getFeedTimestamp(event.date),
-      event,
-    }));
+    const eventItems = marketFeedMode !== 'news'
+      ? visibleEvents.map((event, index) => ({
+          kind: 'event' as const,
+          id: `${event.type}-${event.ticker || 'na'}-${event.date}-${index}`,
+          date: event.date,
+          sortTimestamp: getFeedTimestamp(event.date),
+          event,
+        }))
+      : [];
     const mergedItems: MarketFeedItem[] = [
       ...eventItems,
-      ...visibleNewsItems.map((news) => ({
-        kind: 'news' as const,
-        id: news.id,
-        date: news.date,
-        sortTimestamp: getFeedTimestamp(news.date),
-        news,
-      })),
+      ...(marketFeedMode !== 'events'
+        ? visibleNewsItems.map((news) => ({
+            kind: 'news' as const,
+            id: news.id,
+            date: news.date,
+            sortTimestamp: getFeedTimestamp(news.date),
+            news,
+          }))
+        : []),
     ];
 
     return mergedItems.sort((left, right) => right.sortTimestamp - left.sortTimestamp);
-  }, [visibleEvents, visibleNewsItems]);
+  }, [marketFeedMode, visibleEvents, visibleNewsItems]);
 
   const displayedFeedItems = useMemo(
     () => filteredFeedItems.slice(0, visibleFeedLimit),
@@ -554,18 +564,9 @@ export default function Markets() {
   );
 
   useEffect(() => {
-    let cancelled = false;
+      let cancelled = false;
 
     const fetchVisibleTickerNews = async () => {
-      if (!includeNews) {
-        setNewsItems([]);
-        setNewsTotalCount(0);
-        setAggregateSentiment(null);
-        setNewsError(null);
-        setNewsLoading(false);
-        return;
-      }
-
       try {
         setNewsLoading(true);
         setNewsError(null);
@@ -634,7 +635,7 @@ export default function Markets() {
     return () => {
       cancelled = true;
     };
-  }, [includeNews]);
+  }, []);
 
   const selectedMonthIndex = activeMonthKeys.indexOf(selectedMonthKey);
   const selectedYearIndex = yearCards.indexOf(selectedYear);
@@ -736,16 +737,16 @@ export default function Markets() {
                     onPress={() => setCalendarPickerVisible(true)}
                     accessibilityRole="button"
                   >
-                    <Text style={styles.eventsDateSelectText}>Select</Text>
-                    <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
-                  </TouchableOpacity>
-                </View>
-                <Text style={styles.sectionSubtitle}>
-                  {`${periodEvents.length} events${includeNews ? ` • ${newsTotalCount} news` : ''}`}
-                </Text>
+                  <Text style={styles.eventsDateSelectText}>Select</Text>
+                  <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
+                </TouchableOpacity>
               </View>
+              <Text style={styles.sectionSubtitle}>
+                  {`${periodEvents.length} events • ${newsTotalCount} news`}
+              </Text>
+            </View>
               <View style={styles.eventsHeaderActions}>
-                {includeNews && aggregateSentiment && (
+                {marketFeedMode !== 'events' && aggregateSentiment && (
                   <View
                     style={[
                       styles.aggregateSentimentBadge,
@@ -759,20 +760,29 @@ export default function Markets() {
                     </Text>
                   </View>
                 )}
-                <TouchableOpacity
-                  style={styles.portfolioToggleInline}
-                  onPress={() => setIncludeNews((prev) => !prev)}
-                  accessibilityRole="switch"
-                  accessibilityLabel="Toggle market news"
-                  accessibilityState={{ checked: includeNews }}
-                >
-                  <Text style={styles.portfolioToggleLabelInline}>+News</Text>
-                  <View style={[styles.toggleSwitch, includeNews && styles.toggleSwitchOn]}>
-                    <View style={[styles.toggleKnob, includeNews && styles.toggleKnobOn]} />
-                  </View>
-                </TouchableOpacity>
+                <View style={styles.feedModeGroup}>
+                  {MARKET_FEED_MODE_OPTIONS.map((option) => {
+                    const isActive = marketFeedMode === option.key;
+                    return (
+                      <TouchableOpacity
+                        key={option.key}
+                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}
+                        onPress={() => setMarketFeedMode(option.key)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Show ${option.label.toLowerCase()} on markets`}
+                      >
+                        <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
             </View>
+            {marketFeedMode !== 'events' && aggregateSentiment && (
+              <Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>
+            )}
           </View>
 
           {loading ? (
@@ -781,7 +791,7 @@ export default function Markets() {
             </View>
           ) : error ? (
             <Text style={styles.errorText}>{error}</Text>
-          ) : periodEvents.length === 0 && (!includeNews || (!newsLoading && !newsError && newsItems.length === 0)) ? (
+          ) : periodEvents.length === 0 && (!newsLoading && !newsError && newsItems.length === 0) ? (
             <View style={styles.emptyWrap}>
               <Ionicons name="calendar-outline" size={28} color={COLORS.textMuted} />
               <Text style={styles.emptyText}>No events for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
@@ -842,9 +852,19 @@ export default function Markets() {
                 <View style={styles.loadingWrap}>
                   <ActivityIndicator size="small" color={COLORS.primary} />
                 </View>
-              ) : includeNews && newsError && visibleEvents.length === 0 ? (
+              ) : marketFeedMode !== 'events' && newsError && visibleEvents.length === 0 ? (
                 <Text style={styles.errorText}>{newsError}</Text>
-              ) : typeFilteredEvents.length === 0 && (!includeNews || visibleNewsItems.length === 0) ? (
+              ) : marketFeedMode === 'events' && typeFilteredEvents.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
+                </View>
+              ) : marketFeedMode === 'news' && visibleNewsItems.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>
+                    {normalizedTickerFilter ? `No matches for “${tickerFilter}”` : 'No saved market or ticker news available right now'}
+                  </Text>
+                </View>
+              ) : marketFeedMode === 'all' && typeFilteredEvents.length === 0 && visibleNewsItems.length === 0 ? (
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
                 </View>
@@ -1326,7 +1346,13 @@ const styles = StyleSheet.create({
   eventsDateSelectText: {
     fontSize: 12,
     fontWeight: '600',
-    color: COLORS.primary,
+    color: APP_COLORS.primary,
+  },
+  aggregateSentimentHelperText: {
+    marginTop: 8,
+    fontSize: 11,
+    lineHeight: 16,
+    color: COLORS.textMuted,
   },
   eventTabsRow: {
     flexDirection: 'row',
@@ -1529,6 +1555,32 @@ const styles = StyleSheet.create({
   aggregateSentimentText: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  feedModeGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  feedModeChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  feedModeChipActive: {
+    backgroundColor: APP_COLORS.primary,
+    borderColor: APP_COLORS.primary,
+  },
+  feedModeChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
+  feedModeChipTextActive: {
+    color: '#FFFFFF',
   },
   toggleSwitch: {
     width: 44,

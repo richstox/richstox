@@ -69,6 +69,8 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('visible={calendarPickerVisible}');
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
+    expect(fileContent).toContain("import { COLORS as APP_COLORS } from '../_layout';");
+    expect(fileContent).toContain('color={APP_COLORS.primary}');
     expect(fileContent).toContain('accessibilityLabel="Scroll days left"');
     expect(fileContent).toContain('accessibilityLabel="Scroll days right"');
     expect(fileContent).toContain('style={styles.activeDaysCarouselRow}');
@@ -81,10 +83,11 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('<AppHeader title="Markets" />');
   });
 
-  it('replaces the Prague date label, disables zero-count tabs, and merges +News into Events & News', () => {
+  it('replaces the Prague date label, adds compact feed chips, and merges market news into Events & News', () => {
     expect(fileContent).not.toContain('Prague date');
-    expect(fileContent).toContain('const [includeNews, setIncludeNews] = useState(true);');
-    expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>+News</Text>');
+    expect(fileContent).toContain("type MarketFeedMode = 'all' | 'events' | 'news';");
+    expect(fileContent).toContain("const MARKET_FEED_MODE_OPTIONS: { key: MarketFeedMode; label: string }[] = [");
+    expect(fileContent).toContain("const [marketFeedMode, setMarketFeedMode] = useState<MarketFeedMode>('all');");
     expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 3;');
     expect(fileContent).toContain('const MARKET_DIGEST_LIMIT = 100;');
     expect(fileContent).toContain('/api/v1/markets/news?limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0');
@@ -95,8 +98,10 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
     expect(fileContent).toContain('const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {');
     expect(fileContent).toContain('const displayedFeedItems = useMemo(');
+    expect(fileContent).toContain("marketFeedMode !== 'events' && aggregateSentiment");
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
-    expect(fileContent).toContain('aggregateSentiment && (');
+    expect(fileContent).toContain('AGGREGATE_SENTIMENT_HELPER_TEXT');
+    expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('No saved market or ticker news available right now');
     expect(fileContent).toContain('Load more</Text>');
     expect(fileContent).not.toContain('Load more news</Text>');
