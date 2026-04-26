@@ -2625,6 +2625,11 @@ async def get_homepage_data(request: Request):
     account_open_date = min(account_open_date_candidates) if account_open_date_candidates else None
     account_opened_display = _format_display_date(account_open_date)
 
+    # Seed tickers are the original 7 positions. Replacements are any tickers NOT in this set.
+    # We use seed_tickers (not date comparison) so that corrupted entry_dates from the buggy
+    # migration don't accidentally classify seed positions as replacements.
+    seed_tickers_set = {_normalize_list_ticker(t) for t in (tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN)}
+
     for ticker in ordered_tickers:
         ticker_db = f"{ticker}.US"
         fundamentals = fund_map.get(ticker_db, {})
@@ -2655,12 +2660,13 @@ async def get_homepage_data(request: Request):
             if pos:
                 added_at = _format_display_date(pos.get("added_at"))
                 position_entry_date = pos.get("entry_date")
-                # Seed positions share the account opening close date; replaced positions
-                # have an entry_date strictly after the account opening date.
-                if position_entry_date and account_open_date and position_entry_date > account_open_date:
-                    position_created_at_display = _format_display_date(position_entry_date)
-                else:
+                # Seed positions (ticker still in original seed set) always show the account
+                # opening date. Replaced positions (new ticker not in seed_tickers) show their
+                # own entry_date (the close date of the day they were added).
+                if _normalize_list_ticker(pos.get("ticker", "")) in seed_tickers_set:
                     position_created_at_display = account_opened_display or _format_display_date(position_entry_date)
+                else:
+                    position_created_at_display = _format_display_date(position_entry_date)
                 follow_price = pos.get("entry_price")
                 if follow_price and current and follow_price > 0:
                     change_since_added = round(((current - follow_price) / follow_price) * 100, 2)
