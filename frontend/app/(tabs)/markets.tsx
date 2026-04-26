@@ -873,64 +873,62 @@ export default function Markets() {
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
             <View style={styles.eventsHeaderTop}>
-              <View style={styles.eventsTitleBlock}>
-                <View style={styles.sectionTitleRow}>
-                  <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
-                  <Text style={styles.sectionTitle}>Events & News</Text>
-                </View>
-                <View style={styles.eventsDateRow}>
-                  <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
-                  <TouchableOpacity
-                    style={styles.eventsDateSelectControl}
-                    onPress={() => setCalendarPickerVisible(true)}
-                    accessibilityRole="button"
-                  >
-                    <Text style={styles.eventsDateSelectText}>Select</Text>
-                    <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
-                  </TouchableOpacity>
-                </View>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.sectionTitle} numberOfLines={1}>Events & News</Text>
               </View>
-              <View style={styles.eventsHeaderActions}>
-                {aggregateSentiment && (
-                  <TouchableOpacity
-                    style={[
-                      styles.aggregateSentimentBadge,
-                      styles.aggregateSentimentHeadlineBadge,
-                      { backgroundColor: `${aggregateSentiment.color}20` },
-                    ]}
-                    onPress={() => setAggregateSentimentTooltipVisible(true)}
-                    accessibilityRole="button"
-                    accessibilityLabel="Show aggregate sentiment help"
-                  >
-                    <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
-                    <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
-                      {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
-                    </Text>
-                  </TouchableOpacity>
-                )}
-                <View style={styles.feedModeRow}>
-                  <View style={styles.feedModeGroup}>
-                    {MARKET_FEED_MODE_OPTIONS.map((option) => {
-                      const isActive = marketFeedModes.includes(option.key);
-                      const isLocked = isActive && marketFeedModes.length === 1;
-                      return (
-                        <TouchableOpacity
-                          key={option.key}
-                          style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}
-                          onPress={() => toggleMarketFeedMode(option.key)}
-                          disabled={isLocked}
-                          accessibilityRole="button"
-                          accessibilityLabel={isLocked
-                            ? `Cannot disable last active ${option.label.toLowerCase()} filter on markets`
-                            : `Show ${option.label.toLowerCase()} on markets`}
-                        >
-                          <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
-                            {option.label} ({option.key === 'events' ? visibleEventToggleCount : visibleNewsToggleCount})
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
+              <View style={styles.eventsDateBlock}>
+                <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
+                <TouchableOpacity
+                  style={styles.eventsDateSelectControl}
+                  onPress={() => setCalendarPickerVisible(true)}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.eventsDateSelectText}>Select</Text>
+                  <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
+                </TouchableOpacity>
+              </View>
+            </View>
+            <View style={styles.eventsHeaderActions}>
+              {aggregateSentiment && (
+                <TouchableOpacity
+                  style={[
+                    styles.aggregateSentimentBadge,
+                    styles.aggregateSentimentHeadlineBadge,
+                    { backgroundColor: `${aggregateSentiment.color}20` },
+                  ]}
+                  onPress={() => setAggregateSentimentTooltipVisible(true)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Show aggregate sentiment help"
+                >
+                  <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
+                  <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
+                    {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <View style={styles.feedModeRow}>
+                <View style={styles.feedModeGroup}>
+                  {MARKET_FEED_MODE_OPTIONS.map((option) => {
+                    const isActive = marketFeedModes.includes(option.key);
+                    const isLocked = isActive && marketFeedModes.length === 1;
+                    return (
+                      <TouchableOpacity
+                        key={option.key}
+                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}
+                        onPress={() => toggleMarketFeedMode(option.key)}
+                        disabled={isLocked}
+                        accessibilityRole="button"
+                        accessibilityLabel={isLocked
+                          ? `Cannot disable last active ${option.label.toLowerCase()} filter on markets`
+                          : `Show ${option.label.toLowerCase()} on markets`}
+                      >
+                        <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
+                          {option.label} ({option.key === 'events' ? visibleEventToggleCount : visibleNewsToggleCount})
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
                 </View>
               </View>
             </View>
@@ -1104,19 +1102,21 @@ export default function Markets() {
                           disabled={!canOpenItem}
                           activeOpacity={canOpenItem ? 0.8 : 1}
                         >
-                          <View style={styles.marketNewsTickerRow}>
-                            <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
-                            <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
-                              <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
+                          <View style={styles.eventTopRow}>
+                            <View style={styles.eventTickerBlock}>
+                              <View style={styles.marketNewsTickerRow}>
+                                <Text style={styles.eventTicker}>{news.ticker || 'Market'}</Text>
+                                <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
+                                  <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
+                                </View>
+                              </View>
+                              {news.company_name ? (
+                                <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
+                              ) : null}
                             </View>
+                            <Text style={styles.marketNewsDateMeta}>{getMarketNewsDateLabel(news.date)}</Text>
                           </View>
-                          {news.company_name ? (
-                            <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
-                          ) : null}
                           <Text style={styles.eventTitle} numberOfLines={2}>{news.title}</Text>
-                          <Text style={styles.marketNewsFooterMeta}>
-                            {[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')}
-                          </Text>
                         </TouchableOpacity>
                         {canOpenItem ? (
                           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
@@ -1192,12 +1192,10 @@ export default function Markets() {
                     />
                     <View>
                       <Text style={styles.articleTicker}>{selectedArticle.ticker || 'Market News'}</Text>
-                      <Text style={styles.articleCompany}>{selectedArticle.company_name || selectedArticle.source || 'Market News'}</Text>
+                      <Text style={styles.articleCompany}>{selectedArticle.company_name || 'Market News'}</Text>
                     </View>
                   </TouchableOpacity>
-                  <Text style={styles.articleMeta}>
-                    {[getMarketNewsDateLabel(selectedArticle.date), selectedArticle.source].filter(Boolean).join(' • ')}
-                  </Text>
+                  <Text style={styles.articleMeta}>{getMarketNewsDateLabel(selectedArticle.date)}</Text>
                 </View>
 
                 <Text style={styles.articleTitle}>{selectedArticle.title}</Text>
@@ -1466,8 +1464,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    flex: 1,
+    minWidth: 0,
   },
-  sectionTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
+  sectionTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: COLORS.text,
+    flexShrink: 1,
+    letterSpacing: 0.5,
+    textTransform: 'uppercase',
+  },
   monthNavButton: {
     width: 32,
     height: 32,
@@ -1570,25 +1577,22 @@ const styles = StyleSheet.create({
   },
   eventsHeaderTop: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
+  },
+  eventsDateBlock: {
+    alignItems: 'flex-end',
+    flexShrink: 0,
+    gap: 2,
   },
   eventsHeaderActions: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    flexShrink: 1,
+    flexWrap: 'wrap',
     gap: 8,
-  },
-  eventsTitleBlock: {
-    flex: 1,
-  },
-  eventsDateRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 2,
+    marginTop: 8,
   },
   eventsDateSelectControl: {
     flexDirection: 'row',
@@ -1814,11 +1818,13 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     marginBottom: 4,
   },
-  marketNewsFooterMeta: {
+  marketNewsDateMeta: {
     fontSize: 11,
     color: COLORS.textMuted,
     lineHeight: 16,
-    marginTop: 8,
+    textAlign: 'right',
+    flexShrink: 0,
+    marginTop: 1,
   },
   eventMetaColumn: {
     alignItems: 'flex-end',
