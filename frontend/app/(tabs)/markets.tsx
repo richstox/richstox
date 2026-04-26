@@ -89,8 +89,8 @@ type MarketNewsItem = {
 };
 
 type MarketFeedItem =
-  | { kind: 'event'; id: string; date: string; event: CalendarEvent }
-  | { kind: 'news'; id: string; date?: string | null; news: MarketNewsItem };
+  | { kind: 'event'; id: string; date: string; sortTimestamp: number; event: CalendarEvent }
+  | { kind: 'news'; id: string; date?: string | null; sortTimestamp: number; news: MarketNewsItem };
 
 type AggregateSentiment = {
   score: number;
@@ -111,7 +111,8 @@ const MIN_ACTIVE_DAYS_SCROLL_STEP = 140;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 const MARKET_NEWS_PER_TICKER = 3;
-// Keep these values aligned with backend/server.py GLOBAL_MARKETS_* constants.
+// Keep these values aligned with backend/server.py GLOBAL_MARKETS_* constants:
+// 10 global watchlist tickers + 10 global tracklist tickers, capped to 3 articles each, plus 100 MARKETS articles.
 const MARKET_WATCHLIST_TICKER_LIMIT = 10;
 const MARKET_TRACKLIST_TICKER_LIMIT = 10;
 const MARKET_DIGEST_LIMIT = 100;
@@ -206,6 +207,12 @@ const getMarketNewsDateLabel = (dateStr?: string | null): string => {
   const parsed = new Date(dateStr);
   if (Number.isNaN(parsed.getTime())) return 'Latest';
   return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const getFeedTimestamp = (dateStr?: string | null): number => {
+  if (!dateStr) return 0;
+  const parsed = Date.parse(YMD_DATE_PATTERN.test(dateStr) ? `${dateStr}T00:00:00Z` : dateStr);
+  return Number.isFinite(parsed) ? parsed : 0;
 };
 
 const getSentimentTone = (sentiment?: SentimentCategory | null) => {
@@ -490,6 +497,7 @@ export default function Markets() {
       kind: 'event' as const,
       id: `${event.type}-${event.ticker || 'na'}-${event.date}-${index}`,
       date: event.date,
+      sortTimestamp: getFeedTimestamp(event.date),
       event,
     }));
     const mergedItems: MarketFeedItem[] = [
@@ -498,19 +506,12 @@ export default function Markets() {
         kind: 'news' as const,
         id: news.id,
         date: news.date,
+        sortTimestamp: getFeedTimestamp(news.date),
         news,
       })),
     ];
 
-    return mergedItems.sort((left, right) => {
-      const leftDate = left.date
-        ? Date.parse(YMD_DATE_PATTERN.test(left.date) ? `${left.date}T00:00:00Z` : left.date)
-        : 0;
-      const rightDate = right.date
-        ? Date.parse(YMD_DATE_PATTERN.test(right.date) ? `${right.date}T00:00:00Z` : right.date)
-        : 0;
-      return (Number.isFinite(rightDate) ? rightDate : 0) - (Number.isFinite(leftDate) ? leftDate : 0);
-    });
+    return mergedItems.sort((left, right) => right.sortTimestamp - left.sortTimestamp);
   }, [visibleEvents, visibleNewsItems]);
 
   const displayedFeedItems = useMemo(

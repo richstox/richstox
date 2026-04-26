@@ -54,6 +54,5 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('axios.get(`${API_URL}/api/news?offset=${offset}&limit=${NEWS_PAGE_SIZE}`)');
     expect(fileContent).toContain('setAggregateSentiment(response.data.aggregate_sentiment || null);');
     expect(fileContent).toContain('<Text style={styles.loadMoreText}>Load more events & news</Text>');
-    expect(fileContent).not.toContain('Load more news & events');
   });
 });

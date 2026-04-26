@@ -7642,6 +7642,7 @@ GLOBAL_MARKETS_TOTAL_NEWS_LIMIT = (
 
 
 def _ordered_top_tickers_from_counts(counts: Dict[str, int], limit: int) -> List[str]:
+    """Return top tickers ranked by descending usage count and alphabetically for ties."""
     ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return [ticker for ticker, _ in ordered[:limit]]
 
