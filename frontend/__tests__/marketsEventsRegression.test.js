@@ -84,7 +84,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('disabled={isDisabled}');
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
     expect(fileContent).toContain('News from visible tickers');
-    expect(fileContent).toContain('No stored news for the currently visible tickers');
+    expect(fileContent).toContain('No saved news available for the currently visible tickers');
   });
 
   it('adds icons to the calendar and events headlines and removes the redundant top-right total', () => {

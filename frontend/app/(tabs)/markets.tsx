@@ -500,6 +500,7 @@ export default function Markets() {
 
         if (cancelled) return;
 
+        const rejectedResponses = responses.filter((result) => result.status === 'rejected').length;
         const seenIds = new Set<string>();
         const mergedItems = responses
           .flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
@@ -515,7 +516,7 @@ export default function Markets() {
           });
 
         setNewsItems(mergedItems);
-        if (mergedItems.length === 0 && responses.every((result) => result.status === 'rejected')) {
+        if (mergedItems.length === 0 && rejectedResponses === responses.length) {
           setNewsError('Could not load news');
         }
       } catch (err) {
@@ -528,7 +529,7 @@ export default function Markets() {
       }
     };
 
-    fetchVisibleTickerNews();
+    void fetchVisibleTickerNews();
 
     return () => {
       cancelled = true;
@@ -1054,7 +1055,7 @@ export default function Markets() {
                 <Text style={styles.errorText}>{newsError}</Text>
               ) : newsItems.length === 0 ? (
                 <View style={styles.emptyWrap}>
-                  <Text style={styles.emptyText}>No stored news for the currently visible tickers</Text>
+                  <Text style={styles.emptyText}>No saved news available for the currently visible tickers</Text>
                 </View>
               ) : (
                 newsItems.map((item, index) => {
