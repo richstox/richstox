@@ -592,15 +592,16 @@ export default function Markets() {
 
   const getEventMarketTimingLabel = (event: CalendarEvent): string | null => {
     if (event.type !== 'earnings') return null;
-    const rawTiming = typeof event.metadata?.before_after_market === 'string'
-      ? event.metadata.before_after_market
-      : event.description;
+    const hasStructuredTiming = typeof event.metadata?.before_after_market === 'string';
+    const rawTiming = hasStructuredTiming ? event.metadata?.before_after_market : event.description;
     if (!rawTiming) return null;
     const trimmedTiming = rawTiming.trim();
     const normalized = trimmedTiming.toLowerCase().replace(/[\s_-]+/g, '');
     if (normalized.startsWith('before')) return 'Before Market';
     if (normalized.startsWith('after')) return 'After Market';
-    if (trimmedTiming && trimmedTiming !== EARNINGS_FALLBACK_LABEL) return trimmedTiming;
+    if (!hasStructuredTiming && /market/i.test(trimmedTiming) && trimmedTiming !== EARNINGS_FALLBACK_LABEL) {
+      return trimmedTiming;
+    }
     return null;
   };
 
@@ -967,7 +968,7 @@ export default function Markets() {
                     </View>
 
                     {activeDayKeysForDisplayMonth.length === 0 ? (
-                      <Text style={styles.selectorEmptyText}>No event days in this month.</Text>
+                      <Text style={styles.selectorEmptyText}>No events in this month.</Text>
                     ) : (
                       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeDaysScrollContent}>
                         {activeDayKeysForDisplayMonth.map((dayKey) => {
