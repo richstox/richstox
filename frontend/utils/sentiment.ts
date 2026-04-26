@@ -32,7 +32,7 @@ export const formatAggregateSentimentHelperText = (aggregateSentiment?: Aggregat
 
   return [
     AGGREGATE_SENTIMENT_HELPER_TEXT,
-    '+1.00 means every tracked article is positive; -1.00 means every tracked article is negative.',
+    '+1.00 means all tracked articles are positive; -1.00 means all tracked articles are negative.',
     `Current mix: ${positiveCount} positive • ${neutralCount} neutral • ${negativeCount} negative (${articleLabel}).`,
   ].join('\n');
 };

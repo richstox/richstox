@@ -1137,11 +1137,13 @@ export default function Dashboard() {
               <View style={styles.feedModeGroup} data-testid="homepage-events-toggle">
                 {HOMEPAGE_FEED_MODE_OPTIONS.map((option) => {
                   const isActive = homepageFeedModes.includes(option.key);
+                  const isLocked = isActive && homepageFeedModes.length === 1;
                   return (
                     <TouchableOpacity
                       key={option.key}
-                      style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}
+                      style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}
                       onPress={() => toggleHomepageFeedMode(option.key)}
+                      disabled={isLocked}
                       accessibilityRole="button"
                       accessibilityLabel={`Show ${option.label.toLowerCase()} on homepage`}
                     >
@@ -2400,6 +2402,9 @@ const styles = StyleSheet.create({
   feedModeChipActive: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
+  },
+  feedModeChipLocked: {
+    opacity: 0.75,
   },
   feedModeChipText: {
     fontSize: 11,

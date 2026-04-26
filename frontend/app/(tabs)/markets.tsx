@@ -780,11 +780,13 @@ export default function Markets() {
                 <View style={styles.feedModeGroup}>
                   {MARKET_FEED_MODE_OPTIONS.map((option) => {
                     const isActive = marketFeedModes.includes(option.key);
+                    const isLocked = isActive && marketFeedModes.length === 1;
                     return (
                       <TouchableOpacity
                         key={option.key}
-                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}
+                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}
                         onPress={() => toggleMarketFeedMode(option.key)}
+                        disabled={isLocked}
                         accessibilityRole="button"
                         accessibilityLabel={`Show ${option.label.toLowerCase()} on markets`}
                       >
@@ -1082,7 +1084,7 @@ export default function Markets() {
                 })()}
 
                 <Text style={styles.articleContent}>
-                  Richstox keeps article reading inside the app. Use the button below only if you want to open the original source in your browser.
+                  Review the ticker, source, date, and sentiment here first. Use the button below only if you want to open the original source in your browser.
                 </Text>
 
                 {selectedArticle.link && (
@@ -1754,6 +1756,9 @@ const styles = StyleSheet.create({
   feedModeChipActive: {
     backgroundColor: APP_COLORS.primary,
     borderColor: APP_COLORS.primary,
+  },
+  feedModeChipLocked: {
+    opacity: 0.75,
   },
   feedModeChipText: {
     fontSize: 11,

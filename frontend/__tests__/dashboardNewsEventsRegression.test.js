@@ -54,7 +54,7 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('formatAggregateSentimentHelperText(aggregateSentiment)');
     expect(fileContent).toContain('style={styles.feedModeGroup}');
-    expect(fileContent).toContain('style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}');
+    expect(fileContent).toContain('style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}');
   });
 
   it('keeps homepage paging at five items, authenticates the request, and uses API-provided aggregate sentiment for the full corpus', () => {
