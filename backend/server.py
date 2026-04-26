@@ -2601,7 +2601,7 @@ async def get_homepage_data(request: Request):
     except Exception:
         prague_today = datetime.utcnow().date().isoformat()
     tracklist_rebalance_pending = bool(
-        tracklist_effective_date and tracklist_effective_date > prague_today
+        tracklist_effective_date and tracklist_effective_date >= prague_today
     )
 
     for ticker in ordered_tickers:
