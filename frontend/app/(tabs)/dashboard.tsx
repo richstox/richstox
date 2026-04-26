@@ -729,6 +729,7 @@ export default function Dashboard() {
                       ? `${(performanceMetrics.realized_pnl_usd || 0) >= 0 ? '+' : '-'}$${Math.abs(performanceMetrics.realized_pnl_usd || 0).toFixed(2)}`
                       : formatPercent(performanceMetrics.realized_pnl_pct)}
                   </Text>
+                  <Text style={styles.metricCaption}>Closed trades</Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
                   <Text style={styles.metricLabel}>Unrealized P/L</Text>
@@ -740,6 +741,7 @@ export default function Dashboard() {
                       ? `${(performanceMetrics.unrealized_pnl_usd || 0) >= 0 ? '+' : '-'}$${Math.abs(performanceMetrics.unrealized_pnl_usd || 0).toFixed(2)}`
                       : formatPercent(performanceMetrics.unrealized_pnl_pct)}
                   </Text>
+                  <Text style={styles.metricCaption}>Open positions</Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
                   <Text style={styles.metricLabel}>Avg. per Year</Text>
@@ -1842,6 +1844,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: 'rgba(255,255,255,0.7)',
     marginBottom: 4,
+  },
+  metricCaption: {
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.55)',
+    marginTop: 2,
   },
   metricValue: {
     fontSize: 28,

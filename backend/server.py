@@ -1632,6 +1632,24 @@ async def _get_membership_state(user_id: str) -> dict:
     }
 
 
+# ⚠️ BINDING RULE: TRACKLIST PORTFOLIO INVARIANTS
+# ============================================
+# These two invariants MUST hold for every snapshot produced by the seed and
+# every rebalance helper below. Violating either of them desynchronizes the
+# inception curve and breaks realized/unrealized P/L accounting.
+#
+#   1. total_value = Σ(shares × close) + cash_balance
+#      Cash is part of the portfolio. Even when the user "doesn't deal with
+#      cash", the system must track it for precision.
+#
+#   2. shares are integers. Any rounding residue from `floor(allocation / close)`
+#      flows into cash_balance. This rule applies to BOTH the initial seed and
+#      every rebalance — they share one code path so the curve stays consistent.
+#
+# Realized P/L per sell = (sell_price − avg_cost) × shares_sold (weighted-average
+# cost basis, no FIFO). Realized P/L % and total return % are reported against
+# `initial_capital` (the seed value), not against current portfolio value.
+# ============================================
 async def _build_initial_seed_snapshot(
     tickers: List[str],
     capital: float,
@@ -1692,6 +1710,10 @@ async def _build_rebalance_snapshot(
 ) -> dict:
     """
     Rebalance the entire tracklist to equal-weight integer shares.
+
+    Invariants (see binding rule above _build_initial_seed_snapshot):
+      - total_value = Σ(shares × close) + cash_balance  (cash is in the portfolio)
+      - shares are integers; rounding residue flows into cash_balance
 
     For each existing ticker that stays: compute target_shares = floor(per_slot/close)
     and trade the delta (buy or sell). Buys roll into the weighted-average cost basis;
@@ -1807,6 +1829,9 @@ async def _compute_tracklist_value(
     target_date: Optional[str],
     cash_balance: float = 0.0,
 ) -> float:
+    # Invariant: total_value = Σ(shares × close) + cash_balance.
+    # Cash MUST be passed in (never default to 0 when a doc has cash); otherwise
+    # the inception curve drifts after the first rebalance.
     total = float(cash_balance or 0)
     for pos in positions:
         ticker = _normalize_list_ticker(pos.get("ticker", ""))
