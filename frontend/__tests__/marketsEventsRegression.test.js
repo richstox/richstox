@@ -65,11 +65,26 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
     expect(fileContent).toContain("Show full calendar");
     expect(fileContent).toContain("Load more events");
+    expect(fileContent).toContain("const INITIAL_VISIBLE_EVENTS = 5;");
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
     expect(fileContent).toContain("setSelectedYear(year);");
     expect(fileContent).toContain("import AppHeader from '../../components/AppHeader';");
     expect(fileContent).toContain('<AppHeader title="Markets" />');
+  });
+
+  it('replaces the Prague date label, disables zero-count tabs, and adds the Markets +News toggle', () => {
+    expect(fileContent).toContain('<Text style={styles.sectionSubtitle}>For next 3 months</Text>');
+    expect(fileContent).not.toContain('Prague date');
+    expect(fileContent).toContain('const [includeNews, setIncludeNews] = useState(true);');
+    expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>+News</Text>');
+    expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 1;');
+    expect(fileContent).toContain('/api/news/ticker/${encodeURIComponent(tickerConfig.ticker)}?limit=${MARKET_NEWS_PER_TICKER}&offset=0');
+    expect(fileContent).toContain('const isDisabled = selectedEventCounts[type] === 0;');
+    expect(fileContent).toContain('disabled={isDisabled}');
+    expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
+    expect(fileContent).toContain('News from visible tickers');
+    expect(fileContent).toContain('No stored news for the currently visible tickers');
   });
 
   it('adds icons to the calendar and events headlines and removes the redundant top-right total', () => {

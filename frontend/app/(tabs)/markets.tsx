@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
+  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -45,6 +46,7 @@ const COLORS = {
 
 type EventType = 'earnings' | 'dividend' | 'split' | 'ipo';
 type CalendarViewMode = 'daily' | 'monthly' | 'yearly';
+type SentimentCategory = 'positive' | 'negative' | 'neutral';
 
 type CalendarEvent = {
   date: string;
@@ -61,14 +63,36 @@ type CalendarEvent = {
   metadata?: Record<string, unknown>;
 };
 
+type TickerNewsApiArticle = {
+  article_id?: string | null;
+  title?: string | null;
+  published_at?: string | null;
+  source_link?: string | null;
+  sentiment_label?: SentimentCategory | null;
+};
+
+type MarketNewsItem = {
+  id: string;
+  ticker: string | null;
+  company_name?: string | null;
+  logo_url?: string;
+  fallback_logo_key: string;
+  title: string;
+  date?: string | null;
+  source?: string | null;
+  link?: string | null;
+  sentiment_label?: SentimentCategory | null;
+};
+
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const INITIAL_VISIBLE_EVENTS = 10;
+const INITIAL_VISIBLE_EVENTS = 5;
 const MAX_VISIBLE_MONTH_CARDS = 4;
 const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;
 const ACTIVE_DAYS_SCROLL_PERCENTAGE = 0.8;
 const MIN_ACTIVE_DAYS_SCROLL_STEP = 140;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
+const MARKET_NEWS_PER_TICKER = 1;
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
   if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
@@ -144,6 +168,32 @@ const resolveEventLogoUrl = (rawUrl?: string | null, ticker?: string | null): st
   return rawUrl.startsWith('http') ? rawUrl : `${API_URL}${rawUrl}`;
 };
 
+const getMarketNewsSource = (sourceLink?: string | null): string | null => {
+  if (!sourceLink) return null;
+  try {
+    return new URL(sourceLink).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+};
+
+const getMarketNewsDateLabel = (dateStr?: string | null): string => {
+  if (!dateStr) return 'Latest';
+  const parsed = new Date(dateStr);
+  if (Number.isNaN(parsed.getTime())) return 'Latest';
+  return parsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+};
+
+const getSentimentTone = (sentiment?: SentimentCategory | null) => {
+  if (sentiment === 'positive') {
+    return { backgroundColor: '#D1FAE5', color: COLORS.accent, label: 'Positive' };
+  }
+  if (sentiment === 'negative') {
+    return { backgroundColor: '#FEE2E2', color: COLORS.danger, label: 'Negative' };
+  }
+  return { backgroundColor: '#E0E7FF', color: '#4F46E5', label: 'News' };
+};
+
 const isValidYmd = (value: string): boolean => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const parsed = parseYmd(value);
@@ -194,6 +244,10 @@ export default function Markets() {
   const [tickerFilter, setTickerFilter] = useState('');
   const [visibleEventLimit, setVisibleEventLimit] = useState(INITIAL_VISIBLE_EVENTS);
   const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
+  const [includeNews, setIncludeNews] = useState(true);
+  const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
+  const [newsLoading, setNewsLoading] = useState(false);
+  const [newsError, setNewsError] = useState<string | null>(null);
   const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);
   const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
   const [activeDaysLayoutWidth, setActiveDaysLayoutWidth] = useState(0);
@@ -315,7 +369,7 @@ export default function Markets() {
   useEffect(() => {
     setTickerFilter('');
     setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);
-  }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey]);
+  }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey, selectedEventType]);
 
   useEffect(() => {
     setSelectedYear(Number(format(displayMonth, 'yyyy')));
@@ -373,6 +427,101 @@ export default function Markets() {
     () => visibleEvents.slice(0, visibleEventLimit),
     [visibleEventLimit, visibleEvents],
   );
+
+  const visibleTickerConfigs = useMemo(() => {
+    const seenTickers = new Set<string>();
+    return displayedEvents.reduce<{ ticker: string; company_name?: string | null; logo_url?: string }[]>((acc, event) => {
+      const normalizedTicker = event.ticker?.trim().toUpperCase();
+      if (!normalizedTicker || seenTickers.has(normalizedTicker)) return acc;
+      seenTickers.add(normalizedTicker);
+      acc.push({
+        ticker: normalizedTicker,
+        company_name: event.company_name ?? null,
+        logo_url: resolveEventLogoUrl(event.logo_url, event.ticker),
+      });
+      return acc;
+    }, []);
+  }, [displayedEvents]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const fetchVisibleTickerNews = async () => {
+      if (!includeNews || visibleTickerConfigs.length === 0) {
+        setNewsItems([]);
+        setNewsError(null);
+        setNewsLoading(false);
+        return;
+      }
+
+      try {
+        setNewsLoading(true);
+        setNewsError(null);
+
+        const responses = await Promise.allSettled(
+          visibleTickerConfigs.map(async (tickerConfig) => {
+            const response = await fetch(
+              `${API_URL}/api/news/ticker/${encodeURIComponent(tickerConfig.ticker)}?limit=${MARKET_NEWS_PER_TICKER}&offset=0`,
+            );
+            if (!response.ok) {
+              throw new Error(`HTTP ${response.status}`);
+            }
+            const payload = await response.json();
+            const articles: TickerNewsApiArticle[] = Array.isArray(payload?.articles) ? payload.articles : [];
+            return articles.map((article, index) => ({
+              id:
+                article.article_id ||
+                article.source_link ||
+                `${tickerConfig.ticker}-${article.title ?? 'untitled'}-${article.published_at ?? 'no-date'}-${index}`,
+              ticker: tickerConfig.ticker,
+              company_name: tickerConfig.company_name ?? null,
+              logo_url: tickerConfig.logo_url,
+              fallback_logo_key: getEventFallbackKey(tickerConfig.ticker, tickerConfig.company_name),
+              title: article.title || `${tickerConfig.ticker} news`,
+              date: article.published_at ?? null,
+              source: getMarketNewsSource(article.source_link),
+              link: article.source_link ?? null,
+              sentiment_label: article.sentiment_label ?? null,
+            }));
+          }),
+        );
+
+        if (cancelled) return;
+
+        const seenIds = new Set<string>();
+        const mergedItems = responses
+          .flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+          .filter((item) => {
+            if (seenIds.has(item.id)) return false;
+            seenIds.add(item.id);
+            return true;
+          })
+          .sort((a, b) => {
+            const left = a.date ? Date.parse(a.date) : 0;
+            const right = b.date ? Date.parse(b.date) : 0;
+            return (Number.isFinite(right) ? right : 0) - (Number.isFinite(left) ? left : 0);
+          });
+
+        setNewsItems(mergedItems);
+        if (mergedItems.length === 0 && responses.every((result) => result.status === 'rejected')) {
+          setNewsError('Could not load news');
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.error('Error fetching Markets news:', err);
+        setNewsItems([]);
+        setNewsError('Could not load news');
+      } finally {
+        if (!cancelled) setNewsLoading(false);
+      }
+    };
+
+    fetchVisibleTickerNews();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [includeNews, visibleTickerConfigs]);
 
   const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;
   const canScrollActiveDaysLeft = activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
@@ -446,6 +595,20 @@ export default function Markets() {
     return event.description || 'Scheduled';
   };
 
+  const openNewsItem = async (item: MarketNewsItem) => {
+    if (item.link) {
+      try {
+        await Linking.openURL(item.link);
+        return;
+      } catch (err) {
+        console.error('Error opening Markets news article:', err);
+      }
+    }
+    if (item.ticker) {
+      router.push(`/stock/${item.ticker}`);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <AppHeader title="Markets" />
@@ -458,7 +621,7 @@ export default function Markets() {
                 <Ionicons name="calendar-clear-outline" size={18} color={COLORS.primary} />
                 <Text style={styles.sectionTitle}>Calendar</Text>
               </View>
-              <Text style={styles.sectionSubtitle}>{rangeStartStr} → {rangeEndStr} · Prague date</Text>
+              <Text style={styles.sectionSubtitle}>For next 3 months</Text>
             </View>
           </View>
           <View style={styles.viewToggleRow}>
@@ -709,13 +872,24 @@ export default function Markets() {
 
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
-            <View>
-              <View style={styles.sectionTitleRow}>
-                <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
-                <Text style={styles.sectionTitle}>Events</Text>
+            <View style={styles.eventsHeaderTop}>
+              <View style={styles.eventsTitleBlock}>
+                <View style={styles.sectionTitleRow}>
+                  <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
+                  <Text style={styles.sectionTitle}>Events</Text>
+                </View>
+                <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
+                <Text style={styles.sectionSubtitle}>{periodEvents.length} events</Text>
               </View>
-              <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
-              <Text style={styles.sectionSubtitle}>{periodEvents.length} events</Text>
+              <TouchableOpacity
+                style={styles.portfolioToggleInline}
+                onPress={() => setIncludeNews((prev) => !prev)}
+              >
+                <Text style={styles.portfolioToggleLabelInline}>+News</Text>
+                <View style={[styles.toggleSwitch, includeNews && styles.toggleSwitchOn]}>
+                  <View style={[styles.toggleKnob, includeNews && styles.toggleKnobOn]} />
+                </View>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -723,20 +897,23 @@ export default function Markets() {
             {EVENT_TYPE_ORDER.map((type) => {
               const meta = EVENT_META[type];
               const isActive = selectedEventType === type;
+              const isDisabled = selectedEventCounts[type] === 0;
               return (
                 <TouchableOpacity
                   key={type}
-                  style={[styles.eventTab, isActive && styles.eventTabActive]}
+                  style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}
                   onPress={() => setSelectedEventType(type)}
+                  disabled={isDisabled}
+                  activeOpacity={isDisabled ? 1 : 0.8}
                   accessibilityRole="button"
                 >
                   <View style={styles.eventTabLabelRow}>
                     <View style={[styles.eventTabDot, { backgroundColor: meta.color }]} />
-                    <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive]}>
+                    <Text style={[styles.eventTabText, isActive && styles.eventTabTextActive, isDisabled && styles.eventTabTextDisabled]}>
                       {meta.shortLabel}
                     </Text>
                   </View>
-                  <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive]}>
+                  <Text style={[styles.eventTabCountText, isActive && styles.eventTabCountTextActive, isDisabled && styles.eventTabTextDisabled]}>
                     {selectedEventCounts[type]}
                   </Text>
                 </TouchableOpacity>
@@ -842,6 +1019,71 @@ export default function Markets() {
                 >
                   <Text style={styles.seeLessText}>See less</Text>
                 </TouchableOpacity>
+              )}
+            </View>
+          )}
+
+          {includeNews && visibleTickerConfigs.length > 0 && (
+            <View style={styles.marketNewsSection}>
+              <View style={styles.marketNewsHeader}>
+                <Text style={styles.marketNewsTitle}>News from visible tickers</Text>
+                <Text style={styles.marketNewsSubtitle}>
+                  {visibleTickerConfigs.length} ticker{visibleTickerConfigs.length === 1 ? '' : 's'}
+                </Text>
+              </View>
+
+              {newsLoading ? (
+                <View style={styles.loadingWrap}>
+                  <ActivityIndicator size="small" color={COLORS.primary} />
+                </View>
+              ) : newsError ? (
+                <Text style={styles.errorText}>{newsError}</Text>
+              ) : newsItems.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>No stored news for the currently visible tickers</Text>
+                </View>
+              ) : (
+                newsItems.map((item, index) => {
+                  const tone = getSentimentTone(item.sentiment_label);
+                  const canOpenItem = Boolean(item.link || item.ticker);
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      style={[styles.eventRow, index === newsItems.length - 1 && styles.lastEventRow]}
+                      onPress={() => {
+                        if (!canOpenItem) return;
+                        void openNewsItem(item);
+                      }}
+                      disabled={!canOpenItem}
+                      activeOpacity={canOpenItem ? 0.8 : 1}
+                    >
+                      <EventLogo
+                        logoUrl={item.logo_url}
+                        fallbackKey={item.fallback_logo_key}
+                      />
+                      <View style={styles.eventContent}>
+                        <View style={styles.eventTopRow}>
+                          <View style={styles.eventTickerBlock}>
+                            <Text style={styles.eventTicker}>{item.ticker || 'Market'}</Text>
+                            {item.company_name ? (
+                              <Text style={styles.eventCompanyName} numberOfLines={1}>{item.company_name}</Text>
+                            ) : null}
+                          </View>
+                          <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
+                            <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
+                          </View>
+                        </View>
+                        <Text style={styles.eventTitle} numberOfLines={2}>{item.title}</Text>
+                        <Text style={styles.eventMeta}>
+                          {[item.source, getMarketNewsDateLabel(item.date)].filter(Boolean).join(' • ')}
+                        </Text>
+                      </View>
+                      {canOpenItem ? (
+                        <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                      ) : null}
+                    </TouchableOpacity>
+                  );
+                })
               )}
             </View>
           )}
@@ -1060,6 +1302,15 @@ const styles = StyleSheet.create({
   eventsHeader: {
     marginBottom: 10,
   },
+  eventsHeaderTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  eventsTitleBlock: {
+    flex: 1,
+  },
   eventsDateTitle: { fontSize: 17, fontWeight: '800', color: COLORS.text },
   eventTabsRow: {
     flexDirection: 'row',
@@ -1087,6 +1338,9 @@ const styles = StyleSheet.create({
   eventTabActive: {
     borderBottomColor: '#3B82F6',
   },
+  eventTabDisabled: {
+    opacity: 0.4,
+  },
   eventTabDot: {
     width: 8,
     height: 8,
@@ -1099,6 +1353,9 @@ const styles = StyleSheet.create({
   },
   eventTabTextActive: {
     color: '#2563EB',
+  },
+  eventTabTextDisabled: {
+    color: COLORS.textMuted,
   },
   eventTabCountText: {
     fontSize: 13,
@@ -1217,5 +1474,53 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: COLORS.textLight,
     fontWeight: '500',
+  },
+  marketNewsSection: {
+    marginTop: 16,
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  marketNewsHeader: {
+    marginBottom: 10,
+  },
+  marketNewsTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+  },
+  marketNewsSubtitle: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  toggleSwitch: {
+    width: 44,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: COLORS.border,
+    padding: 2,
+    justifyContent: 'center',
+  },
+  toggleSwitchOn: {
+    backgroundColor: COLORS.primary,
+  },
+  toggleKnob: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#FFFFFF',
+  },
+  toggleKnobOn: {
+    alignSelf: 'flex-end',
+  },
+  portfolioToggleInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  portfolioToggleLabelInline: {
+    fontSize: 12,
+    color: COLORS.textLight,
   },
 });
