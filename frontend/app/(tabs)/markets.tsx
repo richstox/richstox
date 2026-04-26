@@ -84,6 +84,12 @@ type MarketNewsItem = {
   sentiment_label?: SentimentCategory | null;
 };
 
+type VisibleTickerConfig = {
+  ticker: string;
+  company_name?: string | null;
+  logo_url?: string;
+};
+
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const INITIAL_VISIBLE_EVENTS = 5;
 const MAX_VISIBLE_MONTH_CARDS = 4;
@@ -369,7 +375,7 @@ export default function Markets() {
   useEffect(() => {
     setTickerFilter('');
     setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);
-  }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey, selectedEventType]);
+  }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey]);
 
   useEffect(() => {
     setSelectedYear(Number(format(displayMonth, 'yyyy')));
@@ -430,7 +436,7 @@ export default function Markets() {
 
   const visibleTickerConfigs = useMemo(() => {
     const seenTickers = new Set<string>();
-    return displayedEvents.reduce<{ ticker: string; company_name?: string | null; logo_url?: string }[]>((acc, event) => {
+    return displayedEvents.reduce<VisibleTickerConfig[]>((acc, event) => {
       const normalizedTicker = event.ticker?.trim().toUpperCase();
       if (!normalizedTicker || seenTickers.has(normalizedTicker)) return acc;
       seenTickers.add(normalizedTicker);
@@ -472,7 +478,7 @@ export default function Markets() {
               id:
                 article.article_id ||
                 article.source_link ||
-                `${tickerConfig.ticker}-${article.title ?? 'untitled'}-${article.published_at ?? 'no-date'}-${index}`,
+                `${encodeURIComponent(tickerConfig.ticker)}-${encodeURIComponent(article.title ?? 'untitled')}-${encodeURIComponent(article.published_at ?? 'no-date')}-${index}`,
               ticker: tickerConfig.ticker,
               company_name: tickerConfig.company_name ?? null,
               logo_url: tickerConfig.logo_url,
@@ -902,9 +908,11 @@ export default function Markets() {
                 <TouchableOpacity
                   key={type}
                   style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}
-                  onPress={() => setSelectedEventType(type)}
+                  onPress={() => {
+                    setSelectedEventType(type);
+                    setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);
+                  }}
                   disabled={isDisabled}
-                  activeOpacity={isDisabled ? 1 : 0.8}
                   accessibilityRole="button"
                 >
                   <View style={styles.eventTabLabelRow}>
