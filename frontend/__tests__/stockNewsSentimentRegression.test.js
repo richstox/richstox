@@ -9,11 +9,12 @@ describe('Stock news sentiment regressions', () => {
     fileContent = fs.readFileSync(stockPagePath, 'utf-8');
   });
 
-  it('shows the aggregate sentiment score and helper range copy on ticker detail', () => {
-    expect(fileContent).toContain("import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';");
+  it('shows the aggregate sentiment score and routes helper copy through the shared tooltip on ticker detail', () => {
+    expect(fileContent).toContain("import { formatAggregateSentimentLabel, getAggregateSentimentTooltipContent } from '../../utils/sentiment';");
     expect(fileContent).toContain('<View style={styles.aggregateSentimentInfo}>');
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
-    expect(fileContent).toContain('<Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>');
+    expect(fileContent).toContain("onPress={() => showTooltip('aggregateSentiment')}");
+    expect(fileContent).toContain("activeTooltip === 'aggregateSentiment'");
   });
 
   it('keeps the article logo routed to ticker detail while article taps stay in-app', () => {
