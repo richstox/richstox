@@ -28,11 +28,11 @@ export const formatAggregateSentimentHelperText = (aggregateSentiment?: Aggregat
   const totalArticles = typeof aggregateSentiment?.total_articles === 'number' && Number.isFinite(aggregateSentiment.total_articles)
     ? Math.max(0, Math.round(aggregateSentiment.total_articles))
     : positiveCount + negativeCount + neutralCount;
-  const articleLabel = totalArticles === 1 ? '1 article' : `${totalArticles} articles`;
+  const articleCountLabel = totalArticles === 1 ? '1 article' : `${totalArticles} articles`;
 
   return [
     AGGREGATE_SENTIMENT_HELPER_TEXT,
     '+1.00 means all tracked articles are positive. -1.00 means all tracked articles are negative.',
-    `Current mix: ${positiveCount} positive • ${negativeCount} negative • ${neutralCount} neutral (${articleLabel}).`,
+    `Current mix: ${positiveCount} positive • ${negativeCount} negative • ${neutralCount} neutral (${articleCountLabel}).`,
   ].join('\n');
 };

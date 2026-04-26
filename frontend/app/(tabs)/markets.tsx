@@ -1063,7 +1063,7 @@ export default function Markets() {
                     />
                     <View>
                       <Text style={styles.articleTicker}>{selectedArticle.ticker || 'Market News'}</Text>
-                      <Text style={styles.articleCompany}>{selectedArticle.company_name || selectedArticle.source || 'Market news'}</Text>
+                      <Text style={styles.articleCompany}>{selectedArticle.company_name || selectedArticle.source || 'Market News'}</Text>
                     </View>
                   </TouchableOpacity>
                   <Text style={styles.articleMeta}>
