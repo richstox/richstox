@@ -815,7 +815,7 @@ export default function StockDetail() {
   const nextTicker = searchIndex >= 0 && searchIndex < searchResults.length - 1 ? searchResults[searchIndex + 1].ticker : null;
   const navigateToTicker = useCallback((target: string) => {
     router.replace(`/stock/${target}`);
-  }, [from, router]);
+  }, [router]);
 
   // MY STOCKS list navigation (same UX as search pager)
   const { tickers: myStocksTickers, clearTickers: clearMyStocks } = useMyStocksStore();
