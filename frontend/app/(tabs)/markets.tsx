@@ -114,6 +114,7 @@ const MARKET_NEWS_PER_TICKER = 3;
 const MARKET_DIGEST_LIMIT = 100;
 // Markets aggregates ALL distinct Watchlist/Tracklist tickers across users,
 // so request a large enough page to avoid truncating the merged corpus client-side.
+// 1000 is a defensive UI fetch ceiling until the screen adds incremental paging.
 const MARKET_NEWS_LIMIT = 1000;
 const YMD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 

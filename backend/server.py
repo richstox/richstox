@@ -7724,7 +7724,8 @@ async def get_news(
        - Total = min(3 * N, available_articles)
        - If N=16, target up to 48 items
 
-       4. ORDERING: Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
+    4. ORDERING:
+       - Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
 
     ==========================================================================
     LOGO GUARANTEE — DO NOT REMOVE WITHOUT RICHARD APPROVAL
@@ -7747,7 +7748,7 @@ async def get_news(
             if session_token:
                 user = await validate_session(db, session_token)
         if not user:
-            raise HTTPException(401, "Authentication required")
+            raise HTTPException(status_code=401, detail="Authentication required")
 
         membership_state = await _get_membership_state(user["user_id"])
         all_followed = membership_state["watchlist"] | membership_state["tracklist"]
