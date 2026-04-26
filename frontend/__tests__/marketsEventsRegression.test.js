@@ -18,11 +18,12 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('<View style={styles.eventTabLabelRow}>');
   });
 
-  it('shows ticker/company filtering only when the event list is large enough', () => {
-    expect(fileContent).toContain('const TICKER_FILTER_THRESHOLD = 6;');
-    expect(fileContent).toContain('const shouldShowTickerFilter = tickerOptions.length >= TICKER_FILTER_THRESHOLD;');
+  it('keeps the ticker/company search visible for all event tabs', () => {
     expect(fileContent).toContain('placeholder="Search ticker or company"');
     expect(fileContent).toContain("Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null");
+    expect(fileContent).not.toContain('const TICKER_FILTER_THRESHOLD = 6;');
+    expect(fileContent).not.toContain('const shouldShowTickerFilter = tickerOptions.length >= TICKER_FILTER_THRESHOLD;');
+    expect(fileContent).toContain('<View style={styles.filterSearchWrap}>');
   });
 
   it('keeps earnings subtitles on the expected label and shows simplified compact horizontal day cards', () => {
@@ -69,5 +70,13 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("setSelectedYear(year);");
     expect(fileContent).toContain("import AppHeader from '../../components/AppHeader';");
     expect(fileContent).toContain('<AppHeader title="Markets" />');
+  });
+
+  it('adds icons to the calendar and events headlines and removes the redundant top-right total', () => {
+    expect(fileContent).toContain('<Ionicons name="calendar-clear-outline" size={18} color={COLORS.primary} />');
+    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Calendar</Text>');
+    expect(fileContent).toContain('<Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />');
+    expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events</Text>');
+    expect(fileContent).not.toContain('<Text style={styles.eventsCount}>{periodEvents.length}</Text>');
   });
 });

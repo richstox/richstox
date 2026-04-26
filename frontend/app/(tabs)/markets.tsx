@@ -62,7 +62,6 @@ type CalendarEvent = {
 };
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const TICKER_FILTER_THRESHOLD = 6;
 const INITIAL_VISIBLE_EVENTS = 10;
 const MAX_VISIBLE_MONTH_CARDS = 4;
 const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;
@@ -353,13 +352,6 @@ export default function Markets() {
     [periodEvents, selectedEventType],
   );
 
-  const tickerOptions = useMemo(() => {
-    const options = typeFilteredEvents.map((event) => event.ticker || event.company_name || '').filter(Boolean);
-    return Array.from(new Set(options));
-  }, [typeFilteredEvents]);
-
-  const shouldShowTickerFilter = tickerOptions.length >= TICKER_FILTER_THRESHOLD;
-
   const normalizedTickerFilter = tickerFilter.trim().toLowerCase();
   const visibleEvents = useMemo(() => {
     if (!normalizedTickerFilter) return typeFilteredEvents;
@@ -462,7 +454,10 @@ export default function Markets() {
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <View>
-              <Text style={styles.sectionTitle}>Calendar</Text>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="calendar-clear-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.sectionTitle}>Calendar</Text>
+              </View>
               <Text style={styles.sectionSubtitle}>{rangeStartStr} → {rangeEndStr} · Prague date</Text>
             </View>
           </View>
@@ -715,10 +710,13 @@ export default function Markets() {
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
             <View>
+              <View style={styles.sectionTitleRow}>
+                <Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />
+                <Text style={styles.sectionTitle}>Events</Text>
+              </View>
               <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
               <Text style={styles.sectionSubtitle}>{periodEvents.length} events</Text>
             </View>
-            <Text style={styles.eventsCount}>{periodEvents.length}</Text>
           </View>
 
           <View style={styles.eventTabsRow}>
@@ -745,28 +743,26 @@ export default function Markets() {
               );
             })}
           </View>
-          {shouldShowTickerFilter && (
-            <View style={styles.filterSearchWrap}>
-              <Ionicons name="search" size={20} color={COLORS.textMuted} />
-              <TextInput
-                style={[
-                  styles.filterSearchInput,
-                  Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null,
-                ]}
-                placeholder="Search ticker or company"
-                placeholderTextColor={COLORS.textMuted}
-                value={tickerFilter}
-                onChangeText={setTickerFilter}
-                autoCapitalize="characters"
-                autoCorrect={false}
-              />
-              {tickerFilter.length > 0 && (
-                <TouchableOpacity onPress={() => setTickerFilter('')}>
-                  <Ionicons name="close-circle" size={20} color={COLORS.textMuted} />
-                </TouchableOpacity>
-              )}
-            </View>
-          )}
+          <View style={styles.filterSearchWrap}>
+            <Ionicons name="search" size={20} color={COLORS.textMuted} />
+            <TextInput
+              style={[
+                styles.filterSearchInput,
+                Platform.OS === 'web' ? { outlineStyle: 'none', outlineWidth: 0 } : null,
+              ]}
+              placeholder="Search ticker or company"
+              placeholderTextColor={COLORS.textMuted}
+              value={tickerFilter}
+              onChangeText={setTickerFilter}
+              autoCapitalize="characters"
+              autoCorrect={false}
+            />
+            {tickerFilter.length > 0 && (
+              <TouchableOpacity onPress={() => setTickerFilter('')}>
+                <Ionicons name="close-circle" size={20} color={COLORS.textMuted} />
+              </TouchableOpacity>
+            )}
+          </View>
 
           {loading ? (
             <View style={styles.loadingWrap}>
@@ -870,6 +866,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 14,
+  },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   sectionSubtitle: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
@@ -1057,13 +1058,9 @@ const styles = StyleSheet.create({
   dayDotText: { fontSize: 10, color: COLORS.textLight, fontWeight: '700' },
   dayDotTextSelected: { color: COLORS.primary },
   eventsHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
     marginBottom: 10,
   },
   eventsDateTitle: { fontSize: 17, fontWeight: '800', color: COLORS.text },
-  eventsCount: { fontSize: 20, fontWeight: '800', color: COLORS.primary },
   eventTabsRow: {
     flexDirection: 'row',
     gap: 8,

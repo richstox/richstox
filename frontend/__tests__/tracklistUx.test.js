@@ -66,6 +66,8 @@ describe('Tracklist UX regression', () => {
     expect(portfolioSoonPage).toContain('Portfolio is temporarily disabled');
     expect(appHeader).toContain('menu-portfolio');
     expect(appHeader).toContain('Soon');
+    expect(appHeader).toContain("style={[styles.menuItem, styles.menuItemDisabled]}");
+    expect(appHeader).not.toContain("handleMenuItemPress('portfolio')");
     expect(tracklistPage).toContain('Your Tracklist');
     expect(tracklistPage).toContain('You can still replace names from this overview.');
     expect(tracklistPage).toContain('Auto-assigned basket');
