@@ -1662,8 +1662,6 @@ async def _build_initial_seed_snapshot(
         if not close_value or close_value <= 0:
             raise HTTPException(400, f"Missing close price for {ticker}")
         shares = int(math.floor(allocation / close_value))
-        if shares < 0:
-            shares = 0
         cost = shares * close_value
         invested_total += cost
         positions.append({
@@ -1752,8 +1750,6 @@ async def _build_rebalance_snapshot(
         ticker = _normalize_list_ticker(raw_ticker)
         close_value, close_date = close_map[ticker]
         target_shares = int(math.floor(per_slot / close_value)) if close_value > 0 else 0
-        if target_shares < 0:
-            target_shares = 0
 
         if ticker in existing_map:
             old = existing_map[ticker]
@@ -2315,7 +2311,7 @@ async def replace_tracklist_ticker(payload: TracklistReplaceRequest, request: Re
     await _assert_visible_ticker(new_ticker)
     existing_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in state["tracklist_positions"]]
     target_tickers = [new_ticker if ticker == old_ticker else ticker for ticker in existing_tickers]
-    now_iso = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
     effective_date = await _resolve_target_close_date() or datetime.utcnow().date().isoformat()
     tracklist_doc = state["tracklist_doc"] or {"initial_capital": 100000, "events": []}
     cash_balance = float(tracklist_doc.get("cash_balance") or 0)
