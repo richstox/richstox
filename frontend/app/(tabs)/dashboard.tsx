@@ -720,6 +720,28 @@ export default function Dashboard() {
                   </Text>
                 </View>
                 <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Realized P/L</Text>
+                  <Text style={[
+                    styles.metricValue,
+                    (performanceMetrics.realized_pnl_usd || 0) >= 0 ? styles.positive : styles.negative,
+                  ]}>
+                    {performanceMode === 'USD'
+                      ? `${(performanceMetrics.realized_pnl_usd || 0) >= 0 ? '+' : '-'}$${Math.abs(performanceMetrics.realized_pnl_usd || 0).toFixed(2)}`
+                      : formatPercent(performanceMetrics.realized_pnl_pct)}
+                  </Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
+                  <Text style={styles.metricLabel}>Unrealized P/L</Text>
+                  <Text style={[
+                    styles.metricValue,
+                    (performanceMetrics.unrealized_pnl_usd || 0) >= 0 ? styles.positive : styles.negative,
+                  ]}>
+                    {performanceMode === 'USD'
+                      ? `${(performanceMetrics.unrealized_pnl_usd || 0) >= 0 ? '+' : '-'}$${Math.abs(performanceMetrics.unrealized_pnl_usd || 0).toFixed(2)}`
+                      : formatPercent(performanceMetrics.unrealized_pnl_pct)}
+                  </Text>
+                </View>
+                <View style={styles.performanceMetricCard}>
                   <Text style={styles.metricLabel}>Avg. per Year</Text>
                   <Text style={styles.metricValue}>{formatPercent(performanceMetrics.avg_per_year_pct)}</Text>
                 </View>
@@ -1023,6 +1045,14 @@ export default function Dashboard() {
                           {stock.added_at && (
                             <Text style={styles.stockAddedAt}>Added: {stock.added_at}</Text>
                           )}
+                          {/* Position details for tracklist holdings (whole shares only) */}
+                          {typeof stock.shares === 'number' && stock.shares > 0 && (
+                            <Text style={styles.stockPositionDetails} numberOfLines={1}>
+                              {stock.shares} sh
+                              {typeof stock.avg_cost === 'number' ? ` × $${stock.avg_cost.toFixed(2)}` : ''}
+                              {typeof stock.position_value === 'number' ? ` = $${stock.position_value.toFixed(2)}` : ''}
+                            </Text>
+                          )}
                         </View>
                       </View>
                       {/* P37+ Part 3 (G): Show change since added + 1D change */}
@@ -1042,6 +1072,21 @@ export default function Dashboard() {
                         ]}>
                           ({(stock.change_1d_pct || 0) >= 0 ? '+' : ''}{(stock.change_1d_pct || 0).toFixed(2)}%)
                         </Text>
+                        {/* Position P/L for tracklist holdings */}
+                        {typeof stock.position_pl_usd === 'number' && (
+                          <Text
+                            style={[
+                              styles.stockPositionPl,
+                              stock.position_pl_usd >= 0 ? styles.positive : styles.negative,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {stock.position_pl_usd >= 0 ? '+' : '-'}${Math.abs(stock.position_pl_usd).toFixed(2)}
+                            {typeof stock.position_pl_pct === 'number'
+                              ? ` (${stock.position_pl_pct >= 0 ? '+' : ''}${stock.position_pl_pct.toFixed(2)}%)`
+                              : ''}
+                          </Text>
+                        )}
                       </View>
                     </TouchableOpacity>
                   </View>
@@ -2115,6 +2160,11 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 2,
   },
+  stockPositionDetails: {
+    fontSize: 11,
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
   stockChangesColumn: {
     alignItems: 'flex-end',
   },
@@ -2124,6 +2174,11 @@ const styles = StyleSheet.create({
   },
   stock1dChange: {
     fontSize: 11,
+    marginTop: 2,
+  },
+  stockPositionPl: {
+    fontSize: 11,
+    fontWeight: '600',
     marginTop: 2,
   },
   positiveLight: {
