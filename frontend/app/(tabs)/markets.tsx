@@ -865,9 +865,13 @@ export default function Markets() {
     visibleFeedLimit,
   ]);
 
+  const persistMarketsScroll = useCallback(() => {
+    setMarketsState({ scrollY: currentScrollYRef.current });
+  }, [setMarketsState]);
+
   const restoreMarketsScroll = useCallback((force = false) => {
     if (!force && didRestoreScrollRef.current) return;
-    const nextY = useMarketsStore.getState().scrollY || initialMarketsStateRef.current.scrollY;
+    const nextY = currentScrollYRef.current;
     if (nextY <= 0) {
       didRestoreScrollRef.current = true;
       return;
@@ -903,8 +907,9 @@ export default function Markets() {
         contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}
         onScroll={(event) => {
           currentScrollYRef.current = event.nativeEvent.contentOffset.y;
-          setMarketsState({ scrollY: currentScrollYRef.current });
         }}
+        onScrollEndDrag={persistMarketsScroll}
+        onMomentumScrollEnd={persistMarketsScroll}
         onContentSizeChange={() => {
           restoreMarketsScroll();
         }}
