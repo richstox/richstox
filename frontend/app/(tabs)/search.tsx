@@ -17,6 +17,7 @@ import axios from 'axios';
 import { useAuth } from '../../contexts/AuthContext';
 import { useSearchStore } from '../../stores/searchStore';
 import BrandedLoading from '../../components/BrandedLoading';
+import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
 
@@ -31,18 +32,6 @@ const COLORS = {
   background: '#F9FAFB',
   card: '#FFFFFF',
   border: '#E5E7EB',
-};
-
-const MEMBERSHIP_CONFIG: Record<string, { label: string; bg: string; text: string }> = {
-  watchlist: { label: 'Watchlist', bg: '#FEF3C7', text: '#B45309' },
-  tracklist: { label: 'Tracklist', bg: '#DBEAFE', text: '#1D4ED8' },
-};
-
-const getMembershipConfig = (membership: unknown) => {
-  if (typeof membership !== 'string') return null;
-  const normalized = membership.trim().toLowerCase();
-  if (!normalized) return null;
-  return MEMBERSHIP_CONFIG[normalized] ?? { label: normalized.charAt(0).toUpperCase() + normalized.slice(1), bg: '#F3F4F6', text: '#374151' };
 };
 
 // GICS-style sectors with icon and color
@@ -149,7 +138,7 @@ export default function Search() {
     return (
       <View style={styles.pillsRow}>
         {memberships.map((membership: string) => {
-          const config = getMembershipConfig(membership);
+          const config = getMembershipPillConfig(membership);
           if (!config) return null;
           return (
             <View key={`${item.ticker}-${membership}`} style={[styles.membershipPill, { backgroundColor: config.bg }]}>

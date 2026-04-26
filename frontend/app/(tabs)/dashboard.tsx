@@ -22,6 +22,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
 import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
+import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { API_URL } from '../../utils/config';
 import { useMyStocksStore } from '../../stores/myStocksStore';
 
@@ -805,7 +806,7 @@ export default function Dashboard() {
                 onPress={() => setIncludeWatchlist((prev) => !prev)}
                 data-testid="my-stocks-watchlist-toggle"
               >
-                <Text style={styles.portfolioToggleLabelInline}>Watchlist ({data?.watchlist_count || 0})</Text>
+                <Text style={styles.portfolioToggleLabelInline}>+Watchlist ({data?.watchlist_count || 0})</Text>
                 <View style={[styles.toggleSwitch, includeWatchlist && styles.toggleSwitchOn]}>
                   <View style={[styles.toggleKnob, includeWatchlist && styles.toggleKnobOn]} />
                 </View>
@@ -950,13 +951,20 @@ export default function Dashboard() {
             </View>
           ) : filteredStocks.length === 0 ? (
             <View style={styles.emptyState}>
-              <Ionicons name="search-outline" size={32} color={COLORS.textMuted} />
-              <Text style={styles.emptyText}>No matches for "{stocksFilter}"</Text>
+              <Ionicons
+                name={stocksFilter ? 'search-outline' : 'list-outline'}
+                size={32}
+                color={COLORS.textMuted}
+              />
+              <Text style={styles.emptyText}>
+                {stocksFilter ? `No matches for "${stocksFilter}"` : 'No Tracklist stocks yet'}
+              </Text>
             </View>
           ) : (
             <>
               {filteredStocks.slice(0, stocksLimit).map((stock: any, index: number) => {
                 const logoUrl = getLogoUrl(stock);
+                const pillConfig = getMembershipPillConfig(stock.pill);
                 const isLastVisible = index === Math.min(stocksLimit, filteredStocks.length) - 1;
                 return (
                   <View 
@@ -983,15 +991,13 @@ export default function Dashboard() {
                             {/* P33: Pill indicator */}
                             <View style={[
                               styles.stockPill,
-                              stock.pill === 'Portfolio' && styles.stockPillPortfolio,
-                              stock.pill === 'Both' && styles.stockPillBoth,
+                              pillConfig && { backgroundColor: pillConfig.bg },
                             ]}>
                               <Text style={[
                                 styles.stockPillText,
-                                stock.pill === 'Portfolio' && styles.stockPillTextPortfolio,
-                                stock.pill === 'Both' && styles.stockPillTextBoth,
+                                pillConfig && { color: pillConfig.text },
                               ]}>
-                                {stock.pill}
+                                {pillConfig?.label ?? stock.pill}
                               </Text>
                             </View>
                           </View>
@@ -2099,27 +2105,15 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   stockPill: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
     backgroundColor: '#FEF3C7',
   },
-  stockPillPortfolio: {
-    backgroundColor: '#D1FAE5',
-  },
-  stockPillBoth: {
-    backgroundColor: '#E0E7FF',
-  },
   stockPillText: {
-    fontSize: 9,
-    fontWeight: '600',
-    color: '#D97706',
-  },
-  stockPillTextPortfolio: {
-    color: '#059669',
-  },
-  stockPillTextBoth: {
-    color: '#4F46E5',
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B45309',
   },
   
   // P37+ Part 1 (B): Full width load more/see less buttons
