@@ -7611,6 +7611,17 @@ async def get_ticker_ipo(ticker: str):
 # ----- News Endpoints (FROM CACHE - updated daily) -----
 
 
+async def _get_global_watchlist_tickers() -> set[str]:
+    """Global union of Watchlist tickers across all users."""
+    docs = await db.user_watchlist.find({}, {"_id": 0, "ticker": 1}).to_list(length=None)
+    tickers: set[str] = set()
+    for doc in docs:
+        ticker = _normalize_list_ticker(doc.get("ticker", ""))
+        if ticker:
+            tickers.add(ticker)
+    return tickers
+
+
 async def _get_global_tracklist_tickers() -> set[str]:
     """Global union of Tracklist tickers across all users."""
     docs = await db.user_tracklists.find(
@@ -7629,6 +7640,12 @@ async def _get_global_tracklist_tickers() -> set[str]:
             if ticker:
                 tickers.add(ticker)
     return tickers
+
+
+GLOBAL_MARKETS_MARKET_NEWS_LIMIT = 100
+GLOBAL_MARKETS_PER_TICKER_LIMIT = 3
+# UI fetch ceiling until Markets screen adds incremental paging.
+GLOBAL_MARKETS_RESPONSE_LIMIT = 1000
 
 
 def _build_aggregate_sentiment(news_items: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -7687,7 +7704,8 @@ async def get_news(
     sector: str = Query(None, description="Filter by sector"),
     include_portfolio: bool = Query(True, description="Include portfolio tickers in news"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(50, ge=1, le=100)
+    limit: int = Query(50, ge=1, le=100),
+    request: Request = None,
 ):
     """
     P38.4 (BINDING): News & Sentiment = 3 newest articles per ticker.
@@ -7697,8 +7715,7 @@ async def get_news(
     ==========================================================================
 
     1. UNIVERSE:
-       - Portfolio toggle ON: tickers = Watchlist ∪ Portfolio
-       - Portfolio toggle OFF: tickers = Watchlist only
+       - Homepage default: authenticated user's Watchlist ∪ Tracklist
        - Always apply is_visible=true
 
     2. SELECTION RULE (HARD):
@@ -7709,7 +7726,8 @@ async def get_news(
        - Total = min(3 * N, available_articles)
        - If N=16, target up to 48 items
 
-    4. ORDERING: Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
+    4. ORDERING:
+       - Interleaved by recency (max 3 per ticker, sorted by published_at DESC)
 
     ==========================================================================
     LOGO GUARANTEE — DO NOT REMOVE WITHOUT RICHARD APPROVAL
@@ -7724,28 +7742,20 @@ async def get_news(
         # If explicitly provided, use those (for ticker-specific pages)
         ticker_list = [t.strip().upper().replace(".US", "") for t in tickers.split(",")]
     else:
-        # P38.4: Portfolio toggle affects universe
-        # Step 1: Get watchlist tickers (always included)
-        watchlist_raw = await db.user_watchlist.distinct("ticker")
-        watchlist_tickers = set(t.upper().replace(".US", "") for t in watchlist_raw if t)
-        tracklist_tickers = await _get_global_tracklist_tickers()
+        # PRODUCT RULE: Homepage news is strictly user-scoped.
+        # Do not expand this to global or "top" universes without explicit Richard approval.
+        # /api/news stays publicly routable for explicit ticker queries, so
+        # homepage mode performs inline auth instead of relying on middleware.
+        user = getattr(request.state, "user", None) if request else None
+        if not user and request:
+            session_token = get_session_token_from_request(request)
+            if session_token:
+                user = await validate_session(db, session_token)
+        if not user:
+            raise HTTPException(status_code=401, detail="Authentication required")
 
-        # Step 2: Get portfolio tickers (only if include_portfolio=True)
-        if include_portfolio:
-            portfolio_docs = await db.positions.find(
-                {"shares": {"$gt": 0}},
-                {"_id": 0, "ticker": 1}
-            ).to_list(length=None)
-            portfolio_tickers = set(
-                doc["ticker"].upper().replace(".US", "")
-                for doc in portfolio_docs
-                if doc.get("ticker")
-            )
-        else:
-            portfolio_tickers = set()
-
-        # Step 3: Union based on toggle
-        all_followed = watchlist_tickers | tracklist_tickers | portfolio_tickers
+        membership_state = await _get_membership_state(user["user_id"])
+        all_followed = membership_state["watchlist"] | membership_state["tracklist"]
 
         if not all_followed:
             return {
@@ -8044,7 +8054,7 @@ async def get_news(
         "tickers_with_news_count": len(tickers_in_results),
         "include_portfolio": include_portfolio if 'include_portfolio' in dir() else True,
         "per_ticker_cap": 3,
-        "aggregate_sentiment": _build_aggregate_sentiment(cached_news),
+        "aggregate_sentiment": _build_aggregate_sentiment(final_articles),
     }
 
 
@@ -8052,11 +8062,11 @@ async def get_news(
 async def get_markets_news(
     tickers: str = Query("", description="Comma-separated visible event tickers"),
     offset: int = Query(0, ge=0),
-    limit: int = Query(40, ge=1, le=100),
-    market_limit: int = Query(20, ge=1, le=100),
-    per_ticker_limit: int = Query(3, ge=1, le=3),
+    limit: int = Query(GLOBAL_MARKETS_RESPONSE_LIMIT, ge=1, le=GLOBAL_MARKETS_RESPONSE_LIMIT),
+    market_limit: int = Query(GLOBAL_MARKETS_MARKET_NEWS_LIMIT, ge=1, le=100),
+    per_ticker_limit: int = Query(GLOBAL_MARKETS_PER_TICKER_LIMIT, ge=1, le=3),
 ):
-    """Merged Markets news from the shared global ticker corpus plus MARKETS articles."""
+    """Merged Markets news from the full global Watchlist/Tracklist corpus plus MARKETS articles."""
     requested_tickers: List[str] = []
     seen_requested: set[str] = set()
     for raw in tickers.split(","):
@@ -8065,35 +8075,42 @@ async def get_markets_news(
             seen_requested.add(ticker)
             requested_tickers.append(ticker)
 
-    mapping_match: Dict[str, Any] = {}
-    if requested_tickers:
-        mapping_match = {"ticker": {"$in": requested_tickers}}
+    watchlist_tickers: List[str] = []
+    tracklist_tickers: List[str] = []
+    if not requested_tickers:
+        # PRODUCT RULE: Markets must aggregate ALL distinct Watchlist/Tracklist tickers.
+        # Do not reintroduce ranked or "top N" ticker selection without explicit Richard approval.
+        watchlist_tickers = sorted(await _get_global_watchlist_tickers())
+        tracklist_tickers = sorted(await _get_global_tracklist_tickers())
+        requested_tickers = list(dict.fromkeys(watchlist_tickers + tracklist_tickers))
 
-    article_mappings = await db.article_ticker_mapping.aggregate([
-        {"$match": mapping_match} if mapping_match else {"$match": {"ticker": {"$exists": True, "$ne": ""}}},
-        {"$sort": {"ticker": 1, "published_at": -1}},
-        {"$group": {
-            "_id": "$ticker",
-            "mappings": {
-                "$push": {
-                    "article_id": "$article_id",
-                    "published_at": "$published_at",
-                }
-            },
-        }},
-        {"$project": {
-            "_id": 0,
-            "ticker": "$_id",
-            "mappings": {"$slice": ["$mappings", per_ticker_limit]},
-        }},
-        {"$unwind": "$mappings"},
-        {"$project": {
-            "_id": 0,
-            "ticker": 1,
-            "article_id": "$mappings.article_id",
-            "published_at": "$mappings.published_at",
-        }},
-    ]).to_list(length=None)
+    article_mappings = []
+    if requested_tickers:
+        article_mappings = await db.article_ticker_mapping.aggregate([
+            {"$match": {"ticker": {"$in": requested_tickers}}},
+            {"$sort": {"ticker": 1, "published_at": -1}},
+            {"$group": {
+                "_id": "$ticker",
+                "mappings": {
+                    "$push": {
+                        "article_id": "$article_id",
+                        "published_at": "$published_at",
+                    }
+                },
+            }},
+            {"$project": {
+                "_id": 0,
+                "ticker": "$_id",
+                "mappings": {"$slice": ["$mappings", per_ticker_limit]},
+            }},
+            {"$unwind": "$mappings"},
+            {"$project": {
+                "_id": 0,
+                "ticker": 1,
+                "article_id": "$mappings.article_id",
+                "published_at": "$mappings.published_at",
+            }},
+        ]).to_list(length=None)
 
     selected_tickers = sorted({mapping.get("ticker") for mapping in article_mappings if mapping.get("ticker")})
     ticker_full_list = [f"{ticker}.US" for ticker in selected_tickers]
@@ -8210,10 +8227,15 @@ async def get_markets_news(
         "has_more": (offset + len(paginated_news)) < total_count,
         "tickers": selected_tickers,
         "ticker_count": len(selected_tickers),
+        "watchlist_tickers": watchlist_tickers,
+        "tracklist_tickers": tracklist_tickers,
+        "watchlist_ticker_count": len(watchlist_tickers),
+        "tracklist_ticker_count": len(tracklist_tickers),
         "market_news_count": len(market_news),
         "ticker_news_count": len(ticker_news),
+        "total_news_count": total_count,
         "per_ticker_cap": per_ticker_limit,
-        "aggregate_sentiment": _build_aggregate_sentiment(paginated_news),
+        "aggregate_sentiment": _build_aggregate_sentiment(merged_news),
     }
 
 

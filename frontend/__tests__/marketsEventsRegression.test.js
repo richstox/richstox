@@ -58,16 +58,15 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];");
     expect(fileContent).toContain('const MAX_VISIBLE_MONTH_CARDS = 4;');
     expect(fileContent).toContain('const activeDayKeysForDisplayMonth = useMemo(');
-    expect(fileContent).toContain("setVisibleEventLimit(INITIAL_VISIBLE_EVENTS);");
     expect(fileContent).toContain("activeMonthKeys.find((monthKey) => monthKey >= todayMonthKey) ?? activeMonthKeys[0]");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'last')");
     expect(fileContent).toContain("getYearMonthKey(nextYear, 'first')");
     expect(fileContent).toContain("activeDayKeysForDisplayMonth.map((dayKey) => {");
-    expect(fileContent).toContain("Show calendar details");
     expect(fileContent).toContain("Show full calendar");
-    expect(fileContent).toContain("Load more events");
-    expect(fileContent).toContain("const INITIAL_VISIBLE_EVENTS = 5;");
-    expect(fileContent).toContain("const INITIAL_VISIBLE_NEWS = 5;");
+    expect(fileContent).toContain("const INITIAL_VISIBLE_FEED_ITEMS = 5;");
+    expect(fileContent).toContain("const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);");
+    expect(fileContent).toContain('<Text style={styles.eventsDateSelectText}>Select</Text>');
+    expect(fileContent).toContain('visible={calendarPickerVisible}');
     expect(fileContent).toContain("calendarView === 'daily' ? (");
     expect(fileContent).toContain("calendarView === 'monthly' ? (");
     expect(fileContent).toContain("setSelectedYear(year);");
@@ -81,17 +80,20 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const [includeNews, setIncludeNews] = useState(true);');
     expect(fileContent).toContain('<Text style={styles.portfolioToggleLabelInline}>+News</Text>');
     expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 3;');
+    expect(fileContent).toContain('const MARKET_DIGEST_LIMIT = 100;');
     expect(fileContent).toContain('/api/v1/markets/news?limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0');
     expect(fileContent).toContain('const isDisabled = selectedEventCounts[type] === 0;');
     expect(fileContent).toContain('disabled={isDisabled}');
     expect(fileContent).toContain('style={[styles.eventTab, isActive && styles.eventTabActive, isDisabled && styles.eventTabDisabled]}');
     expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
     expect(fileContent).toContain('const visibleNewsItems = useMemo(() => {');
-    expect(fileContent).toContain('const displayedNewsItems = useMemo(');
+    expect(fileContent).toContain('const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {');
+    expect(fileContent).toContain('const displayedFeedItems = useMemo(');
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('aggregateSentiment && (');
     expect(fileContent).toContain('No saved market or ticker news available right now');
-    expect(fileContent).toContain('Load more news');
+    expect(fileContent).toContain('Load more events & news');
+    expect(fileContent).not.toContain('Load more news</Text>');
   });
 
   it('adds icons to the calendar and events headlines and removes the redundant top-right total', () => {
@@ -100,5 +102,13 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('<Ionicons name="newspaper-outline" size={18} color={COLORS.primary} />');
     expect(fileContent).toContain('<Text style={styles.sectionTitle}>Events & News</Text>');
     expect(fileContent).not.toContain('<Text style={styles.eventsCount}>{periodEvents.length}</Text>');
+  });
+
+  it('uses the compact selector flow instead of a standalone show-details button and resolves news logos like event logos', () => {
+    expect(fileContent).toContain("setIsCalendarExpanded((prev) => !prev);");
+    expect(fileContent).toContain("<Text style={styles.calendarHeaderActionText}>Hide Details</Text>");
+    expect(fileContent).toContain("<Text style={styles.eventsDateSelectText}>Select</Text>");
+    expect(fileContent).not.toContain('Show calendar details');
+    expect(fileContent).toContain('resolveEventLogoUrl(news.logo_url, news.ticker)');
   });
 });
