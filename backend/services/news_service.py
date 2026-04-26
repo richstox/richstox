@@ -29,7 +29,7 @@ import hashlib
 import logging
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Set
 from zoneinfo import ZoneInfo
 import httpx
 
@@ -137,7 +137,7 @@ def _extract_mappable_symbols(symbols: Any) -> List[str]:
         return []
 
     clean_symbols: List[str] = []
-    seen: set[str] = set()
+    seen: Set[str] = set()
     for raw in symbols:
         if not isinstance(raw, str):
             continue

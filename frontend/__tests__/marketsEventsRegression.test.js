@@ -112,6 +112,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('style={styles.marketNewsTickerRow}');
     expect(fileContent).toContain('<Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>');
     expect(fileContent).toContain('<Text style={styles.marketNewsFooterMeta}>');
+    expect(fileContent).toContain("[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')");
     expect(fileContent).not.toContain("[news.source, getMarketNewsDateLabel(news.date)].filter(Boolean).join(' • ')");
     expect(fileContent).not.toContain('styles.sectionSubtitle');
     expect(fileContent).toContain('No saved market or ticker news available right now');
