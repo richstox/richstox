@@ -101,7 +101,8 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain("const marketShowsEvents = marketFeedModes.includes('events');");
     expect(fileContent).toContain("const marketShowsNews = marketFeedModes.includes('news');");
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
-    expect(fileContent).toContain('formatAggregateSentimentHelperText(aggregateSentiment)');
+    expect(fileContent).toContain('getAggregateSentimentTooltipContent(aggregateSentiment)');
+    expect(fileContent).toContain('<MetricTooltip');
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('No saved market or ticker news available right now');
     expect(fileContent).toContain('Load more</Text>');

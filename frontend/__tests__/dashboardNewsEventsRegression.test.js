@@ -50,9 +50,10 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain('marginTop: 8,');
     expect(fileContent).toContain('data-testid="homepage-events-toggle"');
     expect(fileContent).toContain("const HOMEPAGE_FEED_MODE_OPTIONS: { key: HomepageFeedMode; label: string }[] = [");
-    expect(fileContent).toContain("const [showAggregateSentimentHelp, setShowAggregateSentimentHelp] = useState(false);");
+    expect(fileContent).toContain("const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);");
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
-    expect(fileContent).toContain('formatAggregateSentimentHelperText(aggregateSentiment)');
+    expect(fileContent).toContain('getAggregateSentimentTooltipContent(aggregateSentiment)');
+    expect(fileContent).toContain('<MetricTooltip');
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('style={[styles.feedModeChip, isActive && styles.feedModeChipActive, isLocked && styles.feedModeChipLocked]}');
   });

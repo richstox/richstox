@@ -20,11 +20,12 @@ import axios from 'axios';
 import { LineChart } from 'react-native-gifted-charts';
 import { useAuth } from '../../contexts/AuthContext';
 import AppHeader from '../../components/AppHeader';
+import { MetricTooltip } from '../../components/MetricTooltip';
 import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { API_URL } from '../../utils/config';
-import { formatAggregateSentimentHelperText, formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { formatAggregateSentimentLabel, getAggregateSentimentTooltipContent } from '../../utils/sentiment';
 import { useMyStocksStore } from '../../stores/myStocksStore';
 
 const COLORS = {
@@ -241,7 +242,7 @@ export default function Dashboard() {
   const [aggregateSentiment, setAggregateSentiment] = useState<any>(null);
   const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');
   const [homepageFeedModes, setHomepageFeedModes] = useState<HomepageFeedMode[]>(['events', 'news']);
-  const [showAggregateSentimentHelp, setShowAggregateSentimentHelp] = useState(false);
+  const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);
   const [newsFeedFilter, setNewsFeedFilter] = useState('');
   
   // Fix 3: News pagination with See less
@@ -1077,9 +1078,9 @@ export default function Dashboard() {
                     styles.aggregateSentimentBadge,
                     { backgroundColor: aggregateSentiment.color + '20' }
                   ]}
-                  onPress={() => setShowAggregateSentimentHelp((prev) => !prev)}
+                  onPress={() => setAggregateSentimentTooltipVisible(true)}
                   accessibilityRole="button"
-                  accessibilityLabel={showAggregateSentimentHelp ? 'Hide aggregate sentiment help' : 'Show aggregate sentiment help'}
+                  accessibilityLabel="Show aggregate sentiment help"
                   data-testid="aggregate-sentiment"
                 >
                   <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
@@ -1089,9 +1090,6 @@ export default function Dashboard() {
                 </TouchableOpacity>
               )}
             </View>
-            {aggregateSentiment && showAggregateSentimentHelp && (
-              <Text style={styles.aggregateSentimentHelperText}>{formatAggregateSentimentHelperText(aggregateSentiment)}</Text>
-            )}
             <View style={styles.newsControlsRow}>
               <View style={styles.newsSortButtons}>
                 <TouchableOpacity
@@ -1430,6 +1428,12 @@ export default function Dashboard() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      <MetricTooltip
+        visible={aggregateSentimentTooltipVisible}
+        onClose={() => setAggregateSentimentTooltipVisible(false)}
+        content={getAggregateSentimentTooltipContent(aggregateSentiment)}
+      />
 
       {/* Notifications Modal */}
       <Modal

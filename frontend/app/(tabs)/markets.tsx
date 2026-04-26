@@ -29,8 +29,9 @@ import {
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
 import { COLORS as APP_COLORS } from '../_layout';
-import { formatAggregateSentimentHelperText, formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { formatAggregateSentimentLabel, getAggregateSentimentTooltipContent } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
+import { MetricTooltip } from '../../components/MetricTooltip';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -296,7 +297,7 @@ export default function Markets() {
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<MarketNewsItem | null>(null);
-  const [showAggregateSentimentHelp, setShowAggregateSentimentHelp] = useState(false);
+  const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);
   const activeDaysScrollRef = useRef<ScrollView | null>(null);
   const [activeDaysViewportWidth, setActiveDaysViewportWidth] = useState(0);
   const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
@@ -768,9 +769,9 @@ export default function Markets() {
                       styles.aggregateSentimentHeadlineBadge,
                       { backgroundColor: `${aggregateSentiment.color}20` },
                     ]}
-                    onPress={() => setShowAggregateSentimentHelp((prev) => !prev)}
+                    onPress={() => setAggregateSentimentTooltipVisible(true)}
                     accessibilityRole="button"
-                    accessibilityLabel={showAggregateSentimentHelp ? 'Hide aggregate sentiment help' : 'Show aggregate sentiment help'}
+                    accessibilityLabel="Show aggregate sentiment help"
                   >
                     <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                     <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
@@ -802,9 +803,6 @@ export default function Markets() {
                 </View>
               </View>
             </View>
-            {aggregateSentiment && showAggregateSentimentHelp && (
-              <Text style={styles.aggregateSentimentHelperText}>{formatAggregateSentimentHelperText(aggregateSentiment)}</Text>
-            )}
           </View>
 
           {loading ? (
@@ -1100,6 +1098,12 @@ export default function Markets() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      <MetricTooltip
+        visible={aggregateSentimentTooltipVisible}
+        onClose={() => setAggregateSentimentTooltipVisible(false)}
+        content={getAggregateSentimentTooltipContent(aggregateSentiment)}
+      />
 
       <Modal
         visible={calendarPickerVisible}

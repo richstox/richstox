@@ -36,7 +36,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
-import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { formatAggregateSentimentLabel, getAggregateSentimentTooltipContent } from '../../utils/sentiment';
 
 // Delay before fetching below-the-fold content (talk posts) to prioritize critical data
 const DEFERRED_FETCH_MS = 800;
@@ -54,6 +54,10 @@ type AggregateSentiment = {
   score: number;
   label: SentimentCategory;
   color: string;
+  total_articles: number;
+  positive_count: number;
+  negative_count: number;
+  neutral_count: number;
 };
 
 const getSentimentText = (label?: SentimentCategory | null): string => {
@@ -66,19 +70,40 @@ const getAggregateSentimentFromArticles = (
   articles: { sentiment_label?: SentimentCategory | null }[]
 ): AggregateSentiment | null => {
   if (!articles.length) return null;
-  const sentimentScores = articles.map((article) => {
-    if (article.sentiment_label === 'positive') return 1;
-    if (article.sentiment_label === 'negative') return -1;
-    return 0;
+  const sentimentSummary = articles.reduce((summary, article) => {
+    if (article.sentiment_label === 'positive') {
+      summary.score += 1;
+      summary.positive_count += 1;
+      return summary;
+    }
+    if (article.sentiment_label === 'negative') {
+      summary.score -= 1;
+      summary.negative_count += 1;
+      return summary;
+    }
+    summary.neutral_count += 1;
+    return summary;
+  }, {
+    score: 0,
+    positive_count: 0,
+    negative_count: 0,
+    neutral_count: 0,
   });
-  const score = sentimentScores.reduce((sum, value) => sum + value, 0) / sentimentScores.length;
+  const score = sentimentSummary.score / articles.length;
+  const baseSentiment = {
+    score: Number(score.toFixed(2)),
+    total_articles: articles.length,
+    positive_count: sentimentSummary.positive_count,
+    negative_count: sentimentSummary.negative_count,
+    neutral_count: sentimentSummary.neutral_count,
+  };
   if (score > AGGREGATE_SENTIMENT_POSITIVE_THRESHOLD) {
-    return { score: Number(score.toFixed(2)), label: 'positive', color: '#10B981' };
+    return { ...baseSentiment, label: 'positive', color: '#10B981' };
   }
   if (score < AGGREGATE_SENTIMENT_NEGATIVE_THRESHOLD) {
-    return { score: Number(score.toFixed(2)), label: 'negative', color: '#EF4444' };
+    return { ...baseSentiment, label: 'negative', color: '#EF4444' };
   }
-  return { score: Number(score.toFixed(2)), label: 'neutral', color: '#F59E0B' };
+  return { ...baseSentiment, label: 'neutral', color: '#F59E0B' };
 };
 
 const formatEventMessage = (title: string, subtitle?: string): string => {
@@ -768,13 +793,13 @@ export default function StockDetail() {
 
   // P1 UX POLISH: Tooltip state for native BottomSheet
   const [tooltipVisible, setTooltipVisible] = useState(false);
-  const [activeTooltip, setActiveTooltip] = useState<keyof typeof TOOLTIP_CONTENT>('rrr');
+  const [activeTooltip, setActiveTooltip] = useState<keyof typeof TOOLTIP_CONTENT | 'aggregateSentiment'>('rrr');
   
   // P1 UX POLISH: Valuation Overview collapsible state
   const [valuationExpanded, setValuationExpanded] = useState(false);
 
   // P1 UX POLISH: Show tooltip helper
-  const showTooltip = (key: keyof typeof TOOLTIP_CONTENT) => {
+  const showTooltip = (key: keyof typeof TOOLTIP_CONTENT | 'aggregateSentiment') => {
     setActiveTooltip(key);
     setTooltipVisible(true);
   };
@@ -4622,18 +4647,20 @@ export default function StockDetail() {
             </View>
             {aggregateSentiment && (
               <View style={styles.aggregateSentimentInfo}>
-                <View
+                <TouchableOpacity
                   style={[
                     styles.aggregateSentimentBadge,
                     { backgroundColor: `${aggregateSentiment.color}20` },
                   ]}
+                  onPress={() => showTooltip('aggregateSentiment')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Show aggregate sentiment help"
                 >
                   <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
                   <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
                     {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
                   </Text>
-                </View>
-                <Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -4978,7 +5005,9 @@ export default function StockDetail() {
       <MetricTooltip 
         visible={tooltipVisible} 
         onClose={() => setTooltipVisible(false)} 
-        content={TOOLTIP_CONTENT[activeTooltip]} 
+        content={activeTooltip === 'aggregateSentiment'
+          ? getAggregateSentimentTooltipContent(aggregateSentiment)
+          : TOOLTIP_CONTENT[activeTooltip]} 
       />
       
       {/* Performance Check period selector */}
