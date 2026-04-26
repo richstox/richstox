@@ -466,6 +466,7 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   menuItemDisabled: {
+    cursor: 'default',
     opacity: 0.6,
   },
   menuItemTextDisabled: {
