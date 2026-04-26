@@ -699,7 +699,7 @@ interface MobileDetailData {
 }
 
 export default function StockDetail() {
-  const { ticker } = useLocalSearchParams();
+  const { ticker, from } = useLocalSearchParams<{ ticker?: string; from?: string }>();
   const router = useRouter();
   const { sessionToken, isAuthenticated, isSessionValidated } = useAuth();
   const dialog = useAppDialog();
@@ -844,12 +844,16 @@ export default function StockDetail() {
       const isReload = navEntry?.type === 'reload';
       // Direct URL entry or hard refresh: no meaningful SPA history to go back to
       if (isReload || window.history.length <= 2) {
-        router.push('/(tabs)/markets' as any);
+        if (from === 'markets') {
+          router.replace('/(tabs)/markets' as any);
+        } else {
+          router.push('/(tabs)/markets' as any);
+        }
         return;
       }
     }
     router.back();
-  }, [router]);
+  }, [from, router]);
 
   // Swipe detection for search result navigation
   const swipeRef = useRef({ startX: 0, startY: 0 });

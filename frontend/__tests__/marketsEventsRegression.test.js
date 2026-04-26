@@ -41,7 +41,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const EventLogo = ({');
     expect(fileContent).toContain('const normalizedTicker = ticker?.trim().toUpperCase();');
     expect(fileContent).toContain('if (!rawUrl && normalizedTicker) return `${API_URL}/api/logo/${normalizedTicker}`;');
-    expect(fileContent).toContain('router.push(`/stock/${event.ticker}`)');
+    expect(fileContent).toContain('if (event.ticker) navigateToStockFromMarkets(event.ticker);');
     expect(fileContent).toContain('<EventLogo');
   });
 
@@ -141,7 +141,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('const openNewsItem = (item: MarketNewsItem) => {');
     expect(fileContent).toContain('setSelectedArticle(item);');
     expect(fileContent).toContain('visible={!!selectedArticle}');
-    expect(fileContent).toContain('if (news.ticker) router.push(`/stock/${news.ticker}`);');
+    expect(fileContent).toContain('if (news.ticker) navigateToStockFromMarkets(news.ticker);');
     expect(fileContent).toContain('<Text style={styles.articleTitle}>{selectedArticle.title}</Text>');
     expect(fileContent).toContain("{selectedArticle.content?.trim() || 'Open the original article to read the full story'}");
   });
@@ -149,15 +149,26 @@ describe('Markets events regressions', () => {
   it('persists markets state and restores the richstox icon for market-only news rows', () => {
     expect(fileContent).toContain("import { useMarketsStore } from '../../stores/marketsStore';");
     expect(fileContent).toContain('const initialMarketsStateRef = useRef(useMarketsStore.getState());');
+    expect(fileContent).toContain('const persistedScrollY = useMarketsStore((state) => state.scrollY);');
+    expect(fileContent).toContain('const currentScrollYRef = useRef(0);');
+    expect(fileContent).toContain('const persistedScrollYRef = useRef(initialMarketsStateRef.current.scrollY);');
+    expect(fileContent).toContain('const navigateToStockFromMarkets = useCallback((rawTicker: string) => {');
+    expect(fileContent).toContain('scrollY: currentScrollYRef.current,');
+    expect(fileContent).toContain('router.push(`/stock/${nextTicker}?from=markets` as any);');
+    expect(fileContent).toContain('useFocusEffect(');
+    expect(fileContent).toContain('scrollToPersistedMarketsPosition();');
     expect(fileContent).toContain('setMarketsState({');
-    expect(fileContent).toContain('onScroll={(event) => {');
+    expect(fileContent).toContain('onScrollEndDrag={persistMarketsScroll}');
+    expect(fileContent).toContain('onMomentumScrollEnd={persistMarketsScroll}');
     expect(fileContent).toContain("source={require('../../assets/images/richstox_icon_only.png')}");
     expect(fileContent).toContain("useRichstoxIcon={news.scope === 'market'}");
     expect(fileContent).toContain("useRichstoxIcon={selectedArticle.scope === 'market'}");
   });
 
-  it('pins the header date to the upper right and removes source text from markets news UI', () => {
+  it('puts sentiment in the top-right header slot, moves date below the headline, and removes source text from markets news UI', () => {
     expect(fileContent).toContain('style={styles.eventsDateBlock}');
+    expect(fileContent).toContain('style={styles.eventsHeaderMetaRow}');
+    expect(fileContent).toContain('styles.aggregateSentimentHeadlineBadge');
     expect(fileContent).toContain('<Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>');
     expect(fileContent).toContain("<Text style={styles.articleCompany}>{selectedArticle.company_name || 'Market News'}</Text>");
     expect(fileContent).toContain('<Text style={styles.articleMeta}>{getMarketNewsDateLabel(selectedArticle.date)}</Text>');
