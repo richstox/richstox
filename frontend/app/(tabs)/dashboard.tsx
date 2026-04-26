@@ -89,21 +89,24 @@ const getDashboardMarketTimingLabel = (value?: string | null): string | null => 
 
 const formatHomepageEventSubtitle = (event: HomepageEvent): string => {
   if (event.event_type === 'Earnings') {
-    const details = [
-      formatDashboardCurrency(event.estimate, event.currency) ? `Exp. ${formatDashboardCurrency(event.estimate, event.currency)}` : null,
-      getDashboardMarketTimingLabel(event.before_after_market),
-    ].filter(Boolean);
-    return details.join(HOMEPAGE_EVENT_SEPARATOR) || 'Scheduled earnings';
+    const estimate = formatDashboardCurrency(event.estimate, event.currency);
+    return estimate ? `Exp. ${estimate}` : 'Scheduled earnings';
   }
   if (event.event_type === 'Dividend') {
     const details = [
       formatDashboardCurrency(event.amount, event.currency),
-      event.date ? `Ex ${formatDashboardDate(event.date)}` : null,
       event.pay_date ? `Pay ${formatDashboardDate(event.pay_date)}` : null,
     ].filter(Boolean);
     return details.join(HOMEPAGE_EVENT_SEPARATOR) || 'Upcoming dividend';
   }
   return event.split_ratio || 'Upcoming split';
+};
+
+const formatHomepageEventMeta = (event: HomepageEvent): string => {
+  return [
+    event.date ? formatDashboardDate(event.date) : null,
+    event.event_type === 'Earnings' ? getDashboardMarketTimingLabel(event.before_after_market) : null,
+  ].filter(Boolean).join(HOMEPAGE_EVENT_SEPARATOR);
 };
 
 const getDashboardFeedDateValue = (item: DashboardFeedItem): number => {
@@ -1014,7 +1017,7 @@ export default function Dashboard() {
                       onPress={loadMoreStocks}
                       data-testid="load-more-stocks-btn"
                     >
-                      <Text style={styles.loadMoreText}>Load more stocks</Text>
+                      <Text style={styles.loadMoreText}>Load more</Text>
                     </TouchableOpacity>
                   )}
                   {hasLessStocks && (
@@ -1119,24 +1122,22 @@ export default function Dashboard() {
                 </View>
               </TouchableOpacity>
             </View>
-            {newsFeedItems.length > 0 && (
-              <View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>
-                <Ionicons name="search" size={16} color={COLORS.textMuted} />
-                <TextInput
-                  style={styles.myStocksSearchInput}
-                  placeholder="Search news & events..."
-                  placeholderTextColor={COLORS.textMuted}
-                  value={newsFeedFilter}
-                  onChangeText={setNewsFeedFilter}
-                  autoCorrect={false}
-                />
-                {newsFeedFilter.length > 0 && (
-                  <TouchableOpacity onPress={() => setNewsFeedFilter('')}>
-                    <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
+            <View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>
+              <Ionicons name="search" size={16} color={COLORS.textMuted} />
+              <TextInput
+                style={styles.myStocksSearchInput}
+                placeholder="Search news & events..."
+                placeholderTextColor={COLORS.textMuted}
+                value={newsFeedFilter}
+                onChangeText={setNewsFeedFilter}
+                autoCorrect={false}
+              />
+              {newsFeedFilter.length > 0 && (
+                <TouchableOpacity onPress={() => setNewsFeedFilter('')}>
+                  <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
           
           {/* News List */}
@@ -1155,6 +1156,7 @@ export default function Dashboard() {
               const isEvent = item.kind === 'event';
               const news = isEvent ? item.event : item.article;
               const eventSubtitle = isEvent ? formatHomepageEventSubtitle(item.event) : null;
+              const eventMeta = isEvent ? formatHomepageEventMeta(item.event) : null;
               return (
               <View
                 key={item.id}
@@ -1186,38 +1188,57 @@ export default function Dashboard() {
                     openArticle(news);
                   }}
                 >
-                  <View style={styles.newsTickerRow}>
-                    <Text style={styles.newsTickerText}>{news.ticker || 'Market'}</Text>
-                    {isEvent ? (
-                      <View style={styles.homepageEventBadge}>
-                        <Text style={styles.homepageEventBadgeText}>{item.event.event_type}</Text>
+                  {isEvent ? (
+                    <>
+                      <View style={styles.homepageEventHeader}>
+                        <View style={styles.homepageEventIdentity}>
+                          <Text style={styles.newsTickerText}>{news.ticker || 'Market'}</Text>
+                          {item.event.company_name ? (
+                            <Text style={styles.homepageEventCompany} numberOfLines={1}>{item.event.company_name}</Text>
+                          ) : null}
+                        </View>
+                        <View style={styles.homepageEventMetaColumn}>
+                          <View style={styles.homepageEventBadge}>
+                            <Text style={styles.homepageEventBadgeText}>{item.event.event_type}</Text>
+                          </View>
+                          {eventMeta ? (
+                            <Text style={styles.homepageEventMetaText}>{eventMeta}</Text>
+                          ) : null}
+                        </View>
                       </View>
-                    ) : news.sentiment_label ? (
-                      <View style={[
-                        styles.sentimentBadgeSmall,
-                        news.sentiment_label === 'positive' && { backgroundColor: '#D1FAE5' },
-                        news.sentiment_label === 'negative' && { backgroundColor: '#FEE2E2' },
-                        news.sentiment_label === 'neutral' && { backgroundColor: '#FEF3C7' },
-                      ]}>
-                        <Text style={[
-                          styles.sentimentTextSmall,
-                          news.sentiment_label === 'positive' && { color: COLORS.accent },
-                          news.sentiment_label === 'negative' && { color: COLORS.danger },
-                          news.sentiment_label === 'neutral' && { color: '#D97706' },
-                        ]}>
-                          {news.sentiment_label === 'positive' ? 'Positive' : 
-                           news.sentiment_label === 'negative' ? 'Negative' : 'Neutral'}
+                      {eventSubtitle ? (
+                        <Text style={styles.homepageEventSubtitle} numberOfLines={2}>{eventSubtitle}</Text>
+                      ) : null}
+                    </>
+                  ) : (
+                    <>
+                      <View style={styles.newsTickerRow}>
+                        <Text style={styles.newsTickerText}>{news.ticker || 'Market'}</Text>
+                        {news.sentiment_label ? (
+                          <View style={[
+                            styles.sentimentBadgeSmall,
+                            news.sentiment_label === 'positive' && { backgroundColor: '#D1FAE5' },
+                            news.sentiment_label === 'negative' && { backgroundColor: '#FEE2E2' },
+                            news.sentiment_label === 'neutral' && { backgroundColor: '#FEF3C7' },
+                          ]}>
+                            <Text style={[
+                              styles.sentimentTextSmall,
+                              news.sentiment_label === 'positive' && { color: COLORS.accent },
+                              news.sentiment_label === 'negative' && { color: COLORS.danger },
+                              news.sentiment_label === 'neutral' && { color: '#D97706' },
+                            ]}>
+                              {news.sentiment_label === 'positive' ? 'Positive' : 
+                               news.sentiment_label === 'negative' ? 'Negative' : 'Neutral'}
+                            </Text>
+                          </View>
+                        ) : null}
+                        <Text style={styles.newsMeta}>
+                          {news.date ? new Date(news.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''}
                         </Text>
                       </View>
-                    ) : null}
-                    <Text style={styles.newsMeta}>
-                      {isEvent ? formatDashboardDate(news.date) : (news.date ? new Date(news.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '')}
-                    </Text>
-                  </View>
-                  <Text style={styles.newsTitle} numberOfLines={2}>{news.title}</Text>
-                  {eventSubtitle ? (
-                    <Text style={styles.homepageEventSubtitle} numberOfLines={2}>{eventSubtitle}</Text>
-                  ) : null}
+                      <Text style={styles.newsTitle} numberOfLines={2}>{news.title}</Text>
+                    </>
+                  )}
                 </TouchableOpacity>
                 
                 <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
@@ -1243,7 +1264,7 @@ export default function Dashboard() {
                   {newsLoading ? (
                     <ActivityIndicator size="small" color={COLORS.primary} />
                   ) : (
-                      <Text style={styles.loadMoreText}>Load more events & news</Text>
+                      <Text style={styles.loadMoreText}>Load more</Text>
                   )}
                 </TouchableOpacity>
               )}
@@ -2365,6 +2386,26 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.primary,
   },
+  homepageEventHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  homepageEventIdentity: {
+    flex: 1,
+    gap: 2,
+  },
+  homepageEventCompany: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: COLORS.textMuted,
+  },
+  homepageEventMetaColumn: {
+    alignItems: 'flex-end',
+    gap: 6,
+    maxWidth: '45%',
+  },
   sentimentBadgeSmall: {
     paddingHorizontal: 6,
     paddingVertical: 2,
@@ -2385,6 +2426,12 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#2563EB',
+  },
+  homepageEventMetaText: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    textAlign: 'right',
+    lineHeight: 16,
   },
   newsTitle: {
     fontSize: 14,

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -18,14 +18,9 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import {
   addDays,
-  endOfMonth,
-  endOfWeek,
   format,
-  isSameDay,
-  isSameMonth,
   parseISO,
   startOfMonth,
-  startOfWeek,
   subDays,
 } from 'date-fns';
 import { useLayoutSpacing } from '../../constants/layout';
@@ -102,16 +97,12 @@ type AggregateSentiment = {
   neutral_count: number;
 };
 
-const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const INITIAL_VISIBLE_FEED_ITEMS = 5;
-const MAX_VISIBLE_MONTH_CARDS = 4;
-const ACTIVE_DAYS_SCROLL_THRESHOLD = 4;
-const ACTIVE_DAYS_SCROLL_PERCENTAGE = 0.8;
-const MIN_ACTIVE_DAYS_SCROLL_STEP = 140;
 const EVENT_TYPE_ORDER: EventType[] = ['earnings', 'dividend', 'split', 'ipo'];
 const CALENDAR_VIEW_ORDER: CalendarViewMode[] = ['daily', 'monthly', 'yearly'];
 const MARKET_NEWS_PER_TICKER = 3;
 const MARKET_DIGEST_LIMIT = 100;
+const EARNINGS_FALLBACK_LABEL = 'Scheduled earnings';
 // Markets aggregates ALL distinct Watchlist/Tracklist tickers across users,
 // so request a large enough page to avoid truncating the merged corpus client-side.
 // 1000 keeps the current full corpus retrievable (3 per ticker + 100 MARKETS)
@@ -282,8 +273,6 @@ export default function Markets() {
   const [selectedEventType, setSelectedEventType] = useState<EventType>('earnings');
   const [tickerFilter, setTickerFilter] = useState('');
   const [visibleFeedLimit, setVisibleFeedLimit] = useState(INITIAL_VISIBLE_FEED_ITEMS);
-  const [isCalendarExpanded, setIsCalendarExpanded] = useState(false);
-  const [isFullCalendarExpanded, setIsFullCalendarExpanded] = useState(false);
   const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);
   const [includeNews, setIncludeNews] = useState(true);
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
@@ -291,10 +280,6 @@ export default function Markets() {
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
-  const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);
-  const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
-  const [activeDaysLayoutWidth, setActiveDaysLayoutWidth] = useState(0);
-  const activeDaysScrollRef = useRef<ScrollView>(null);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -375,7 +360,6 @@ export default function Markets() {
   const monthCards = useMemo(() => {
     return activeMonthKeys
       .filter((monthKey) => monthKey.startsWith(`${selectedYearKey}-`))
-      .slice(0, MAX_VISIBLE_MONTH_CARDS)
       .map((monthKey) => startOfMonth(parseYmd(`${monthKey}-01`)));
   }, [activeMonthKeys, selectedYearKey]);
 
@@ -415,10 +399,6 @@ export default function Markets() {
   }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey]);
 
   useEffect(() => {
-    setIsFullCalendarExpanded(false);
-  }, [calendarView, selectedMonthKey]);
-
-  useEffect(() => {
     setSelectedYear(Number(format(displayMonth, 'yyyy')));
   }, [displayMonth]);
 
@@ -444,10 +424,6 @@ export default function Markets() {
       setTickerFilter('');
     }
   }, [selectedEventCounts, selectedEventType]);
-
-  useEffect(() => {
-    activeDaysScrollRef.current?.scrollTo({ x: 0, animated: false });
-  }, [selectedMonthKey]);
 
   const typeFilteredEvents = useMemo(
     () => periodEvents.filter((event) => event.type === selectedEventType),
@@ -602,32 +578,6 @@ export default function Markets() {
     };
   }, [includeNews]);
 
-  const shouldShowActiveDaysArrows = activeDaysContentWidth > activeDaysLayoutWidth + ACTIVE_DAYS_SCROLL_THRESHOLD;
-  const canScrollActiveDaysLeft = activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
-  const canScrollActiveDaysRight =
-    activeDaysContentWidth - activeDaysLayoutWidth - activeDaysScrollX > ACTIVE_DAYS_SCROLL_THRESHOLD;
-  const scrollActiveDaysBy = (scrollDirection: 'left' | 'right') => {
-    const step = Math.max(activeDaysLayoutWidth * ACTIVE_DAYS_SCROLL_PERCENTAGE, MIN_ACTIVE_DAYS_SCROLL_STEP);
-    activeDaysScrollRef.current?.scrollTo({
-      x: Math.max(0, activeDaysScrollX + (scrollDirection === 'right' ? step : -step)),
-      animated: true,
-    });
-  };
-
-  const calendarDays = useMemo(() => {
-    const monthStart = startOfMonth(displayMonth);
-    const monthEnd = endOfMonth(displayMonth);
-    const gridStart = startOfWeek(monthStart, { weekStartsOn: 1 });
-    const gridEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
-    const days: Date[] = [];
-    let cursor = gridStart;
-    while (cursor <= gridEnd) {
-      days.push(cursor);
-      cursor = addDays(cursor, 1);
-    }
-    return days;
-  }, [displayMonth]);
-
   const selectedMonthIndex = activeMonthKeys.indexOf(selectedMonthKey);
   const selectedYearIndex = yearCards.indexOf(selectedYear);
   const canGoPrev = selectedMonthIndex > 0;
@@ -638,6 +588,21 @@ export default function Markets() {
     const yearMonthKeys = activeMonthKeys.filter((monthKey) => monthKey.startsWith(`${year}-`));
     if (yearMonthKeys.length === 0) return undefined;
     return edge === 'first' ? yearMonthKeys[0] : yearMonthKeys[yearMonthKeys.length - 1];
+  };
+
+  const getEventMarketTimingLabel = (event: CalendarEvent): string | null => {
+    if (event.type !== 'earnings') return null;
+    const hasStructuredTiming = typeof event.metadata?.before_after_market === 'string';
+    const rawTiming = hasStructuredTiming ? event.metadata?.before_after_market : event.description;
+    if (!rawTiming) return null;
+    const trimmedTiming = rawTiming.trim();
+    const normalized = trimmedTiming.toLowerCase().replace(/[\s_-]+/g, '');
+    if (normalized.startsWith('before')) return 'Before Market';
+    if (normalized.startsWith('after')) return 'After Market';
+    if (!hasStructuredTiming && /\bmarket\b/i.test(trimmedTiming) && trimmedTiming !== EARNINGS_FALLBACK_LABEL) {
+      return trimmedTiming;
+    }
+    return null;
   };
 
   const formatEventSecondary = (event: CalendarEvent): string => {
@@ -656,8 +621,7 @@ export default function Markets() {
       const details: string[] = [];
       const formattedEstimate = formatEventAmount(event.estimate, event.currency);
       if (formattedEstimate) details.push(`Exp. ${formattedEstimate}`);
-      if (event.description) details.push(event.description);
-      return details.join(' • ') || 'Scheduled earnings';
+      return details.join(' • ') || EARNINGS_FALLBACK_LABEL;
     }
     if (event.type === 'ipo') {
       const details: string[] = [];
@@ -672,6 +636,12 @@ export default function Markets() {
       return details.join(' • ') || 'Upcoming IPO';
     }
     return event.description || 'Scheduled';
+  };
+
+  const formatEventHeaderMeta = (event: CalendarEvent): string => {
+    return [getMarketNewsDateLabel(event.date), getEventMarketTimingLabel(event)]
+      .filter(Boolean)
+      .join(' • ');
   };
 
   const openNewsItem = async (item: MarketNewsItem) => {
@@ -693,257 +663,6 @@ export default function Markets() {
       <AppHeader title="Markets" />
 
       <ScrollView style={styles.scroll} contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}>
-        {isCalendarExpanded && (
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <View>
-              <View style={styles.sectionTitleRow}>
-                <Ionicons name="calendar-clear-outline" size={18} color={COLORS.primary} />
-                <Text style={styles.sectionTitle}>Calendar</Text>
-              </View>
-              <Text style={styles.sectionSubtitle}>For next 3 months</Text>
-            </View>
-            <TouchableOpacity
-              onPress={() => setIsCalendarExpanded((prev) => !prev)}
-              accessibilityRole="button"
-              accessibilityLabel="Hide details"
-            >
-              <Text style={styles.calendarHeaderActionText}>Hide Details</Text>
-            </TouchableOpacity>
-          </View>
-
-          {calendarView === 'daily' ? (
-            <>
-              <View style={styles.monthHeader}>
-                <TouchableOpacity
-                  style={[styles.monthNavButton, !canGoPrev && styles.monthNavButtonDisabled]}
-                  onPress={() => {
-                    if (!canGoPrev) return;
-                    setDisplayMonth(startOfMonth(parseYmd(`${activeMonthKeys[selectedMonthIndex - 1]}-01`)));
-                  }}
-                  disabled={!canGoPrev}
-                >
-                  <Ionicons name="chevron-back" size={16} color={canGoPrev ? COLORS.primary : COLORS.textMuted} />
-                </TouchableOpacity>
-                <Text style={styles.monthTitle}>{format(displayMonth, 'MMMM yyyy')}</Text>
-                <TouchableOpacity
-                  style={[styles.monthNavButton, !canGoNext && styles.monthNavButtonDisabled]}
-                  onPress={() => {
-                    if (!canGoNext) return;
-                    setDisplayMonth(startOfMonth(parseYmd(`${activeMonthKeys[selectedMonthIndex + 1]}-01`)));
-                  }}
-                  disabled={!canGoNext}
-                >
-                  <Ionicons name="chevron-forward" size={16} color={canGoNext ? COLORS.primary : COLORS.textMuted} />
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.activeDaysScrollerRow}>
-                {shouldShowActiveDaysArrows && (
-                  <TouchableOpacity
-                    style={[styles.horizontalNavButton, !canScrollActiveDaysLeft && styles.horizontalNavButtonDisabled]}
-                    onPress={() => scrollActiveDaysBy('left')}
-                    disabled={!canScrollActiveDaysLeft}
-                  >
-                    <Ionicons name="chevron-back" size={16} color={canScrollActiveDaysLeft ? COLORS.primary : COLORS.textMuted} />
-                  </TouchableOpacity>
-                )}
-                <ScrollView
-                  ref={activeDaysScrollRef}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  style={styles.activeDaysScroll}
-                  contentContainerStyle={styles.activeDaysScrollContent}
-                  onScroll={(event) => setActiveDaysScrollX(event.nativeEvent.contentOffset.x)}
-                  onContentSizeChange={(width) => setActiveDaysContentWidth(width)}
-                  onLayout={(event) => setActiveDaysLayoutWidth(event.nativeEvent.layout.width)}
-                  scrollEventThrottle={16}
-                >
-                  {activeDayKeysForDisplayMonth.map((dayKey) => {
-                    const day = parseYmd(dayKey);
-                    const isSelected = dayKey === selectedDateKey;
-                    return (
-                      <TouchableOpacity
-                        key={dayKey}
-                        style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
-                        onPress={() => setSelectedDate(day)}
-                      >
-                        <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
-                          {format(day, 'EEE')}
-                        </Text>
-                        <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
-                          {format(day, 'd')}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-                {shouldShowActiveDaysArrows && (
-                  <TouchableOpacity
-                    style={[styles.horizontalNavButton, !canScrollActiveDaysRight && styles.horizontalNavButtonDisabled]}
-                    onPress={() => scrollActiveDaysBy('right')}
-                    disabled={!canScrollActiveDaysRight}
-                  >
-                    <Ionicons name="chevron-forward" size={16} color={canScrollActiveDaysRight ? COLORS.primary : COLORS.textMuted} />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              <TouchableOpacity
-                style={styles.calendarToggleButton}
-                onPress={() => setIsFullCalendarExpanded((prev) => !prev)}
-                accessibilityRole="button"
-                accessibilityLabel={isFullCalendarExpanded ? 'Hide full calendar' : 'Show full calendar'}
-              >
-                <Text style={styles.calendarToggleText}>
-                  {isFullCalendarExpanded ? 'Hide full calendar' : 'Show full calendar'}
-                </Text>
-                <Ionicons
-                  name={isFullCalendarExpanded ? 'chevron-up' : 'chevron-down'}
-                  size={16}
-                  color={COLORS.primary}
-                />
-              </TouchableOpacity>
-
-              {isFullCalendarExpanded && (
-                <>
-                  <View style={styles.weekdayRow}>
-                    {WEEKDAY_LABELS.map((day) => (
-                      <Text key={day} style={styles.weekdayLabel}>{day}</Text>
-                    ))}
-                  </View>
-
-                  <View style={styles.calendarGrid}>
-                    {calendarDays.map((day) => {
-                      const dayKey = format(day, 'yyyy-MM-dd');
-                      const inRange = day >= rangeStart && day <= rangeEnd;
-                      const isSelected = isSameDay(day, selectedDate);
-                      const dayEvents = eventsByDate[dayKey] || [];
-                      return (
-                        <TouchableOpacity
-                          key={dayKey}
-                          style={[
-                            styles.dayCell,
-                            !isSameMonth(day, displayMonth) && styles.dayCellOutsideMonth,
-                            isSelected && styles.dayCellSelected,
-                            !inRange && styles.dayCellDisabled,
-                          ]}
-                          onPress={() => inRange && setSelectedDate(day)}
-                          disabled={!inRange}
-                        >
-                          <Text
-                            style={[
-                              styles.dayLabel,
-                              !isSameMonth(day, displayMonth) && styles.dayLabelOutsideMonth,
-                              isSelected && styles.dayLabelSelected,
-                              !inRange && styles.dayLabelDisabled,
-                            ]}
-                          >
-                            {format(day, 'd')}
-                          </Text>
-                          {dayEvents.length > 0 && (
-                            <View style={[styles.dayDot, isSelected && styles.dayDotSelected]}>
-                              <Text style={[styles.dayDotText, isSelected && styles.dayDotTextSelected]}>{dayEvents.length}</Text>
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </>
-              )}
-            </>
-          ) : calendarView === 'monthly' ? (
-            <>
-              <View style={styles.monthHeader}>
-                <TouchableOpacity
-                  style={[styles.monthNavButton, !canGoPrevYear && styles.monthNavButtonDisabled]}
-                  onPress={() => {
-                    if (!canGoPrevYear) return;
-                    const nextYear = yearCards[selectedYearIndex - 1];
-                    const nextMonthKey = getYearMonthKey(nextYear, 'last');
-                    setSelectedYear(nextYear);
-                    setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${nextYear}-01`)}-01`)));
-                  }}
-                  disabled={!canGoPrevYear}
-                >
-                  <Ionicons name="chevron-back" size={16} color={canGoPrevYear ? COLORS.primary : COLORS.textMuted} />
-                </TouchableOpacity>
-                <Text style={styles.monthTitle}>{selectedYear}</Text>
-                <TouchableOpacity
-                  style={[styles.monthNavButton, !canGoNextYear && styles.monthNavButtonDisabled]}
-                  onPress={() => {
-                    if (!canGoNextYear) return;
-                    const nextYear = yearCards[selectedYearIndex + 1];
-                    const nextMonthKey = getYearMonthKey(nextYear, 'first');
-                    setSelectedYear(nextYear);
-                    setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${nextYear}-01`)}-01`)));
-                  }}
-                  disabled={!canGoNextYear}
-                >
-                  <Ionicons name="chevron-forward" size={16} color={canGoNextYear ? COLORS.primary : COLORS.textMuted} />
-                </TouchableOpacity>
-              </View>
-              <View style={styles.periodGrid}>
-                {monthCards.map((month) => {
-                  const monthKey = format(month, 'yyyy-MM');
-                  const inRange = monthKey >= rangeStartStr.slice(0, 7) && monthKey <= rangeEndStr.slice(0, 7);
-                  const isSelected = monthKey === selectedMonthKey;
-                  return (
-                    <TouchableOpacity
-                      key={monthKey}
-                      style={[
-                        styles.periodCell,
-                        isSelected && styles.periodCellSelected,
-                        !inRange && styles.periodCellDisabled,
-                      ]}
-                      onPress={() => {
-                        if (!inRange) return;
-                        setDisplayMonth(startOfMonth(month));
-                        setCalendarView('monthly');
-                      }}
-                      disabled={!inRange}
-                    >
-                      <Text style={[styles.periodCellLabel, isSelected && styles.periodCellLabelSelected]}>
-                        {format(month, 'MMM')}
-                      </Text>
-                      <Text style={[styles.periodCellCount, isSelected && styles.periodCellCountSelected]}>
-                        {monthlyEventCounts[monthKey] || 0}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </>
-          ) : (
-            <View style={styles.periodGrid}>
-              {yearCards.map((year) => {
-                const yearKey = String(year);
-                const isSelected = year === selectedYear;
-                return (
-                  <TouchableOpacity
-                    key={yearKey}
-                    style={[styles.periodCell, styles.yearCell, isSelected && styles.periodCellSelected]}
-                    onPress={() => {
-                      setSelectedYear(year);
-                      const nextMonthKey = getYearMonthKey(year, 'first');
-                      setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${year}-01`)}-01`)));
-                    }}
-                  >
-                    <Text style={[styles.periodCellLabel, isSelected && styles.periodCellLabelSelected]}>
-                      {yearKey}
-                    </Text>
-                    <Text style={[styles.periodCellCount, isSelected && styles.periodCellCountSelected]}>
-                      {yearlyEventCounts[yearKey] || 0}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-        </View>
-        )}
-
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
             <View style={styles.eventsHeaderTop}>
@@ -954,8 +673,13 @@ export default function Markets() {
                 </View>
                 <View style={styles.eventsDateRow}>
                   <Text style={styles.eventsDateTitle}>{selectedPeriodLabel}</Text>
-                  <TouchableOpacity onPress={() => setCalendarPickerVisible(true)} accessibilityRole="button">
+                  <TouchableOpacity
+                    style={styles.eventsDateSelectControl}
+                    onPress={() => setCalendarPickerVisible(true)}
+                    accessibilityRole="button"
+                  >
                     <Text style={styles.eventsDateSelectText}>Select</Text>
+                    <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.sectionSubtitle}>
@@ -1104,12 +828,14 @@ export default function Markets() {
                                   <Text style={styles.eventCompanyName} numberOfLines={1}>{event.company_name}</Text>
                                 ) : null}
                               </View>
-                              <View style={[styles.eventPill, { backgroundColor: `${meta.color}15` }]}>
-                                <Text style={[styles.eventPillText, { color: meta.color }]}>{meta.singularLabel}</Text>
+                              <View style={styles.eventMetaColumn}>
+                                <View style={[styles.eventPill, { backgroundColor: `${meta.color}15` }]}>
+                                  <Text style={[styles.eventPillText, { color: meta.color }]}>{meta.singularLabel}</Text>
+                                </View>
+                                <Text style={styles.eventHeaderMeta}>{formatEventHeaderMeta(event)}</Text>
                               </View>
                             </View>
-                            <Text style={styles.eventTitle} numberOfLines={2}>{event.label}</Text>
-                            <Text style={styles.eventMeta}>{formatEventSecondary(event)}</Text>
+                            <Text style={styles.eventPrimaryText} numberOfLines={2}>{formatEventSecondary(event)}</Text>
                           </View>
                           {canOpenTicker ? (
                             <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
@@ -1168,7 +894,7 @@ export default function Markets() {
                     style={styles.loadMoreButtonFull}
                     onPress={() => setVisibleFeedLimit((prev) => prev + INITIAL_VISIBLE_FEED_ITEMS)}
                   >
-                    <Text style={styles.loadMoreText}>Load more events & news</Text>
+                    <Text style={styles.loadMoreText}>Load more</Text>
                   </TouchableOpacity>
                 )}
                 {visibleFeedLimit > INITIAL_VISIBLE_FEED_ITEMS && (
@@ -1195,42 +921,173 @@ export default function Markets() {
           <Pressable style={styles.selectorSheet} onPress={(event) => event.stopPropagation()}>
             <View style={styles.selectorHandle} />
             <Text style={styles.selectorTitle}>Events & News calendar</Text>
-            {CALENDAR_VIEW_ORDER.map((viewMode) => {
-              const isActive = calendarView === viewMode;
-              return (
-                <TouchableOpacity
-                  key={viewMode}
-                  style={styles.selectorOption}
-                  onPress={() => {
-                    setCalendarView(viewMode);
-                    setCalendarPickerVisible(false);
-                  }}
-                >
-                  <Text style={[styles.selectorOptionText, isActive && styles.selectorOptionTextActive]}>
-                    {CALENDAR_VIEW_META[viewMode].label}
-                  </Text>
-                  {isActive ? (
-                    <Ionicons name="checkmark" size={18} color={COLORS.primary} />
-                  ) : null}
-                </TouchableOpacity>
-              );
-            })}
-            <TouchableOpacity
-              style={styles.selectorOption}
-              onPress={() => {
-                setIsCalendarExpanded((prev) => !prev);
-                setCalendarPickerVisible(false);
-              }}
-            >
-              <Text style={styles.selectorOptionText}>
-                {isCalendarExpanded ? 'Hide Details' : 'Show Details'}
-              </Text>
-              <Ionicons
-                name={isCalendarExpanded ? 'chevron-up' : 'chevron-down'}
-                size={18}
-                color={COLORS.textLight}
-              />
-            </TouchableOpacity>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.selectorScrollContent}>
+              {CALENDAR_VIEW_ORDER.map((viewMode) => {
+                const isActive = calendarView === viewMode;
+                return (
+                  <TouchableOpacity
+                    key={viewMode}
+                    style={styles.selectorOption}
+                    onPress={() => setCalendarView(viewMode)}
+                  >
+                    <Text style={[styles.selectorOptionText, isActive && styles.selectorOptionTextActive]}>
+                      {CALENDAR_VIEW_META[viewMode].label}
+                    </Text>
+                    {isActive ? (
+                      <Ionicons name="checkmark" size={18} color={COLORS.primary} />
+                    ) : null}
+                  </TouchableOpacity>
+                );
+              })}
+
+              <View style={styles.selectorDetailSection}>
+                {calendarView === 'daily' ? (
+                  <>
+                    <View style={styles.selectorMonthHeader}>
+                      <TouchableOpacity
+                        style={[styles.monthNavButton, !canGoPrev && styles.monthNavButtonDisabled]}
+                        onPress={() => {
+                          if (!canGoPrev) return;
+                          setDisplayMonth(startOfMonth(parseYmd(`${activeMonthKeys[selectedMonthIndex - 1]}-01`)));
+                        }}
+                        disabled={!canGoPrev}
+                      >
+                        <Ionicons name="chevron-back" size={16} color={canGoPrev ? COLORS.primary : COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <Text style={styles.selectorMonthTitle}>{format(displayMonth, 'MMMM yyyy')}</Text>
+                      <TouchableOpacity
+                        style={[styles.monthNavButton, !canGoNext && styles.monthNavButtonDisabled]}
+                        onPress={() => {
+                          if (!canGoNext) return;
+                          setDisplayMonth(startOfMonth(parseYmd(`${activeMonthKeys[selectedMonthIndex + 1]}-01`)));
+                        }}
+                        disabled={!canGoNext}
+                      >
+                        <Ionicons name="chevron-forward" size={16} color={canGoNext ? COLORS.primary : COLORS.textMuted} />
+                      </TouchableOpacity>
+                    </View>
+
+                    {activeDayKeysForDisplayMonth.length === 0 ? (
+                      <Text style={styles.selectorEmptyText}>No events in this month.</Text>
+                    ) : (
+                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeDaysScrollContent}>
+                        {activeDayKeysForDisplayMonth.map((dayKey) => {
+                          const day = parseYmd(dayKey);
+                          const isSelected = dayKey === selectedDateKey;
+                          return (
+                            <TouchableOpacity
+                              key={dayKey}
+                              style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
+                              onPress={() => {
+                                setSelectedDate(day);
+                                setCalendarPickerVisible(false);
+                              }}
+                            >
+                              <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
+                                {format(day, 'EEE')}
+                              </Text>
+                              <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
+                                {format(day, 'd')}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    )}
+                  </>
+                ) : calendarView === 'monthly' ? (
+                  <>
+                    <View style={styles.selectorMonthHeader}>
+                      <TouchableOpacity
+                        style={[styles.monthNavButton, !canGoPrevYear && styles.monthNavButtonDisabled]}
+                        onPress={() => {
+                          if (!canGoPrevYear) return;
+                          const nextYear = yearCards[selectedYearIndex - 1];
+                          const nextMonthKey = getYearMonthKey(nextYear, 'last');
+                          setSelectedYear(nextYear);
+                          setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${nextYear}-01`)}-01`)));
+                        }}
+                        disabled={!canGoPrevYear}
+                      >
+                        <Ionicons name="chevron-back" size={16} color={canGoPrevYear ? COLORS.primary : COLORS.textMuted} />
+                      </TouchableOpacity>
+                      <Text style={styles.selectorMonthTitle}>{selectedYear}</Text>
+                      <TouchableOpacity
+                        style={[styles.monthNavButton, !canGoNextYear && styles.monthNavButtonDisabled]}
+                        onPress={() => {
+                          if (!canGoNextYear) return;
+                          const nextYear = yearCards[selectedYearIndex + 1];
+                          const nextMonthKey = getYearMonthKey(nextYear, 'first');
+                          setSelectedYear(nextYear);
+                          setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${nextYear}-01`)}-01`)));
+                        }}
+                        disabled={!canGoNextYear}
+                      >
+                        <Ionicons name="chevron-forward" size={16} color={canGoNextYear ? COLORS.primary : COLORS.textMuted} />
+                      </TouchableOpacity>
+                    </View>
+
+                    <View style={styles.periodGrid}>
+                      {monthCards.map((month) => {
+                        const monthKey = format(month, 'yyyy-MM');
+                        const inRange = monthKey >= rangeStartStr.slice(0, 7) && monthKey <= rangeEndStr.slice(0, 7);
+                        const isSelected = monthKey === selectedMonthKey;
+                        return (
+                          <TouchableOpacity
+                            key={monthKey}
+                            style={[
+                              styles.periodCell,
+                              isSelected && styles.periodCellSelected,
+                              !inRange && styles.periodCellDisabled,
+                            ]}
+                            onPress={() => {
+                              if (!inRange) return;
+                              setDisplayMonth(startOfMonth(month));
+                              setCalendarView('monthly');
+                              setCalendarPickerVisible(false);
+                            }}
+                            disabled={!inRange}
+                          >
+                            <Text style={[styles.periodCellLabel, isSelected && styles.periodCellLabelSelected]}>
+                              {format(month, 'MMM')}
+                            </Text>
+                            <Text style={[styles.periodCellCount, isSelected && styles.periodCellCountSelected]}>
+                              {monthlyEventCounts[monthKey] || 0}
+                            </Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  </>
+                ) : (
+                  <View style={styles.periodGrid}>
+                    {yearCards.map((year) => {
+                      const yearKey = String(year);
+                      const isSelected = year === selectedYear;
+                      return (
+                        <TouchableOpacity
+                          key={yearKey}
+                          style={[styles.periodCell, styles.yearCell, isSelected && styles.periodCellSelected]}
+                          onPress={() => {
+                            setSelectedYear(year);
+                            const nextMonthKey = getYearMonthKey(year, 'first');
+                            setDisplayMonth(startOfMonth(parseYmd(`${(nextMonthKey ?? `${year}-01`)}-01`)));
+                            setCalendarPickerVisible(false);
+                          }}
+                        >
+                          <Text style={[styles.periodCellLabel, isSelected && styles.periodCellLabelSelected]}>
+                            {yearKey}
+                          </Text>
+                          <Text style={[styles.periodCellCount, isSelected && styles.periodCellCountSelected]}>
+                            {yearlyEventCounts[yearKey] || 0}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
+            </ScrollView>
           </Pressable>
         </Pressable>
       </Modal>
@@ -1248,12 +1105,6 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLORS.border,
   },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
   sectionTitleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1261,41 +1112,6 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 16, fontWeight: '700', color: COLORS.text },
   sectionSubtitle: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
-  calendarHeaderActionText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.primary,
-  },
-  viewToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-  viewToggleButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: '#F3F4F6',
-    alignItems: 'center',
-  },
-  viewToggleButtonActive: {
-    backgroundColor: COLORS.primary,
-  },
-  viewToggleText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textLight,
-  },
-  viewToggleTextActive: {
-    color: '#FFFFFF',
-  },
-  monthHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  monthTitle: { fontSize: 16, fontWeight: '700', color: COLORS.primary },
   monthNavButton: {
     width: 32,
     height: 32,
@@ -1305,23 +1121,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#EEF2FF',
   },
   monthNavButtonDisabled: { backgroundColor: '#F3F4F6' },
-  weekdayRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  activeDaysScroll: {
-    flex: 1,
-    marginBottom: 12,
-  },
   activeDaysScrollContent: {
     gap: 8,
     paddingRight: 4,
-  },
-  activeDaysScrollerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
   },
   activeDayCard: {
     minWidth: 58,
@@ -1352,28 +1154,6 @@ const styles = StyleSheet.create({
   },
   activeDayTextSelected: {
     color: '#FFFFFF',
-  },
-  calendarToggleButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 10,
-    borderRadius: 12,
-    backgroundColor: COLORS.primarySoft,
-    marginBottom: 12,
-  },
-  calendarToggleText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: COLORS.primary,
-  },
-  weekdayLabel: {
-    width: `${100 / 7}%`,
-    textAlign: 'center',
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.textMuted,
   },
   periodGrid: {
     flexDirection: 'row',
@@ -1418,37 +1198,6 @@ const styles = StyleSheet.create({
   periodCellCountSelected: {
     color: '#FFFFFF',
   },
-  calendarGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
-  dayCell: {
-    width: `${100 / 7}%`,
-    aspectRatio: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 12,
-    marginBottom: 4,
-    gap: 4,
-  },
-  dayCellOutsideMonth: { opacity: 0.55 },
-  dayCellSelected: { backgroundColor: COLORS.primary },
-  dayCellDisabled: { opacity: 0.3 },
-  dayLabel: { fontSize: 14, color: COLORS.text, fontWeight: '600' },
-  dayLabelOutsideMonth: { color: COLORS.textLight },
-  dayLabelSelected: { color: '#FFFFFF' },
-  dayLabelDisabled: { color: COLORS.textMuted },
-  dayDot: {
-    minWidth: 18,
-    paddingHorizontal: 5,
-    borderRadius: 9,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#E5E7EB',
-  },
-  dayDotSelected: { backgroundColor: '#FFFFFF' },
-  dayDotText: { fontSize: 10, color: COLORS.textLight, fontWeight: '700' },
-  dayDotTextSelected: { color: COLORS.primary },
   eventsHeader: {
     marginBottom: 10,
   },
@@ -1471,10 +1220,15 @@ const styles = StyleSheet.create({
     gap: 8,
     marginTop: 2,
   },
+  eventsDateSelectControl: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
   eventsDateTitle: { fontSize: 17, fontWeight: '800', color: COLORS.text },
   eventsDateSelectText: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '600',
     color: COLORS.primary,
   },
   eventTabsRow: {
@@ -1529,18 +1283,6 @@ const styles = StyleSheet.create({
   },
   eventTabCountTextActive: {
     color: '#2563EB',
-  },
-  horizontalNavButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#EEF2FF',
-    marginBottom: 12,
-  },
-  horizontalNavButtonDisabled: {
-    backgroundColor: '#F3F4F6',
   },
   filterSearchWrap: {
     flexDirection: 'row',
@@ -1602,19 +1344,24 @@ const styles = StyleSheet.create({
   eventTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     gap: 8,
   },
   eventTickerBlock: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    gap: 2,
     flexShrink: 1,
   },
   eventTicker: { fontSize: 13, fontWeight: '700', color: COLORS.primary, textTransform: 'uppercase' },
   eventCompanyName: { fontSize: 13, fontWeight: '600', color: COLORS.textMuted, flexShrink: 1 },
+  eventMetaColumn: {
+    alignItems: 'flex-end',
+    gap: 6,
+    maxWidth: '45%',
+  },
   eventPill: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   eventPillText: { fontSize: 11, fontWeight: '700' },
+  eventHeaderMeta: { fontSize: 11, color: COLORS.textMuted, lineHeight: 16, textAlign: 'right' },
+  eventPrimaryText: { fontSize: 14, fontWeight: '600', color: COLORS.text, lineHeight: 20 },
   eventTitle: { fontSize: 14, fontWeight: '600', color: COLORS.text, lineHeight: 20 },
   eventMeta: { fontSize: 12, color: COLORS.textLight, lineHeight: 18 },
   loadMoreButtonFull: {
@@ -1726,8 +1473,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: 32,
-    gap: 4,
+    paddingBottom: 20,
   },
   selectorHandle: {
     alignSelf: 'center',
@@ -1742,6 +1488,9 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.text,
     marginBottom: 8,
+  },
+  selectorScrollContent: {
+    paddingBottom: 12,
   },
   selectorOption: {
     flexDirection: 'row',
@@ -1758,5 +1507,28 @@ const styles = StyleSheet.create({
   },
   selectorOptionTextActive: {
     color: COLORS.primary,
+  },
+  selectorDetailSection: {
+    paddingTop: 16,
+    gap: 12,
+  },
+  selectorMonthHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  selectorMonthTitle: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  selectorEmptyText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    paddingVertical: 12,
   },
 });

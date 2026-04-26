@@ -4738,7 +4738,7 @@ export default function StockDetail() {
                       {newsLoading ? (
                         <ActivityIndicator size="small" color={COLORS.primary} />
                       ) : (
-                        <Text style={styles.newsActionText}>Load more news</Text>
+                        <Text style={styles.newsActionText}>Load more</Text>
                       )}
                     </TouchableOpacity>
                   )}
