@@ -24,7 +24,7 @@ import { FONTS } from '../_layout';
 import { useLayoutSpacing } from '../../constants/layout';
 import { getMembershipPillConfig } from '../../constants/membershipPills';
 import { API_URL } from '../../utils/config';
-import { formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';
 import { useMyStocksStore } from '../../stores/myStocksStore';
 
 const COLORS = {
@@ -63,6 +63,13 @@ type DashboardFeedItem =
   | { kind: 'article'; id: string; article: any };
 
 type HomepageFeedSort = 'date_desc' | 'date_asc' | 'az' | 'za';
+type HomepageFeedMode = 'all' | 'events' | 'news';
+
+const HOMEPAGE_FEED_MODE_OPTIONS: { key: HomepageFeedMode; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'events', label: 'Events' },
+  { key: 'news', label: 'News' },
+];
 
 const formatDashboardDate = (dateStr?: string | null): string => {
   if (!dateStr) return '';
@@ -234,7 +241,7 @@ export default function Dashboard() {
   const [selectedArticle, setSelectedArticle] = useState<any>(null);
   const [aggregateSentiment, setAggregateSentiment] = useState<any>(null);
   const [homepageFeedSort, setHomepageFeedSort] = useState<HomepageFeedSort>('date_desc');
-  const [includeHomepageNews, setIncludeHomepageNews] = useState(true);
+  const [homepageFeedMode, setHomepageFeedMode] = useState<HomepageFeedMode>('all');
   const [newsFeedFilter, setNewsFeedFilter] = useState('');
   
   // Fix 3: News pagination with See less
@@ -470,12 +477,14 @@ export default function Dashboard() {
   );
 
   const newsFeedItems = useMemo<DashboardFeedItem[]>(() => {
-    const eventItems = homepageEvents.map((event) => ({
-      kind: 'event' as const,
-      id: event.id,
-      event,
-    }));
-    const articleItems = includeHomepageNews
+    const eventItems = homepageFeedMode !== 'news'
+      ? homepageEvents.map((event) => ({
+          kind: 'event' as const,
+          id: event.id,
+          event,
+        }))
+      : [];
+    const articleItems = homepageFeedMode !== 'events'
       ? newsItems.map((article) => ({
           kind: 'article' as const,
           id: article.id,
@@ -495,7 +504,7 @@ export default function Dashboard() {
       default:
         return mergedItems.sort((a, b) => getDashboardFeedDateValue(b) - getDashboardFeedDateValue(a));
     }
-  }, [homepageEvents, homepageFeedSort, includeHomepageNews, newsItems]);
+  }, [homepageEvents, homepageFeedMode, homepageFeedSort, newsItems]);
 
   const normalizedNewsFeedFilter = newsFeedFilter.trim().toLowerCase();
   const filteredNewsFeedItems = useMemo<DashboardFeedItem[]>(() => {
@@ -525,7 +534,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     setNewsLimit(INITIAL_NEWS_LIMIT);
-  }, [homepageFeedSort, includeHomepageNews]);
+  }, [homepageFeedMode, homepageFeedSort]);
 
   const formatPercent = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   const formatDrawdown = (v: number) => `-${Math.abs(v).toFixed(2)}%`;
@@ -1050,7 +1059,7 @@ export default function Dashboard() {
                 </View>
               </View>
               {/* Aggregate Sentiment Badge */}
-              {includeHomepageNews && aggregateSentiment && (
+              {homepageFeedMode !== 'events' && aggregateSentiment && (
                 <View 
                   style={[
                     styles.aggregateSentimentBadge,
@@ -1065,6 +1074,9 @@ export default function Dashboard() {
                 </View>
               )}
             </View>
+            {homepageFeedMode !== 'events' && aggregateSentiment && (
+              <Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>
+            )}
             <View style={styles.newsControlsRow}>
               <View style={styles.newsSortButtons}>
                 <TouchableOpacity
@@ -1108,19 +1120,24 @@ export default function Dashboard() {
                   </Text>
                 </TouchableOpacity>
               </View>
-              <TouchableOpacity
-                style={styles.portfolioToggleInline}
-                onPress={() => setIncludeHomepageNews((prev) => !prev)}
-                data-testid="homepage-events-toggle"
-                accessibilityRole="switch"
-                accessibilityLabel="Toggle homepage news"
-                accessibilityState={{ checked: includeHomepageNews }}
-              >
-                <Text style={styles.portfolioToggleLabelInline}>+News</Text>
-                <View style={[styles.toggleSwitch, includeHomepageNews && styles.toggleSwitchOn]}>
-                  <View style={[styles.toggleKnob, includeHomepageNews && styles.toggleKnobOn]} />
-                </View>
-              </TouchableOpacity>
+              <View style={styles.feedModeGroup} data-testid="homepage-events-toggle">
+                {HOMEPAGE_FEED_MODE_OPTIONS.map((option) => {
+                  const isActive = homepageFeedMode === option.key;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}
+                      onPress={() => setHomepageFeedMode(option.key)}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Show ${option.label.toLowerCase()} on homepage`}
+                    >
+                      <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
             <View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>
               <Ionicons name="search" size={16} color={COLORS.textMuted} />
@@ -2322,6 +2339,12 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 4,
   },
+  aggregateSentimentHelperText: {
+    marginTop: 8,
+    fontSize: 11,
+    lineHeight: 16,
+    color: COLORS.textMuted,
+  },
   newsScrollContainer: {
     // Removed - using main ScrollView for scrolling
   },
@@ -2345,6 +2368,32 @@ const styles = StyleSheet.create({
   aggregateSentimentScore: {
     fontSize: 11,
     color: COLORS.textMuted,
+  },
+  feedModeGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  feedModeChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  feedModeChipActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  feedModeChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
+  feedModeChipTextActive: {
+    color: '#FFFFFF',
   },
   newsRow: {
     flexDirection: 'row',

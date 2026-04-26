@@ -36,6 +36,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useAppDialog } from '../../contexts/AppDialogContext';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
+import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';
 
 // Delay before fetching below-the-fold content (talk posts) to prioritize critical data
 const DEFERRED_FETCH_MS = 800;
@@ -4620,16 +4621,19 @@ export default function StockDetail() {
               <Text style={styles.sectionTitleBold}>News & Events</Text>
             </View>
             {aggregateSentiment && (
-              <View
-                style={[
-                  styles.aggregateSentimentBadge,
-                  { backgroundColor: `${aggregateSentiment.color}20` },
-                ]}
-              >
-                <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
-                <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
-                  {getSentimentText(aggregateSentiment.label)}
-                </Text>
+              <View style={styles.aggregateSentimentInfo}>
+                <View
+                  style={[
+                    styles.aggregateSentimentBadge,
+                    { backgroundColor: `${aggregateSentiment.color}20` },
+                  ]}
+                >
+                  <View style={[styles.aggregateSentimentDot, { backgroundColor: aggregateSentiment.color }]} />
+                  <Text style={[styles.aggregateSentimentText, { color: aggregateSentiment.color }]}>
+                    {formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)}
+                  </Text>
+                </View>
+                <Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>
               </View>
             )}
           </View>
@@ -5635,6 +5639,11 @@ const styles = StyleSheet.create({
   newsLoading: { padding: 24, alignItems: 'center' },
   newsSectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 10 },
   newsSectionTitleWrap: { marginBottom: 0, flex: 1 },
+  aggregateSentimentInfo: {
+    alignItems: 'flex-end',
+    gap: 6,
+    maxWidth: '70%',
+  },
   aggregateSentimentBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -5651,6 +5660,12 @@ const styles = StyleSheet.create({
   aggregateSentimentText: {
     fontSize: 12,
     fontWeight: '600',
+  },
+  aggregateSentimentHelperText: {
+    fontSize: 11,
+    lineHeight: 16,
+    color: COLORS.textLight,
+    textAlign: 'right',
   },
   newsEmpty: { padding: 24, alignItems: 'center' },
   newsEmptyText: { fontSize: 15, fontWeight: '600', color: COLORS.text, marginTop: 8 },

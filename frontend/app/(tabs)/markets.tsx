@@ -1,9 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
+  type LayoutChangeEvent,
   Linking,
   Modal,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
@@ -25,7 +28,8 @@ import {
 } from 'date-fns';
 import { useLayoutSpacing } from '../../constants/layout';
 import { API_URL } from '../../utils/config';
-import { formatAggregateSentimentLabel } from '../../utils/sentiment';
+import { COLORS as APP_COLORS } from '../_layout';
+import { AGGREGATE_SENTIMENT_HELPER_TEXT, formatAggregateSentimentLabel } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
 
 const COLORS = {
@@ -45,6 +49,7 @@ const COLORS = {
 type EventType = 'earnings' | 'dividend' | 'split' | 'ipo';
 type CalendarViewMode = 'daily' | 'monthly' | 'yearly';
 type SentimentCategory = 'positive' | 'negative' | 'neutral';
+type MarketFeedMode = 'all' | 'events' | 'news';
 
 type CalendarEvent = {
   date: string;
@@ -109,6 +114,17 @@ const EARNINGS_FALLBACK_LABEL = 'Scheduled earnings';
 // while we still fetch this feed in a single request before incremental paging lands.
 const MARKET_NEWS_LIMIT = 1000;
 const YMD_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const ACTIVE_DAY_CARD_ESTIMATED_WIDTH = 74;
+const ACTIVE_DAY_CARD_GAP = 8;
+// Allow a few pixels of tolerance before disabling the day-strip arrows after inertial scrolling.
+const ACTIVE_DAY_SCROLL_TOLERANCE = 4;
+// Keep a small overlap between pages so users retain context while stepping through dates.
+const ACTIVE_DAY_SCROLL_PAGE_MARGIN = 72;
+const MARKET_FEED_MODE_OPTIONS: { key: MarketFeedMode; label: string }[] = [
+  { key: 'all', label: 'All' },
+  { key: 'events', label: 'Events' },
+  { key: 'news', label: 'News' },
+];
 
 const formatDateDMY = (dateStr: string | null | undefined): string => {
   if (!dateStr || !isValidYmd(dateStr)) return 'N/A';
@@ -274,12 +290,16 @@ export default function Markets() {
   const [tickerFilter, setTickerFilter] = useState('');
   const [visibleFeedLimit, setVisibleFeedLimit] = useState(INITIAL_VISIBLE_FEED_ITEMS);
   const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);
-  const [includeNews, setIncludeNews] = useState(true);
+  const [marketFeedMode, setMarketFeedMode] = useState<MarketFeedMode>('all');
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
   const [newsTotalCount, setNewsTotalCount] = useState(0);
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
+  const activeDaysScrollRef = useRef<ScrollView | null>(null);
+  const [activeDaysViewportWidth, setActiveDaysViewportWidth] = useState(0);
+  const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
+  const [activeDaysScrollX, setActiveDaysScrollX] = useState(0);
 
   useEffect(() => {
     const fetchEvents = async () => {
@@ -367,6 +387,29 @@ export default function Markets() {
     return activeYearKeys.map((yearKey) => Number(yearKey));
   }, [activeYearKeys]);
 
+  const maxActiveDaysScrollX = Math.max(0, activeDaysContentWidth - activeDaysViewportWidth);
+  const canScrollActiveDaysPrev = activeDaysScrollX > ACTIVE_DAY_SCROLL_TOLERANCE;
+  const canScrollActiveDaysNext = activeDaysScrollX < maxActiveDaysScrollX - ACTIVE_DAY_SCROLL_TOLERANCE;
+
+  const handleActiveDaysLayout = useCallback((event: LayoutChangeEvent) => {
+    setActiveDaysViewportWidth(event.nativeEvent.layout.width);
+  }, []);
+
+  const handleActiveDaysScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    setActiveDaysScrollX(Math.max(0, contentOffset.x));
+    setActiveDaysViewportWidth(layoutMeasurement.width);
+    setActiveDaysContentWidth(contentSize.width);
+  }, []);
+
+  const scrollActiveDaysBy = useCallback((direction: -1 | 1) => {
+    const step = activeDaysViewportWidth > 0
+      ? Math.max(activeDaysViewportWidth - ACTIVE_DAY_SCROLL_PAGE_MARGIN, ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP)
+      : ACTIVE_DAY_CARD_ESTIMATED_WIDTH * 3;
+    const nextX = Math.max(0, Math.min(maxActiveDaysScrollX, activeDaysScrollX + (direction * step)));
+    activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: true });
+  }, [activeDaysScrollX, activeDaysViewportWidth, maxActiveDaysScrollX]);
+
   const periodEvents = useMemo(() => {
     if (calendarView === 'daily') return selectedEvents;
     if (calendarView === 'monthly') {
@@ -417,6 +460,28 @@ export default function Markets() {
   }, [activeDayKeysForDisplayMonth, calendarView, selectedDateKey, todayPragueStr]);
 
   useEffect(() => {
+    if (calendarView !== 'daily' || activeDayKeysForDisplayMonth.length === 0 || activeDaysViewportWidth <= 0) return;
+    const selectedDayIndex = Math.max(activeDayKeysForDisplayMonth.indexOf(selectedDateKey), 0);
+    const centeredOffset = Math.max(
+      0,
+      (selectedDayIndex * (ACTIVE_DAY_CARD_ESTIMATED_WIDTH + ACTIVE_DAY_CARD_GAP))
+        - Math.max(0, (activeDaysViewportWidth - ACTIVE_DAY_CARD_ESTIMATED_WIDTH) / 2),
+    );
+    const nextMaxActiveDaysScrollX = Math.max(0, activeDaysContentWidth - activeDaysViewportWidth);
+    const nextX = centeredOffset > nextMaxActiveDaysScrollX ? nextMaxActiveDaysScrollX : centeredOffset;
+    // Keep the selected date visible immediately when the picker opens or the month changes.
+    activeDaysScrollRef.current?.scrollTo({ x: nextX, animated: false });
+    setActiveDaysScrollX(nextX);
+  }, [
+    activeDayKeysForDisplayMonth,
+    activeDaysContentWidth,
+    activeDaysViewportWidth,
+    calendarPickerVisible,
+    calendarView,
+    selectedDateKey,
+  ]);
+
+  useEffect(() => {
     const nextType = EVENT_TYPE_ORDER.find((type) => selectedEventCounts[type] > 0) ?? 'earnings';
     if (selectedEventCounts[selectedEventType] === 0 && nextType !== selectedEventType) {
       setSelectedEventType(nextType);
@@ -448,7 +513,6 @@ export default function Markets() {
   }, [normalizedTickerFilter, typeFilteredEvents]);
 
   const visibleNewsItems = useMemo(() => {
-    if (!includeNews) return [];
     if (!normalizedTickerFilter) return newsItems;
     return newsItems.filter((item) => {
       const haystack = [
@@ -462,33 +526,37 @@ export default function Markets() {
         .toLowerCase();
       return haystack.includes(normalizedTickerFilter);
     });
-  }, [includeNews, newsItems, normalizedTickerFilter]);
+  }, [newsItems, normalizedTickerFilter]);
 
   useEffect(() => {
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
-  }, [includeNews, normalizedTickerFilter]);
+  }, [marketFeedMode, normalizedTickerFilter]);
 
   const filteredFeedItems = useMemo<MarketFeedItem[]>(() => {
-    const eventItems = visibleEvents.map((event, index) => ({
-      kind: 'event' as const,
-      id: `${event.type}-${event.ticker || 'na'}-${event.date}-${index}`,
-      date: event.date,
-      sortTimestamp: getFeedTimestamp(event.date),
-      event,
-    }));
+    const eventItems = marketFeedMode !== 'news'
+      ? visibleEvents.map((event, index) => ({
+          kind: 'event' as const,
+          id: `${event.type}-${event.ticker || 'na'}-${event.date}-${index}`,
+          date: event.date,
+          sortTimestamp: getFeedTimestamp(event.date),
+          event,
+        }))
+      : [];
     const mergedItems: MarketFeedItem[] = [
       ...eventItems,
-      ...visibleNewsItems.map((news) => ({
-        kind: 'news' as const,
-        id: news.id,
-        date: news.date,
-        sortTimestamp: getFeedTimestamp(news.date),
-        news,
-      })),
+      ...(marketFeedMode !== 'events'
+        ? visibleNewsItems.map((news) => ({
+            kind: 'news' as const,
+            id: news.id,
+            date: news.date,
+            sortTimestamp: getFeedTimestamp(news.date),
+            news,
+          }))
+        : []),
     ];
 
     return mergedItems.sort((left, right) => right.sortTimestamp - left.sortTimestamp);
-  }, [visibleEvents, visibleNewsItems]);
+  }, [marketFeedMode, visibleEvents, visibleNewsItems]);
 
   const displayedFeedItems = useMemo(
     () => filteredFeedItems.slice(0, visibleFeedLimit),
@@ -499,15 +567,6 @@ export default function Markets() {
     let cancelled = false;
 
     const fetchVisibleTickerNews = async () => {
-      if (!includeNews) {
-        setNewsItems([]);
-        setNewsTotalCount(0);
-        setAggregateSentiment(null);
-        setNewsError(null);
-        setNewsLoading(false);
-        return;
-      }
-
       try {
         setNewsLoading(true);
         setNewsError(null);
@@ -576,7 +635,7 @@ export default function Markets() {
     return () => {
       cancelled = true;
     };
-  }, [includeNews]);
+  }, []);
 
   const selectedMonthIndex = activeMonthKeys.indexOf(selectedMonthKey);
   const selectedYearIndex = yearCards.indexOf(selectedYear);
@@ -679,15 +738,15 @@ export default function Markets() {
                     accessibilityRole="button"
                   >
                     <Text style={styles.eventsDateSelectText}>Select</Text>
-                    <Ionicons name="chevron-down" size={12} color={COLORS.primary} />
+                    <Ionicons name="chevron-down" size={12} color={APP_COLORS.primary} />
                   </TouchableOpacity>
                 </View>
                 <Text style={styles.sectionSubtitle}>
-                  {`${periodEvents.length} events${includeNews ? ` • ${newsTotalCount} news` : ''}`}
+                  {`${periodEvents.length} events • ${newsTotalCount} news`}
                 </Text>
               </View>
               <View style={styles.eventsHeaderActions}>
-                {includeNews && aggregateSentiment && (
+                {marketFeedMode !== 'events' && aggregateSentiment && (
                   <View
                     style={[
                       styles.aggregateSentimentBadge,
@@ -701,20 +760,29 @@ export default function Markets() {
                     </Text>
                   </View>
                 )}
-                <TouchableOpacity
-                  style={styles.portfolioToggleInline}
-                  onPress={() => setIncludeNews((prev) => !prev)}
-                  accessibilityRole="switch"
-                  accessibilityLabel="Toggle market news"
-                  accessibilityState={{ checked: includeNews }}
-                >
-                  <Text style={styles.portfolioToggleLabelInline}>+News</Text>
-                  <View style={[styles.toggleSwitch, includeNews && styles.toggleSwitchOn]}>
-                    <View style={[styles.toggleKnob, includeNews && styles.toggleKnobOn]} />
-                  </View>
-                </TouchableOpacity>
+                <View style={styles.feedModeGroup}>
+                  {MARKET_FEED_MODE_OPTIONS.map((option) => {
+                    const isActive = marketFeedMode === option.key;
+                    return (
+                      <TouchableOpacity
+                        key={option.key}
+                        style={[styles.feedModeChip, isActive && styles.feedModeChipActive]}
+                        onPress={() => setMarketFeedMode(option.key)}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Show ${option.label.toLowerCase()} on markets`}
+                      >
+                        <Text style={[styles.feedModeChipText, isActive && styles.feedModeChipTextActive]}>
+                          {option.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
             </View>
+            {marketFeedMode !== 'events' && aggregateSentiment && (
+              <Text style={styles.aggregateSentimentHelperText}>{AGGREGATE_SENTIMENT_HELPER_TEXT}</Text>
+            )}
           </View>
 
           {loading ? (
@@ -723,7 +791,7 @@ export default function Markets() {
             </View>
           ) : error ? (
             <Text style={styles.errorText}>{error}</Text>
-          ) : periodEvents.length === 0 && (!includeNews || (!newsLoading && !newsError && newsItems.length === 0)) ? (
+          ) : periodEvents.length === 0 && (!newsLoading && !newsError && newsItems.length === 0) ? (
             <View style={styles.emptyWrap}>
               <Ionicons name="calendar-outline" size={28} color={COLORS.textMuted} />
               <Text style={styles.emptyText}>No events for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
@@ -784,9 +852,19 @@ export default function Markets() {
                 <View style={styles.loadingWrap}>
                   <ActivityIndicator size="small" color={COLORS.primary} />
                 </View>
-              ) : includeNews && newsError && visibleEvents.length === 0 ? (
+              ) : marketFeedMode !== 'events' && newsError && visibleEvents.length === 0 ? (
                 <Text style={styles.errorText}>{newsError}</Text>
-              ) : typeFilteredEvents.length === 0 && (!includeNews || visibleNewsItems.length === 0) ? (
+              ) : marketFeedMode === 'events' && typeFilteredEvents.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
+                </View>
+              ) : marketFeedMode === 'news' && visibleNewsItems.length === 0 ? (
+                <View style={styles.emptyWrap}>
+                  <Text style={styles.emptyText}>
+                    {normalizedTickerFilter ? `No matches for “${tickerFilter}”` : 'No saved market or ticker news available right now'}
+                  </Text>
+                </View>
+              ) : marketFeedMode === 'all' && typeFilteredEvents.length === 0 && visibleNewsItems.length === 0 ? (
                 <View style={styles.emptyWrap}>
                   <Text style={styles.emptyText}>No {EVENT_META[selectedEventType].label.toLowerCase()} for this {CALENDAR_VIEW_META[calendarView].emptyLabel}</Text>
                 </View>
@@ -970,29 +1048,57 @@ export default function Markets() {
                     {activeDayKeysForDisplayMonth.length === 0 ? (
                       <Text style={styles.selectorEmptyText}>No events in this month.</Text>
                     ) : (
-                      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeDaysScrollContent}>
-                        {activeDayKeysForDisplayMonth.map((dayKey) => {
-                          const day = parseYmd(dayKey);
-                          const isSelected = dayKey === selectedDateKey;
-                          return (
-                            <TouchableOpacity
-                              key={dayKey}
-                              style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
-                              onPress={() => {
-                                setSelectedDate(day);
-                                setCalendarPickerVisible(false);
-                              }}
-                            >
-                              <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
-                                {format(day, 'EEE')}
-                              </Text>
-                              <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
-                                {format(day, 'd')}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </ScrollView>
+                      <View style={styles.activeDaysCarouselRow}>
+                        <TouchableOpacity
+                          style={[styles.monthNavButton, styles.activeDaysNavButton, !canScrollActiveDaysPrev && styles.monthNavButtonDisabled]}
+                          onPress={() => scrollActiveDaysBy(-1)}
+                          disabled={!canScrollActiveDaysPrev}
+                          accessibilityLabel="Scroll days left"
+                        >
+                          <Ionicons name="chevron-back" size={16} color={canScrollActiveDaysPrev ? COLORS.primary : COLORS.textMuted} />
+                        </TouchableOpacity>
+                        <ScrollView
+                          ref={activeDaysScrollRef}
+                          horizontal
+                          showsHorizontalScrollIndicator={false}
+                          contentContainerStyle={styles.activeDaysScrollContent}
+                          style={styles.activeDaysScroll}
+                          onLayout={handleActiveDaysLayout}
+                          onContentSizeChange={(contentWidth) => setActiveDaysContentWidth(contentWidth)}
+                          onScroll={handleActiveDaysScroll}
+                          scrollEventThrottle={16}
+                        >
+                          {activeDayKeysForDisplayMonth.map((dayKey) => {
+                            const day = parseYmd(dayKey);
+                            const isSelected = dayKey === selectedDateKey;
+                            return (
+                              <TouchableOpacity
+                                key={dayKey}
+                                style={[styles.activeDayCard, isSelected && styles.activeDayCardSelected]}
+                                onPress={() => {
+                                  setSelectedDate(day);
+                                  setCalendarPickerVisible(false);
+                                }}
+                              >
+                                <Text style={[styles.activeDayWeekday, isSelected && styles.activeDayTextSelected]}>
+                                  {format(day, 'EEE')}
+                                </Text>
+                                <Text style={[styles.activeDayNumber, isSelected && styles.activeDayTextSelected]}>
+                                  {format(day, 'd')}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </ScrollView>
+                        <TouchableOpacity
+                          style={[styles.monthNavButton, styles.activeDaysNavButton, !canScrollActiveDaysNext && styles.monthNavButtonDisabled]}
+                          onPress={() => scrollActiveDaysBy(1)}
+                          disabled={!canScrollActiveDaysNext}
+                          accessibilityLabel="Scroll days right"
+                        >
+                          <Ionicons name="chevron-forward" size={16} color={canScrollActiveDaysNext ? COLORS.primary : COLORS.textMuted} />
+                        </TouchableOpacity>
+                      </View>
                     )}
                   </>
                 ) : calendarView === 'monthly' ? (
@@ -1121,6 +1227,17 @@ const styles = StyleSheet.create({
     backgroundColor: '#EEF2FF',
   },
   monthNavButtonDisabled: { backgroundColor: '#F3F4F6' },
+  activeDaysCarouselRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  activeDaysNavButton: {
+    flexShrink: 0,
+  },
+  activeDaysScroll: {
+    flex: 1,
+  },
   activeDaysScrollContent: {
     gap: 8,
     paddingRight: 4,
@@ -1229,7 +1346,13 @@ const styles = StyleSheet.create({
   eventsDateSelectText: {
     fontSize: 12,
     fontWeight: '600',
-    color: COLORS.primary,
+    color: APP_COLORS.primary,
+  },
+  aggregateSentimentHelperText: {
+    marginTop: 8,
+    fontSize: 11,
+    lineHeight: 16,
+    color: COLORS.textMuted,
   },
   eventTabsRow: {
     flexDirection: 'row',
@@ -1432,6 +1555,32 @@ const styles = StyleSheet.create({
   aggregateSentimentText: {
     fontSize: 12,
     fontWeight: '700',
+  },
+  feedModeGroup: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  feedModeChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  feedModeChipActive: {
+    backgroundColor: APP_COLORS.primary,
+    borderColor: APP_COLORS.primary,
+  },
+  feedModeChipText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: COLORS.textLight,
+  },
+  feedModeChipTextActive: {
+    color: '#FFFFFF',
   },
   toggleSwitch: {
     width: 44,
