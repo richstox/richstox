@@ -1090,7 +1090,7 @@ export default function Markets() {
                 {selectedArticle.link && (
                   <TouchableOpacity
                     style={styles.readOriginalButton}
-                    onPress={() => openExternalLink(selectedArticle.link!)}
+                    onPress={() => openExternalLink(selectedArticle.link)}
                   >
                     <Text style={styles.readOriginalText}>Read original article</Text>
                     <Ionicons name="open-outline" size={16} color={COLORS.primary} />
