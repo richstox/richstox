@@ -1122,24 +1122,22 @@ export default function Dashboard() {
                 </View>
               </TouchableOpacity>
             </View>
-            {newsFeedItems.length > 0 && (
-              <View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>
-                <Ionicons name="search" size={16} color={COLORS.textMuted} />
-                <TextInput
-                  style={styles.myStocksSearchInput}
-                  placeholder="Search news & events..."
-                  placeholderTextColor={COLORS.textMuted}
-                  value={newsFeedFilter}
-                  onChangeText={setNewsFeedFilter}
-                  autoCorrect={false}
-                />
-                {newsFeedFilter.length > 0 && (
-                  <TouchableOpacity onPress={() => setNewsFeedFilter('')}>
-                    <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
-                  </TouchableOpacity>
-                )}
-              </View>
-            )}
+            <View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>
+              <Ionicons name="search" size={16} color={COLORS.textMuted} />
+              <TextInput
+                style={styles.myStocksSearchInput}
+                placeholder="Search news & events..."
+                placeholderTextColor={COLORS.textMuted}
+                value={newsFeedFilter}
+                onChangeText={setNewsFeedFilter}
+                autoCorrect={false}
+              />
+              {newsFeedFilter.length > 0 && (
+                <TouchableOpacity onPress={() => setNewsFeedFilter('')}>
+                  <Ionicons name="close-circle" size={16} color={COLORS.textMuted} />
+                </TouchableOpacity>
+              )}
+            </View>
           </View>
           
           {/* News List */}

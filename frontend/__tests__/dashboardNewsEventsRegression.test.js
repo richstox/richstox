@@ -42,6 +42,7 @@ describe('Dashboard News & Events regressions', () => {
     expect(fileContent).toContain("Date {homepageFeedSort === 'date_asc' ? '↑' : '↓'}");
     expect(fileContent).toContain("A‑Z {homepageFeedSort === 'za' ? '↑' : '↓'}");
     expect(fileContent).toContain('placeholder="Search news & events..."');
+    expect(fileContent).not.toContain('{newsFeedItems.length > 0 && (');
     expect(fileContent).toContain('<View style={[styles.myStocksSearchWrapper, styles.newsSearchWrapper]}>');
     expect(fileContent).toContain('newsSearchWrapper: {');
     expect(fileContent).toContain('marginTop: 8,');
