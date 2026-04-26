@@ -2595,6 +2595,14 @@ async def get_homepage_data(request: Request):
     current_tracklist_event = tracklist_events[-1] if tracklist_events else {}
     tracklist_effective_date = current_tracklist_event.get("effective_date")
     tracklist_event_type = current_tracklist_event.get("event_type")
+    tracklist_rebalanced_display = _format_display_date(tracklist_effective_date)
+    try:
+        prague_today = datetime.now(PRAGUE_TZ).date().isoformat()
+    except Exception:
+        prague_today = datetime.utcnow().date().isoformat()
+    tracklist_rebalance_pending = bool(
+        tracklist_effective_date and tracklist_effective_date > prague_today
+    )
 
     for ticker in ordered_tickers:
         ticker_db = f"{ticker}.US"
@@ -2619,11 +2627,13 @@ async def get_homepage_data(request: Request):
         position_pl_usd: Optional[float] = None
         position_pl_pct: Optional[float] = None
         position_entry_date: Optional[str] = None
+        position_created_at_display: Optional[str] = None
 
         if in_tracklist:
             pos = next((position for position in tracklist_positions if _normalize_list_ticker(position.get("ticker", "")) == ticker), None)
             if pos:
                 added_at = _format_display_date(pos.get("added_at"))
+                position_created_at_display = added_at
                 position_entry_date = pos.get("entry_date")
                 follow_price = pos.get("entry_price")
                 if follow_price and current and follow_price > 0:
@@ -2661,8 +2671,11 @@ async def get_homepage_data(request: Request):
             "position_pl_usd": position_pl_usd,
             "position_pl_pct": position_pl_pct,
             "entry_date": position_entry_date,
+            "created_at_display": position_created_at_display,
             "tracklist_effective_date": tracklist_effective_date if in_tracklist else None,
             "tracklist_event_type": tracklist_event_type if in_tracklist else None,
+            "rebalanced_at_display": tracklist_rebalanced_display if in_tracklist else None,
+            "rebalanced_pending": tracklist_rebalance_pending if in_tracklist else None,
         })
 
     tracklist_performance = await _build_tracklist_performance(membership_state["tracklist_doc"])

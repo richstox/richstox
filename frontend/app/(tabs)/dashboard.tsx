@@ -74,9 +74,16 @@ type DashboardStock = {
   shares?: number | null;
   avg_cost?: number | null;
   position_value?: number | null;
+  position_pl_usd?: number | null;
+  position_pl_pct?: number | null;
+  position_pl_closed_usd?: number | null;
+  position_pl_open_usd?: number | null;
   entry_date?: string | null;
+  created_at_display?: string | null;
   tracklist_effective_date?: string | null;
   tracklist_event_type?: string | null;
+  rebalanced_at_display?: string | null;
+  rebalanced_pending?: boolean | null;
 };
 
 type HomepageFeedSort = 'date_desc' | 'date_asc' | 'az' | 'za';
@@ -617,30 +624,31 @@ export default function Dashboard() {
     return `$${value.toFixed(2)}`;
   };
 
-  const getPragueTodayISO = () => {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Europe/Prague',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).formatToParts(new Date());
-    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-    return `${values.year}-${values.month}-${values.day}`;
+  const formatSignedMoney = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    const sign = value >= 0 ? '+' : '-';
+    return `${sign}$${Math.abs(value).toFixed(2)}`;
   };
 
-  const getStockStatusText = (stock: DashboardStock) => {
+  const formatSignedPercent = (value?: number | null) => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    const sign = value >= 0 ? '+' : '';
+    return `${sign}${value.toFixed(2)}%`;
+  };
+
+  const getStockCreatedText = (stock: DashboardStock) => {
     if (stock.pill !== 'Tracklist') {
       return stock.added_at ? `Added: ${stock.added_at}` : null;
     }
-    if (stock.tracklist_effective_date && stock.tracklist_effective_date > getPragueTodayISO()) {
-      return 'Pending';
-    }
-    const effectiveDate = stock.tracklist_effective_date || stock.entry_date;
-    const formattedDate = effectiveDate ? formatDashboardDate(effectiveDate) : stock.added_at;
-    if (!formattedDate) return null;
-    return stock.tracklist_event_type === 'replace'
-      ? `Rebalanced: ${formattedDate}`
-      : `Started: ${formattedDate}`;
+    const created = stock.created_at_display || stock.added_at;
+    return created ? `Created: ${created}` : null;
+  };
+
+  const getStockRebalancedText = (stock: DashboardStock) => {
+    if (stock.pill !== 'Tracklist') return null;
+    if (stock.rebalanced_pending) return 'Rebalanced: Pending';
+    if (stock.rebalanced_at_display) return `Rebalanced: ${stock.rebalanced_at_display}`;
+    return null;
   };
 
   const openExternalLink = (url: string) => {
@@ -1067,8 +1075,18 @@ export default function Dashboard() {
                 const logoUrl = getLogoUrl(stock);
                 const pillConfig = getMembershipPillConfig(stock.pill);
                 const isLastVisible = index === Math.min(stocksLimit, filteredStocks.length) - 1;
-                const statusText = getStockStatusText(stock);
+                const createdText = getStockCreatedText(stock);
+                const rebalancedText = getStockRebalancedText(stock);
                 const positionPriceText = formatPositionPrice(stock.avg_cost);
+                const sharesLineText =
+                  typeof stock.shares === 'number' && stock.shares > 0 && positionPriceText
+                    ? `${stock.shares} sh · Avg ${positionPriceText}`
+                    : null;
+                const plUsdText = formatSignedMoney(stock.position_pl_usd);
+                const plPctText = formatSignedPercent(stock.position_pl_pct);
+                const plIsPositive = (stock.position_pl_usd ?? 0) >= 0;
+                const closedUsdText = formatSignedMoney(stock.position_pl_closed_usd);
+                const openUsdText = formatSignedMoney(stock.position_pl_open_usd);
                 return (
                   <View 
                     key={stock.ticker}
@@ -1103,39 +1121,57 @@ export default function Dashboard() {
                                 {pillConfig?.label ?? stock.pill}
                               </Text>
                             </View>
-                            {typeof stock.shares === 'number' && stock.shares > 0 && positionPriceText ? (
-                              <Text style={styles.stockOpenPositionInline} numberOfLines={1}>
-                                {stock.shares} sh × {positionPriceText}
-                              </Text>
-                            ) : null}
                           </View>
                           <Text style={styles.companyName} numberOfLines={1}>{stock.name || stock.ticker}</Text>
-                          {statusText ? (
-                            <Text style={styles.stockAddedAt}>{statusText}</Text>
+                          {sharesLineText ? (
+                            <Text style={styles.stockPositionDetails} numberOfLines={1}>
+                              {sharesLineText}
+                            </Text>
+                          ) : null}
+                          {createdText ? (
+                            <Text style={styles.stockAddedAt}>{createdText}</Text>
+                          ) : null}
+                          {rebalancedText ? (
+                            <Text style={styles.stockAddedAt}>{rebalancedText}</Text>
                           ) : null}
                         </View>
                       </View>
-                      {/* P37+ Part 3 (G): Show change since added + 1D change */}
                       <View style={styles.stockChangesColumn}>
                         {typeof stock.position_value === 'number' ? (
                           <Text style={styles.stockTotalValue} numberOfLines={1}>
                             {formatWholeMoney(stock.position_value)}
                           </Text>
-                        ) : stock.change_since_added !== null && stock.change_since_added !== undefined && (
+                        ) : stock.change_since_added !== null && stock.change_since_added !== undefined ? (
                           <Text style={[
                             styles.stockChangeSinceAdded,
                             stock.change_since_added >= 0 ? styles.positive : styles.negative
                           ]}>
                             {stock.change_since_added >= 0 ? '+' : ''}{stock.change_since_added.toFixed(2)}%
                           </Text>
+                        ) : null}
+                        {plUsdText && plPctText ? (
+                          <Text
+                            style={[
+                              styles.stockPositionPl,
+                              plIsPositive ? styles.positive : styles.negative,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {plUsdText} ({plPctText})
+                          </Text>
+                        ) : (
+                          <Text style={[
+                            styles.stock1dChange,
+                            (stock.change_1d_pct || 0) >= 0 ? styles.positiveLight : styles.negativeLight
+                          ]}>
+                            ({(stock.change_1d_pct || 0) >= 0 ? '+' : ''}{(stock.change_1d_pct || 0).toFixed(2)}%)
+                          </Text>
                         )}
-                        {/* Fix 2: Daily change in brackets without "1D:" */}
-                        <Text style={[
-                          styles.stock1dChange,
-                          (stock.change_1d_pct || 0) >= 0 ? styles.positiveLight : styles.negativeLight
-                        ]}>
-                          ({(stock.change_1d_pct || 0) >= 0 ? '+' : ''}{(stock.change_1d_pct || 0).toFixed(2)}%)
-                        </Text>
+                        {closedUsdText && openUsdText ? (
+                          <Text style={styles.stockClosedOpenSubtext} numberOfLines={1}>
+                            Closed {closedUsdText} · Open {openUsdText}
+                          </Text>
+                        ) : null}
                       </View>
                     </TouchableOpacity>
                   </View>
@@ -2214,12 +2250,6 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     marginTop: 2,
   },
-  stockOpenPositionInline: {
-    flexShrink: 1,
-    fontSize: 10,
-    color: COLORS.textLight,
-    fontWeight: '500',
-  },
   stockPositionDetails: {
     fontSize: 11,
     color: COLORS.textLight,
@@ -2244,6 +2274,11 @@ const styles = StyleSheet.create({
   stockPositionPl: {
     fontSize: 11,
     fontWeight: '600',
+    marginTop: 2,
+  },
+  stockClosedOpenSubtext: {
+    fontSize: 10,
+    color: COLORS.textMuted,
     marginTop: 2,
   },
   positiveLight: {
