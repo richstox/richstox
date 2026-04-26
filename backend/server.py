@@ -7644,6 +7644,25 @@ async def _get_global_tracklist_tickers() -> set[str]:
     return tickers
 
 
+async def _filter_visible_list_tickers(tickers: List[str]) -> List[str]:
+    """Keep bare list tickers that are currently visible in tracked_tickers."""
+    normalized_tickers = list(dict.fromkeys(
+        ticker for ticker in (_normalize_list_ticker(raw) for raw in tickers) if ticker
+    ))
+    if not normalized_tickers:
+        return []
+
+    # article_ticker_mapping stores bare symbols, while the visible app universe
+    # is keyed in tracked_tickers as "<TICKER>.US"; map once here and keep the
+    # rest of the Markets news pipeline bare-ticker based.
+    visible_docs = await db.tracked_tickers.find(
+        {"ticker": {"$in": [f"{ticker}.US" for ticker in normalized_tickers]}, **VISIBLE_UNIVERSE_QUERY},
+        {"_id": 0, "ticker": 1},
+    ).to_list(length=None)
+    visible = {doc.get("ticker", "").replace(".US", "").upper() for doc in visible_docs if doc.get("ticker")}
+    return [ticker for ticker in normalized_tickers if ticker in visible]
+
+
 GLOBAL_MARKETS_MARKET_NEWS_LIMIT = 100
 GLOBAL_MARKETS_PER_TICKER_LIMIT = 3
 GLOBAL_MARKETS_MIN_TICKER_NEWS = 100
@@ -8103,21 +8122,23 @@ async def get_markets_news(
     per_ticker_limit: int = Query(GLOBAL_MARKETS_PER_TICKER_LIMIT, ge=1, le=3),
 ):
     """Merged Markets news from scoped tickers, latest global ticker news, and MARKETS articles."""
-    requested_tickers: List[str] = []
+    requested_tickers_raw: List[str] = []
     seen_requested: set[str] = set()
     for raw in tickers.split(","):
         ticker = _normalize_list_ticker(raw)
         if ticker and ticker not in seen_requested:
             seen_requested.add(ticker)
-            requested_tickers.append(ticker)
+            requested_tickers_raw.append(ticker)
+
+    requested_tickers = await _filter_visible_list_tickers(requested_tickers_raw)
 
     watchlist_tickers: List[str] = []
     tracklist_tickers: List[str] = []
-    if not requested_tickers:
+    if not requested_tickers_raw:
         # PRODUCT RULE: Markets must aggregate ALL distinct Watchlist/Tracklist tickers.
         # Do not reintroduce ranked or "top N" ticker selection without explicit Richard approval.
-        watchlist_tickers = sorted(await _get_global_watchlist_tickers())
-        tracklist_tickers = sorted(await _get_global_tracklist_tickers())
+        watchlist_tickers = sorted(await _filter_visible_list_tickers(list(await _get_global_watchlist_tickers())))
+        tracklist_tickers = sorted(await _filter_visible_list_tickers(list(await _get_global_tracklist_tickers())))
         requested_tickers = list(dict.fromkeys(watchlist_tickers + tracklist_tickers))
 
     article_mappings = []
@@ -8155,10 +8176,21 @@ async def get_markets_news(
     }
     fallback_needed = max(GLOBAL_MARKETS_MIN_TICKER_NEWS - len(existing_article_ids), 0)
     if fallback_needed > 0:
-        fallback_ticker_mappings = await _get_recent_global_ticker_mappings(
-            fallback_needed,
+        # Over-fetch visible candidates because the recent global pool can include
+        # invisible symbols; 10x keeps the fallback filled without changing the
+        # downstream per-ticker caps or merged response limit.
+        fallback_candidates = await _get_recent_global_ticker_mappings(
+            max(fallback_needed * 10, fallback_needed),
             existing_article_ids,
         )
+        visible_fallback_tickers = set(await _filter_visible_list_tickers([
+            mapping.get("ticker", "") for mapping in fallback_candidates
+        ]))
+        fallback_ticker_mappings = [
+            mapping
+            for mapping in fallback_candidates
+            if mapping.get("ticker") in visible_fallback_tickers
+        ][:fallback_needed]
         article_mappings.extend(fallback_ticker_mappings)
 
     selected_tickers = sorted({mapping.get("ticker") for mapping in article_mappings if mapping.get("ticker")})

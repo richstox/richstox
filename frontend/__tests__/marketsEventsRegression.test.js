@@ -38,7 +38,7 @@ describe('Markets events regressions', () => {
   });
 
   it('renders event logos with ticker logo fallback and links ticker rows to stock detail', () => {
-    expect(fileContent).toContain('const EventLogo = ({ logoUrl, fallbackKey }');
+    expect(fileContent).toContain('const EventLogo = ({');
     expect(fileContent).toContain('const normalizedTicker = ticker?.trim().toUpperCase();');
     expect(fileContent).toContain('if (!rawUrl && normalizedTicker) return `${API_URL}/api/logo/${normalizedTicker}`;');
     expect(fileContent).toContain('router.push(`/stock/${event.ticker}`)');
@@ -87,7 +87,7 @@ describe('Markets events regressions', () => {
     expect(fileContent).not.toContain('Prague date');
     expect(fileContent).toContain("type MarketFeedMode = 'events' | 'news';");
     expect(fileContent).toContain("const MARKET_FEED_MODE_OPTIONS: { key: MarketFeedMode; label: string }[] = [");
-    expect(fileContent).toContain("const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(['events', 'news']);");
+    expect(fileContent).toContain('const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(');
     expect(fileContent).toContain('const MARKET_NEWS_PER_TICKER = 3;');
     expect(fileContent).toContain('const MARKET_DIGEST_LIMIT = 100;');
     expect(fileContent).toContain('/api/v1/markets/news?limit=${MARKET_NEWS_LIMIT}&market_limit=${MARKET_DIGEST_LIMIT}&per_ticker_limit=${MARKET_NEWS_PER_TICKER}&offset=0');
@@ -106,11 +106,13 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('formatAggregateSentimentLabel(aggregateSentiment.label, aggregateSentiment.score)');
     expect(fileContent).toContain('getAggregateSentimentTooltipContent(aggregateSentiment)');
     expect(fileContent).toContain('<MetricTooltip');
-    expect(fileContent).toContain('<Text style={styles.feedModePrefix}>Show:</Text>');
+    expect(fileContent).not.toContain('<Text style={styles.feedModePrefix}>Show:</Text>');
     expect(fileContent).toContain("{option.label} ({option.key === 'events' ? visibleEventToggleCount : visibleNewsToggleCount})");
     expect(fileContent).toContain('style={styles.feedModeGroup}');
     expect(fileContent).toContain('style={styles.marketNewsTickerRow}');
     expect(fileContent).toContain('<Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>');
+    expect(fileContent).toContain('<Text style={styles.marketNewsFooterMeta}>');
+    expect(fileContent).toContain("[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')");
     expect(fileContent).not.toContain("[news.source, getMarketNewsDateLabel(news.date)].filter(Boolean).join(' • ')");
     expect(fileContent).not.toContain('styles.sectionSubtitle');
     expect(fileContent).toContain('No saved market or ticker news available right now');
@@ -144,5 +146,15 @@ describe('Markets events regressions', () => {
     expect(fileContent).toContain('if (news.ticker) router.push(`/stock/${news.ticker}`);');
     expect(fileContent).toContain('<Text style={styles.articleTitle}>{selectedArticle.title}</Text>');
     expect(fileContent).toContain("{selectedArticle.content?.trim() || 'Open the original article to read the full story'}");
+  });
+
+  it('persists markets state and restores the richstox icon for market-only news rows', () => {
+    expect(fileContent).toContain("import { useMarketsStore } from '../../stores/marketsStore';");
+    expect(fileContent).toContain('const initialMarketsStateRef = useRef(useMarketsStore.getState());');
+    expect(fileContent).toContain('setMarketsState({');
+    expect(fileContent).toContain('onScroll={(event) => {');
+    expect(fileContent).toContain("source={require('../../assets/images/richstox_icon_only.png')}");
+    expect(fileContent).toContain("useRichstoxIcon={news.scope === 'market'}");
+    expect(fileContent).toContain("useRichstoxIcon={selectedArticle.scope === 'market'}");
   });
 });

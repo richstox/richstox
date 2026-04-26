@@ -32,6 +32,7 @@ import { COLORS as APP_COLORS } from '../_layout';
 import { formatAggregateSentimentLabel, getAggregateSentimentTooltipContent } from '../../utils/sentiment';
 import AppHeader from '../../components/AppHeader';
 import { MetricTooltip } from '../../components/MetricTooltip';
+import { useMarketsStore } from '../../stores/marketsStore';
 
 const COLORS = {
   primary: '#1E3A5F',
@@ -247,10 +248,28 @@ const isValidYmd = (value: string): boolean => {
   return !Number.isNaN(parsed.getTime()) && format(parsed, 'yyyy-MM-dd') === value;
 };
 
-const EventLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: string }) => {
+const EventLogo = ({
+  logoUrl,
+  fallbackKey,
+  useRichstoxIcon = false,
+}: {
+  logoUrl?: string;
+  fallbackKey: string;
+  useRichstoxIcon?: boolean;
+}) => {
   const [imageError, setImageError] = useState(false);
 
   if (!logoUrl || imageError) {
+    if (useRichstoxIcon) {
+      return (
+        <View style={[styles.eventLogoFallback, styles.marketLogoFallback]}>
+          <Image
+            source={require('../../assets/images/richstox_icon_only.png')}
+            style={styles.marketLogoIcon}
+          />
+        </View>
+      );
+    }
     return (
       <View style={[styles.eventLogoFallback, { backgroundColor: hashSymbolToColor(fallbackKey) }]}>
         <Text style={styles.eventLogoFallbackText}>{fallbackKey}</Text>
@@ -270,6 +289,8 @@ const EventLogo = ({ logoUrl, fallbackKey }: { logoUrl?: string; fallbackKey: st
 export default function Markets() {
   const router = useRouter();
   const sp = useLayoutSpacing();
+  const initialMarketsStateRef = useRef(useMarketsStore.getState());
+  const setMarketsState = useMarketsStore((state) => state.setState);
 
   const todayPragueStr = getPragueDateString();
   const todayPrague = parseYmd(todayPragueStr);
@@ -279,25 +300,59 @@ export default function Markets() {
   const rangeStartStr = format(rangeStart, 'yyyy-MM-dd');
   const rangeEndStr = format(rangeEnd, 'yyyy-MM-dd');
   const currentYear = Number(todayPragueStr.slice(0, 4));
+  const storedSelectedDateKey = initialMarketsStateRef.current.selectedDateKey;
+  const storedDisplayMonthKey = initialMarketsStateRef.current.displayMonthKey;
+  const storedCalendarView = initialMarketsStateRef.current.calendarView;
+  const storedSelectedYear = initialMarketsStateRef.current.selectedYear;
+  const storedSelectedEventType = initialMarketsStateRef.current.selectedEventType;
+  const storedVisibleFeedLimit = initialMarketsStateRef.current.visibleFeedLimit;
+  const storedMarketFeedModes = initialMarketsStateRef.current.marketFeedModes;
+  const initialSelectedDate = storedSelectedDateKey && isValidYmd(storedSelectedDateKey)
+    ? parseYmd(storedSelectedDateKey)
+    : todayPrague;
+  const initialDisplayMonth = storedDisplayMonthKey && isValidYmd(`${storedDisplayMonthKey}-01`)
+    ? startOfMonth(parseYmd(`${storedDisplayMonthKey}-01`))
+    : startOfMonth(todayPrague);
+  const initialCalendarView = CALENDAR_VIEW_ORDER.includes(storedCalendarView as CalendarViewMode)
+    ? storedCalendarView as CalendarViewMode
+    : 'daily';
+  const initialSelectedYear = Number.isInteger(storedSelectedYear) && storedSelectedYear >= 2000 && storedSelectedYear <= currentYear + 10
+    ? storedSelectedYear
+    : currentYear;
+  const initialSelectedEventType = EVENT_TYPE_ORDER.includes(storedSelectedEventType as EventType)
+    ? storedSelectedEventType as EventType
+    : 'earnings';
+  const initialVisibleFeedLimit = storedVisibleFeedLimit && storedVisibleFeedLimit > 0
+    ? storedVisibleFeedLimit
+    : INITIAL_VISIBLE_FEED_ITEMS;
+  const initialMarketFeedModes = storedMarketFeedModes.filter((mode): mode is MarketFeedMode =>
+    MARKET_FEED_MODE_OPTIONS.some((option) => option.key === mode),
+  );
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [calendarView, setCalendarView] = useState<CalendarViewMode>('daily');
-  const [selectedDate, setSelectedDate] = useState<Date>(todayPrague);
-  const [displayMonth, setDisplayMonth] = useState<Date>(startOfMonth(todayPrague));
-  const [selectedYear, setSelectedYear] = useState<number>(currentYear);
-  const [selectedEventType, setSelectedEventType] = useState<EventType>('earnings');
-  const [tickerFilter, setTickerFilter] = useState('');
-  const [visibleFeedLimit, setVisibleFeedLimit] = useState(INITIAL_VISIBLE_FEED_ITEMS);
+  const [calendarView, setCalendarView] = useState<CalendarViewMode>(initialCalendarView);
+  const [selectedDate, setSelectedDate] = useState<Date>(initialSelectedDate);
+  const [displayMonth, setDisplayMonth] = useState<Date>(initialDisplayMonth);
+  const [selectedYear, setSelectedYear] = useState<number>(initialSelectedYear);
+  const [selectedEventType, setSelectedEventType] = useState<EventType>(initialSelectedEventType);
+  const [tickerFilter, setTickerFilter] = useState(initialMarketsStateRef.current.tickerFilter);
+  const [visibleFeedLimit, setVisibleFeedLimit] = useState(initialVisibleFeedLimit);
   const [calendarPickerVisible, setCalendarPickerVisible] = useState(false);
-  const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(['events', 'news']);
+  const [marketFeedModes, setMarketFeedModes] = useState<MarketFeedMode[]>(
+    initialMarketFeedModes.length > 0 ? initialMarketFeedModes : ['events', 'news'],
+  );
   const [newsItems, setNewsItems] = useState<MarketNewsItem[]>([]);
   const [aggregateSentiment, setAggregateSentiment] = useState<AggregateSentiment | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
   const [selectedArticle, setSelectedArticle] = useState<MarketNewsItem | null>(null);
   const [aggregateSentimentTooltipVisible, setAggregateSentimentTooltipVisible] = useState(false);
+  const marketsScrollRef = useRef<ScrollView | null>(null);
+  const didHydratePeriodResetRef = useRef(false);
+  const didHydrateFeedResetRef = useRef(false);
+  const didRestoreScrollRef = useRef(initialMarketsStateRef.current.scrollY <= 0);
   const activeDaysScrollRef = useRef<ScrollView | null>(null);
   const [activeDaysViewportWidth, setActiveDaysViewportWidth] = useState(0);
   const [activeDaysContentWidth, setActiveDaysContentWidth] = useState(0);
@@ -342,6 +397,29 @@ export default function Markets() {
 
   const selectedMonthKey = format(displayMonth, 'yyyy-MM');
   const selectedYearKey = String(selectedYear);
+
+  useEffect(() => {
+    setMarketsState({
+      calendarView,
+      selectedDateKey,
+      displayMonthKey: selectedMonthKey,
+      selectedYear,
+      selectedEventType,
+      tickerFilter,
+      visibleFeedLimit,
+      marketFeedModes,
+    });
+  }, [
+    calendarView,
+    marketFeedModes,
+    selectedDateKey,
+    selectedEventType,
+    selectedMonthKey,
+    selectedYear,
+    setMarketsState,
+    tickerFilter,
+    visibleFeedLimit,
+  ]);
 
   const activeDateKeys = useMemo(
     () => Array.from(new Set(events.map((event) => event.date).filter(isValidYmd))).sort(),
@@ -439,6 +517,10 @@ export default function Markets() {
   }, [calendarView, displayMonth, selectedDateKey, selectedYearKey]);
 
   useEffect(() => {
+    if (!didHydratePeriodResetRef.current) {
+      didHydratePeriodResetRef.current = true;
+      return;
+    }
     setTickerFilter('');
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
   }, [calendarView, selectedDateKey, selectedMonthKey, selectedYearKey]);
@@ -560,6 +642,10 @@ export default function Markets() {
   const visibleNewsToggleCount = visibleNewsItems.length;
 
   useEffect(() => {
+    if (!didHydrateFeedResetRef.current) {
+      didHydrateFeedResetRef.current = true;
+      return;
+    }
     setVisibleFeedLimit(INITIAL_VISIBLE_FEED_ITEMS);
   }, [marketFeedModes, normalizedTickerFilter]);
 
@@ -749,11 +835,41 @@ export default function Markets() {
     }
   };
 
+  const restoreMarketsScroll = useCallback(() => {
+    if (didRestoreScrollRef.current) return;
+    const nextY = initialMarketsStateRef.current.scrollY;
+    if (nextY <= 0) {
+      didRestoreScrollRef.current = true;
+      return;
+    }
+    marketsScrollRef.current?.scrollTo({ y: nextY, animated: false });
+    didRestoreScrollRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (loading || newsLoading) return;
+    const frame = requestAnimationFrame(() => {
+      restoreMarketsScroll();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [displayedFeedItems.length, loading, newsLoading, restoreMarketsScroll]);
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <AppHeader title="Markets" />
 
-      <ScrollView style={styles.scroll} contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}>
+      <ScrollView
+        ref={marketsScrollRef}
+        style={styles.scroll}
+        contentContainerStyle={{ padding: sp.pageGutter, gap: 12 }}
+        onScroll={(event) => {
+          setMarketsState({ scrollY: event.nativeEvent.contentOffset.y });
+        }}
+        onContentSizeChange={() => {
+          restoreMarketsScroll();
+        }}
+        scrollEventThrottle={16}
+      >
         <View style={styles.card}>
           <View style={styles.eventsHeader}>
             <View style={styles.eventsHeaderTop}>
@@ -793,7 +909,6 @@ export default function Markets() {
                   </TouchableOpacity>
                 )}
                 <View style={styles.feedModeRow}>
-                  <Text style={styles.feedModePrefix}>Show:</Text>
                   <View style={styles.feedModeGroup}>
                     {MARKET_FEED_MODE_OPTIONS.map((option) => {
                       const isActive = marketFeedModes.includes(option.key);
@@ -977,6 +1092,7 @@ export default function Markets() {
                           <EventLogo
                             logoUrl={resolveEventLogoUrl(news.logo_url, news.ticker)}
                             fallbackKey={news.fallback_logo_key}
+                            useRichstoxIcon={news.scope === 'market'}
                           />
                         </TouchableOpacity>
                         <TouchableOpacity
@@ -993,15 +1109,14 @@ export default function Markets() {
                             <View style={[styles.eventPill, { backgroundColor: tone.backgroundColor }]}>
                               <Text style={[styles.eventPillText, { color: tone.color }]}>{tone.label}</Text>
                             </View>
-                            <View style={styles.marketNewsMetaSpacer} />
-                            {news.date ? (
-                              <Text style={styles.eventMeta}>{getMarketNewsDateLabel(news.date)}</Text>
-                            ) : null}
                           </View>
                           {news.company_name ? (
                             <Text style={styles.marketNewsCompanyName} numberOfLines={1}>{news.company_name}</Text>
                           ) : null}
                           <Text style={styles.eventTitle} numberOfLines={2}>{news.title}</Text>
+                          <Text style={styles.marketNewsFooterMeta}>
+                            {[getMarketNewsDateLabel(news.date), news.source].filter(Boolean).join(' • ')}
+                          </Text>
                         </TouchableOpacity>
                         {canOpenItem ? (
                           <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
@@ -1073,6 +1188,7 @@ export default function Markets() {
                     <EventLogo
                       logoUrl={resolveEventLogoUrl(selectedArticle.logo_url, selectedArticle.ticker)}
                       fallbackKey={selectedArticle.fallback_logo_key}
+                      useRichstoxIcon={selectedArticle.scope === 'market'}
                     />
                     <View>
                       <Text style={styles.articleTicker}>{selectedArticle.ticker || 'Market News'}</Text>
@@ -1454,12 +1570,15 @@ const styles = StyleSheet.create({
   },
   eventsHeaderTop: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'center',
     justifyContent: 'space-between',
     gap: 12,
   },
   eventsHeaderActions: {
-    alignItems: 'flex-end',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    flexShrink: 1,
     gap: 8,
   },
   eventsTitleBlock: {
@@ -1656,6 +1775,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  marketLogoFallback: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  marketLogoIcon: {
+    width: 28,
+    height: 28,
+  },
   eventLogoFallbackText: {
     fontSize: 16,
     fontWeight: '700',
@@ -1678,10 +1806,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 4,
-  },
-  marketNewsMetaSpacer: {
-    flex: 1,
   },
   marketNewsCompanyName: {
     fontSize: 13,
@@ -1689,6 +1813,12 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     lineHeight: 18,
     marginBottom: 4,
+  },
+  marketNewsFooterMeta: {
+    fontSize: 11,
+    color: COLORS.textMuted,
+    lineHeight: 16,
+    marginTop: 8,
   },
   eventMetaColumn: {
     alignItems: 'flex-end',
@@ -1773,23 +1903,18 @@ const styles = StyleSheet.create({
   feedModeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    flexWrap: 'wrap',
+    flexShrink: 1,
     justifyContent: 'flex-end',
-    gap: 8,
-  },
-  feedModePrefix: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: COLORS.textLight,
+    minWidth: 0,
   },
   feedModeGroup: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
+    flexShrink: 1,
     justifyContent: 'flex-end',
     gap: 6,
   },
   feedModeChip: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: COLORS.background,
@@ -1804,7 +1929,7 @@ const styles = StyleSheet.create({
     opacity: 0.75,
   },
   feedModeChipText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: COLORS.textLight,
   },

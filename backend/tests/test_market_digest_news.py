@@ -54,17 +54,23 @@ class TestFetchMarketDigestFromEodhd:
 
 class TestStoreMarketDigestArticles:
     @pytest.mark.asyncio
-    async def test_stores_market_topic_and_sentiment_label(self):
+    async def test_stores_market_topic_and_sentiment_label(self, monkeypatch):
         db = MagicMock()
 
         captured_updates = []
+        ticker_mapping_articles = []
 
         async def capture_update(filter_doc, update_doc, upsert=False):
             captured_updates.append((filter_doc, update_doc, upsert))
             return MagicMock(upserted_id="market-1")
 
+        async def capture_ticker_mappings(_db, articles):
+            ticker_mapping_articles.extend(articles)
+            return {"new_articles": 1, "new_mappings": 2}
+
         db.market_news.update_one = AsyncMock(side_effect=capture_update)
         db.market_news.count_documents = AsyncMock(return_value=1)
+        monkeypatch.setattr(news_service, "store_articles_with_mapping", capture_ticker_mappings)
 
         result = await store_market_digest_articles(db, [{
             "link": "https://example.com/markets/1",
@@ -76,8 +82,17 @@ class TestStoreMarketDigestArticles:
             "sentiment": {"pos": 0.3, "neg": 0.1},
         }])
 
-        assert result == {"new_articles": 1}
+        assert result == {"new_articles": 1, "new_ticker_articles": 1, "new_ticker_mappings": 2}
         assert len(captured_updates) == 1
+        assert ticker_mapping_articles == [{
+            "link": "https://example.com/markets/1",
+            "title": "Macro outlook improves",
+            "date": "2026-04-26T07:50:00+00:00",
+            "content": "Market digest content",
+            "tags": ["MARKETS", "MACRO"],
+            "symbols": ["SPY"],
+            "sentiment": {"pos": 0.3, "neg": 0.1},
+        }]
         _, update_doc, upsert = captured_updates[0]
         stored_doc = update_doc["$setOnInsert"]
         assert upsert is True
@@ -137,6 +152,8 @@ class TestRefreshFullNews:
             "api_calls": 1,
             "total_articles_fetched": 7,
             "new_articles_stored": 3,
+            "new_ticker_articles": 2,
+            "new_ticker_mappings": 5,
             "api_endpoint_template": "market-template",
         })
 
@@ -154,7 +171,10 @@ class TestRefreshFullNews:
         assert result["new_articles_stored"] == 8
         assert result["market_digest_articles_fetched"] == 7
         assert result["market_digest_new_articles_stored"] == 3
+        assert result["market_digest_new_ticker_articles_stored"] == 2
+        assert result["market_digest_new_ticker_mappings"] == 5
         assert result["sample_tickers"] == ["AAPL", "MSFT"]
+        assert result["new_ticker_mappings"] == 13
         assert result["ticker_news"]["new_ticker_mappings"] == 8
         assert result["market_digest"]["job_type"] == "market_digest_refresh"
 
