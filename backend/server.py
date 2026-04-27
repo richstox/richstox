@@ -1483,6 +1483,91 @@ def _coerce_utc_datetime(raw_value: Any) -> Optional[datetime]:
     return None
 
 
+async def _rebuild_tracklist_from_seed(
+    user_id: str,
+    tracklist_doc: dict,
+    real_created_at: datetime,
+) -> dict:
+    """
+    Re-builds the tracklist from the correct seed date (real_created_at) and replays
+    any subsequent replace events on top. Used to correct docs where the auto_seed
+    effective_date was set to today's date instead of the user's account creation date
+    (PR402 bug), which caused avg_cost to be based on the wrong historical close prices
+    and therefore showed P/L = 0 for all seed positions.
+
+    After correction, a `seed_date_corrected` flag is stored on the doc so this
+    migration only runs once per user.
+    """
+    events = sorted(
+        tracklist_doc.get("events") or [],
+        key=lambda e: e.get("effective_date") or "1970-01-01",
+    )
+    seed_event = next((e for e in events if e.get("event_type") == "auto_seed"), None)
+    replace_events = [e for e in events if e.get("event_type") == "replace"]
+
+    seed_tickers = tracklist_doc.get("seed_tickers") or MAGNIFICENT_SEVEN
+    initial_capital = float(tracklist_doc.get("initial_capital") or 100000)
+    correct_date = real_created_at.date().isoformat()
+    seed_created_at_iso = seed_event.get("created_at") if seed_event else real_created_at.isoformat()
+
+    seed_snapshot = await _build_initial_seed_snapshot(
+        seed_tickers, initial_capital, correct_date, created_at=seed_created_at_iso
+    )
+    current_positions = seed_snapshot["positions"]
+    cash_balance = float(seed_snapshot["cash_balance"])
+    realized_pnl_total = 0.0
+    corrected_events: List[dict] = [{
+        **seed_snapshot,
+        "event_type": "auto_seed",
+        "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+        "created_at": seed_created_at_iso,
+    }]
+
+    for event in replace_events:
+        removed = _normalize_list_ticker(event.get("removed_ticker", ""))
+        added = _normalize_list_ticker(event.get("added_ticker", ""))
+        event_eff = event.get("effective_date") or correct_date
+        event_created_at = event.get("created_at") or datetime.now(timezone.utc).isoformat()
+        current_tickers = [_normalize_list_ticker(pos.get("ticker", "")) for pos in current_positions]
+        if not removed or removed not in current_tickers or not added:
+            continue
+        target_tickers = [added if t == removed else t for t in current_tickers]
+        snap = await _build_rebalance_snapshot(
+            current_positions, cash_balance, target_tickers, event_eff, created_at=event_created_at
+        )
+        realized_pnl_total += float(snap.get("realized_pnl") or 0)
+        cash_balance = float(snap.get("cash_balance") or 0)
+        current_positions = snap["positions"]
+        corrected_events.append({
+            **snap,
+            "event_type": "replace",
+            "removed_ticker": removed,
+            "added_ticker": added,
+            "created_at": event_created_at,
+        })
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    corrected_doc = {
+        "user_id": user_id,
+        "initial_capital": initial_capital,
+        "positions": current_positions,
+        "cash_balance": round(cash_balance, 2),
+        "realized_pnl_total": round(realized_pnl_total, 2),
+        "events": corrected_events,
+        "seed_name": tracklist_doc.get("seed_name") or "magnificent_7",
+        "seed_tickers": seed_tickers,
+        "seeded_at": seed_created_at_iso,
+        "seed_date_corrected": True,
+        "updated_at": now_iso,
+    }
+    await db.user_tracklists.update_one(
+        {"user_id": user_id},
+        {"$set": corrected_doc},
+        upsert=True,
+    )
+    return corrected_doc
+
+
 async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
     tracklist_doc = await _get_tracklist_doc_for_user(user_id)
     if len(_get_tracklist_positions(tracklist_doc)) == 7:
@@ -1538,6 +1623,41 @@ async def _ensure_default_tracklist_for_user(user_id: str) -> Optional[dict]:
                     upsert=True,
                 )
                 return migrated_doc
+        # Detect and correct corrupted auto_seed effective_date (PR402 bug).
+        # When the lazy migration ran before PR402 was deployed, it fell back to
+        # today's date instead of user.created_at, giving seed positions the wrong
+        # avg_cost (recent close instead of account-opening close) → P/L ≈ 0.
+        # This block runs once per user (guarded by seed_date_corrected) and replays
+        # the full event history from the correct seed date.
+        if tracklist_doc and not tracklist_doc.get("seed_date_corrected"):
+            events = tracklist_doc.get("events") or []
+            seed_event = next((e for e in events if e.get("event_type") == "auto_seed"), None)
+            if seed_event:
+                seed_eff = seed_event.get("effective_date") or ""
+                inner_user = await db.users.find_one(
+                    {"user_id": user_id}, {"_id": 0, "created_at": 1, "role": 1}
+                )
+                if inner_user:
+                    real_created_at = _coerce_utc_datetime(inner_user.get("created_at"))
+                    if not real_created_at and inner_user.get("role") == "admin":
+                        real_created_at = ADMIN_TRACKLIST_FALLBACK_CREATED_AT
+                    if real_created_at:
+                        real_created_date = real_created_at.date()
+                        try:
+                            seed_date = datetime.fromisoformat(seed_eff).date()
+                        except (ValueError, TypeError):
+                            seed_date = None
+                        if seed_date and seed_date > real_created_date:
+                            delta_days = (seed_date - real_created_date).days
+                            if delta_days > 7:
+                                try:
+                                    return await _rebuild_tracklist_from_seed(
+                                        user_id, tracklist_doc, real_created_at
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "seed date correction failed for user_id=%s", user_id
+                                    )
         return tracklist_doc
 
     user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "created_at": 1, "updated_at": 1, "role": 1, "email": 1})
@@ -1692,7 +1812,7 @@ async def _build_initial_seed_snapshot(
             "ticker": ticker,
             "shares": shares,
             "entry_price": round(close_value, 4),
-            "entry_date": close_date or effective_date,
+            "entry_date": effective_date,
             "added_at": created_at,
             "avg_cost": round(close_value, 4),
         })
@@ -1816,7 +1936,7 @@ async def _build_rebalance_snapshot(
                 "ticker": ticker,
                 "shares": target_shares,
                 "entry_price": round(close_value, 4),
-                "entry_date": close_date or effective_date,
+                "entry_date": effective_date,
                 "added_at": created_at,
                 "avg_cost": round(close_value, 4),
             })

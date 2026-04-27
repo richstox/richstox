@@ -640,6 +640,16 @@ export default function Dashboard() {
     if (stock.pill !== 'Tracklist') {
       return stock.added_at ? `Added: ${stock.added_at}` : null;
     }
+    // Replacement positions in a pending rebalance: we know the effective date but not
+    // yet the actual close price, so the "Opened" date is not final yet.
+    if (
+      stock.rebalanced_pending &&
+      stock.entry_date &&
+      stock.tracklist_effective_date &&
+      stock.entry_date === stock.tracklist_effective_date
+    ) {
+      return 'Opened: Pending';
+    }
     const created = stock.created_at_display || stock.added_at;
     return created ? `Opened: ${created}` : null;
   };
