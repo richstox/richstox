@@ -2418,6 +2418,26 @@ async def get_tracklist(request: Request):
             "avg_cost": pos.get("avg_cost") or pos.get("entry_price"),
         })
     draft_tickers = state["tracklist_draft_tickers"]
+    raw_events = sorted(tracklist_doc.get("events", []), key=lambda e: e.get("effective_date") or "")
+    events_history = []
+    for event in raw_events:
+        event_type = event.get("event_type")
+        effective_date = event.get("effective_date")
+        if not effective_date:
+            continue
+        entry: dict = {
+            "event_type": event_type,
+            "effective_date": effective_date,
+            "effective_date_display": _format_display_date(effective_date),
+            "realized_pnl": round(float(event.get("realized_pnl") or 0), 2),
+            "capital": round(float(event.get("capital") or 0), 2),
+            "cash_balance": round(float(event.get("cash_balance") or 0), 2),
+            "positions_count": len(event.get("positions", [])),
+        }
+        if event_type == "replace":
+            entry["removed_ticker"] = event.get("removed_ticker")
+            entry["added_ticker"] = event.get("added_ticker")
+        events_history.append(entry)
     return {
         "count": len(positions),
         "max_positions": 7,
@@ -2433,6 +2453,7 @@ async def get_tracklist(request: Request):
         "cash_balance": round(float(tracklist_doc.get("cash_balance") or 0), 2),
         "realized_pnl_total": round(float(tracklist_doc.get("realized_pnl_total") or 0), 2),
         "performance": performance,
+        "events_history": events_history,
         "changes_apply_note": "Tracklist starts automatically from your first login date. Replacements apply at next close.",
     }
 
