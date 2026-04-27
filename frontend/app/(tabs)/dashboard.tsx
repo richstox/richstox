@@ -71,6 +71,8 @@ type DashboardStock = {
   added_at?: string | null;
   change_since_added?: number | null;
   change_1d_pct?: number | null;
+  price?: number | null;
+  follow_price?: number | null;
   shares?: number | null;
   avg_cost?: number | null;
   position_value?: number | null;
@@ -361,7 +363,17 @@ export default function Dashboard() {
      
      return stocks;
    }, [myStocks, stocksFilter, stocksSort, includeWatchlist]);
-  
+
+  // Sum of position_value across all Tracklist stocks — used for basket-weight calculation
+  const totalTracklistValue = useMemo(() => {
+    return filteredStocks.reduce((sum: number, s: any) => {
+      if (s.pill === 'Tracklist' && typeof s.position_value === 'number') {
+        return sum + s.position_value;
+      }
+      return sum;
+    }, 0);
+  }, [filteredStocks]);
+
   // P36 Item 4: hasMoreStocks and hasLessStocks for Load more / See less
   const INITIAL_STOCKS_LIMIT = 7;
   const hasMoreStocks = stocksLimit < filteredStocks.length;
@@ -634,6 +646,20 @@ export default function Dashboard() {
     if (typeof value !== 'number' || !Number.isFinite(value)) return null;
     const sign = value >= 0 ? '+' : '';
     return `${sign}${value.toFixed(2)}%`;
+  };
+
+  const formatDuration = (isoDate?: string | null): string => {
+    if (!isoDate) return '—';
+    const start = new Date(`${isoDate}T00:00:00Z`);
+    if (Number.isNaN(start.getTime())) return '—';
+    const diffDays = Math.floor((Date.now() - start.getTime()) / 86400000);
+    if (diffDays < 0) return '—';
+    if (diffDays < 30) return `${diffDays}d`;
+    const months = Math.floor(diffDays / 30.44);
+    if (months < 12) return `${months}mo`;
+    const years = Math.floor(months / 12);
+    const remMonths = months % 12;
+    return remMonths > 0 ? `${years}y ${remMonths}mo` : `${years}y`;
   };
 
   const getStockCreatedText = (stock: DashboardStock) => {
@@ -910,6 +936,15 @@ export default function Dashboard() {
               ) : null}
             </>
           )}
+          {/* Full history link → all positions trading history */}
+          <TouchableOpacity
+            style={styles.performanceHistoryBtn}
+            onPress={() => router.push('/trading-history')}
+          >
+            <Ionicons name="list-outline" size={14} color="rgba(255,255,255,0.85)" />
+            <Text style={styles.performanceHistoryBtnText}>All positions history</Text>
+            <Ionicons name="chevron-forward" size={13} color="rgba(255,255,255,0.85)" />
+          </TouchableOpacity>
         </View>
 
         {/* ===== MY STOCKS ===== */}
@@ -1054,7 +1089,6 @@ export default function Dashboard() {
             
             {/* Column header for values */}
             <View style={styles.columnHeaderSpacer} />
-            <Text style={styles.columnHeader}>Total{'\n'}(1D)</Text>
           </View>
 
           {myStocks.length === 0 ? (
@@ -1085,6 +1119,195 @@ export default function Dashboard() {
                 const logoUrl = getLogoUrl(stock);
                 const pillConfig = getMembershipPillConfig(stock.pill);
                 const isLastVisible = index === Math.min(stocksLimit, filteredStocks.length) - 1;
+                const isTracklist = stock.pill === 'Tracklist';
+                const navigateToStock = () => {
+                  useMyStocksStore.getState().setTickers(filteredStocks.map((s: any) => s.ticker));
+                  router.push(`/stock/${stock.ticker}`);
+                };
+
+                if (isTracklist) {
+                  // ── Tracklist: expanded 6-row detail card ──
+                  const change1dPct = stock.change_1d_pct || 0;
+                  // follow_price is the price at which this position was entered into the tracklist
+                  const entryPrice = stock.follow_price;
+                  const lastClose = stock.price;
+                  const changeTotal = stock.change_since_added;
+                  const entryValue =
+                    typeof stock.shares === 'number' && stock.shares > 0 &&
+                    typeof stock.avg_cost === 'number' && stock.avg_cost > 0
+                      ? stock.shares * stock.avg_cost
+                      : null;
+                  const plUsdText = formatSignedMoney(stock.position_pl_usd);
+                  const plPctText = formatSignedPercent(stock.position_pl_pct);
+                  const plIsPositive = (stock.position_pl_usd ?? 0) >= 0;
+                  const rebalancedDisplay = stock.rebalanced_pending
+                    ? 'Pending'
+                    : (stock.rebalanced_at_display || '—');
+                  const entryDateDisplay = stock.created_at_display || stock.added_at || '—';
+                  const duration = formatDuration(stock.entry_date);
+                  const weightPct =
+                    typeof stock.position_value === 'number' && totalTracklistValue > 0
+                      ? (stock.position_value / totalTracklistValue) * 100
+                      : null;
+
+                  return (
+                    <View
+                      key={stock.ticker}
+                      style={[
+                        styles.detailCard,
+                        isLastVisible && !hasMoreStocks && !hasLessStocks && styles.detailCardLast,
+                      ]}
+                    >
+                      {/* Tappable header → stock detail */}
+                      <TouchableOpacity activeOpacity={0.8} onPress={navigateToStock}>
+                        <View style={styles.detailCardHeader}>
+                          <StockLogo logoUrl={logoUrl} ticker={stock.ticker} color={getCompanyColor(stock.ticker)} />
+                          <View style={styles.detailCardHeaderInfo}>
+                            <View style={styles.tickerRow}>
+                              <Text style={styles.companyTicker}>{stock.ticker}</Text>
+                              <View style={[styles.stockPill, pillConfig && { backgroundColor: pillConfig.bg }]}>
+                                <Text style={[styles.stockPillText, pillConfig && { color: pillConfig.text }]}>
+                                  {pillConfig?.label ?? stock.pill}
+                                </Text>
+                              </View>
+                            </View>
+                            <Text style={styles.companyName} numberOfLines={1}>{stock.name || stock.ticker}</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={18} color={COLORS.textMuted} />
+                        </View>
+                      </TouchableOpacity>
+
+                      <View style={styles.detailDivider} />
+
+                      {/* Row 1: Amount | 1D Change */}
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailCell}>
+                          <Text style={styles.detailCellLabel}>Amount</Text>
+                          <Text style={styles.detailCellValue}>
+                            {stock.shares != null && stock.shares > 0 ? `${stock.shares} pcs` : '—'}
+                          </Text>
+                        </View>
+                        <View style={[styles.detailCell, styles.detailCellRight]}>
+                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>1D Change</Text>
+                          <Text style={[
+                            styles.detailCellValue,
+                            styles.detailCellValueRight,
+                            change1dPct >= 0 ? styles.positive : styles.negative,
+                          ]}>
+                            {change1dPct >= 0 ? '+' : ''}{change1dPct.toFixed(2)}%
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Row 2: Market value | Basket weight */}
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailCell}>
+                          <Text style={styles.detailCellLabel}>Market value</Text>
+                          <Text style={styles.detailCellValue}>
+                            {stock.position_value != null ? formatWholeMoney(stock.position_value) : '—'}
+                          </Text>
+                        </View>
+                        <View style={[styles.detailCell, styles.detailCellRight]}>
+                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Basket weight</Text>
+                          <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>
+                            {weightPct != null ? `${weightPct.toFixed(1)}%` : '—'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Row 3: Entry price → Close | Total change % */}
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailCell}>
+                          <Text style={styles.detailCellLabel}>Entry → Close</Text>
+                          <Text style={styles.detailCellValue}>
+                            {entryPrice != null ? `$${entryPrice.toFixed(2)}` : '—'}{' '}→{' '}
+                            {lastClose != null ? `$${lastClose.toFixed(2)}` : '—'}
+                          </Text>
+                        </View>
+                        <View style={[styles.detailCell, styles.detailCellRight]}>
+                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Total change</Text>
+                          <Text style={[
+                            styles.detailCellValue,
+                            styles.detailCellValueRight,
+                            changeTotal != null
+                              ? (changeTotal >= 0 ? styles.positive : styles.negative)
+                              : undefined,
+                          ]}>
+                            {changeTotal != null
+                              ? `${changeTotal >= 0 ? '+' : ''}${changeTotal.toFixed(2)}%`
+                              : '—'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Row 4: Entry value → Current | Open P/L */}
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailCell}>
+                          <Text style={styles.detailCellLabel}>Entry val → Current</Text>
+                          <Text style={styles.detailCellValue}>
+                            {entryValue != null ? formatWholeMoney(entryValue) : '—'}{' '}→{' '}
+                            {stock.position_value != null ? formatWholeMoney(stock.position_value) : '—'}
+                          </Text>
+                        </View>
+                        <View style={[styles.detailCell, styles.detailCellRight]}>
+                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Open P/L</Text>
+                          {plUsdText && plPctText ? (
+                            <Text style={[
+                              styles.detailCellValue,
+                              styles.detailCellValueRight,
+                              plIsPositive ? styles.positive : styles.negative,
+                            ]}>
+                              {plUsdText}{'\n'}({plPctText})
+                            </Text>
+                          ) : (
+                            <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>—</Text>
+                          )}
+                        </View>
+                      </View>
+
+                      {/* Row 5: Rebalanced | Realized P/L (tappable → trading history) */}
+                      <View style={styles.detailRow}>
+                        <View style={styles.detailCell}>
+                          <Text style={styles.detailCellLabel}>Rebalanced</Text>
+                          <Text style={styles.detailCellValue}>{rebalancedDisplay}</Text>
+                        </View>
+                        <TouchableOpacity
+                          style={[styles.detailCell, styles.detailCellRight]}
+                          onPress={() => router.push(`/trading-history?ticker=${stock.ticker}`)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Realized P/L ↗</Text>
+                          {/* Open positions have no realized P/L until replaced/sold */}
+                          <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>{formatSignedMoney(0)} ({formatSignedPercent(0)})</Text>
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Row 6: Opened → Today | Duration */}
+                      <View style={[styles.detailRow, styles.detailRowLast]}>
+                        <View style={styles.detailCell}>
+                          <Text style={styles.detailCellLabel}>Opened → Today</Text>
+                          <Text style={styles.detailCellValue}>{entryDateDisplay}</Text>
+                        </View>
+                        <View style={[styles.detailCell, styles.detailCellRight]}>
+                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Duration</Text>
+                          <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>{duration}</Text>
+                        </View>
+                      </View>
+
+                      {/* History button — trading history for this ticker */}
+                      <TouchableOpacity
+                        style={styles.detailHistoryBtn}
+                        onPress={() => router.push(`/trading-history?ticker=${stock.ticker}`)}
+                      >
+                        <Ionicons name="list-outline" size={14} color={COLORS.primary} />
+                        <Text style={styles.detailHistoryBtnText}>Trading history</Text>
+                        <Ionicons name="chevron-forward" size={13} color={COLORS.primary} />
+                      </TouchableOpacity>
+                    </View>
+                  );
+                }
+
+                // ── Watchlist: simple compact card (original layout) ──
                 const createdText = getStockCreatedText(stock);
                 const rebalancedText = getStockRebalancedText(stock);
                 const positionPriceText = formatPositionPrice(stock.avg_cost);
@@ -1098,45 +1321,28 @@ export default function Dashboard() {
                 const closedUsdText = formatSignedMoney(stock.position_pl_closed_usd);
                 const openUsdText = formatSignedMoney(stock.position_pl_open_usd);
                 return (
-                  <View 
+                  <View
                     key={stock.ticker}
                     style={[
                       styles.companyRowWrapper,
-                      isLastVisible && !hasMoreStocks && !hasLessStocks && styles.lastRow
+                      isLastVisible && !hasMoreStocks && !hasLessStocks && styles.lastRow,
                     ]}
                   >
-                    {/* P41: Removed unfollow star - unfollow only via ticker detail page */}
-                    
-                    <TouchableOpacity
-                      style={styles.companyRow}
-                      onPress={() => {
-                        useMyStocksStore.getState().setTickers(filteredStocks.map((s: any) => s.ticker));
-                        router.push(`/stock/${stock.ticker}`);
-                      }}
-                    >
+                    <TouchableOpacity style={styles.companyRow} onPress={navigateToStock}>
                       <View style={styles.companyLeft}>
                         <StockLogo logoUrl={logoUrl} ticker={stock.ticker} color={getCompanyColor(stock.ticker)} />
                         <View style={styles.stockInfoColumn}>
                           <View style={styles.tickerRow}>
                             <Text style={styles.companyTicker}>{stock.ticker}</Text>
-                            {/* P33: Pill indicator */}
-                            <View style={[
-                              styles.stockPill,
-                              pillConfig && { backgroundColor: pillConfig.bg },
-                            ]}>
-                              <Text style={[
-                                styles.stockPillText,
-                                pillConfig && { color: pillConfig.text },
-                              ]}>
+                            <View style={[styles.stockPill, pillConfig && { backgroundColor: pillConfig.bg }]}>
+                              <Text style={[styles.stockPillText, pillConfig && { color: pillConfig.text }]}>
                                 {pillConfig?.label ?? stock.pill}
                               </Text>
                             </View>
                           </View>
                           <Text style={styles.companyName} numberOfLines={1}>{stock.name || stock.ticker}</Text>
                           {sharesLineText ? (
-                            <Text style={styles.stockPositionDetails} numberOfLines={1}>
-                              {sharesLineText}
-                            </Text>
+                            <Text style={styles.stockPositionDetails} numberOfLines={1}>{sharesLineText}</Text>
                           ) : null}
                           {createdText ? (
                             <Text style={styles.stockAddedAt}>{createdText}</Text>
@@ -1154,17 +1360,14 @@ export default function Dashboard() {
                         ) : stock.change_since_added !== null && stock.change_since_added !== undefined ? (
                           <Text style={[
                             styles.stockChangeSinceAdded,
-                            stock.change_since_added >= 0 ? styles.positive : styles.negative
+                            stock.change_since_added >= 0 ? styles.positive : styles.negative,
                           ]}>
                             {stock.change_since_added >= 0 ? '+' : ''}{stock.change_since_added.toFixed(2)}%
                           </Text>
                         ) : null}
                         {plUsdText && plPctText ? (
                           <Text
-                            style={[
-                              styles.stockPositionPl,
-                              plIsPositive ? styles.positive : styles.negative,
-                            ]}
+                            style={[styles.stockPositionPl, plIsPositive ? styles.positive : styles.negative]}
                             numberOfLines={1}
                           >
                             {plUsdText} ({plPctText})
@@ -1172,7 +1375,7 @@ export default function Dashboard() {
                         ) : (
                           <Text style={[
                             styles.stock1dChange,
-                            (stock.change_1d_pct || 0) >= 0 ? styles.positiveLight : styles.negativeLight
+                            (stock.change_1d_pct || 0) >= 0 ? styles.positiveLight : styles.negativeLight,
                           ]}>
                             ({(stock.change_1d_pct || 0) >= 0 ? '+' : ''}{(stock.change_1d_pct || 0).toFixed(2)}%)
                           </Text>
@@ -2999,5 +3202,107 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 4,
     backgroundColor: COLORS.border,
+  },
+
+  // ── Tracklist detail card (expanded 6-row layout) ──
+  detailCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    ...Platform.select({
+      web: { boxShadow: '0 1px 4px rgba(0,0,0,0.07)' },
+      default: { elevation: 1 },
+    }),
+  },
+  detailCardLast: {
+    marginBottom: 0,
+  },
+  detailCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 12,
+  },
+  detailCardHeaderInfo: {
+    flex: 1,
+  },
+  detailDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginBottom: 4,
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  detailRowLast: {
+    borderBottomWidth: 0,
+    paddingBottom: 4,
+  },
+  detailCell: {
+    flex: 1,
+    paddingRight: 8,
+  },
+  detailCellRight: {
+    alignItems: 'flex-end',
+    paddingRight: 0,
+    paddingLeft: 8,
+  },
+  detailCellLabel: {
+    fontSize: 10,
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+    marginBottom: 2,
+  },
+  detailCellLabelRight: {
+    textAlign: 'right',
+  },
+  detailCellValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+    lineHeight: 18,
+  },
+  detailCellValueRight: {
+    textAlign: 'right',
+  },
+  detailHistoryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    marginTop: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: COLORS.primary + '10',
+  },
+  detailHistoryBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+
+  // ── Performance card "Full history" button ──
+  performanceHistoryBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    marginTop: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  performanceHistoryBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: 'rgba(255,255,255,0.85)',
   },
 });

@@ -52,7 +52,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, date as date_type
 import asyncio
 import httpx
 import json
@@ -2418,6 +2418,26 @@ async def get_tracklist(request: Request):
             "avg_cost": pos.get("avg_cost") or pos.get("entry_price"),
         })
     draft_tickers = state["tracklist_draft_tickers"]
+    raw_events = sorted(tracklist_doc.get("events", []), key=lambda e: e.get("effective_date") or "")
+    events_history = []
+    for event in raw_events:
+        event_type = event.get("event_type")
+        effective_date = event.get("effective_date")
+        if not effective_date:
+            continue
+        entry: dict = {
+            "event_type": event_type,
+            "effective_date": effective_date,
+            "effective_date_display": _format_display_date(effective_date),
+            "realized_pnl": round(float(event.get("realized_pnl") or 0), 2),
+            "capital": round(float(event.get("capital") or 0), 2),
+            "cash_balance": round(float(event.get("cash_balance") or 0), 2),
+            "positions_count": len(event.get("positions", [])),
+        }
+        if event_type == "replace":
+            entry["removed_ticker"] = event.get("removed_ticker")
+            entry["added_ticker"] = event.get("added_ticker")
+        events_history.append(entry)
     return {
         "count": len(positions),
         "max_positions": 7,
@@ -2433,11 +2453,142 @@ async def get_tracklist(request: Request):
         "cash_balance": round(float(tracklist_doc.get("cash_balance") or 0), 2),
         "realized_pnl_total": round(float(tracklist_doc.get("realized_pnl_total") or 0), 2),
         "performance": performance,
+        "events_history": events_history,
         "changes_apply_note": "Tracklist starts automatically from your first login date. Replacements apply at next close.",
     }
 
 
-@api_router.post("/v1/tracklist/setup")
+@api_router.get("/v1/tracklist/positions-history")
+async def get_tracklist_positions_history(request: Request):
+    """
+    Returns all positions ever held in the tracklist, both open (current) and
+    closed (replaced), with full trade detail: entry/exit prices, dates, P&L.
+    Used by the Trading History screen.
+    """
+    user = request.state.user
+    state = await _get_membership_state(user["user_id"])
+    tracklist_doc = state["tracklist_doc"]
+    if not tracklist_doc:
+        return {"open_positions": [], "closed_positions": [], "summary": {"total_closed": 0, "total_open": 0, "realized_pnl_usd": 0.0}}
+
+    initial_capital = float(tracklist_doc.get("initial_capital") or 100000)
+    raw_events = sorted(tracklist_doc.get("events", []), key=lambda e: e.get("effective_date") or "")
+
+    # Walking events we maintain the current portfolio snapshot so that when a
+    # replace event fires we can read the removed ticker's cost-basis from the
+    # previous snapshot.
+    current_positions: Dict[str, dict] = {}
+    closed_positions: list = []
+
+    for event in raw_events:
+        event_type = event.get("event_type")
+        effective_date = event.get("effective_date")
+        event_positions = event.get("positions", [])
+
+        if event_type == "auto_seed":
+            current_positions = {
+                _normalize_list_ticker(pos.get("ticker", "")): pos
+                for pos in event_positions
+                if pos.get("ticker")
+            }
+
+        elif event_type == "replace":
+            removed = _normalize_list_ticker(event.get("removed_ticker") or "")
+            added = _normalize_list_ticker(event.get("added_ticker") or "")
+
+            if removed and removed in current_positions:
+                removed_pos = current_positions[removed]
+                exit_price_val, _exit_date = await _get_close_for_date_or_latest(
+                    f"{removed}.US", effective_date
+                )
+                avg_cost = float(removed_pos.get("avg_cost") or removed_pos.get("entry_price") or 0)
+                shares = int(removed_pos.get("shares") or 0)
+                exit_price = float(exit_price_val or 0)
+
+                pnl_usd: Optional[float] = None
+                pnl_pct: Optional[float] = None
+                pnl_pct_of_capital: Optional[float] = None
+                if exit_price > 0 and avg_cost > 0:
+                    pnl_usd = round((exit_price - avg_cost) * shares, 2)
+                    pnl_pct = round(((exit_price - avg_cost) / avg_cost) * 100, 2)
+                    pnl_pct_of_capital = round((pnl_usd / initial_capital) * 100, 2) if initial_capital > 0 else None
+
+                entry_date_str = removed_pos.get("entry_date")
+                duration_days: Optional[int] = None
+                if entry_date_str and effective_date:
+                    try:
+                        d1 = date_type.fromisoformat(entry_date_str)
+                        d2 = date_type.fromisoformat(effective_date)
+                        duration_days = (d2 - d1).days
+                    except (ValueError, AttributeError):
+                        pass
+
+                closed_positions.append({
+                    "ticker": removed,
+                    "status": "closed",
+                    "shares": shares,
+                    "entry_price": round(float(removed_pos.get("entry_price") or avg_cost), 4),
+                    "avg_cost": round(avg_cost, 4),
+                    "entry_date": entry_date_str,
+                    "entry_date_display": _format_display_date(entry_date_str),
+                    "exit_price": round(exit_price, 4) if exit_price > 0 else None,
+                    "exit_date": effective_date,
+                    "exit_date_display": _format_display_date(effective_date),
+                    "realized_pnl_usd": pnl_usd,
+                    "realized_pnl_pct": pnl_pct,
+                    "realized_pnl_pct_of_capital": pnl_pct_of_capital,
+                    "duration_days": duration_days,
+                    "replaced_by": added,
+                })
+
+            # Advance the snapshot to the new positions after replacement.
+            current_positions = {
+                _normalize_list_ticker(pos.get("ticker", "")): pos
+                for pos in event_positions
+                if pos.get("ticker")
+            }
+
+    # Build open positions from the current snapshot.
+    open_positions: list = []
+    for ticker, pos in current_positions.items():
+        latest_price_val, _ = await _get_close_for_date_or_latest(f"{ticker}.US", None)
+        avg_cost = float(pos.get("avg_cost") or pos.get("entry_price") or 0)
+        shares = int(pos.get("shares") or 0)
+        latest_price = float(latest_price_val or 0)
+
+        unrealized_pnl_usd: Optional[float] = None
+        unrealized_pnl_pct: Optional[float] = None
+        if latest_price > 0 and avg_cost > 0:
+            unrealized_pnl_usd = round((latest_price - avg_cost) * shares, 2)
+            unrealized_pnl_pct = round(((latest_price - avg_cost) / avg_cost) * 100, 2)
+
+        entry_date_str = pos.get("entry_date")
+        open_positions.append({
+            "ticker": ticker,
+            "status": "open",
+            "shares": shares,
+            "entry_price": round(float(pos.get("entry_price") or avg_cost), 4),
+            "avg_cost": round(avg_cost, 4),
+            "entry_date": entry_date_str,
+            "entry_date_display": _format_display_date(entry_date_str),
+            "current_price": round(latest_price, 4) if latest_price > 0 else None,
+            "unrealized_pnl_usd": unrealized_pnl_usd,
+            "unrealized_pnl_pct": unrealized_pnl_pct,
+        })
+
+    closed_positions.sort(key=lambda p: p.get("exit_date") or "", reverse=True)
+    open_positions.sort(key=lambda p: p.get("entry_date") or "")
+
+    realized_total = round(sum(p.get("realized_pnl_usd") or 0 for p in closed_positions), 2)
+    return {
+        "open_positions": open_positions,
+        "closed_positions": closed_positions,
+        "summary": {
+            "total_closed": len(closed_positions),
+            "total_open": len(open_positions),
+            "realized_pnl_usd": realized_total,
+        },
+    }
 async def setup_tracklist(payload: TracklistSetupRequest, request: Request):
     raise HTTPException(410, "Tracklist is assigned automatically from your first login date.")
 
