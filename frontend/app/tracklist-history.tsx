@@ -9,8 +9,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect, useRouter } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect, useRouter } from 'expo-router';import { Ionicons } from '@expo/vector-icons';
 import { LineChart } from 'react-native-gifted-charts';
 import axios from 'axios';
 import AppHeader from '../components/AppHeader';
@@ -219,14 +218,20 @@ export default function TracklistHistoryPage() {
               {[
                 { label: 'Total return', value: formatSignedPct(metrics.total_profit_pct) },
                 { label: 'Equity value', value: formatMoney(performance?.equity_value) },
-                { label: 'Realized P/L', value: formatSignedMoney(metrics.realized_pnl_usd), colored: true, v: metrics.realized_pnl_usd },
+                { label: 'Realized P/L ↗', value: formatSignedMoney(metrics.realized_pnl_usd), colored: true, v: metrics.realized_pnl_usd, onPress: () => router.push('/trading-history') },
                 { label: 'Unrealized P/L', value: formatSignedMoney(metrics.unrealized_pnl_usd), colored: true, v: metrics.unrealized_pnl_usd },
                 { label: 'Avg / year', value: formatSignedPct(metrics.avg_per_year_pct) },
                 { label: 'Max drawdown', value: `-${Math.abs(metrics.max_drawdown_pct ?? 0).toFixed(2)}%` },
                 { label: 'Track record', value: `${metrics.track_record_days ?? 0} days` },
                 { label: 'Vs. S&P 500', value: formatSignedPct(metrics.vs_benchmark_pct), colored: true, v: metrics.vs_benchmark_pct },
-              ].map(({ label, value, colored, v }) => (
-                <View key={label} style={styles.metricCell}>
+              ].map(({ label, value, colored, v, onPress }: any) => (
+                <TouchableOpacity
+                  key={label}
+                  style={styles.metricCell}
+                  onPress={onPress}
+                  disabled={!onPress}
+                  activeOpacity={onPress ? 0.7 : 1}
+                >
                   <Text style={styles.metricLabel}>{label}</Text>
                   <Text style={[
                     styles.metricValue,
@@ -234,7 +239,7 @@ export default function TracklistHistoryPage() {
                   ]}>
                     {value}
                   </Text>
-                </View>
+                </TouchableOpacity>
               ))}
             </View>
           </View>
@@ -288,7 +293,7 @@ export default function TracklistHistoryPage() {
           )}
         </View>
 
-        {/* ── Navigate to individual tickers ── */}
+        {/* ── Current positions ── */}
         {(data?.positions || []).length > 0 && (
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Current positions</Text>
@@ -296,7 +301,7 @@ export default function TracklistHistoryPage() {
               <TouchableOpacity
                 key={pos.ticker}
                 style={styles.positionRow}
-                onPress={() => router.push(`/stock/${pos.ticker}`)}
+                onPress={() => router.push(`/trading-history?ticker=${pos.ticker}`)}
               >
                 <View>
                   <Text style={styles.positionTicker}>{pos.ticker}</Text>

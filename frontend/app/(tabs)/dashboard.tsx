@@ -936,13 +936,13 @@ export default function Dashboard() {
               ) : null}
             </>
           )}
-          {/* Full history link */}
+          {/* Full history link → all positions trading history */}
           <TouchableOpacity
             style={styles.performanceHistoryBtn}
-            onPress={() => router.push('/tracklist-history')}
+            onPress={() => router.push('/trading-history')}
           >
-            <Ionicons name="time-outline" size={14} color="rgba(255,255,255,0.85)" />
-            <Text style={styles.performanceHistoryBtnText}>Full portfolio history</Text>
+            <Ionicons name="list-outline" size={14} color="rgba(255,255,255,0.85)" />
+            <Text style={styles.performanceHistoryBtnText}>All positions history</Text>
             <Ionicons name="chevron-forward" size={13} color="rgba(255,255,255,0.85)" />
           </TouchableOpacity>
         </View>
@@ -1265,17 +1265,21 @@ export default function Dashboard() {
                         </View>
                       </View>
 
-                      {/* Row 5: Rebalanced | Realized P/L */}
+                      {/* Row 5: Rebalanced | Realized P/L (tappable → trading history) */}
                       <View style={styles.detailRow}>
                         <View style={styles.detailCell}>
                           <Text style={styles.detailCellLabel}>Rebalanced</Text>
                           <Text style={styles.detailCellValue}>{rebalancedDisplay}</Text>
                         </View>
-                        <View style={[styles.detailCell, styles.detailCellRight]}>
-                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Realized P/L</Text>
+                        <TouchableOpacity
+                          style={[styles.detailCell, styles.detailCellRight]}
+                          onPress={() => router.push(`/trading-history?ticker=${stock.ticker}`)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Realized P/L ↗</Text>
                           {/* Open positions have no realized P/L until replaced/sold */}
                           <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>$0.00 (0.00%)</Text>
-                        </View>
+                        </TouchableOpacity>
                       </View>
 
                       {/* Row 6: Opened → Today | Duration */}
@@ -1290,13 +1294,13 @@ export default function Dashboard() {
                         </View>
                       </View>
 
-                      {/* History button */}
+                      {/* History button — trading history for this ticker */}
                       <TouchableOpacity
                         style={styles.detailHistoryBtn}
-                        onPress={navigateToStock}
+                        onPress={() => router.push(`/trading-history?ticker=${stock.ticker}`)}
                       >
-                        <Ionicons name="bar-chart-outline" size={14} color={COLORS.primary} />
-                        <Text style={styles.detailHistoryBtnText}>Price history</Text>
+                        <Ionicons name="list-outline" size={14} color={COLORS.primary} />
+                        <Text style={styles.detailHistoryBtnText}>Trading history</Text>
                         <Ionicons name="chevron-forward" size={13} color={COLORS.primary} />
                       </TouchableOpacity>
                     </View>
