@@ -71,6 +71,8 @@ type DashboardStock = {
   added_at?: string | null;
   change_since_added?: number | null;
   change_1d_pct?: number | null;
+  price?: number | null;
+  follow_price?: number | null;
   shares?: number | null;
   avg_cost?: number | null;
   position_value?: number | null;
@@ -361,7 +363,17 @@ export default function Dashboard() {
      
      return stocks;
    }, [myStocks, stocksFilter, stocksSort, includeWatchlist]);
-  
+
+  // Sum of position_value across all Tracklist stocks — used for basket-weight calculation
+  const totalTracklistValue = useMemo(() => {
+    return filteredStocks.reduce((sum: number, s: any) => {
+      if (s.pill === 'Tracklist' && typeof s.position_value === 'number') {
+        return sum + s.position_value;
+      }
+      return sum;
+    }, 0);
+  }, [filteredStocks]);
+
   // P36 Item 4: hasMoreStocks and hasLessStocks for Load more / See less
   const INITIAL_STOCKS_LIMIT = 7;
   const hasMoreStocks = stocksLimit < filteredStocks.length;
@@ -634,6 +646,20 @@ export default function Dashboard() {
     if (typeof value !== 'number' || !Number.isFinite(value)) return null;
     const sign = value >= 0 ? '+' : '';
     return `${sign}${value.toFixed(2)}%`;
+  };
+
+  const formatDuration = (isoDate?: string | null): string => {
+    if (!isoDate) return '—';
+    const start = new Date(`${isoDate}T00:00:00Z`);
+    if (Number.isNaN(start.getTime())) return '—';
+    const diffDays = Math.floor((Date.now() - start.getTime()) / 86400000);
+    if (diffDays < 0) return '—';
+    if (diffDays < 30) return `${diffDays}d`;
+    const months = Math.floor(diffDays / 30.44);
+    if (months < 12) return `${months}mo`;
+    const years = Math.floor(months / 12);
+    const remMonths = months % 12;
+    return remMonths > 0 ? `${years}y ${remMonths}mo` : `${years}y`;
   };
 
   const getStockCreatedText = (stock: DashboardStock) => {
@@ -1054,7 +1080,6 @@ export default function Dashboard() {
             
             {/* Column header for values */}
             <View style={styles.columnHeaderSpacer} />
-            <Text style={styles.columnHeader}>Total{'\n'}(1D)</Text>
           </View>
 
           {myStocks.length === 0 ? (
