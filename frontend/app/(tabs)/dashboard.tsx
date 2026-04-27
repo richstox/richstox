@@ -1278,7 +1278,7 @@ export default function Dashboard() {
                         >
                           <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Realized P/L ↗</Text>
                           {/* Open positions have no realized P/L until replaced/sold */}
-                          <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>$0.00 (0.00%)</Text>
+                          <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>{formatSignedMoney(0)} ({formatSignedPercent(0)})</Text>
                         </TouchableOpacity>
                       </View>
 
