@@ -1128,6 +1128,7 @@ export default function Dashboard() {
                 if (isTracklist) {
                   // ── Tracklist: expanded 6-row detail card ──
                   const change1dPct = stock.change_1d_pct || 0;
+                  // follow_price is the price at which this position was entered into the tracklist
                   const entryPrice = stock.follow_price;
                   const lastClose = stock.price;
                   const changeTotal = stock.change_since_added;
@@ -1272,6 +1273,7 @@ export default function Dashboard() {
                         </View>
                         <View style={[styles.detailCell, styles.detailCellRight]}>
                           <Text style={[styles.detailCellLabel, styles.detailCellLabelRight]}>Realized P/L</Text>
+                          {/* Open positions have no realized P/L until replaced/sold */}
                           <Text style={[styles.detailCellValue, styles.detailCellValueRight]}>$0.00 (0.00%)</Text>
                         </View>
                       </View>
